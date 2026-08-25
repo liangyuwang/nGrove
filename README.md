@@ -57,9 +57,9 @@ The AutoTrain system is responsible for building the training system itself.
 
 The primary objective is simple:
 
-[
+$$
 \boxed{\text{Minimize hidden TEST loss}}
-]
+$$
 
 under the resource constraints of the selected benchmark track.
 
@@ -101,13 +101,13 @@ The benchmark is intended to measure the capability of a system to perform auton
 
 Let:
 
-* (S_0) be the AutoTrain system at the moment the benchmark task is revealed;
-* (S_t) be the system after autonomous improvement during the episode;
-* (M_t) be a target model or training system produced by (S_t).
+* $S_0$ be the AutoTrain system at the moment the benchmark task is revealed;
+* $S_t$ be the system after autonomous improvement during the episode;
+* $M_t$ be a target model or training system produced by $S_t$.
 
 AutoTrain-Benchmark studies trajectories of the form:
 
-[
+$$
 S_0
 \rightarrow
 S_1
@@ -115,15 +115,15 @@ S_1
 S_2
 \rightarrow
 \cdots
-]
+$$
 
 while simultaneously producing increasingly capable training systems:
 
-[
+$$
 S_t
 \rightarrow
 M_t.
-]
+$$
 
 The benchmark therefore does **not** require the AutoTrain system itself to remain static.
 
@@ -298,15 +298,15 @@ Only then does the official evaluator run TEST.
 
 Therefore:
 
-[
+$$
 \boxed{\text{VAL is part of the research loop}}
-]
+$$
 
 while:
 
-[
+$$
 \boxed{\text{TEST is post-mortem only}}
-]
+$$
 
 The system cannot resume research after receiving TEST results.
 
@@ -327,14 +327,13 @@ A benchmark release specifies:
 
 The default primary metric is autoregressive token negative log-likelihood:
 
-[
+$$
 L
 =
-
 -\frac{1}{N}
 \sum_t
 \log p(x_t \mid x_{<t}).
-]
+$$
 
 The internal architecture is unrestricted.
 
@@ -494,9 +493,9 @@ Track A constrains total elapsed research time.
 
 The benchmark defines:
 
-[
+$$
 T_{\text{total}}.
-]
+$$
 
 The clock begins when the task is revealed to the submitted AutoTrain system.
 
@@ -537,11 +536,11 @@ All of these decisions compete for the same wall-clock budget.
 
 The primary Track A score is:
 
-[
+$$
 \boxed{
 L_{\mathrm{TEST}}(T_{\mathrm{total}})
 }
-]
+$$
 
 for the system's final declared incumbent at the deadline.
 
@@ -561,15 +560,15 @@ Track B constrains the system's access to the expensive training environment rat
 
 A benchmark release defines:
 
-[
+$$
 N_{\mathrm{runs}}
-]
+$$
 
 and:
 
-[
+$$
 T_{\mathrm{run}}.
-]
+$$
 
 For example:
 
@@ -621,11 +620,11 @@ Failures caused by benchmark infrastructure do not consume the participant's run
 
 The primary Track B score is:
 
-[
+$$
 \boxed{
 L_{\mathrm{TEST}}(N_{\mathrm{runs}})
 }
-]
+$$
 
 for the final incumbent selected by the AutoTrain system.
 
@@ -671,17 +670,17 @@ Together they expose two different scaling behaviors.
 
 Track A measures:
 
-[
+$$
 L_{\mathrm{TEST}}(t).
-]
+$$
 
 Track B measures:
 
-[
+$$
 L_{\mathrm{TEST}}(n).
-]
+$$
 
-where (t) is autonomous research time and (n) is the number of expensive training-environment interactions.
+where $t$ is autonomous research time and $n$ is the number of expensive training-environment interactions.
 
 ---
 
@@ -689,11 +688,11 @@ where (t) is autonomous research time and (n) is the number of expensive trainin
 
 The submitted system is frozen only at the **start boundary**.
 
-Before task reveal, the participant registers the initial AutoTrain system (S_0).
+Before task reveal, the participant registers the initial AutoTrain system $S_0$.
 
 After task reveal:
 
-> Anything generated autonomously and causally by (S_0), using permitted resources, may become part of the system's subsequent trajectory.
+> Anything generated autonomously and causally by $S_0$, using permitted resources, may become part of the system's subsequent trajectory.
 
 Therefore, a system may autonomously:
 
@@ -766,16 +765,14 @@ For multi-agent systems, usage is aggregated across the complete AutoTrain syste
 
 This makes it possible to study:
 
-[
+$$
 L_{\mathrm{TEST}}
-=================
-
-f(
+= f(
 \text{agent tokens},
 \text{research time},
 \text{training interactions}
 ).
-]
+$$
 
 In Track A, agent reasoning naturally competes with training and engineering for the total wall-clock budget.
 
@@ -821,7 +818,7 @@ AutoTrain-Benchmark explicitly permits using VAL results to change the training-
 
 For example:
 
-[
+$$
 \text{VAL feedback}
 \rightarrow
 \text{new subset}
@@ -829,7 +826,7 @@ For example:
 \text{new mixture}
 \rightarrow
 \text{new curriculum}.
-]
+$$
 
 This may eventually overfit VAL.
 
@@ -875,19 +872,19 @@ This produces a hidden generalization trajectory.
 
 For Track A:
 
-[
+$$
 \boxed{
 L_{\mathrm{TEST}}(t)
 }
-]
+$$
 
 For Track B:
 
-[
+$$
 \boxed{
 L_{\mathrm{TEST}}(n_{\mathrm{runs}})
 }
-]
+$$
 
 These curves are first-class benchmark outputs.
 
@@ -916,9 +913,9 @@ The second system may be more interesting from an RSI perspective even when the 
 
 The primary leaderboard metric is:
 
-[
+$$
 \boxed{\text{final hidden TEST NLL}}
-]
+$$
 
 under the selected track's resource constraint.
 
@@ -1256,38 +1253,37 @@ Beyond leaderboard ranking, AutoTrain-Benchmark is intended to support questions
 
 How does model quality scale with autonomous research time?
 
-[
+$$
 L_{\mathrm{TEST}}(t)
-]
+$$
 
 ### Experiment-efficiency scaling
 
 How does model quality scale with the number of expensive empirical interactions?
 
-[
+$$
 L_{\mathrm{TEST}}(n)
-]
+$$
 
 ### Agent-compute scaling
 
 How does performance scale with researcher inference?
 
-[
+$$
 L_{\mathrm{TEST}}(N_{\mathrm{agent\ tokens}})
-]
+$$
 
 ### Research gain
 
 How much better does a system become after receiving experimental feedback?
 
-[
+$$
 \Delta L
-========
-
-## L_{\mathrm{initial}}
-
+=
+L_{\mathrm{initial}}
+-
 L_{\mathrm{final}}.
-]
+$$
 
 ### Validation overfitting
 
@@ -1337,51 +1333,51 @@ These parameters should be chosen only after the benchmark's conceptual boundari
 
 AutoTrain-Benchmark evaluates an autonomous system starting from a fixed initial state:
 
-[
+$$
 S_0.
-]
+$$
 
 After task reveal, the system may autonomously research, experiment, write software, modify its training strategy, and improve its own task-local process.
 
 The benchmark provides:
 
-[
+$$
 \boxed{\text{Fixed TRAIN}}
-]
+$$
 
-[
+$$
 \boxed{\text{Fixed tokenizer}}
-]
+$$
 
-[
+$$
 \boxed{\text{Fixed training hardware}}
-]
+$$
 
-[
+$$
 \boxed{\text{VAL feedback}}
-]
+$$
 
-[
+$$
 \boxed{\text{Hidden TEST}}
-]
+$$
 
 while leaving the training stack open.
 
 Two complementary tracks constrain different resources:
 
-[
+$$
 \boxed{
 \text{Track A: fixed total autonomous research time}
 }
-]
+$$
 
 and:
 
-[
+$$
 \boxed{
 \text{Track B: fixed number of training-environment interactions}
 }
-]
+$$
 
 with a fixed maximum duration for each run.
 
