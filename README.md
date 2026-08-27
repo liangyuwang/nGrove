@@ -1,16 +1,16 @@
-# AutoTrain-Benchmark
+# AutoTrain-Bench
 
 **An open-ended benchmark for autonomous training research and recursive self-improvement.**
 
-> **Status:** early design / specification
-> **Project name:** AutoTrain-Benchmark
+> **Status:** v0 local reference prototype
+> **Project name:** AutoTrain-Bench
 > Dataset, hardware, and concrete resource budgets are intentionally not fixed yet.
 
 ---
 
 ## Overview
 
-AutoTrain-Benchmark is a benchmark for evaluating **autonomous systems that design, implement, run, analyze, and improve machine-learning training systems**.
+AutoTrain-Bench is a benchmark for evaluating **autonomous systems that design, implement, run, analyze, and improve machine-learning training systems**.
 
 The benchmark is inspired by training speedruns, but asks a broader question.
 
@@ -18,7 +18,7 @@ Instead of fixing a small model and asking:
 
 > How quickly can this model reach a target validation loss?
 
-AutoTrain-Benchmark asks:
+AutoTrain-Bench asks:
 
 > **Given a fixed task, fixed data, fixed training hardware, and a constrained opportunity to interact with the training environment, how good a model can an autonomous research system produce?**
 
@@ -65,6 +65,78 @@ under the resource constraints of the selected benchmark track.
 
 ---
 
+# Local Reference Prototype
+
+The repository now contains an executable, single-host Docker prototype of the benchmark protocol. It is intended to validate episode lifecycle, Training Lease accounting, hidden evaluation, and the agent-facing control surface before the first official benchmark instance is selected.
+
+The prototype deliberately assumes that the user has already obtained a machine matching the task's hardware specification. AutoTrain-Bench verifies and consumes resources visible on that machine; it does **not** allocate machines or integrate with Slurm, Kubernetes, or a cloud scheduler.
+
+## Quick start
+
+Requirements:
+
+* Python 3.9 or newer;
+* Docker;
+* NVIDIA Container Toolkit only when the selected task requires GPUs.
+
+Install the local CLI:
+
+```bash
+python3 -m pip install -e .
+```
+
+Prepare the bundled CPU toy task and pull its fixed images:
+
+```bash
+autotrain-bench prepare --task examples/toy/task.json
+```
+
+Run a complete Track B episode with the example autonomous agent:
+
+```bash
+autotrain-bench start --task examples/toy/task.json --track B
+```
+
+A participant Agent Container can be selected without changing the benchmark task:
+
+```bash
+autotrain-bench start \
+  --task path/to/task.json \
+  --track B \
+  --agent-image participant-agent:version \
+  --agent-command "python /workspace/agent.py"
+```
+
+The Supervisor prints the episode directory. Its final state can be inspected later with:
+
+```bash
+autotrain-bench report --episode .autotrain/episodes/<episode-id>
+```
+
+The example proves the complete protocol:
+
+```text
+task reveal
+→ interactive lease
+→ TRAIN-only experimentation
+→ candidate commit
+→ hidden VAL scalar
+→ autonomous revision
+→ finish
+→ episode closed
+→ hidden TEST
+```
+
+## v0 scope and security
+
+The reference implementation uses an official host-side Supervisor, an Agent Container, disposable Training Containers, and evaluator-only Eval Containers. Agent and Training Containers receive no Docker socket, no arbitrary Internet access, and no VAL or TEST content.
+
+The v0 threat model protects benchmark policy from the Agent, not from the user or machine administrator. Docker isolation is a development reference boundary and is not presented as protection against kernel, container-runtime, or GPU-driver exploits. Official adversarial evaluation may require stronger worker or VM isolation.
+
+The bundled evaluator uses a provisional dependency-free Candidate ABI. It is intentionally not the final high-performance serving interface.
+
+---
+
 # Motivation
 
 Most training benchmarks deliberately restrict the search space.
@@ -91,7 +163,7 @@ but also:
 
 > What experiment should I run next?
 
-AutoTrain-Benchmark therefore treats the **entire training system as the search space**.
+AutoTrain-Bench therefore treats the **entire training system as the search space**.
 
 The benchmark is intended to measure the capability of a system to perform autonomous ML systems research, rather than its ability to optimize a predefined training script.
 
@@ -105,7 +177,7 @@ Let:
 * $S_t$ be the system after autonomous improvement during the episode;
 * $M_t$ be a target model or training system produced by $S_t$.
 
-AutoTrain-Benchmark studies trajectories of the form:
+AutoTrain-Bench studies trajectories of the form:
 
 $$
 S_0
@@ -143,47 +215,21 @@ This distinction is fundamental to the benchmark.
 
 # System Boundaries
 
-AutoTrain-Benchmark separates three components.
+AutoTrain-Bench v0 separates four components.
 
 ```text
-┌───────────────────────────┐
-│      AutoTrain Agent      │
-│                           │
-│ reasoning                 │
-│ coding                    │
-│ experiment design         │
-│ data analysis             │
-│ self-improvement          │
-│ research memory           │
-└─────────────┬─────────────┘
-              │
-        SUBMIT TRAINING RUN
-              │
-              ▼
-┌───────────────────────────┐
-│    Training Environment   │
-│                           │
-│ fixed hardware            │
-│ fixed runtime policy      │
-│ benchmark TRAIN data      │
-│ participant training code │
-└─────────────┬─────────────┘
-              │
-              ▼
-┌───────────────────────────┐
-│        Evaluator          │
-│                           │
-│ hidden VAL                │
-│ hidden TEST               │
-│ fixed evaluation code     │
-└───────────────────────────┘
+User-owned host
+└── trusted AutoTrain-Bench Supervisor
+    ├── untrusted Agent Container
+    ├── disposable Training Container
+    └── evaluator-only Eval Container
 ```
 
-The AutoTrain system does not receive interactive access to the training machines.
+The official Supervisor records task reveal time, owns Track A deadlines and Track B lease counters, controls container lifecycle, exposes already-allocated local GPUs, and invokes evaluation. The Agent cannot access the Supervisor's state or Docker socket.
 
-Instead, it constructs a training artifact and explicitly submits a **Training Run**.
+The Agent receives interactive access to a Training Container only through the Supervisor's narrow command channel during an active **Training Lease**. It may inspect logs, edit the shared workspace, compile code, profile, and run any number of TRAIN-only experiments inside that lease.
 
-Every Training Run executes in an isolated environment.
+VAL and TEST content exists only in Eval Containers. A committed candidate receives at most one official VAL evaluation per lease, and the Agent receives only the permitted aggregate metric. TEST cannot run until the episode has been permanently closed.
 
 ---
 
@@ -243,7 +289,7 @@ VAL = 2.84
 
 This is intended behavior.
 
-AutoTrain-Benchmark does not attempt to prevent validation-guided dataset research.
+AutoTrain-Bench does not attempt to prevent validation-guided dataset research.
 
 Generalization is enforced by TEST.
 
@@ -253,7 +299,7 @@ Generalization is enforced by TEST.
 
 VAL is the benchmark's **research feedback channel**.
 
-After a Training Run is completed, the official evaluator may return the fixed validation metric to the AutoTrain system.
+After a Training Lease commits a candidate and closes, the official evaluator may return the fixed validation metric to the AutoTrain system.
 
 The AutoTrain system is free to use this result to change anything it controls, including:
 
@@ -431,59 +477,37 @@ Choosing the appropriate model scale is itself part of the benchmark.
 
 ---
 
-# Training Runs
+# Training Leases
 
-A **Training Run** is the atomic interaction between the AutoTrain system and the expensive training environment.
-
-The protocol is:
+A **Training Lease** is a fixed-duration interactive window in which the Agent may use the benchmark's already-allocated training hardware.
 
 ```text
 Agent
   │
-  │ creates code/config/artifact
+  │ lease start
   ▼
-SUBMIT_RUN
+Supervisor creates Training Container
   │
-  │ immutable snapshot
-  ▼
-isolated training environment
+  ├── edit shared workspace
+  ├── execute commands
+  ├── inspect logs
+  ├── compile and profile
+  └── run unlimited TRAIN-only experiments
   │
-  │ no live agent intervention
+  │ commit one candidate, stop, or time out
   ▼
-one candidate artifact
+lease permanently ends
   │
-  ▼
-official VAL evaluation
-  │
-  ▼
-result + permitted logs returned to Agent
+  └── committed candidate → one hidden VAL query → aggregate metric
 ```
 
-Once a run begins, the external AutoTrain agent cannot interactively patch or control that run.
+The Agent interacts with the Training Container only through Supervisor-controlled operations. It never receives Docker or host control.
 
-However, the submitted training program may contain arbitrary pre-programmed adaptive behavior.
+Within a lease, the search process is unrestricted by experiment count. The Agent may repeatedly change architecture, optimization, data policy, kernels, distributed code, or its own research tools as long as it remains within the lease's hardware and time limits.
 
-For example, the training program may autonomously:
+Each lease may commit at most one candidate. Commit immediately terminates the lease before VAL is evaluated, so VAL feedback can influence only a later lease. A lease may also end without a candidate because of failure, timeout, or an explicit stop.
 
-* adjust learning rates;
-* change batch size;
-* alter curriculum;
-* change sequence length;
-* perform online profiling;
-* modify sampling probabilities;
-* restart internal phases;
-* use dynamic routing;
-* make other training-time decisions.
-
-The distinction is:
-
-> **Adaptive training code is allowed. External researcher intervention during a run is not.**
-
-A Training Run may internally perform arbitrary computation that fits within its hardware and time budget.
-
-However, each Training Run produces at most one official candidate for the benchmark VAL query.
-
-This preserves a clear definition of an empirical interaction with the benchmark evaluator.
+The lease is consumed when the Training Container starts successfully. Participant-controlled crashes, OOMs, compile failures, early termination, or failure to commit do not restore it. A failure before the Training Container starts is an infrastructure failure and does not consume the lease.
 
 ---
 
@@ -508,10 +532,10 @@ TASK REVEAL
 ├── data analysis
 ├── coding
 ├── self-improvement
-├── Training Run 1
+├── Training Lease 1
 ├── VAL feedback
 ├── analysis
-├── Training Run 2
+├── Training Lease 2
 ├── infrastructure changes
 ├── architecture changes
 ├── more research
@@ -519,7 +543,7 @@ TASK REVEAL
 └── DEADLINE
 ```
 
-The system may perform as many Training Runs as fit inside the total budget.
+The system may open as many Training Leases as fit inside the total budget. A lease can never extend beyond the Track A deadline.
 
 There is no requirement to follow a particular experiment strategy.
 
@@ -554,34 +578,35 @@ It rewards both research quality and research speed.
 
 ---
 
-# Track B — Interaction-Bounded Autonomous Research
+# Track B — Lease-Bounded Autonomous Research
 
 Track B constrains the system's access to the expensive training environment rather than its total research wall-clock.
 
 A benchmark release defines:
 
 $$
-N_{\mathrm{runs}}
+N_{\mathrm{leases}}
 $$
 
 and:
 
 $$
-T_{\mathrm{run}}.
+T_{\mathrm{lease}}.
 $$
 
 For example:
 
 ```text
-Maximum Training Runs:     TBD
-Maximum Time per Run:      TBD
+Maximum Training Leases:   TBD
+Maximum Time per Lease:    TBD
 Training Hardware:         TBD
+VAL Queries per Lease:     1
 Agent Research Time:       Unbounded by benchmark score
 ```
 
-The AutoTrain system may reason, write code, analyze previous results, and autonomously improve for as long as it chooses between Training Runs.
+The AutoTrain system may reason, write code, analyze previous results, and autonomously improve for as long as it chooses between Training Leases.
 
-However, it may submit to the training environment only a fixed number of times.
+However, it may obtain interactive access to the training hardware only a fixed number of times.
 
 Conceptually:
 
@@ -592,7 +617,7 @@ TASK
 Agent research
  │
  ▼
-RUN 1
+LEASE 1
  │
  ▼
 VAL 1
@@ -601,28 +626,28 @@ VAL 1
 Agent research / self-improvement
  │
  ▼
-RUN 2
+LEASE 2
  │
  ▼
 VAL 2
  │
  ...
  ▼
-RUN N
+LEASE N
  │
  ▼
 FINAL SUBMISSION
 ```
 
-A run that is launched consumes one run budget even if participant code crashes, OOMs, diverges, or otherwise fails.
+A lease that starts consumes one lease budget even if participant code crashes, OOMs, diverges, stops early, or otherwise fails.
 
-Failures caused by benchmark infrastructure do not consume the participant's run budget.
+Failures that occur before the Training Container starts do not consume the participant's lease budget.
 
 The primary Track B score is:
 
 $$
 \boxed{
-L_{\mathrm{TEST}}(N_{\mathrm{runs}})
+L_{\mathrm{TEST}}(N_{\mathrm{leases}})
 }
 $$
 
@@ -632,16 +657,16 @@ for the final incumbent selected by the AutoTrain system.
 
 Track B asks:
 
-> **How effectively can an autonomous researcher learn from a limited number of expensive interactions with reality?**
+> **How effectively can an autonomous researcher use a limited number of training-hardware windows and official validation-feedback rounds?**
 
 It emphasizes:
 
 * experiment selection;
 * strength of prior reasoning;
-* information gained per experiment;
+* information gained per lease and VAL query;
 * interpretation of failures;
 * hypothesis quality;
-* sample efficiency of autonomous scientific research.
+* efficiency of autonomous research under bounded accelerator access.
 
 Track B intentionally does **not** optimize total research wall-clock.
 
@@ -657,14 +682,15 @@ The two tracks constrain different scarce resources.
 
 |                     | Track A                          | Track B                                        |
 | ------------------- | -------------------------------- | ---------------------------------------------- |
-| Primary constraint  | Total wall-clock                 | Training Run count                             |
-| Per-run time        | Bounded by remaining total time  | Fixed maximum                                  |
+| Primary constraint  | Total wall-clock                 | Training Lease count and duration              |
+| Per-lease time      | Bounded by remaining total time  | Fixed maximum                                  |
 | Agent research time | Counts against deadline          | Not score-limited                              |
-| Number of runs      | Unlimited within deadline        | Fixed                                          |
-| VAL feedback        | After runs                       | After runs                                     |
+| Number of leases    | Unlimited within deadline        | Fixed                                          |
+| Experiments in lease| Unlimited within time/hardware   | Unlimited within time/hardware                 |
+| Official VAL        | At most once per committed lease | At most once per committed lease               |
 | Self-improvement    | Allowed                          | Allowed                                        |
 | Human intervention  | Forbidden                        | Forbidden                                      |
-| Primary question    | How fast can the system improve? | How efficiently can it learn from experiments? |
+| Primary question    | How fast can the system improve? | How well can it use bounded GPU access?         |
 
 Together they expose two different scaling behaviors.
 
@@ -680,7 +706,7 @@ $$
 L_{\mathrm{TEST}}(n).
 $$
 
-where $t$ is autonomous research time and $n$ is the number of expensive training-environment interactions.
+where $t$ is autonomous research time and $n$ is the number of Training Leases and official feedback rounds.
 
 ---
 
@@ -759,7 +785,7 @@ The benchmark records, at minimum:
 * output tokens;
 * total model calls;
 * token usage over time;
-* token usage between Training Runs.
+* token usage between Training Leases.
 
 For multi-agent systems, usage is aggregated across the complete AutoTrain system.
 
@@ -770,7 +796,7 @@ L_{\mathrm{TEST}}
 = f(
 \text{agent tokens},
 \text{research time},
-\text{training interactions}
+\text{lease and validation interactions}
 ).
 $$
 
@@ -814,7 +840,7 @@ The benchmark controls information through evaluator and environment boundaries 
 
 # Validation-Guided Data Research
 
-AutoTrain-Benchmark explicitly permits using VAL results to change the training-data strategy.
+AutoTrain-Bench explicitly permits using VAL results to change the training-data strategy.
 
 For example:
 
@@ -859,7 +885,7 @@ Each incumbent declaration records:
 
 * artifact hash;
 * timestamp;
-* run number;
+* lease number;
 * VAL score;
 * model metadata;
 * current research resource usage.
@@ -882,7 +908,7 @@ For Track B:
 
 $$
 \boxed{
-L_{\mathrm{TEST}}(n_{\mathrm{runs}})
+L_{\mathrm{TEST}}(n_{\mathrm{leases}})
 }
 $$
 
@@ -934,7 +960,7 @@ The benchmark also records:
 * final VAL–TEST gap;
 * agent input/output tokens;
 * number of agent calls;
-* number of Training Runs;
+* number and duration of Training Leases;
 * total training wall-clock;
 * hardware-hours;
 * tokens processed by the target model;
@@ -952,7 +978,7 @@ These metrics are intended for scientific analysis rather than replacing the pri
 
 # Training-Time Accounting
 
-Participant-controlled setup performed inside a Training Run counts toward that run's execution budget.
+Participant-controlled setup performed inside a Training Lease counts toward that lease's execution budget.
 
 Examples include:
 
@@ -989,21 +1015,21 @@ The AutoTrain environment may:
 * inspect permitted TRAIN data;
 * reason;
 * write code;
-* construct run artifacts;
+* modify its shared research workspace;
 * analyze returned logs;
 * store research state.
 
-It may not directly enter the training environment.
+It may request and interact with a Training Container only through the Supervisor-controlled lease interface.
 
 The Training Environment:
 
-* receives an immutable run artifact;
-* executes on fixed hardware;
-* has no interactive researcher connection;
-* has no access to TEST;
-* returns only benchmark-permitted outputs after termination.
+* executes on fixed, already-allocated local hardware;
+* shares the Agent workspace during an active lease;
+* permits repeated interactive commands inside that lease;
+* has no Docker socket, public network, VAL, or TEST access;
+* is forcibly terminated by the host Supervisor at lease expiry.
 
-This separation provides clean run accounting and makes Track B's interaction budget meaningful.
+The Eval Environment receives only a read-only candidate and the selected hidden split. It is inaccessible to Agent and Training Containers and returns only benchmark-permitted aggregate metrics.
 
 ---
 
@@ -1019,6 +1045,10 @@ The default direction for the core track is:
 * no arbitrary Internet access;
 * no external pretrained target-model checkpoints;
 * no human assistance after task reveal.
+
+Each release separates an online **Preparation Phase** from the benchmark episode. Preparation may download versioned official images, the tokenized TRAIN corpus, tokenizer assets, compilers, frameworks, and an offline package bundle. Dataset and image hashes are verified before task reveal.
+
+The first official Training Environment will be fixed by the benchmark release rather than extended by each user. During the episode, Agent and Training Containers run without arbitrary public-network access. The fixed environment may still include CUDA, Triton, compilers, headers, source trees, and other tools that allow the Agent to build or replace participant-controlled infrastructure within its resource budget.
 
 Remote inference required by the registered AutoTrain system may be exposed through a benchmark-controlled interface.
 
@@ -1042,7 +1072,7 @@ Examples include:
 * deadlocks;
 * invalid checkpoints.
 
-In Track B, once the participant launches a valid Training Run request, that interaction normally consumes one run budget even if participant-controlled code fails.
+In Track B, a lease is consumed as soon as its Training Container starts successfully, even if participant-controlled code later fails.
 
 Benchmark infrastructure failures are excluded and may be rerun.
 
@@ -1061,8 +1091,9 @@ task manifest
 initial AutoTrain system identity
 agent token usage
 agent/tool invocation metadata
-run submission timestamps
-run artifact hashes
+lease start/end timestamps
+lease command metadata
+candidate artifact hashes
 training logs
 hardware telemetry
 VAL outputs
@@ -1071,7 +1102,7 @@ final artifact
 post-mortem TEST results
 ```
 
-Where possible, official runs should be reproducible from immutable artifacts.
+Where possible, official candidates and episode traces should be reproducible from immutable artifacts.
 
 The benchmark should preserve enough information to distinguish:
 
@@ -1085,7 +1116,7 @@ The benchmark should preserve enough information to distinguish:
 
 # Leaderboards
 
-AutoTrain-Benchmark should maintain separate leaderboards for the two tracks.
+AutoTrain-Bench should maintain separate leaderboards for the two tracks.
 
 ## Track A
 
@@ -1100,7 +1131,7 @@ Reported alongside:
 ```text
 research-time curve
 agent tokens
-Training Runs
+Training Leases
 training compute
 model size
 ```
@@ -1110,17 +1141,17 @@ model size
 Ranked primarily by:
 
 ```text
-final TEST NLL after at most N Training Runs
+final TEST NLL after at most N Training Leases
 ```
 
-with fixed maximum duration per run.
+with fixed maximum duration per lease and at most one official VAL query per committed lease.
 
 Reported alongside:
 
 ```text
-TEST loss by run number
+TEST loss by lease number
 agent tokens
-agent reasoning between runs
+agent reasoning between leases
 training compute
 model size
 ```
@@ -1131,44 +1162,40 @@ Different benchmark releases may use different hardware or budget scales and sho
 
 # Example Benchmark Configuration
 
-The first official configuration has not yet been selected.
+The executable v0 task manifest is JSON and keeps task and track budgets in one small file:
 
-A future release may look conceptually like:
-
-```yaml
-task:
-  tokenizer: TBD
-  train_dataset: TBD
-  validation_dataset: TBD
-  test_dataset: TBD
-
-training_environment:
-  hardware: TBD
-  cpu: TBD
-  ram: TBD
-  local_storage: TBD
-  network_policy: TBD
-
-track_a:
-  total_wall_clock: TBD
-
-track_b:
-  max_training_runs: TBD
-  max_time_per_run: TBD
-
-evaluation:
-  metric: autoregressive_nll
-  val_feedback: aggregate_score
-  test_feedback_during_episode: none
+```json
+{
+  "task_id": "toy-bigram-v0",
+  "paths": {
+    "train": "data",
+    "val": "private/val.json",
+    "test": "private/test.json",
+    "agent_workspace": "agent"
+  },
+  "images": {
+    "agent": "python:3.11-slim",
+    "training": "python:3.11-slim",
+    "evaluator": "python:3.11-slim"
+  },
+  "hardware": { "gpu_count": 0, "gpu_model": null },
+  "track_a": { "total_seconds": 120 },
+  "track_b": { "max_leases": 2, "lease_seconds": 30 },
+  "evaluation": {
+    "metric": "autoregressive_nll",
+    "vocab_size": 3,
+    "context_length": 16
+  }
+}
 ```
 
-Dataset and hardware selection are intentionally deferred until the benchmark protocol is stable.
+See `examples/toy/task.json` for the complete runnable manifest. Dataset and hardware selection for the first official release remain intentionally deferred.
 
 ---
 
 # Design Principles
 
-AutoTrain-Benchmark follows several principles.
+AutoTrain-Bench follows several principles.
 
 ### 1. Fix the task, not the solution
 
@@ -1206,9 +1233,9 @@ The way a system improves can be as scientifically important as where it ends.
 
 ---
 
-# What AutoTrain-Benchmark Is Intended to Measure
+# What AutoTrain-Bench Is Intended to Measure
 
-AutoTrain-Benchmark is designed to expose capabilities including:
+AutoTrain-Bench is designed to expose capabilities including:
 
 * autonomous ML research;
 * autonomous systems engineering;
@@ -1233,9 +1260,9 @@ and:
 
 ---
 
-# What AutoTrain-Benchmark Does Not Claim to Measure
+# What AutoTrain-Bench Does Not Claim to Measure
 
-AutoTrain-Benchmark is not a complete measure of general intelligence or general recursive self-improvement.
+AutoTrain-Bench is not a complete measure of general intelligence or general recursive self-improvement.
 
 A high score demonstrates strong autonomous capability within a specific machine-learning research environment.
 
@@ -1247,7 +1274,7 @@ Its value comes from providing a concrete environment in which improvement itsel
 
 # Research Questions
 
-Beyond leaderboard ranking, AutoTrain-Benchmark is intended to support questions such as:
+Beyond leaderboard ranking, AutoTrain-Bench is intended to support questions such as:
 
 ### Research-time scaling
 
@@ -1257,9 +1284,9 @@ $$
 L_{\mathrm{TEST}}(t)
 $$
 
-### Experiment-efficiency scaling
+### Lease-efficiency scaling
 
-How does model quality scale with the number of expensive empirical interactions?
+How does model quality scale with the number of Training Leases and official validation-feedback rounds?
 
 $$
 L_{\mathrm{TEST}}(n)
@@ -1307,31 +1334,27 @@ These questions are central to the project.
 
 # Project Status
 
-The current goal is to stabilize the benchmark specification before selecting the first concrete environment.
+The repository contains a working v0 local reference prototype with:
 
-Major remaining implementation decisions include:
+* an official host-side Supervisor;
+* Track A wall-clock enforcement;
+* Track B interactive lease count and duration enforcement;
+* a Supervisor-controlled Agent command mailbox;
+* disposable Docker Training Containers;
+* candidate hashing and immutable snapshots;
+* hidden VAL and post-closure TEST evaluation;
+* an append-only `events.jsonl` trace;
+* a deterministic CPU toy task and example autonomous agent.
 
-* TRAIN corpus;
-* VAL and TEST construction;
-* tokenizer;
-* training hardware;
-* Track A wall-clock budget;
-* Track B run count;
-* Track B per-run duration;
-* exact agent sandbox;
-* run submission format;
-* artifact format;
-* evaluation interface;
-* synthetic-data policy;
-* logging schema.
+The first official benchmark instance has not been selected. Major remaining release decisions include the real TRAIN/VAL/TEST construction, tokenizer, hardware and budgets, fixed software image, production Candidate ABI, controlled Agent inference access, synthetic-data policy, and stronger official isolation.
 
-These parameters should be chosen only after the benchmark's conceptual boundaries are stable.
+The v0 prototype is intentionally single-host and resource-allocation agnostic. Users obtain a machine matching the release specification before starting AutoTrain-Bench.
 
 ---
 
 # Summary
 
-AutoTrain-Benchmark evaluates an autonomous system starting from a fixed initial state:
+AutoTrain-Bench evaluates an autonomous system starting from a fixed initial state:
 
 $$
 S_0.
@@ -1375,11 +1398,11 @@ and:
 
 $$
 \boxed{
-\text{Track B: fixed number of training-environment interactions}
+\text{Track B: fixed number and duration of Training Leases}
 }
 $$
 
-with a fixed maximum duration for each run.
+with at most one official VAL query for each committed lease.
 
 In both tracks:
 
