@@ -107,43 +107,64 @@ autotrain-bench start \
   --agent-command "python /workspace/agent.py"
 ```
 
-## Bring your own Agent: Open mode
+## Bring your own Agent: controlled inference
 
-The reference runtime can launch an existing autonomous Agent system without
-owning or replacing that system's model client, authentication, prompts, tools,
-or reasoning loop. Codex-like agents are one example; the interface is not tied
-to any particular provider or Agent implementation.
+AutoTrain-Bench is intended to benchmark participant-defined autonomous Agent
+systems, including systems whose researcher model is served remotely. The Agent
+execution loop still runs inside the Agent Container so the benchmark can enforce
+its policy boundary; remote model inference is exposed through a narrow
+Supervisor-controlled gateway rather than arbitrary public Internet access.
 
-Open Agent mode is independent of Track A and Track B. The track still defines
-the benchmark resource budget, while `--agent-network open` controls only the
-Agent Container's network access:
+In the normal `sandboxed` mode the Agent Container uses `--network none`. When a
+registered inference channel is configured, AutoTrain-Bench starts a localhost
+OpenAI-compatible proxy at:
 
-```bash
-export PROVIDER_API_KEY="..."
-
-autotrain-bench start \
-  --task path/to/task.json \
-  --track B \
-  --agent-image my-autonomous-agent:v1 \
-  --agent-command "my-agent --non-interactive" \
-  --agent-network open \
-  --agent-env PROVIDER_API_KEY
+```text
+http://127.0.0.1:8765/v1
 ```
 
-`--agent-env NAME` may be repeated. Only the environment variable name is
-placed in Docker arguments and episode metadata; its value is copied from the
-Supervisor environment directly into the Agent Container. Reserved benchmark
-variables such as `HOME`, `PYTHONPATH`, and the control paths cannot be
-overridden this way. The Agent can nevertheless read and transmit any value it
-receives, so Open mode should be used only with an Agent and provider account
-the user trusts. Agent stdout and stderr are saved to the private `agent.log`
-episode artifact; an Agent should not print credential values.
+The proxy sends requests through the trusted Supervisor. The Supervisor, running
+on the host, owns the real network connection and API credential. The Agent never
+receives that credential and cannot choose arbitrary destinations. The task
+configuration fixes the upstream origin, allowed API paths, and model names before
+task reveal.
 
-The Agent does not need to use a benchmark-owned inference client. It keeps its
-native remote model connection and uses the benchmark package only as a narrow
-control plane. Python-based Agent images can import
-`autotrain_bench.client.Client`, as the toy Agent does, or invoke the same
-operations as commands:
+A minimal configuration looks like:
+
+```json
+{
+  "agent": {
+    "command": ["python", "/workspace/agent.py"],
+    "mode": "sandboxed",
+    "environment": [],
+    "inference": {
+      "protocol": "openai_compatible",
+      "base_url": "https://api.openai.com",
+      "api_key_env": "OPENAI_API_KEY",
+      "allowed_models": ["registered-researcher-model"],
+      "allowed_paths": ["/v1/responses", "/v1/chat/completions"]
+    }
+  }
+}
+```
+
+The user exports the credential only in the host environment before starting the
+episode:
+
+```bash
+export OPENAI_API_KEY="..."
+autotrain-bench start --task path/to/task.json --track B
+```
+
+For compatibility with common OpenAI-style clients, the Agent Container receives
+`OPENAI_BASE_URL=http://127.0.0.1:8765/v1` and a dummy local API key. The real key
+remains host-side. V0 permits ordinary function-tool schemas because the tool is
+executed by the sandboxed Agent, but rejects provider-hosted web/retrieval tools
+that would create a second external-information channel. V0 currently supports
+OpenAI-compatible HTTP JSON/SSE endpoints; other provider protocols can be added
+as small adapters later.
+
+The Agent can use the benchmark package only as the control plane for training:
 
 ```bash
 python -m autotrain_bench.cli agent status
@@ -155,34 +176,13 @@ python -m autotrain_bench.cli agent finish
 
 The submitted Agent command must be autonomous and non-interactive. Docker does
 not attach a user input stream after task reveal, so the user cannot continue
-steering the Agent during the episode.
+steering the Agent during the episode. Each episode receives a private copy of
+the prepared Agent workspace.
 
-Each episode receives a private copy of the prepared Agent workspace. The Agent
-and Training Containers may modify that copy through `/workspace`, while the
-source workspace selected by the task is never mounted or modified. The Agent
-root filesystem is read-only and its temporary `HOME` is not shared with the
-Training Container. At episode end, the Agent Container and its temporary home
-are destroyed; the episode workspace, candidates, trace, and `agent.log` remain
-as artifacts.
-
-The equivalent task defaults are optional:
-
-```json
-{
-  "agent": {
-    "command": ["my-agent", "--non-interactive"],
-    "network": "open",
-    "environment": ["PROVIDER_API_KEY"]
-  }
-}
-```
-
-Open mode deliberately permits arbitrary Agent egress, including remote model
-inference. Training and Eval Containers still use `--network none`, receive no
-Agent credentials, and retain the same TRAIN/VAL/TEST boundaries. Open-mode
-results record a useful whole-system capability measurement, but are not
-directly comparable unless participants use equivalent external-resource
-policies.
+For debugging only, `agent.mode` may be set to `unrestricted-dev`. That gives the
+Agent Container ordinary Docker bridge egress and marks the run
+`policy_compliant: false`. It is not a closed AutoTrain-Bench result and exists
+only to make local integration easier.
 
 The Supervisor prints the episode directory. Its final state can be inspected later with:
 
@@ -206,7 +206,7 @@ task reveal
 
 ## v0 scope and security
 
-The reference implementation uses an official host-side Supervisor, an Agent Container, disposable Training Containers, and evaluator-only Eval Containers. No participant container receives the Docker socket or VAL/TEST content. Agent networking is disabled by default and may be explicitly opened for Bring Your Own Agent experiments; Training and Eval networking remains disabled.
+The reference implementation uses an official host-side Supervisor, an Agent Container, disposable Training Containers, and evaluator-only Eval Containers. No participant container receives the Docker socket or VAL/TEST content. Agent networking is disabled in policy-compliant runs. Registered remote researcher inference is relayed through the host Supervisor; Training and Eval networking remains disabled. `unrestricted-dev` exists only as a non-compliant debugging mode.
 
 The v0 threat model protects benchmark policy from the Agent, not from the user or machine administrator. Docker isolation is a development reference boundary and is not presented as protection against kernel, container-runtime, or GPU-driver exploits. Official adversarial evaluation may require stronger worker or VM isolation.
 
@@ -1125,11 +1125,9 @@ The default direction for the core track is:
 
 Each release separates an online **Preparation Phase** from the benchmark episode. Preparation may download versioned official images, the tokenized TRAIN corpus, tokenizer assets, compilers, frameworks, and an offline package bundle. Dataset and image hashes are verified before task reveal.
 
-The first official Training Environment will be fixed by the benchmark release rather than extended by each user. In the default closed policy, Agent and Training Containers run without arbitrary public-network access. Open Agent mode is an explicitly labeled exception for Bring Your Own Agent experiments: only the Agent Container receives ordinary egress, while Training and Eval Containers remain offline. The fixed training environment may still include CUDA, Triton, compilers, headers, source trees, and other tools that allow the Agent to build or replace participant-controlled infrastructure within its resource budget.
+The first official Training Environment will be fixed by the benchmark release rather than extended by each user. In policy-compliant runs, Agent and Training Containers have no arbitrary public-network access. The fixed training environment may still include CUDA, Triton, compilers, headers, source trees, and other tools that allow the Agent to build or replace participant-controlled infrastructure within its resource budget.
 
-Remote inference required by the registered AutoTrain system may be exposed through a benchmark-controlled interface.
-
-Such calls must be logged as part of the agent system.
+Remote researcher inference is allowed only through a registered Supervisor-controlled inference channel. The upstream origin, permitted API paths, and permitted model identities are frozen before task reveal; provider credentials remain outside the Agent Container. Such calls are recorded as part of the episode trace.
 
 The exact policy for synthetic training examples generated autonomously by the submitted system will be specified before the first official dataset release.
 
@@ -1257,7 +1255,7 @@ The executable v0 task manifest is JSON and keeps task and track budgets in one 
   },
   "agent": {
     "command": ["python", "/workspace/agent.py"],
-    "network": "none",
+    "mode": "sandboxed",
     "environment": []
   },
   "hardware": { "gpu_count": 0, "gpu_model": null },
@@ -1424,11 +1422,12 @@ The repository contains a working v0 local reference prototype with:
 * a Supervisor-controlled Agent command mailbox;
 * disposable Docker Training Containers;
 * candidate hashing and immutable snapshots;
+* sandboxed Agent execution with an optional controlled remote-inference gateway;
 * hidden VAL and post-closure TEST evaluation;
 * an append-only `events.jsonl` trace;
 * a deterministic CPU toy task and example autonomous agent.
 
-The first official benchmark instance has not been selected. Major remaining release decisions include the real TRAIN/VAL/TEST construction, tokenizer, hardware and budgets, fixed software image, production Candidate ABI, controlled Agent inference access, synthetic-data policy, and stronger official isolation.
+The first official benchmark instance has not been selected. Major remaining release decisions include the real TRAIN/VAL/TEST construction, tokenizer, hardware and budgets, fixed software image, production Candidate ABI, additional inference-provider adapters, synthetic-data policy, and stronger official isolation.
 
 The v0 prototype is intentionally single-host and resource-allocation agnostic. Users obtain a machine matching the release specification before starting AutoTrain-Bench.
 

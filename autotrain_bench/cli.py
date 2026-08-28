@@ -20,7 +20,7 @@ from .config import (
     ConfigError,
     TaskConfig,
     agent_environment_names,
-    agent_network_policy,
+    agent_mode,
 )
 from .runtime import DockerRuntime, RuntimeFailure
 from .supervisor import Supervisor
@@ -61,7 +61,9 @@ def command_prepare(args: argparse.Namespace) -> int:
             "images": config.images,
             "gpu_count": config.gpu_count,
             "gpu_model": config.gpu_model,
-            "agent_network": config.agent_network,
+            "agent_mode": config.agent_mode,
+            "policy_compliant": config.policy_compliant,
+            "inference_enabled": config.inference is not None,
         }
     )
     return 0
@@ -72,7 +74,7 @@ def command_start(args: argparse.Namespace) -> int:
     if (
         args.agent_image
         or args.agent_command_override
-        or args.agent_network
+        or args.agent_mode
         or args.agent_environment
     ):
         command = (
@@ -90,9 +92,9 @@ def command_start(args: argparse.Namespace) -> int:
             config,
             agent_image=args.agent_image or config.agent_image,
             agent_command=command,
-            agent_network=agent_network_policy(
-                args.agent_network or config.agent_network,
-                "--agent-network",
+            agent_mode=agent_mode(
+                args.agent_mode or config.agent_mode,
+                "--agent-mode",
             ),
             agent_environment=environment,
         )
@@ -238,9 +240,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="override the command executed in the Agent Container",
     )
     start.add_argument(
-        "--agent-network",
-        choices=["none", "open"],
-        help="override Agent Container network policy (default: task policy)",
+        "--agent-mode",
+        choices=["sandboxed", "unrestricted-dev"],
+        help=(
+            "override Agent execution mode; unrestricted-dev is convenient for "
+            "debugging but is not policy-compliant"
+        ),
     )
     start.add_argument(
         "--agent-env",

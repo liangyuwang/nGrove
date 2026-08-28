@@ -105,5 +105,24 @@ class Client:
     def stop_lease(self) -> Dict[str, Any]:
         return self.request("lease_stop")
 
+    def inference(
+        self,
+        *,
+        method: str,
+        path: str,
+        headers: Dict[str, str],
+        body_base64: str,
+        timeout_seconds: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        response_timeout = None if timeout_seconds is None else timeout_seconds + 30
+        return self.request(
+            "inference",
+            method=method,
+            path=path,
+            headers=headers,
+            body_base64=body_base64,
+            timeout_seconds=response_timeout,
+        )
+
     def finish(self, candidate_id: Optional[str] = None) -> Dict[str, Any]:
         return self.request("finish", candidate_id=candidate_id)

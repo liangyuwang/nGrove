@@ -1,3 +1,4 @@
+import base64
 import json
 import tempfile
 import threading
@@ -6,7 +7,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from autotrain_bench.config import TaskConfig
+from autotrain_bench.config import InferenceConfig, TaskConfig
 from autotrain_bench.client import Client
 from autotrain_bench.runtime import ExecResult, RuntimeFailure
 from autotrain_bench.supervisor import ProtocolError, Supervisor
@@ -96,7 +97,8 @@ class SupervisorTests(unittest.TestCase):
 
     def test_track_b_interactive_lease_commit_and_finish(self):
         supervisor = self.supervisor()
-        self.assertEqual(supervisor.state["agent_system"]["network"], "none")
+        self.assertEqual(supervisor.state["agent_system"]["network"], "disabled")
+        self.assertTrue(supervisor.state["agent_system"]["policy_compliant"])
         self.assertEqual(
             len(supervisor.state["agent_system"]["initial_workspace_sha256"]), 64
         )
@@ -166,10 +168,56 @@ class SupervisorTests(unittest.TestCase):
         thread.join(timeout=1)
         self.assertFalse(thread.is_alive())
         self.assertEqual(result["status"], "active")
-        self.assertEqual(result["agent_network"], "none")
+        self.assertEqual(result["agent_network"], "disabled")
+        self.assertEqual(result["agent_mode"], "sandboxed")
         serialized = json.dumps(result)
         self.assertNotIn(str(self.config.val_path), serialized)
         self.assertNotIn(str(self.config.test_path), serialized)
+
+    def test_registered_inference_channel_is_available_without_exposing_secret(self):
+        inference = InferenceConfig(
+            protocol="openai_compatible",
+            base_url="https://api.example.com",
+            api_key_env=None,
+            allowed_models=("researcher-a",),
+            allowed_paths=("/v1/responses",),
+            timeout_seconds=30,
+        )
+        config = replace(self.config, inference=inference)
+        supervisor = self.supervisor(config=config)
+
+        import autotrain_bench.supervisor as supervisor_module
+
+        original = supervisor_module.forward_inference_request
+        try:
+            def fake_forward(**kwargs):
+                self.assertEqual(kwargs["path"], "/v1/responses")
+                return {
+                    "status": 200,
+                    "content_type": "application/json",
+                    "body_base64": base64.b64encode(b'{"ok":true}').decode("ascii"),
+                    "model": "researcher-a",
+                }
+
+            supervisor_module.forward_inference_request = fake_forward
+            result = supervisor.inference(
+                method="POST",
+                path="/v1/responses",
+                headers={"content-type": "application/json"},
+                body_base64=base64.b64encode(
+                    b'{"model":"researcher-a","input":"hello"}'
+                ).decode("ascii"),
+            )
+        finally:
+            supervisor_module.forward_inference_request = original
+
+        self.assertEqual(result["status"], 200)
+        events = [
+            json.loads(line)
+            for line in supervisor.events_path.read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertIn("INFERENCE_COMPLETED", [event["type"] for event in events])
+
 
 
 if __name__ == "__main__":

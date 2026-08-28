@@ -6,18 +6,23 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 
 class ConfigError(ValueError):
     """Raised when a task configuration is invalid."""
 
 
-AGENT_NETWORK_POLICIES = {"none", "open"}
+AGENT_MODES = {"sandboxed", "unrestricted-dev"}
 RESERVED_AGENT_ENVIRONMENT = {
+    "AUTOTRAIN_BENCH_AGENT_COMMAND_JSON",
     "AUTOTRAIN_BENCH_CONTROL_DIR",
+    "AUTOTRAIN_BENCH_INFERENCE_BASE_URL",
+    "AUTOTRAIN_BENCH_INFERENCE_GATEWAY",
     "AUTOTRAIN_BENCH_TASK",
     "HOME",
+    "OPENAI_BASE_URL",
     "PYTHONPATH",
 }
 _ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -45,6 +50,18 @@ def _string(value: Any, field: str) -> str:
     return value
 
 
+def _string_list(value: Any, field: str) -> Tuple[str, ...]:
+    if not isinstance(value, list) or not value:
+        raise ConfigError(f"{field} must be a non-empty string array")
+    result: List[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ConfigError(f"{field} must contain non-empty strings")
+        if item not in result:
+            result.append(item)
+    return tuple(result)
+
+
 def agent_environment_names(value: Any, field: str = "agent.environment") -> List[str]:
     if value is None:
         return []
@@ -61,19 +78,84 @@ def agent_environment_names(value: Any, field: str = "agent.environment") -> Lis
     return names
 
 
-def agent_network_policy(value: Any, field: str = "agent.network") -> str:
-    if not isinstance(value, str) or value not in AGENT_NETWORK_POLICIES:
-        allowed = ", ".join(sorted(AGENT_NETWORK_POLICIES))
+def agent_mode(value: Any, field: str = "agent.mode") -> str:
+    if not isinstance(value, str) or value not in AGENT_MODES:
+        allowed = ", ".join(sorted(AGENT_MODES))
         raise ConfigError(f"{field} must be one of: {allowed}")
     return value
+
+
+@dataclass(frozen=True)
+class InferenceConfig:
+    """Registered external researcher inference channel.
+
+    The Agent Container sees only a localhost OpenAI-compatible proxy.  The
+    upstream origin and credential stay on the trusted host.
+    """
+
+    protocol: str
+    base_url: str
+    api_key_env: Optional[str]
+    allowed_models: Tuple[str, ...]
+    allowed_paths: Tuple[str, ...]
+    timeout_seconds: int
+
+    @classmethod
+    def load(cls, value: Any, field: str = "agent.inference") -> Optional["InferenceConfig"]:
+        if value is None:
+            return None
+        raw = _mapping(value, field)
+        if raw.get("enabled", True) is False:
+            return None
+        protocol = _string(raw.get("protocol", "openai_compatible"), f"{field}.protocol")
+        if protocol != "openai_compatible":
+            raise ConfigError(f"{field}.protocol must be 'openai_compatible' in v0")
+        base_url = _string(raw.get("base_url"), f"{field}.base_url")
+        parsed = urlsplit(base_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ConfigError(f"{field}.base_url must be an http(s) origin")
+        if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+            raise ConfigError(f"{field}.base_url must not contain a path, query, or fragment")
+
+        api_key_env = raw.get("api_key_env")
+        if api_key_env is not None:
+            if not isinstance(api_key_env, str) or not _ENVIRONMENT_NAME.fullmatch(api_key_env):
+                raise ConfigError(f"{field}.api_key_env must be an environment variable name or null")
+
+        allowed_models = _string_list(raw.get("allowed_models"), f"{field}.allowed_models")
+        allowed_paths = _string_list(
+            raw.get("allowed_paths", ["/v1/responses", "/v1/chat/completions"]),
+            f"{field}.allowed_paths",
+        )
+        for path in allowed_paths:
+            parsed_path = urlsplit(path)
+            if (
+                not path.startswith("/")
+                or parsed_path.scheme
+                or parsed_path.netloc
+                or parsed_path.query
+                or parsed_path.fragment
+            ):
+                raise ConfigError(f"{field}.allowed_paths must contain exact absolute paths")
+        timeout_seconds = _positive_int(
+            raw.get("timeout_seconds", 300), f"{field}.timeout_seconds"
+        )
+        return cls(
+            protocol=protocol,
+            base_url=base_url.rstrip("/"),
+            api_key_env=api_key_env,
+            allowed_models=allowed_models,
+            allowed_paths=allowed_paths,
+            timeout_seconds=timeout_seconds,
+        )
 
 
 @dataclass(frozen=True)
 class TaskConfig:
     """Fully resolved benchmark task configuration.
 
-    Private evaluator paths stay on the trusted host and are never included in
-    :meth:`public_manifest`.
+    Private evaluator paths and inference credentials stay on the trusted host
+    and are never included in :meth:`public_manifest`.
     """
 
     source: Path
@@ -86,8 +168,9 @@ class TaskConfig:
     training_image: str
     evaluator_image: str
     agent_command: List[str]
-    agent_network: str
+    agent_mode: str
     agent_environment: List[str]
+    inference: Optional[InferenceConfig]
     gpu_count: int
     gpu_model: Optional[str]
     metric: str
@@ -134,6 +217,27 @@ class TaskConfig:
         ):
             raise ConfigError("agent.command must be a non-empty string array")
 
+        if "mode" in agent and "network" in agent:
+            raise ConfigError("agent.mode and legacy agent.network may not both be set")
+        if "mode" in agent:
+            resolved_agent_mode = agent_mode(agent.get("mode"))
+        else:
+            # Backward-compatible migration for the first local prototype.
+            legacy_network = agent.get("network", "none")
+            if legacy_network == "none":
+                resolved_agent_mode = "sandboxed"
+            elif legacy_network == "open":
+                resolved_agent_mode = "unrestricted-dev"
+            else:
+                raise ConfigError("legacy agent.network must be 'none' or 'open'")
+
+        inference = InferenceConfig.load(agent.get("inference"))
+        environment = agent_environment_names(agent.get("environment", []))
+        if inference and inference.api_key_env and inference.api_key_env in environment:
+            raise ConfigError(
+                "agent.environment may not forward the inference API credential into the Agent Container"
+            )
+
         gpu_model_value = hardware.get("gpu_model")
         if gpu_model_value is not None and not isinstance(gpu_model_value, str):
             raise ConfigError("hardware.gpu_model must be a string or null")
@@ -149,8 +253,9 @@ class TaskConfig:
             training_image=_string(images.get("training"), "images.training"),
             evaluator_image=_string(images.get("evaluator"), "images.evaluator"),
             agent_command=list(command),
-            agent_network=agent_network_policy(agent.get("network", "none")),
-            agent_environment=agent_environment_names(agent.get("environment", [])),
+            agent_mode=resolved_agent_mode,
+            agent_environment=environment,
+            inference=inference,
             gpu_count=_positive_int(
                 hardware.get("gpu_count"), "hardware.gpu_count", allow_zero=True
             ),
@@ -178,18 +283,18 @@ class TaskConfig:
         )
 
         if config.metric != "autoregressive_nll":
-            raise ConfigError(
-                "v0 only implements evaluation.metric='autoregressive_nll'"
-            )
+            raise ConfigError("v0 only implements evaluation.metric='autoregressive_nll'")
         if config.gpu_count == 0 and config.gpu_model:
             raise ConfigError("hardware.gpu_model requires hardware.gpu_count > 0")
         return config
 
     @property
     def images(self) -> List[str]:
-        return sorted(
-            {self.agent_image, self.training_image, self.evaluator_image}
-        )
+        return sorted({self.agent_image, self.training_image, self.evaluator_image})
+
+    @property
+    def policy_compliant(self) -> bool:
+        return self.agent_mode == "sandboxed"
 
     def public_manifest(self, track: str) -> Dict[str, Any]:
         normalized = track.upper()
@@ -204,6 +309,17 @@ class TaskConfig:
                 "max_leases": self.track_b_max_leases,
                 "max_seconds_per_lease": self.track_b_lease_seconds,
                 "official_val_queries_per_lease": 1,
+            }
+
+        inference_manifest: Dict[str, Any] = {"enabled": False}
+        if self.inference is not None:
+            inference_manifest = {
+                "enabled": True,
+                "protocol": self.inference.protocol,
+                "local_base_url": "http://127.0.0.1:8765/v1",
+                "allowed_models": list(self.inference.allowed_models),
+                "allowed_paths": list(self.inference.allowed_paths),
+                "provider_hosted_tools": "forbidden_except_function_tools",
             }
 
         return {
@@ -231,11 +347,14 @@ class TaskConfig:
             },
             "budget": budget,
             "agent_environment": {
-                "network": self.agent_network,
+                "mode": self.agent_mode,
+                "network": "disabled" if self.agent_mode == "sandboxed" else "unrestricted_dev",
                 "workspace": "/workspace",
                 "workspace_scope": "episode_copy",
                 "control": "file_mailbox",
                 "forwarded_environment": list(self.agent_environment),
+                "inference": inference_manifest,
+                "policy_compliant": self.policy_compliant,
             },
             "training_environment": {
                 "image": self.training_image,

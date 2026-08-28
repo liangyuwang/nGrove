@@ -135,7 +135,7 @@ class DockerRuntime:
             "--name",
             name,
             "--network",
-            "none" if config.agent_network == "none" else "bridge",
+            "none" if config.agent_mode == "sandboxed" else "bridge",
             "--cap-drop",
             "ALL",
             "--security-opt",
@@ -170,9 +170,45 @@ class DockerRuntime:
         ]
         for name in config.agent_environment:
             # Passing only the name makes Docker copy the value from the trusted
-            # Supervisor environment without putting the secret in argv or traces.
+            # Supervisor environment without putting the value in argv or traces.
             args.extend(["--env", name])
-        args.extend([config.agent_image, *config.agent_command])
+
+        if config.inference is not None:
+            if config.inference.api_key_env and not os.environ.get(
+                config.inference.api_key_env
+            ):
+                raise RuntimeFailure(
+                    "inference credential is missing from the trusted host: "
+                    f"{config.inference.api_key_env}"
+                )
+            # The Agent Container still has no public network in sandboxed mode.
+            # A tiny localhost proxy sends requests through the Supervisor mailbox;
+            # the real credential never enters the container.
+            args.extend(
+                [
+                    "--env",
+                    "AUTOTRAIN_BENCH_INFERENCE_GATEWAY=1",
+                    "--env",
+                    "AUTOTRAIN_BENCH_INFERENCE_BASE_URL=http://127.0.0.1:8765/v1",
+                    "--env",
+                    "OPENAI_BASE_URL=http://127.0.0.1:8765/v1",
+                    "--env",
+                    "OPENAI_API_KEY=autotrain-bench-gateway",
+                    "--env",
+                    "AUTOTRAIN_BENCH_AGENT_COMMAND_JSON="
+                    + json.dumps(config.agent_command),
+                ]
+            )
+            args.extend(
+                [
+                    config.agent_image,
+                    "python",
+                    "-m",
+                    "autotrain_bench.agent_entrypoint",
+                ]
+            )
+        else:
+            args.extend([config.agent_image, *config.agent_command])
         self._run(args)
 
     def start_training(

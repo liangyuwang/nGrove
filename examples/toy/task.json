@@ -12,9 +12,12 @@
     "evaluator": "python:3.11-slim"
   },
   "agent": {
-    "command": ["python", "/workspace/agent.py"],
-    "network": "none",
-    "environment": []
+    "command": [
+      "python",
+      "/workspace/agent.py"
+    ],
+    "environment": [],
+    "mode": "sandboxed"
   },
   "hardware": {
     "gpu_count": 0,
