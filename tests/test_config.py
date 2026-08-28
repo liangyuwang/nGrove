@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from autotrain_bench.config import ConfigError, TaskConfig
@@ -83,6 +84,10 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.inference.allowed_models, ("researcher-a", "researcher-b"))
             public = config.public_manifest("A")["agent_environment"]["inference"]
             self.assertTrue(public["enabled"])
+            self.assertEqual(
+                public["local_base_url"], "http://inference-gateway:8765/v1"
+            )
+            self.assertIn(config.inference_gateway_image, config.images)
             self.assertNotIn("OPENAI_API_KEY", json.dumps(public))
             self.assertNotIn("api.openai.com", json.dumps(public))
 
@@ -93,6 +98,14 @@ class ConfigTests(unittest.TestCase):
             )
             with self.assertRaises(ConfigError):
                 TaskConfig.load(leaked)
+
+            # CLI overrides are applied after load, so final validation must
+            # enforce the same cross-field credential boundary.
+            with self.assertRaises(ConfigError):
+                replace(
+                    config,
+                    agent_environment=["OPENAI_API_KEY"],
+                ).validate()
 
     def test_legacy_network_configuration_migrates(self):
         with tempfile.TemporaryDirectory() as directory:

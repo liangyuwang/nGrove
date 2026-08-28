@@ -113,26 +113,31 @@ AutoTrain-Bench is intended to benchmark participant-defined autonomous Agent
 systems, including systems whose researcher model is served remotely. The Agent
 execution loop still runs inside the Agent Container so the benchmark can enforce
 its policy boundary; remote model inference is exposed through a narrow
-Supervisor-controlled gateway rather than arbitrary public Internet access.
+official Gateway sidecar rather than arbitrary public Internet access.
 
-In the normal `sandboxed` mode the Agent Container uses `--network none`. When a
-registered inference channel is configured, AutoTrain-Bench starts a localhost
-OpenAI-compatible proxy at:
+In the normal `sandboxed` mode an Agent without remote inference uses
+`--network none`. When a registered inference channel is configured,
+AutoTrain-Bench creates an episode-private Docker `--internal` network shared
+only by the Agent and a trusted OpenAI-compatible Gateway at:
 
 ```text
-http://127.0.0.1:8765/v1
+http://inference-gateway:8765/v1
 ```
 
-The proxy sends requests through the trusted Supervisor. The Supervisor, running
-on the host, owns the real network connection and API credential. The Agent never
-receives that credential and cannot choose arbitrary destinations. The task
-configuration fixes the upstream origin, allowed API paths, and model names before
-task reveal.
+The Agent has no route from that internal network to the public Internet. The
+official Gateway alone also joins a separate egress network and owns the real
+provider credential. It is not a generic HTTP proxy: the task configuration fixes
+the upstream origin, allowed API paths, and model names before task reveal;
+redirects and provider-hosted external tools are rejected. The Agent never
+receives the provider credential or chooses arbitrary destinations.
 
 A minimal configuration looks like:
 
 ```json
 {
+  "images": {
+    "inference_gateway": "python:3.11-slim"
+  },
   "agent": {
     "command": ["python", "/workspace/agent.py"],
     "mode": "sandboxed",
@@ -157,12 +162,18 @@ autotrain-bench start --task path/to/task.json --track B
 ```
 
 For compatibility with common OpenAI-style clients, the Agent Container receives
-`OPENAI_BASE_URL=http://127.0.0.1:8765/v1` and a dummy local API key. The real key
-remains host-side. V0 permits ordinary function-tool schemas because the tool is
-executed by the sandboxed Agent, but rejects provider-hosted web/retrieval tools
-that would create a second external-information channel. V0 currently supports
-OpenAI-compatible HTTP JSON/SSE endpoints; other provider protocols can be added
-as small adapters later.
+`OPENAI_BASE_URL=http://inference-gateway:8765/v1` and a dummy local API key. The
+real key is copied only into the trusted Gateway. V0 permits ordinary
+function-tool schemas because the tool is executed by the sandboxed Agent, but
+rejects provider-hosted web/retrieval tools that would create a second
+external-information channel. JSON and SSE responses are forwarded incrementally;
+the Gateway writes model calls and provider-reported usage to the append-only
+`inference/inference.jsonl` trace. Missing usage is explicitly marked incomplete.
+Other provider protocols can be added as small adapters later.
+
+The Gateway is a separate official container, so enabling inference does not
+replace or wrap the participant command. Node, Go, Rust, Python, and other Agent
+images continue to run their registered entrypoint unchanged.
 
 The Agent can use the benchmark package only as the control plane for training:
 
@@ -206,7 +217,7 @@ task reveal
 
 ## v0 scope and security
 
-The reference implementation uses an official host-side Supervisor, an Agent Container, disposable Training Containers, and evaluator-only Eval Containers. No participant container receives the Docker socket or VAL/TEST content. Agent networking is disabled in policy-compliant runs. Registered remote researcher inference is relayed through the host Supervisor; Training and Eval networking remains disabled. `unrestricted-dev` exists only as a non-compliant debugging mode.
+The reference implementation uses an official host-side Supervisor, an Agent Container, a thin trusted Inference Gateway when registered, disposable Training Containers, and evaluator-only Eval Containers. No participant container receives the Docker socket or VAL/TEST content. Agent public networking is disabled in policy-compliant runs. The Gateway handles only frozen researcher-inference endpoints while the Supervisor independently enforces episode and GPU-lease deadlines. Training and Eval networking remains disabled. `unrestricted-dev` exists only as a non-compliant debugging mode.
 
 The v0 threat model protects benchmark policy from the Agent, not from the user or machine administrator. Docker isolation is a development reference boundary and is not presented as protection against kernel, container-runtime, or GPU-driver exploits. Official adversarial evaluation may require stronger worker or VM isolation.
 
@@ -1127,7 +1138,7 @@ Each release separates an online **Preparation Phase** from the benchmark episod
 
 The first official Training Environment will be fixed by the benchmark release rather than extended by each user. In policy-compliant runs, Agent and Training Containers have no arbitrary public-network access. The fixed training environment may still include CUDA, Triton, compilers, headers, source trees, and other tools that allow the Agent to build or replace participant-controlled infrastructure within its resource budget.
 
-Remote researcher inference is allowed only through a registered Supervisor-controlled inference channel. The upstream origin, permitted API paths, and permitted model identities are frozen before task reveal; provider credentials remain outside the Agent Container. Such calls are recorded as part of the episode trace.
+Remote researcher inference is allowed only through a registered, Supervisor-managed trusted Gateway. The upstream origin, permitted API paths, and permitted model identities are frozen before task reveal; provider credentials remain outside the Agent Container. The Gateway cannot redirect to another origin and records calls and provider-reported token usage as part of the episode trace.
 
 The exact policy for synthetic training examples generated autonomously by the submitted system will be specified before the first official dataset release.
 
@@ -1422,9 +1433,9 @@ The repository contains a working v0 local reference prototype with:
 * a Supervisor-controlled Agent command mailbox;
 * disposable Docker Training Containers;
 * candidate hashing and immutable snapshots;
-* sandboxed Agent execution with an optional controlled remote-inference gateway;
+* sandboxed Agent execution with an optional trusted streaming inference sidecar;
 * hidden VAL and post-closure TEST evaluation;
-* an append-only `events.jsonl` trace;
+* append-only `events.jsonl` and `inference/inference.jsonl` traces;
 * a deterministic CPU toy task and example autonomous agent.
 
 The first official benchmark instance has not been selected. Major remaining release decisions include the real TRAIN/VAL/TEST construction, tokenizer, hardware and budgets, fixed software image, production Candidate ABI, additional inference-provider adapters, synthetic-data policy, and stronger official isolation.

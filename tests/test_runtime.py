@@ -1,4 +1,3 @@
-import json
 import os
 import subprocess
 import tempfile
@@ -53,12 +52,13 @@ class RuntimeBoundaryTests(unittest.TestCase):
             self.assertNotIn(str(config.val_path), command)
             self.assertNotIn(str(config.test_path), command)
 
-    def test_sandboxed_inference_uses_local_proxy_and_keeps_host_key_out(self):
+    def test_sandboxed_inference_uses_trusted_sidecar_and_internal_network(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             workspace = root / "workspace"
             control = root / "control"
             lease = root / "lease"
+            audit = root / "audit"
             workspace.mkdir()
             control.mkdir()
             public_task = root / "task.json"
@@ -74,31 +74,75 @@ class RuntimeBoundaryTests(unittest.TestCase):
             config = replace(
                 TaskConfig.load(ROOT / "examples/toy/task.json"),
                 agent_workspace=workspace,
+                agent_command=["node", "/workspace/agent.js"],
                 agent_mode="sandboxed",
                 inference=inference,
             )
             runtime = CapturingDockerRuntime()
+            runtime.create_network("agent-net", internal=True)
+            runtime.create_network("egress-net", internal=False)
             with patch.dict(os.environ, {"OPENAI_API_KEY": "host-secret"}):
-                runtime.start_agent(
-                    name="agent",
+                runtime.start_inference_gateway(
+                    name="gateway",
+                    agent_network="agent-net",
+                    egress_network="egress-net",
                     config=config,
-                    control_dir=control,
-                    public_task_path=public_task,
+                    audit_dir=audit,
                 )
+            runtime.start_agent(
+                name="agent",
+                config=config,
+                control_dir=control,
+                public_task_path=public_task,
+                inference_network="agent-net",
+            )
             runtime.start_training(name="training", config=config, lease_dir=lease)
 
-            agent_command = runtime.calls[0]
-            training_command = runtime.calls[1]
-            agent_network = agent_command.index("--network")
-            training_network = training_command.index("--network")
-            self.assertEqual(agent_command[agent_network + 1], "none")
-            self.assertEqual(training_command[training_network + 1], "none")
-            serialized = "\n".join(agent_command)
-            self.assertIn("OPENAI_BASE_URL=http://127.0.0.1:8765/v1", serialized)
-            self.assertIn("autotrain_bench.agent_entrypoint", serialized)
-            self.assertNotIn("host-secret", serialized)
-            self.assertNotIn("api.openai.com", serialized)
+            self.assertIn("--internal", runtime.calls[0])
+            run_calls = [call for call in runtime.calls if call and call[0] == "run"]
+            gateway_command = next(
+                call for call in run_calls if call[call.index("--name") + 1] == "gateway"
+            )
+            agent_command = next(
+                call for call in run_calls if call[call.index("--name") + 1] == "agent"
+            )
+            training_command = next(
+                call for call in run_calls if call[call.index("--name") + 1] == "training"
+            )
+            self.assertEqual(
+                gateway_command[gateway_command.index("--network") + 1], "egress-net"
+            )
+            self.assertEqual(
+                agent_command[agent_command.index("--network") + 1], "agent-net"
+            )
+            self.assertEqual(
+                training_command[training_command.index("--network") + 1], "none"
+            )
+            serialized_agent = "\n".join(agent_command)
+            serialized_gateway = "\n".join(gateway_command)
+            self.assertIn(
+                "OPENAI_BASE_URL=http://inference-gateway:8765/v1",
+                serialized_agent,
+            )
+            self.assertNotIn("autotrain_bench.agent_entrypoint", serialized_agent)
+            self.assertEqual(agent_command[-2:], ["node", "/workspace/agent.js"])
+            self.assertNotIn("host-secret", serialized_agent)
+            self.assertNotIn("api.openai.com", serialized_agent)
+            self.assertIn("api.openai.com", serialized_gateway)
+            self.assertNotIn("host-secret", serialized_gateway)
+            self.assertIn("OPENAI_API_KEY", gateway_command)
             self.assertNotIn("OPENAI_API_KEY", "\n".join(training_command))
+            self.assertIn(
+                [
+                    "network",
+                    "connect",
+                    "--alias",
+                    "inference-gateway",
+                    "agent-net",
+                    "gateway",
+                ],
+                runtime.calls,
+            )
 
     def test_unrestricted_dev_mode_has_bridge_network_and_is_not_training_network(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -117,22 +161,22 @@ class RuntimeBoundaryTests(unittest.TestCase):
             )
             runtime = CapturingDockerRuntime()
             runtime.start_agent(
-                name="agent", config=config, control_dir=control, public_task_path=public_task
+                name="agent",
+                config=config,
+                control_dir=control,
+                public_task_path=public_task,
             )
             runtime.start_training(name="training", config=config, lease_dir=lease)
             agent_command, training_command = runtime.calls
-            self.assertEqual(agent_command[agent_command.index("--network") + 1], "bridge")
-            self.assertEqual(training_command[training_command.index("--network") + 1], "none")
+            self.assertEqual(
+                agent_command[agent_command.index("--network") + 1], "bridge"
+            )
+            self.assertEqual(
+                training_command[training_command.index("--network") + 1], "none"
+            )
 
-    def test_missing_inference_credential_fails_before_container_start(self):
+    def test_missing_inference_credential_fails_before_gateway_start(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            workspace = root / "workspace"
-            control = root / "control"
-            workspace.mkdir()
-            control.mkdir()
-            public_task = root / "task.json"
-            public_task.write_text("{}", encoding="utf-8")
             inference = InferenceConfig(
                 protocol="openai_compatible",
                 base_url="https://api.openai.com",
@@ -143,18 +187,18 @@ class RuntimeBoundaryTests(unittest.TestCase):
             )
             config = replace(
                 TaskConfig.load(ROOT / "examples/toy/task.json"),
-                agent_workspace=workspace,
                 inference=inference,
             )
             runtime = CapturingDockerRuntime()
             with patch.dict(os.environ, {}, clear=False):
                 os.environ.pop("AUTOTRAIN_BENCH_TEST_MISSING_KEY", None)
                 with self.assertRaises(RuntimeFailure):
-                    runtime.start_agent(
-                        name="agent",
+                    runtime.start_inference_gateway(
+                        name="gateway",
+                        agent_network="agent-net",
+                        egress_network="egress-net",
                         config=config,
-                        control_dir=control,
-                        public_task_path=public_task,
+                        audit_dir=Path(directory) / "audit",
                     )
             self.assertEqual(runtime.calls, [])
 

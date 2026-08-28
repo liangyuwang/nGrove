@@ -16,13 +16,19 @@ class ConfigError(ValueError):
 
 AGENT_MODES = {"sandboxed", "unrestricted-dev"}
 RESERVED_AGENT_ENVIRONMENT = {
-    "AUTOTRAIN_BENCH_AGENT_COMMAND_JSON",
     "AUTOTRAIN_BENCH_CONTROL_DIR",
     "AUTOTRAIN_BENCH_INFERENCE_BASE_URL",
-    "AUTOTRAIN_BENCH_INFERENCE_GATEWAY",
     "AUTOTRAIN_BENCH_TASK",
     "HOME",
     "OPENAI_BASE_URL",
+    "PYTHONPATH",
+}
+RESERVED_INFERENCE_CREDENTIAL_ENVIRONMENT = {
+    "AUTOTRAIN_BENCH_GATEWAY_HOST",
+    "AUTOTRAIN_BENCH_GATEWAY_PORT",
+    "AUTOTRAIN_BENCH_INFERENCE_AUDIT_PATH",
+    "AUTOTRAIN_BENCH_INFERENCE_CONFIG_JSON",
+    "PYTHONDONTWRITEBYTECODE",
     "PYTHONPATH",
 }
 _ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -89,8 +95,8 @@ def agent_mode(value: Any, field: str = "agent.mode") -> str:
 class InferenceConfig:
     """Registered external researcher inference channel.
 
-    The Agent Container sees only a localhost OpenAI-compatible proxy.  The
-    upstream origin and credential stay on the trusted host.
+    The Agent Container sees only an OpenAI-compatible trusted sidecar.  The
+    upstream origin and credential stay outside the untrusted Agent Container.
     """
 
     protocol: str
@@ -121,6 +127,11 @@ class InferenceConfig:
         if api_key_env is not None:
             if not isinstance(api_key_env, str) or not _ENVIRONMENT_NAME.fullmatch(api_key_env):
                 raise ConfigError(f"{field}.api_key_env must be an environment variable name or null")
+            if api_key_env in RESERVED_INFERENCE_CREDENTIAL_ENVIRONMENT:
+                raise ConfigError(
+                    f"{field}.api_key_env may not use reserved gateway variable "
+                    f"{api_key_env}"
+                )
 
         allowed_models = _string_list(raw.get("allowed_models"), f"{field}.allowed_models")
         allowed_paths = _string_list(
@@ -154,8 +165,8 @@ class InferenceConfig:
 class TaskConfig:
     """Fully resolved benchmark task configuration.
 
-    Private evaluator paths and inference credentials stay on the trusted host
-    and are never included in :meth:`public_manifest`.
+    Private evaluator paths and inference credentials stay in trusted
+    host/Gateway components and are never included in :meth:`public_manifest`.
     """
 
     source: Path
@@ -167,6 +178,7 @@ class TaskConfig:
     agent_image: str
     training_image: str
     evaluator_image: str
+    inference_gateway_image: str
     agent_command: List[str]
     agent_mode: str
     agent_environment: List[str]
@@ -252,6 +264,10 @@ class TaskConfig:
             agent_image=_string(images.get("agent"), "images.agent"),
             training_image=_string(images.get("training"), "images.training"),
             evaluator_image=_string(images.get("evaluator"), "images.evaluator"),
+            inference_gateway_image=_string(
+                images.get("inference_gateway", "python:3.11-slim"),
+                "images.inference_gateway",
+            ),
             agent_command=list(command),
             agent_mode=resolved_agent_mode,
             agent_environment=environment,
@@ -282,15 +298,40 @@ class TaskConfig:
             ),
         )
 
-        if config.metric != "autoregressive_nll":
+        return config.validate()
+
+    def validate(self) -> "TaskConfig":
+        """Validate the final effective configuration, including CLI overrides."""
+
+        agent_mode(self.agent_mode)
+        normalized_environment = agent_environment_names(self.agent_environment)
+        if normalized_environment != self.agent_environment:
+            raise ConfigError("agent.environment must be normalized and duplicate-free")
+        if not self.agent_command or not all(
+            isinstance(item, str) and item for item in self.agent_command
+        ):
+            raise ConfigError("agent.command must be a non-empty string array")
+        if (
+            self.inference
+            and self.inference.api_key_env
+            and self.inference.api_key_env in self.agent_environment
+        ):
+            raise ConfigError(
+                "agent.environment may not forward the inference API credential "
+                "into the Agent Container"
+            )
+        if self.metric != "autoregressive_nll":
             raise ConfigError("v0 only implements evaluation.metric='autoregressive_nll'")
-        if config.gpu_count == 0 and config.gpu_model:
+        if self.gpu_count == 0 and self.gpu_model:
             raise ConfigError("hardware.gpu_model requires hardware.gpu_count > 0")
-        return config
+        return self
 
     @property
     def images(self) -> List[str]:
-        return sorted({self.agent_image, self.training_image, self.evaluator_image})
+        images = {self.agent_image, self.training_image, self.evaluator_image}
+        if self.inference is not None:
+            images.add(self.inference_gateway_image)
+        return sorted(images)
 
     @property
     def policy_compliant(self) -> bool:
@@ -316,7 +357,8 @@ class TaskConfig:
             inference_manifest = {
                 "enabled": True,
                 "protocol": self.inference.protocol,
-                "local_base_url": "http://127.0.0.1:8765/v1",
+                "local_base_url": "http://inference-gateway:8765/v1",
+                "gateway_image": self.inference_gateway_image,
                 "allowed_models": list(self.inference.allowed_models),
                 "allowed_paths": list(self.inference.allowed_paths),
                 "provider_hosted_tools": "forbidden_except_function_tools",

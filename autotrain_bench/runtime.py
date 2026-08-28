@@ -12,6 +12,7 @@ import math
 import os
 import shutil
 import subprocess
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -120,7 +121,9 @@ class DockerRuntime:
         config: TaskConfig,
         control_dir: Path,
         public_task_path: Path,
+        inference_network: Optional[str] = None,
     ) -> None:
+        config.validate()
         package_dir = Path(__file__).resolve().parent
         missing_environment = [
             name for name in config.agent_environment if name not in os.environ
@@ -128,6 +131,13 @@ class DockerRuntime:
         if missing_environment:
             names = ", ".join(missing_environment)
             raise RuntimeFailure(f"agent environment variable is not set: {names}")
+        if config.inference is not None and not inference_network:
+            raise RuntimeFailure("inference_network is required when inference is enabled")
+        agent_network = (
+            inference_network
+            if config.inference is not None
+            else ("none" if config.agent_mode == "sandboxed" else "bridge")
+        )
         args: List[str] = [
             "run",
             "--detach",
@@ -135,7 +145,7 @@ class DockerRuntime:
             "--name",
             name,
             "--network",
-            "none" if config.agent_mode == "sandboxed" else "bridge",
+            agent_network,
             "--cap-drop",
             "ALL",
             "--security-opt",
@@ -174,42 +184,140 @@ class DockerRuntime:
             args.extend(["--env", name])
 
         if config.inference is not None:
-            if config.inference.api_key_env and not os.environ.get(
-                config.inference.api_key_env
-            ):
-                raise RuntimeFailure(
-                    "inference credential is missing from the trusted host: "
-                    f"{config.inference.api_key_env}"
-                )
-            # The Agent Container still has no public network in sandboxed mode.
-            # A tiny localhost proxy sends requests through the Supervisor mailbox;
-            # the real credential never enters the container.
             args.extend(
                 [
                     "--env",
-                    "AUTOTRAIN_BENCH_INFERENCE_GATEWAY=1",
+                    "AUTOTRAIN_BENCH_INFERENCE_BASE_URL="
+                    "http://inference-gateway:8765/v1",
                     "--env",
-                    "AUTOTRAIN_BENCH_INFERENCE_BASE_URL=http://127.0.0.1:8765/v1",
-                    "--env",
-                    "OPENAI_BASE_URL=http://127.0.0.1:8765/v1",
+                    "OPENAI_BASE_URL=http://inference-gateway:8765/v1",
                     "--env",
                     "OPENAI_API_KEY=autotrain-bench-gateway",
-                    "--env",
-                    "AUTOTRAIN_BENCH_AGENT_COMMAND_JSON="
-                    + json.dumps(config.agent_command),
                 ]
             )
-            args.extend(
-                [
-                    config.agent_image,
-                    "python",
-                    "-m",
-                    "autotrain_bench.agent_entrypoint",
-                ]
-            )
-        else:
-            args.extend([config.agent_image, *config.agent_command])
+        args.extend([config.agent_image, *config.agent_command])
         self._run(args)
+
+    def create_network(self, name: str, *, internal: bool) -> None:
+        args = ["network", "create", "--driver", "bridge"]
+        if internal:
+            args.append("--internal")
+        args.append(name)
+        self._run(args)
+
+    def remove_network(self, name: str) -> None:
+        if name:
+            self._run(["network", "rm", name], check=False)
+
+    def start_inference_gateway(
+        self,
+        *,
+        name: str,
+        agent_network: str,
+        egress_network: str,
+        config: TaskConfig,
+        audit_dir: Path,
+        readiness_timeout_seconds: float = 10,
+    ) -> None:
+        config.validate()
+        inference = config.inference
+        if inference is None:
+            raise RuntimeFailure("cannot start inference gateway without configuration")
+        if inference.api_key_env and not os.environ.get(inference.api_key_env):
+            raise RuntimeFailure(
+                "inference credential is missing from the trusted host: "
+                f"{inference.api_key_env}"
+            )
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        audit_dir.chmod(0o700)
+        package_dir = Path(__file__).resolve().parent
+        gateway_config = json.dumps(
+            {
+                "protocol": inference.protocol,
+                "base_url": inference.base_url,
+                "api_key_env": inference.api_key_env,
+                "allowed_models": list(inference.allowed_models),
+                "allowed_paths": list(inference.allowed_paths),
+                "timeout_seconds": inference.timeout_seconds,
+            },
+            separators=(",", ":"),
+        )
+        args: List[str] = [
+            "run",
+            "--detach",
+            "--init",
+            "--name",
+            name,
+            "--network",
+            egress_network,
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges:true",
+            "--pids-limit",
+            "128",
+            "--read-only",
+            "--tmpfs",
+            "/tmp:rw,nosuid,size=64m",
+            "--mount",
+            self._mount(package_dir, "/opt/autotrain_bench", read_only=True),
+            "--mount",
+            self._mount(audit_dir, "/audit", read_only=False),
+            "--env",
+            "PYTHONPATH=/opt",
+            "--env",
+            "PYTHONDONTWRITEBYTECODE=1",
+            "--env",
+            f"AUTOTRAIN_BENCH_INFERENCE_CONFIG_JSON={gateway_config}",
+            "--env",
+            "AUTOTRAIN_BENCH_INFERENCE_AUDIT_PATH=/audit/inference.jsonl",
+        ]
+        if inference.api_key_env:
+            # Docker copies the value from the host into the trusted Gateway only.
+            args.extend(["--env", inference.api_key_env])
+        args.extend(
+            [
+                config.inference_gateway_image,
+                "python",
+                "-m",
+                "autotrain_bench.agent_gateway",
+            ]
+        )
+        try:
+            self._run(args)
+            self._run(
+                [
+                    "network",
+                    "connect",
+                    "--alias",
+                    "inference-gateway",
+                    agent_network,
+                    name,
+                ]
+            )
+            deadline = time.monotonic() + readiness_timeout_seconds
+            health_command = (
+                "import urllib.request; "
+                "urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=1).read()"
+            )
+            while time.monotonic() < deadline:
+                ready = self._run(
+                    ["exec", name, "python", "-c", health_command],
+                    check=False,
+                    timeout=2,
+                )
+                if ready.returncode == 0:
+                    return
+                if not self.container_running(name):
+                    break
+                time.sleep(0.05)
+        except RuntimeFailure:
+            self.stop_container(name)
+            raise
+        logs = self.container_logs(name).strip()
+        self.stop_container(name)
+        detail = f": {logs}" if logs else ""
+        raise RuntimeFailure(f"inference gateway did not become ready{detail}")
 
     def start_training(
         self,

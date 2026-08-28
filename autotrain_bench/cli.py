@@ -22,6 +22,7 @@ from .config import (
     agent_environment_names,
     agent_mode,
 )
+from .inference import summarize_inference_trace
 from .runtime import DockerRuntime, RuntimeFailure
 from .supervisor import Supervisor
 
@@ -97,7 +98,9 @@ def command_start(args: argparse.Namespace) -> int:
                 "--agent-mode",
             ),
             agent_environment=environment,
-        )
+        ).validate()
+    else:
+        config.validate()
     missing_environment = [
         name for name in config.agent_environment if name not in os.environ
     ]
@@ -118,25 +121,56 @@ def command_start(args: argparse.Namespace) -> int:
     except Exception:
         shutil.rmtree(episode_dir, ignore_errors=True)
         raise
-    config = replace(config, agent_workspace=workspace)
+    config = replace(config, agent_workspace=workspace).validate()
     supervisor = Supervisor(
         config=config,
         track=args.track,
         episode_dir=episode_dir,
         runtime=runtime,
     )
-    supervisor.begin()
-    agent_name = f"atb-{episode_dir.name[:12].lower()}-agent"
+    runtime_id = uuid.uuid5(uuid.NAMESPACE_URL, str(episode_dir)).hex[:12]
+    prefix = f"atb-{runtime_id}"
+    agent_name = f"{prefix}-agent"
+    gateway_name = f"{prefix}-inference"
+    agent_network = f"{prefix}-agent-net"
+    egress_network = f"{prefix}-egress-net"
+    agent_started = False
+    gateway_started = False
+    networks_created: List[str] = []
     print(f"Episode: {episode_dir}", flush=True)
     try:
+        if config.inference is not None:
+            runtime.create_network(
+                agent_network,
+                internal=config.agent_mode == "sandboxed",
+            )
+            networks_created.append(agent_network)
+            runtime.create_network(egress_network, internal=False)
+            networks_created.append(egress_network)
+            runtime.start_inference_gateway(
+                name=gateway_name,
+                agent_network=agent_network,
+                egress_network=egress_network,
+                config=config,
+                audit_dir=supervisor.inference_dir,
+            )
+            gateway_started = True
+        supervisor.begin()
         runtime.start_agent(
             name=agent_name,
             config=config,
             control_dir=supervisor.control_dir,
             public_task_path=supervisor.public_task_path,
+            inference_network=agent_network if config.inference is not None else None,
         )
-    except RuntimeFailure:
+        agent_started = True
+    except Exception:
         supervisor.agent_exited_without_finish()
+        runtime.stop_container(agent_name)
+        if gateway_started:
+            runtime.stop_container(gateway_name)
+        for network in reversed(networks_created):
+            runtime.remove_network(network)
         raise
 
     finalized_at: Optional[float] = None
@@ -147,11 +181,25 @@ def command_start(args: argparse.Namespace) -> int:
             status = supervisor.public_status()["status"]
             agent_running = runtime.container_running(agent_name)
 
+            if (
+                status == "active"
+                and config.inference is not None
+                and not runtime.container_running(gateway_name)
+            ):
+                supervisor.infrastructure_failed(
+                    "the trusted inference gateway exited during the episode"
+                )
+                status = supervisor.public_status()["status"]
+
             if status == "active" and not agent_running:
                 supervisor.agent_exited_without_finish()
                 status = "dnf"
 
             if status != "active":
+                if gateway_started:
+                    runtime.stop_container(gateway_name)
+                    gateway_started = False
+                    supervisor.refresh_inference_usage()
                 if finalized_at is None:
                     finalized_at = time.monotonic()
                 if not agent_running or time.monotonic() - finalized_at >= 3:
@@ -165,24 +213,33 @@ def command_start(args: argparse.Namespace) -> int:
         if active:
             runtime.stop_container(active["container_name"])
         try:
-            agent_log = runtime.container_logs(agent_name)
+            agent_log = runtime.container_logs(agent_name) if agent_started else ""
             agent_log_path = episode_dir / "agent.log"
             agent_log_path.write_text(agent_log, encoding="utf-8")
             agent_log_path.chmod(0o600)
         except (OSError, RuntimeFailure):
             pass
         runtime.stop_container(agent_name)
+        if gateway_started:
+            runtime.stop_container(gateway_name)
+        supervisor.refresh_inference_usage()
+        for network in reversed(networks_created):
+            runtime.remove_network(network)
 
     _print(supervisor.public_status())
     return 0 if supervisor.state["status"] == "finalized" else 1
 
 
 def command_report(args: argparse.Namespace) -> int:
-    state_path = args.episode.resolve() / "state.json"
+    episode = args.episode.resolve()
+    state_path = episode / "state.json"
     try:
         payload = json.loads(state_path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
         raise ConfigError(f"episode state not found: {state_path}") from exc
+    payload["inference_usage"] = summarize_inference_trace(
+        episode / "inference" / "inference.jsonl"
+    )
     _print(payload)
     return 0
 

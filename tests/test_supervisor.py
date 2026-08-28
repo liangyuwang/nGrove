@@ -1,4 +1,3 @@
-import base64
 import json
 import tempfile
 import threading
@@ -174,7 +173,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertNotIn(str(self.config.val_path), serialized)
         self.assertNotIn(str(self.config.test_path), serialized)
 
-    def test_registered_inference_channel_is_available_without_exposing_secret(self):
+    def test_registered_inference_usage_is_summarized_from_trusted_trace(self):
         inference = InferenceConfig(
             protocol="openai_compatible",
             base_url="https://api.example.com",
@@ -186,37 +185,36 @@ class SupervisorTests(unittest.TestCase):
         config = replace(self.config, inference=inference)
         supervisor = self.supervisor(config=config)
 
-        import autotrain_bench.supervisor as supervisor_module
-
-        original = supervisor_module.forward_inference_request
-        try:
-            def fake_forward(**kwargs):
-                self.assertEqual(kwargs["path"], "/v1/responses")
-                return {
-                    "status": 200,
-                    "content_type": "application/json",
-                    "body_base64": base64.b64encode(b'{"ok":true}').decode("ascii"),
-                    "model": "researcher-a",
-                }
-
-            supervisor_module.forward_inference_request = fake_forward
-            result = supervisor.inference(
-                method="POST",
-                path="/v1/responses",
-                headers={"content-type": "application/json"},
-                body_base64=base64.b64encode(
-                    b'{"model":"researcher-a","input":"hello"}'
-                ).decode("ascii"),
-            )
-        finally:
-            supervisor_module.forward_inference_request = original
-
-        self.assertEqual(result["status"], 200)
-        events = [
-            json.loads(line)
-            for line in supervisor.events_path.read_text(encoding="utf-8").splitlines()
+        records = [
+            {
+                "type": "INFERENCE_STARTED",
+                "request_id": "request-1",
+                "model": "researcher-a",
+                "path": "/v1/responses",
+            },
+            {
+                "type": "INFERENCE_COMPLETED",
+                "request_id": "request-1",
+                "model": "researcher-a",
+                "path": "/v1/responses",
+                "status": 200,
+                "usage": {
+                    "input_tokens": 7,
+                    "output_tokens": 3,
+                    "total_tokens": 10,
+                },
+            },
         ]
-        self.assertIn("INFERENCE_COMPLETED", [event["type"] for event in events])
+        supervisor.inference_trace_path.write_text(
+            "".join(json.dumps(record) + "\n" for record in records),
+            encoding="utf-8",
+        )
+        summary = supervisor.refresh_inference_usage()
+        self.assertEqual(summary["model_calls"], 1)
+        self.assertEqual(summary["total_tokens"], 10)
+        self.assertTrue(summary["usage_complete"])
+        state = json.loads(supervisor.state_path.read_text(encoding="utf-8"))
+        self.assertEqual(state["inference_usage"], summary)
 
 
 

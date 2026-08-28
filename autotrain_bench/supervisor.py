@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from .config import TaskConfig
-from .inference import InferenceFailure, forward_inference_request
+from .inference import summarize_inference_trace
 from .runtime import ExecResult, RuntimeFailure
 
 
@@ -57,6 +57,8 @@ class Supervisor:
         self.runs_dir = self.episode_dir / "leases"
         self.candidates_dir = self.episode_dir / "candidates"
         self.evaluations_dir = self.episode_dir / "evaluations"
+        self.inference_dir = self.episode_dir / "inference"
+        self.inference_trace_path = self.inference_dir / "inference.jsonl"
         self.public_dir = self.episode_dir / "public"
         for directory in (
             self.inbox,
@@ -64,12 +66,14 @@ class Supervisor:
             self.runs_dir,
             self.candidates_dir,
             self.evaluations_dir,
+            self.inference_dir,
             self.public_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
         os.chmod(self.control_dir, 0o777)
         os.chmod(self.inbox, 0o777)
         os.chmod(self.outbox, 0o777)
+        os.chmod(self.inference_dir, 0o700)
 
         self.state_path = self.episode_dir / "state.json"
         self.events_path = self.episode_dir / "events.jsonl"
@@ -91,6 +95,9 @@ class Supervisor:
                 "inference": {
                     "enabled": config.inference is not None,
                     "protocol": config.inference.protocol if config.inference else None,
+                    "gateway_image": (
+                        config.inference_gateway_image if config.inference else None
+                    ),
                     "allowed_models": list(config.inference.allowed_models) if config.inference else [],
                     "allowed_paths": list(config.inference.allowed_paths) if config.inference else [],
                 },
@@ -110,6 +117,7 @@ class Supervisor:
             "incumbent_id": None,
             "final_candidate_id": None,
             "test_nll": None,
+            "inference_usage": summarize_inference_trace(self.inference_trace_path),
             "failure": None,
         }
         self.sequence = 0
@@ -192,6 +200,7 @@ class Supervisor:
                 "agent_network": "disabled" if self.config.agent_mode == "sandboxed" else "unrestricted_dev",
                 "policy_compliant": self.config.policy_compliant,
                 "inference_enabled": self.config.inference is not None,
+                "inference_usage": dict(self.state["inference_usage"]),
                 "status": self.state["status"],
                 "elapsed_seconds": round(self._elapsed(), 3),
                 "leases_used": self.state["leases_used"],
@@ -238,13 +247,6 @@ class Supervisor:
             return self.commit_lease(request.get("candidate_path"))
         if operation == "lease_stop":
             return self.stop_lease()
-        if operation == "inference":
-            return self.inference(
-                method=request.get("method"),
-                path=request.get("path"),
-                headers=request.get("headers"),
-                body_base64=request.get("body_base64"),
-            )
         if operation == "finish":
             return self.finish(request.get("candidate_id"))
         raise ProtocolError("unknown_operation", f"unknown operation: {operation!r}")
@@ -534,69 +536,12 @@ class Supervisor:
             self._save_state()
             return dict(metadata)
 
-    def inference(
-        self,
-        *,
-        method: Any,
-        path: Any,
-        headers: Any,
-        body_base64: Any,
-    ) -> Dict[str, Any]:
+    def refresh_inference_usage(self) -> Dict[str, Any]:
         with self.lock:
-            self._require_active()
-            if self.config.inference is None:
-                raise ProtocolError(
-                    "inference_disabled", "no external inference channel is registered"
-                )
-            if not isinstance(method, str) or not isinstance(path, str):
-                raise ProtocolError(
-                    "invalid_inference_request", "method and path must be strings"
-                )
-            if not isinstance(headers, dict) or not all(
-                isinstance(key, str) and isinstance(value, str)
-                for key, value in headers.items()
-            ):
-                raise ProtocolError(
-                    "invalid_inference_request", "headers must be a string mapping"
-                )
-            if not isinstance(body_base64, str):
-                raise ProtocolError(
-                    "invalid_inference_request", "body_base64 must be a string"
-                )
-            remaining = None
-            if self.track == "A":
-                remaining = self._track_a_remaining()
-                if remaining <= 0:
-                    self.enforce_deadlines()
-                    raise ProtocolError("deadline_reached", "Track A deadline has passed")
-            try:
-                result = forward_inference_request(
-                    inference_config=self.config.inference,
-                    method=method,
-                    path=path,
-                    headers=headers,
-                    body_base64=body_base64,
-                    timeout_seconds=remaining,
-                )
-            except InferenceFailure as exc:
-                self._event("INFERENCE_REJECTED", code=exc.code, message=str(exc))
-                self._save_state()
-                raise ProtocolError(exc.code, str(exc)) from exc
-
-            # A Track A inference call consumes the same wall clock as all other
-            # research.  If the deadline elapsed while the upstream was running,
-            # close the episode instead of returning a post-deadline result.
-            if self.track == "A" and self._track_a_remaining() <= 0:
-                self.enforce_deadlines()
-                raise ProtocolError("deadline_reached", "Track A deadline has passed")
-            self._event(
-                "INFERENCE_COMPLETED",
-                model=result.get("model"),
-                path=path,
-                status=result.get("status"),
-            )
+            summary = summarize_inference_trace(self.inference_trace_path)
+            self.state["inference_usage"] = summary
             self._save_state()
-            return result
+            return dict(summary)
 
     def finish(self, candidate_id: Any = None) -> Dict[str, Any]:
         with self.lock:
@@ -679,6 +624,17 @@ class Supervisor:
             self._event("EPISODE_DNF", reason="agent_exited_without_finish")
             self._save_state()
 
+    def infrastructure_failed(self, message: str) -> None:
+        with self.lock:
+            if self.state["status"] != "active":
+                return
+            if self.state["active_lease"] is not None:
+                self._end_active_lease("infrastructure_failure")
+            self.state["status"] = "infrastructure_failure"
+            self.state["failure"] = message
+            self._event("EPISODE_INFRASTRUCTURE_FAILURE", message=message)
+            self._save_state()
+
     def process_one_request(self) -> bool:
         paths = sorted(self.inbox.glob("*.json"))
         if not paths:
@@ -686,8 +642,8 @@ class Supervisor:
         request_path = paths[0]
         request_id = request_path.stem
         try:
-            if request_path.stat().st_size > 32 * 1024 * 1024:
-                raise ProtocolError("request_too_large", "request exceeds 32 MiB")
+            if request_path.stat().st_size > 1024 * 1024:
+                raise ProtocolError("request_too_large", "request exceeds 1 MiB")
             request = json.loads(request_path.read_text(encoding="utf-8"))
             if not isinstance(request, dict):
                 raise ProtocolError("invalid_request", "request must be an object")
