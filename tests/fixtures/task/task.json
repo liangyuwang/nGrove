@@ -1,0 +1,38 @@
+{
+  "task_id": "test-byte-lm-v1",
+  "paths": {
+    "train": "train",
+    "val": "private/val.json",
+    "test": "private/test.json",
+    "agent_workspace": "agent"
+  },
+  "images": {
+    "agent": "python@sha256:test-agent",
+    "training": "python@sha256:test-training",
+    "candidate": "python@sha256:test-candidate",
+    "evaluator": "python@sha256:test-evaluator",
+    "inference_gateway": "python@sha256:test-gateway"
+  },
+  "agent": {
+    "runner": "container",
+    "command": ["python", "/workspace/agent.py"],
+    "environment": [],
+    "mode": "sandboxed",
+    "inference": {"enabled": false}
+  },
+  "hardware": {"gpu_count": 0, "gpu_model": null},
+  "evaluation": {
+    "backend": "isolated_candidate",
+    "entrypoint": "evaluator.py",
+    "metric": "autoregressive_nll",
+    "vocab_size": 3,
+    "context_length": 3,
+    "batch_size": 2,
+    "device": "cpu",
+    "max_candidate_bytes": 1048576,
+    "max_candidate_files": 100,
+    "timeout_seconds": 30
+  },
+  "track_a": {"total_seconds": 100},
+  "track_b": {"max_leases": 2, "lease_seconds": 10}
+}

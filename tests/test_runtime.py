@@ -14,6 +14,7 @@ from autotrain_bench.host_agent import summarize_host_agent_trace
 
 
 ROOT = Path(__file__).resolve().parents[1]
+TASK = ROOT / "tests/fixtures/task/task.json"
 
 
 class CapturingDockerRuntime(DockerRuntime):
@@ -46,7 +47,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 "'leaked': os.environ.get('SHOULD_NOT_LEAK')}))"
             )
             config = replace(
-                TaskConfig.load(ROOT / "examples/toy/task.json"),
+                TaskConfig.load(TASK),
                 agent_workspace=workspace,
                 agent_runner="host_cli",
                 agent_mode=None,
@@ -163,7 +164,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             public_task = root / "task.json"
             public_task.write_text("{}", encoding="utf-8")
             config = replace(
-                TaskConfig.load(ROOT / "examples/toy/task.json"),
+                TaskConfig.load(TASK),
                 agent_workspace=workspace,
             )
             runtime = CapturingDockerRuntime()
@@ -177,7 +178,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             self.assertIn("dst=/opt/autotrain_bench,readonly", command)
             self.assertIn("/agent-home:rw,nosuid,size=1g,mode=1777", command)
             self.assertIn("HOME=/agent-home", command)
-            self.assertNotIn(str(ROOT / "examples/toy/private"), command)
+            self.assertNotIn(str(TASK.parent / "private"), command)
             self.assertNotIn(str(config.val_path), command)
             self.assertNotIn(str(config.test_path), command)
 
@@ -201,7 +202,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 timeout_seconds=300,
             )
             config = replace(
-                TaskConfig.load(ROOT / "examples/toy/task.json"),
+                TaskConfig.load(TASK),
                 agent_workspace=workspace,
                 agent_command=["node", "/workspace/agent.js"],
                 agent_mode="sandboxed",
@@ -284,7 +285,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             public_task = root / "task.json"
             public_task.write_text("{}", encoding="utf-8")
             config = replace(
-                TaskConfig.load(ROOT / "examples/toy/task.json"),
+                TaskConfig.load(TASK),
                 agent_workspace=workspace,
                 agent_mode="unrestricted-dev",
             )
@@ -304,22 +305,39 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 training_command[training_command.index("--network") + 1], "none"
             )
 
-    def test_evaluator_entrypoint_comes_from_the_explicit_task_backend(self):
+    def test_evaluator_and_candidate_use_separate_internal_containers(self):
         with tempfile.TemporaryDirectory() as directory:
-            config = TaskConfig.load(ROOT / "examples/toy/task.json")
+            config = replace(
+                TaskConfig.load(TASK),
+                gpu_count=1,
+                evaluator_device="cuda",
+            ).validate()
             runtime = CapturingDockerRuntime()
             output = Path(directory) / "output"
             with self.assertRaises(RuntimeFailure):
                 runtime.run_evaluator(
                     config=config,
-                    candidate_dir=ROOT / "examples/toy/agent",
+                    candidate_dir=TASK.parent / "agent",
                     split="val",
                     output_dir=output,
                 )
-            command = runtime.calls[-1]
-            serialized = "\n".join(command)
-            self.assertIn(str(config.evaluator_entrypoint), serialized)
-            self.assertNotIn("autotrain_bench/toy_evaluator.py", serialized)
+            create = runtime.calls[0]
+            run_calls = [call for call in runtime.calls if call and call[0] == "run"]
+            candidate = next(call for call in run_calls if "candidate_server" in " ".join(call))
+            evaluator = next(call for call in run_calls if "/opt/evaluator.py" in call)
+            self.assertIn("--internal", create)
+            self.assertIn("dst=/candidate,readonly", "\n".join(candidate))
+            self.assertNotIn(str(config.val_path), "\n".join(candidate))
+            self.assertNotIn("dst=/candidate", "\n".join(evaluator))
+            self.assertIn(str(config.val_path), "\n".join(evaluator))
+            self.assertIn(str(config.evaluator_entrypoint), "\n".join(evaluator))
+            self.assertIn("http://candidate:8766", evaluator)
+            self.assertIn("--gpus", candidate)
+            self.assertNotIn("--gpus", evaluator)
+            network = create[-1]
+            self.assertEqual(candidate[candidate.index("--network") + 1], network)
+            self.assertEqual(evaluator[evaluator.index("--network") + 1], network)
+            self.assertIn(["network", "rm", network], runtime.calls)
 
     def test_missing_inference_credential_fails_before_gateway_start(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -332,7 +350,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 timeout_seconds=300,
             )
             config = replace(
-                TaskConfig.load(ROOT / "examples/toy/task.json"),
+                TaskConfig.load(TASK),
                 inference=inference,
             )
             runtime = CapturingDockerRuntime()

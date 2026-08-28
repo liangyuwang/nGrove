@@ -16,7 +16,7 @@ class ConfigError(ValueError):
 
 AGENT_RUNNERS = {"container", "host_cli"}
 AGENT_MODES = {"sandboxed", "unrestricted-dev"}
-EVALUATOR_BACKENDS = {"insecure_reference"}
+EVALUATOR_BACKENDS = {"isolated_candidate"}
 RESERVED_AGENT_ENVIRONMENT = {
     "AUTOTRAIN_BENCH_CONTROL_DIR",
     "AUTOTRAIN_BENCH_FORWARDED_ENVIRONMENT",
@@ -198,6 +198,7 @@ class TaskConfig:
     agent_workspace: Path
     agent_image: Optional[str]
     training_image: str
+    candidate_image: str
     evaluator_image: str
     inference_gateway_image: str
     agent_command: List[str]
@@ -216,6 +217,8 @@ class TaskConfig:
     evaluator_timeout_seconds: int
     evaluator_batch_size: int
     evaluator_device: str
+    candidate_max_bytes: int
+    candidate_max_files: int
     evaluator_backend: str
     evaluator_entrypoint: Path
 
@@ -320,6 +323,7 @@ class TaskConfig:
                 )
             ),
             training_image=_string(images.get("training"), "images.training"),
+            candidate_image=_string(images.get("candidate"), "images.candidate"),
             evaluator_image=_string(images.get("evaluator"), "images.evaluator"),
             inference_gateway_image=_string(
                 images.get("inference_gateway", "python:3.11-slim"),
@@ -361,6 +365,14 @@ class TaskConfig:
             evaluator_device=_string(
                 evaluation.get("device", "cpu"),
                 "evaluation.device",
+            ),
+            candidate_max_bytes=_positive_int(
+                evaluation.get("max_candidate_bytes"),
+                "evaluation.max_candidate_bytes",
+            ),
+            candidate_max_files=_positive_int(
+                evaluation.get("max_candidate_files"),
+                "evaluation.max_candidate_files",
             ),
             evaluator_backend=evaluator_backend(evaluation.get("backend")),
             evaluator_entrypoint=evaluator_entrypoint,
@@ -417,7 +429,11 @@ class TaskConfig:
 
     @property
     def images(self) -> List[str]:
-        images = {self.training_image, self.evaluator_image}
+        images = {
+            self.training_image,
+            self.candidate_image,
+            self.evaluator_image,
+        }
         if self.agent_runner == "container" and self.agent_image:
             images.add(self.agent_image)
         if self.inference is not None:
@@ -430,7 +446,7 @@ class TaskConfig:
 
     @property
     def evaluator_policy_compliant(self) -> bool:
-        return self.evaluator_backend != "insecure_reference"
+        return self.evaluator_backend == "isolated_candidate"
 
     @property
     def policy_violations(self) -> List[str]:
@@ -438,7 +454,7 @@ class TaskConfig:
         if not self.agent_policy_compliant:
             violations.append("agent_execution_boundary")
         if not self.evaluator_policy_compliant:
-            violations.append("insecure_reference_evaluator")
+            violations.append("candidate_evaluator_isolation")
         return violations
 
     @property
@@ -493,12 +509,22 @@ class TaskConfig:
             },
             "evaluation": {
                 "backend": self.evaluator_backend,
+                "candidate_image": self.candidate_image,
                 "metric": self.metric,
                 "vocab_size": self.vocab_size,
                 "context_length": self.context_length,
                 "batch_size": self.evaluator_batch_size,
                 "device": self.evaluator_device,
+                "candidate_artifact_limits": {
+                    "max_bytes": self.candidate_max_bytes,
+                    "max_files": self.candidate_max_files,
+                },
                 "policy_compliant": self.evaluator_policy_compliant,
+                "candidate_boundary": {
+                    "hidden_data_mount": "none",
+                    "network": "ephemeral_internal_only",
+                    "protocol": "next_token_logits_v1",
+                },
             },
             "hardware": {
                 "gpu_count": self.gpu_count,

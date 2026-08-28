@@ -16,7 +16,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from .config import TaskConfig
 from .host_agent import HostAgentProcess, start_host_agent_process
@@ -114,6 +114,69 @@ class DockerRuntime:
             raise RuntimeFailure(
                 f"task requires GPU model containing {config.gpu_model!r}; found {names}"
             )
+
+    def environment_manifest(self, config: TaskConfig) -> Dict[str, Any]:
+        """Record the concrete runtime used for a comparable episode."""
+
+        docker_version = self._run(
+            ["version", "--format", "{{.Server.Version}}"], timeout=20
+        ).stdout.strip()
+        images: Dict[str, Dict[str, str]] = {}
+        for role, reference in (
+            ("agent", config.agent_image),
+            ("training", config.training_image),
+            ("candidate", config.candidate_image),
+            ("evaluator", config.evaluator_image),
+            (
+                "inference_gateway",
+                config.inference_gateway_image if config.inference else None,
+            ),
+        ):
+            if not reference:
+                continue
+            inspected = self._run(
+                ["image", "inspect", reference, "--format", "{{.Id}}"],
+                timeout=20,
+            )
+            images[role] = {
+                "reference": reference,
+                "image_id": inspected.stdout.strip(),
+            }
+
+        gpus: List[Dict[str, str]] = []
+        if config.gpu_count:
+            nvidia_smi = shutil.which("nvidia-smi")
+            if not nvidia_smi:  # guarded by validate_hardware
+                raise RuntimeFailure("nvidia-smi disappeared after hardware validation")
+            result = subprocess.run(
+                [
+                    nvidia_smi,
+                    "--query-gpu=name,uuid,driver_version,memory.total",
+                    "--format=csv,noheader,nounits",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                raise RuntimeFailure(result.stderr.strip() or "nvidia-smi failed")
+            for line in result.stdout.splitlines():
+                fields = [field.strip() for field in line.split(",")]
+                if len(fields) != 4:
+                    raise RuntimeFailure("nvidia-smi returned malformed GPU metadata")
+                gpus.append(
+                    {
+                        "name": fields[0],
+                        "uuid": fields[1],
+                        "driver_version": fields[2],
+                        "memory_mib": fields[3],
+                    }
+                )
+        return {
+            "docker_server_version": docker_version,
+            "images": images,
+            "gpus": gpus,
+        }
 
     def start_agent(
         self,
@@ -362,6 +425,7 @@ class DockerRuntime:
         output = lease_dir / "output"
         scratch.mkdir(parents=True, exist_ok=True)
         output.mkdir(parents=True, exist_ok=True)
+        package_dir = Path(__file__).resolve().parent
         args: List[str] = [
             "run",
             "--detach",
@@ -386,8 +450,12 @@ class DockerRuntime:
             self._mount(scratch, "/scratch", read_only=False),
             "--mount",
             self._mount(output, "/output", read_only=False),
+            "--mount",
+            self._mount(package_dir, "/opt/autotrain_bench", read_only=True),
             "--env",
             "HOME=/scratch",
+            "--env",
+            "PYTHONPATH=/opt",
             "--env",
             "AUTOTRAIN_TRAIN_DIR=/benchmark/train",
             "--env",
@@ -453,17 +521,28 @@ class DockerRuntime:
     ) -> float:
         if split not in {"val", "test"}:
             raise RuntimeFailure(f"invalid evaluator split: {split}")
+        if config.evaluator_backend != "isolated_candidate":
+            raise RuntimeFailure(
+                f"unsupported evaluator backend: {config.evaluator_backend}"
+            )
         data_path = config.val_path if split == "val" else config.test_path
         output_dir.mkdir(parents=True, exist_ok=True)
         result_path = output_dir / f"{split}.json"
-        container_name = f"atb-eval-{uuid.uuid4().hex[:12]}"
-        args = [
+        runtime_id = uuid.uuid4().hex[:12]
+        candidate_name = f"atb-candidate-{runtime_id}"
+        evaluator_name = f"atb-evaluator-{runtime_id}"
+        network_name = f"atb-evaluation-{runtime_id}"
+        package_dir = Path(__file__).resolve().parent
+        candidate_args: List[str] = [
             "run",
-            "--rm",
+            "--detach",
+            "--init",
             "--name",
-            container_name,
+            candidate_name,
             "--network",
-            "none",
+            network_name,
+            "--network-alias",
+            "candidate",
             "--cap-drop",
             "ALL",
             "--security-opt",
@@ -472,9 +551,62 @@ class DockerRuntime:
             "512",
             "--read-only",
             "--tmpfs",
-            "/tmp:rw,nosuid,size=128m",
+            "/tmp:rw,nosuid,size=1g",
+            "--tmpfs",
+            "/candidate-home:rw,nosuid,size=1g",
+            "--log-opt",
+            "max-size=10m",
+            "--log-opt",
+            "max-file=1",
             "--mount",
             self._mount(candidate_dir, "/candidate", read_only=True),
+            "--mount",
+            self._mount(package_dir, "/opt/autotrain_bench", read_only=True),
+            "--env",
+            "HOME=/candidate-home",
+            "--env",
+            "PYTHONPATH=/opt",
+            "--env",
+            "PYTHONDONTWRITEBYTECODE=1",
+            "--workdir",
+            "/candidate",
+        ]
+        if config.evaluator_device == "cuda":
+            candidate_args.extend(["--gpus", str(config.gpu_count)])
+        candidate_args.extend(
+            [
+                config.candidate_image,
+                "python",
+                "-m",
+                "autotrain_bench.candidate_server",
+                "--candidate",
+                "/candidate",
+                "--device",
+                config.evaluator_device,
+                "--vocab-size",
+                str(config.vocab_size),
+                "--context-length",
+                str(config.context_length),
+                "--maximum-batch-size",
+                str(config.evaluator_batch_size),
+            ]
+        )
+        evaluator_args: List[str] = [
+            "run",
+            "--rm",
+            "--name",
+            evaluator_name,
+            "--network",
+            network_name,
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges:true",
+            "--pids-limit",
+            "256",
+            "--read-only",
+            "--tmpfs",
+            "/tmp:rw,nosuid,size=128m",
             "--mount",
             self._mount(data_path, "/eval-data/split.json", read_only=True),
             "--mount",
@@ -490,8 +622,8 @@ class DockerRuntime:
             config.evaluator_image,
             "python",
             "/opt/evaluator.py",
-            "--candidate",
-            "/candidate",
+            "--candidate-url",
+            "http://candidate:8766",
             "--data",
             "/eval-data/split.json",
             "--output",
@@ -500,19 +632,34 @@ class DockerRuntime:
             str(config.vocab_size),
             "--batch-size",
             str(config.evaluator_batch_size),
-            "--device",
-            config.evaluator_device,
         ]
-        if config.evaluator_device == "cuda":
-            args[1:1] = ["--gpus", str(config.gpu_count)]
+        evaluator_started = False
         try:
-            self._run(args, timeout=config.evaluator_timeout_seconds)
-        except RuntimeFailure:
-            self.stop_container(container_name)
-            raise
+            self.create_network(network_name, internal=True)
+            self._run(candidate_args)
+            evaluator_started = True
+            self._run(
+                evaluator_args,
+                timeout=config.evaluator_timeout_seconds,
+            )
+        except RuntimeFailure as exc:
+            candidate_logs = self.container_logs(candidate_name).strip()[-4000:]
+            detail = f"; Candidate logs: {candidate_logs}" if candidate_logs else ""
+            raise RuntimeFailure(f"isolated evaluation failed: {exc}{detail}") from exc
+        finally:
+            if evaluator_started:
+                self.stop_container(evaluator_name)
+            self.stop_container(candidate_name)
+            self.remove_network(network_name)
         try:
             payload = json.loads(result_path.read_text(encoding="utf-8"))
             loss = float(payload["nll"])
-        except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        except (
+            FileNotFoundError,
+            KeyError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+        ) as exc:
             raise RuntimeFailure("evaluator did not produce a valid NLL result") from exc
         return loss

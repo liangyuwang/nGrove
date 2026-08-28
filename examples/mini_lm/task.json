@@ -1,5 +1,5 @@
 {
-  "task_id": "tinystories-byte-lm-mini-v0",
+  "task_id": "tinystories-byte-transformer-mini-v1",
   "paths": {
     "train": "data/train",
     "val": "data/private/val.json",
@@ -8,7 +8,8 @@
   },
   "images": {
     "agent": "python@sha256:1042b61448fef4ba92d16a8c7eb4996d027568ce64792a7877fd88511e0af7c6",
-    "training": "python@sha256:1042b61448fef4ba92d16a8c7eb4996d027568ce64792a7877fd88511e0af7c6",
+    "training": "pytorch/pytorch@sha256:c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2",
+    "candidate": "pytorch/pytorch@sha256:c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2",
     "evaluator": "python@sha256:1042b61448fef4ba92d16a8c7eb4996d027568ce64792a7877fd88511e0af7c6",
     "inference_gateway": "python@sha256:1042b61448fef4ba92d16a8c7eb4996d027568ce64792a7877fd88511e0af7c6"
   },
@@ -25,22 +26,26 @@
     }
   },
   "hardware": {
-    "gpu_count": 0,
-    "gpu_model": null
+    "gpu_count": 1,
+    "gpu_model": "NVIDIA H200"
   },
   "evaluation": {
-    "backend": "insecure_reference",
-    "entrypoint": "../evaluators/insecure_reference/evaluator.py",
+    "backend": "isolated_candidate",
+    "entrypoint": "evaluator/evaluator.py",
     "metric": "autoregressive_nll",
     "vocab_size": 257,
     "context_length": 128,
-    "timeout_seconds": 60
+    "batch_size": 64,
+    "device": "cuda",
+    "max_candidate_bytes": 2147483648,
+    "max_candidate_files": 10000,
+    "timeout_seconds": 240
   },
   "track_a": {
     "total_seconds": 300
   },
   "track_b": {
     "max_leases": 3,
-    "lease_seconds": 60
+    "lease_seconds": 75
   }
 }

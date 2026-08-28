@@ -71,11 +71,10 @@ The repository now contains an executable, single-host Docker prototype of the b
 
 The prototype deliberately assumes that the user has already obtained a machine matching the task's hardware specification. AutoTrain-Bench verifies and consumes resources visible on that machine; it does **not** allocate machines or integrate with Slurm, Kubernetes, or a cloud scheduler.
 
-All bundled tasks explicitly select the example-only
-`insecure_reference` evaluator. It imports participant candidate code in the
-same process that can read the hidden split, so every bundled example reports
-`policy_compliant: false`. These tasks validate the protocol and user
-experience; they are not official results or leaderboard submissions.
+The repository contains one bundled task, `examples/mini_lm`. It is a comparable
+mini release rather than a collection of unrelated toys: exact H200 hardware,
+pinned images, a real fixed corpus, both tracks, and an isolated Candidate
+serving boundary. Its default sandboxed run reports `policy_compliant: true`.
 
 ## Quick start
 
@@ -83,7 +82,8 @@ Requirements:
 
 * Python 3.9 or newer;
 * Docker;
-* NVIDIA Container Toolkit only when the selected task requires GPUs.
+* NVIDIA Container Toolkit;
+* exactly one visible NVIDIA H200 GPU.
 
 Install the local CLI:
 
@@ -91,45 +91,20 @@ Install the local CLI:
 python3 -m pip install -e .
 ```
 
-Prepare the bundled CPU toy task and pull its fixed images:
-
-```bash
-autotrain-bench prepare --task examples/toy/task.json
-```
-
-Run a complete Track B episode with the example autonomous agent:
-
-```bash
-autotrain-bench start --task examples/toy/task.json --track B
-```
-
-For a still inexpensive but substantially more realistic rehearsal, prepare the
-fixed TinyStories mini benchmark and run its five-minute Track A:
+Prepare the fixed TinyStories data and images, then run the five-minute Track A
+or the three-lease Track B:
 
 ```bash
 python3 examples/mini_lm/prepare_data.py
 autotrain-bench prepare --task examples/mini_lm/task.json
 autotrain-bench start --task examples/mini_lm/task.json --track A
+autotrain-bench start --task examples/mini_lm/task.json --track B
 ```
 
-This second example downloads about 0.98 MB of real text, uses a fixed byte-level
-tokenizer, hidden 8K-token VAL/TEST splits, pinned container images, and three
-validation-guided training leases. See `examples/mini_lm/README.md` for the full
-official-to-mini mapping and reproducibility details.
-
-For a single-GPU rehearsal, `examples/gpu_lm` replaces the n-gram starter with a
-small PyTorch causal Transformer while retaining the same fixed TinyStories
-data and protocol. After obtaining a machine where Docker can access one
-compatible NVIDIA GPU, run:
-
-```bash
-python3 examples/mini_lm/prepare_data.py
-autotrain-bench prepare --task examples/gpu_lm/task.json
-autotrain-bench start --task examples/gpu_lm/task.json --track B
-```
-
-Machine allocation remains outside AutoTrain-Bench. The task uses the same
-single-host Docker reference runtime and isolation contract as other tasks.
+The task downloads about 0.98 MB of real text, uses a fixed byte tokenizer,
+hidden 8K-token VAL/TEST splits, and trains small causal Transformers. See
+`examples/mini_lm/README.md` for the release-to-mini mapping, Candidate ABI,
+isolation boundary, and reproducibility details.
 
 A participant Agent Container can be selected without changing the benchmark task:
 
@@ -298,16 +273,18 @@ The Agent can use the benchmark package only as the control plane for training:
 python -m autotrain_bench.cli agent status
 python -m autotrain_bench.cli agent lease-start
 python -m autotrain_bench.cli agent lease-exec -- python /workspace/train.py
-python -m autotrain_bench.cli agent lease-commit candidate
+python -m autotrain_bench.cli agent lease-commit /output/candidate
 python -m autotrain_bench.cli agent declare-incumbent sha256:<candidate-hash>
 python -m autotrain_bench.cli agent finish
 ```
 
-`lease-commit` snapshots the artifact and returns one aggregate VAL result, but
-does not change the incumbent. After interpreting that scalar, the Agent must
-explicitly call `declare-incumbent` for the model it would submit if the episode
-ended immediately. `finish` and an automatic Track A deadline test only that
-last Agent-declared incumbent.
+Training code writes Candidate artifacts into the lease-owned `/output` mount.
+`lease-commit` first stops the Training Container, validates and snapshots the
+now-immutable artifact, and returns one aggregate VAL result; it does not change
+the incumbent. After interpreting that scalar, the Agent must explicitly call
+`declare-incumbent` for the model it would submit if the episode ended
+immediately. `finish` and an automatic Track A deadline test only that last
+Agent-declared incumbent.
 
 The submitted Agent command must be autonomous and non-interactive. Docker does
 not attach a user input stream after task reveal, so the user cannot continue
@@ -343,23 +320,23 @@ task reveal
 
 The reference implementation uses an official host-side Supervisor, either an
 Agent Container or a non-compliant host CLI process, a thin trusted Inference
-Gateway when registered, disposable Training Containers, and an example Eval
-Container. Agent and Training Containers receive neither the Docker socket nor
-VAL/TEST mounts, and sandboxed Agent networking is disabled. The Gateway handles
-only frozen researcher-inference endpoints while the Supervisor independently
-enforces episode and GPU-lease deadlines. Training and Eval networking remains
-disabled. `unrestricted-dev` and `host_cli` exist only as non-compliant local
-integration modes.
+Gateway when registered, disposable Training Containers, and separate trusted
+Evaluator and untrusted Candidate containers. Agent, Training, and Candidate
+containers receive neither the Docker socket nor VAL/TEST mounts. Sandboxed
+Agent and Training networking is disabled; Candidate evaluation uses only an
+ephemeral internal network shared with its Evaluator. The Gateway handles only
+frozen researcher-inference endpoints while the Supervisor independently
+enforces episode and GPU-lease deadlines. `unrestricted-dev` and `host_cli`
+exist only as non-compliant local integration modes.
 
 The v0 threat model protects benchmark policy from the Agent, not from the user or machine administrator. Docker isolation is a development reference boundary and is not presented as protection against kernel, container-runtime, or GPU-driver exploits. Official adversarial evaluation may require stronger worker or VM isolation.
 
-The bundled evaluator lives under
-`examples/evaluators/insecure_reference/` and must be selected explicitly by a
-task. It uses a provisional dependency-free Candidate ABI and directly imports
-untrusted candidate code while the hidden split is mounted. A candidate can
-therefore read VAL/TEST content, so this backend is always non-compliant. A
-formal release must replace it with a trusted evaluator and a separate,
-ephemeral untrusted Candidate serving boundary.
+The `isolated_candidate` backend starts a fresh internal Docker network per
+query. The trusted Evaluator mounts only the selected hidden split and output;
+the untrusted Candidate mounts only its content-addressed artifact. The
+Evaluator sends input prefixes over `next_token_logits_v1` and validates a
+bounded `[batch, vocabulary]` response. Candidate and Evaluator are destroyed
+after each query. This backend satisfies the v0 reference isolation contract.
 
 ---
 
@@ -441,30 +418,28 @@ This distinction is fundamental to the benchmark.
 
 # System Boundaries
 
-The local v0 prototype separates four components, but its example evaluator is
-not a formal security boundary.
+The local v0 reference separates trusted scoring from untrusted Candidate code.
 
 ```text
 User-owned host
 └── trusted AutoTrain-Bench Supervisor
     ├── untrusted Agent Container
     ├── disposable Training Container
-    └── insecure example Eval Container
-        └── trusted scoring code and untrusted candidate share one process
+    └── ephemeral internal evaluation network
+        ├── trusted Evaluator Container with hidden split
+        └── untrusted Candidate Container without hidden files or public network
 ```
 
 The official Supervisor records task reveal time, owns Track A deadlines and Track B lease counters, controls container lifecycle, exposes already-allocated local GPUs, and invokes evaluation. The Agent cannot access the Supervisor's state or Docker socket.
 
 The Agent receives interactive access to a Training Container only through the Supervisor's narrow command channel during an active **Training Lease**. It may inspect logs, edit the shared workspace, compile code, profile, and run any number of TRAIN-only experiments inside that lease.
 
-VAL and TEST files are mounted only in Eval Containers. The current example
-backend nevertheless imports candidate code beside those files and is therefore
-not suitable for adversarial evaluation. In the formal architecture, a trusted
-Evaluator alone owns the split and communicates with a separate ephemeral
-Candidate Container through a restricted inference protocol. A committed
-candidate receives at most one official VAL evaluation per lease, and the Agent
-receives only the permitted aggregate metric. TEST cannot run until the episode
-has been permanently closed.
+VAL and TEST files are mounted only in trusted Evaluator Containers. The
+Evaluator communicates with a separate ephemeral Candidate Container through a
+restricted next-token inference protocol. A committed candidate receives at
+most one official VAL evaluation per lease, and the Agent receives only the
+permitted aggregate metric. TEST cannot run until the episode has been
+permanently closed.
 
 ---
 
@@ -1268,7 +1243,11 @@ The Training Environment:
 * has no Docker socket, public network, VAL, or TEST access;
 * is forcibly terminated by the host Supervisor at lease expiry.
 
-The Eval Environment receives only a read-only candidate and the selected hidden split. It is inaccessible to Agent and Training Containers and returns only benchmark-permitted aggregate metrics.
+The trusted Eval Environment receives only the selected hidden split. A separate
+read-only Candidate Environment receives only the immutable Candidate artifact;
+the two communicate through the restricted inference protocol. Both are
+inaccessible to Agent and Training Containers, and the Evaluator returns only
+benchmark-permitted aggregate metrics.
 
 ---
 
@@ -1409,17 +1388,18 @@ The executable v0 task manifest is JSON and keeps task and track budgets in one 
 
 ```json
 {
-  "task_id": "toy-bigram-v0",
+  "task_id": "tinystories-byte-transformer-mini-v1",
   "paths": {
-    "train": "data",
-    "val": "private/val.json",
-    "test": "private/test.json",
+    "train": "data/train",
+    "val": "data/private/val.json",
+    "test": "data/private/test.json",
     "agent_workspace": "agent"
   },
   "images": {
-    "agent": "python:3.11-slim",
-    "training": "python:3.11-slim",
-    "evaluator": "python:3.11-slim"
+    "agent": "python@sha256:<digest>",
+    "training": "pytorch/pytorch@sha256:<digest>",
+    "candidate": "pytorch/pytorch@sha256:<digest>",
+    "evaluator": "python@sha256:<digest>"
   },
   "agent": {
     "runner": "container",
@@ -1427,20 +1407,25 @@ The executable v0 task manifest is JSON and keeps task and track budgets in one 
     "mode": "sandboxed",
     "environment": []
   },
-  "hardware": { "gpu_count": 0, "gpu_model": null },
-  "track_a": { "total_seconds": 120 },
-  "track_b": { "max_leases": 2, "lease_seconds": 30 },
+  "hardware": { "gpu_count": 1, "gpu_model": "NVIDIA H200" },
+  "track_a": { "total_seconds": 300 },
+  "track_b": { "max_leases": 3, "lease_seconds": 75 },
   "evaluation": {
-    "backend": "insecure_reference",
-    "entrypoint": "../evaluators/insecure_reference/evaluator.py",
+    "backend": "isolated_candidate",
+    "entrypoint": "evaluator/evaluator.py",
     "metric": "autoregressive_nll",
-    "vocab_size": 3,
-    "context_length": 16
+    "vocab_size": 257,
+    "context_length": 128,
+    "batch_size": 64,
+    "device": "cuda",
+    "max_candidate_bytes": 2147483648,
+    "max_candidate_files": 10000
   }
 }
 ```
 
-See `examples/toy/task.json` for the complete runnable manifest. Dataset and hardware selection for the first official release remain intentionally deferred.
+See `examples/mini_lm/task.json` for the complete runnable manifest with exact
+image digests.
 
 ---
 
@@ -1595,11 +1580,15 @@ The repository contains a working v0 local reference prototype with:
 * candidate hashing and immutable snapshots;
 * sandboxed Agent execution with an optional trusted streaming inference sidecar;
 * a generic host CLI runner and a logged-in Codex CLI adapter;
-* example hidden-split lifecycle and post-closure TEST evaluation;
+* isolated hidden-split lifecycle and post-closure TEST evaluation;
 * append-only benchmark, inference, and host-Agent JSONL traces;
-* a deterministic CPU toy task plus a reproducible real-data TinyStories mini benchmark.
+* one reproducible, fixed-hardware TinyStories mini benchmark.
 
-The first official benchmark instance has not been selected. Major remaining release decisions include the real TRAIN/VAL/TEST construction, tokenizer, hardware and budgets, fixed software image, a trusted Evaluator plus isolated Candidate serving protocol, additional inference-provider adapters, synthetic-data policy, and stronger official isolation.
+The comparable mini release fixes its TRAIN/VAL/TEST construction, tokenizer,
+H200 hardware, budgets, software images, and isolated Candidate serving
+protocol. A future long-duration release may scale those fixed concepts, while
+additional inference-provider adapters, synthetic-data policy, and isolation
+beyond the v0 Docker threat model remain open design work.
 
 The v0 prototype is intentionally single-host and resource-allocation agnostic. Users obtain a machine matching the release specification before starting AutoTrain-Bench.
 

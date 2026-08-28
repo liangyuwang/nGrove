@@ -20,6 +20,8 @@ def load(candidate_dir, device):
 
 @torch.inference_mode()
 def next_token_logits(bundle, input_ids):
+    """Return one next-token logit vector for every unpadded input prefix."""
+
     model = bundle["model"]
     device = bundle["device"]
     maximum = max(len(sequence) for sequence in input_ids)
@@ -28,8 +30,7 @@ def next_token_logits(bundle, input_ids):
     padded = torch.zeros((len(input_ids), maximum), dtype=torch.long, device=device)
     for index, sequence in enumerate(input_ids):
         padded[index, : len(sequence)] = torch.tensor(sequence, device=device)
-    logits = model(padded).float().cpu()
-    return [
-        logits[index, : len(sequence)].tolist()
-        for index, sequence in enumerate(input_ids)
-    ]
+    logits = model(padded).float()
+    return torch.stack(
+        [logits[index, len(sequence) - 1] for index, sequence in enumerate(input_ids)]
+    ).cpu()

@@ -1,76 +1,90 @@
-"""Low-cost autonomous baseline for the real-text mini benchmark."""
+"""Deterministic baseline Agent for the comparable mini benchmark."""
+
+import json
+import os
+from pathlib import Path
 
 from autotrain_bench.client import Client
 
 
-def run_experiment(client, index, *, order, smoothing, max_contexts):
-    client.start_lease(seconds=60)
-    candidate_path = f"candidate-{index}"
-    result = client.exec(
-        [
-            "python",
-            "/workspace/train.py",
-            "--order",
-            str(order),
-            "--smoothing",
-            str(smoothing),
-            "--max-contexts",
-            str(max_contexts),
-            "--output",
-            f"/workspace/{candidate_path}",
-        ]
-    )
-    if result["exit_code"] != 0:
-        client.stop_lease()
-        raise RuntimeError(result["stderr"] or "mini LM training failed")
-    committed = client.commit(candidate_path)
-    return {
-        **committed,
-        "order": order,
-        "smoothing": smoothing,
-        "max_contexts": max_contexts,
-    }
-
-
 def main():
     client = Client()
-    candidates = []
+    public_task = json.loads(
+        Path(os.environ["AUTOTRAIN_BENCH_TASK"]).read_text(encoding="utf-8")
+    )
+    evaluation = public_task["evaluation"]
     incumbent = None
+    for index, (width, layers, learning_rate) in enumerate(
+        ((192, 3, 4e-4), (256, 4, 3e-4), (320, 5, 2e-4)), start=1
+    ):
+        status = client.status()
+        if status["status"] != "active":
+            break
+        if status["track"] == "A":
+            remaining = status["remaining_wall_clock_seconds"]
+            if remaining < 55:
+                break
+            requested = int(min(75, remaining - 30))
+        else:
+            if status["leases_remaining"] <= 0:
+                break
+            requested = 75
 
-    def record(candidate):
-        nonlocal incumbent
-        candidates.append(candidate)
+        lease = client.start_lease(requested)
+        output = f"/output/candidate-{index}"
+        result = client.exec(
+            [
+                "python",
+                "/workspace/train.py",
+                "--output",
+                output,
+                "--seconds",
+                str(max(25, int(lease["duration_seconds"]) - 20)),
+                "--context-length",
+                str(evaluation["context_length"]),
+                "--d-model",
+                str(width),
+                "--layers",
+                str(layers),
+                "--heads",
+                "4",
+                "--learning-rate",
+                str(learning_rate),
+            ],
+            timeout_seconds=max(30, lease["duration_seconds"] - 12),
+        )
+        if result["exit_code"] != 0:
+            client.stop_lease()
+            continue
+
+        preflight = client.exec(
+            [
+                "python",
+                "-m",
+                "autotrain_bench.candidate_preflight",
+                "--candidate",
+                output,
+                "--device",
+                evaluation["device"],
+                "--vocab-size",
+                str(evaluation["vocab_size"]),
+                "--context-length",
+                str(evaluation["context_length"]),
+            ],
+            timeout_seconds=10,
+        )
+        if preflight["exit_code"] != 0:
+            client.stop_lease()
+            continue
+
+        candidate = client.commit(output)
         if candidate["val_nll"] is not None and (
             incumbent is None or candidate["val_nll"] < incumbent["val_nll"]
         ):
             client.declare_incumbent(candidate["candidate_id"])
             incumbent = candidate
 
-    record(run_experiment(client, 1, order=2, smoothing=1.0, max_contexts=20_000))
-    record(
-        run_experiment(
-            client, 2, order=3, smoothing=0.25, max_contexts=30_000
-        )
-    )
-
-    valid = [candidate for candidate in candidates if candidate["val_nll"] is not None]
-    if valid and min(valid, key=lambda candidate: candidate["val_nll"])["order"] >= 3:
-        revision = {"order": 4, "smoothing": 0.1, "max_contexts": 40_000}
-    else:
-        revision = {"order": 2, "smoothing": 0.1, "max_contexts": 30_000}
-    record(run_experiment(client, 3, **revision))
-
-    valid = [candidate for candidate in candidates if candidate["val_nll"] is not None]
-    if not valid:
-        client.finish()
-        return
-    best = min(valid, key=lambda candidate: candidate["val_nll"])
-    final = client.finish()
-    print(
-        "selected "
-        f"order={best['order']} smoothing={best['smoothing']} "
-        f"VAL_NLL={best['val_nll']:.6f} TEST_NLL={final['test_nll']:.6f}"
-    )
+    client.finish()
 
 
 if __name__ == "__main__":

@@ -17,12 +17,16 @@ Allowed information and actions:
   python -m autotrain_bench.cli agent lease-start [--seconds N]
   python -m autotrain_bench.cli agent lease-exec [--timeout N] -- <command>
   python -m autotrain_bench.cli agent lease-logs [--limit N]
-  python -m autotrain_bench.cli agent lease-commit <candidate-relative-path>
+  python -m autotrain_bench.cli agent lease-commit /output/<candidate-directory>
   python -m autotrain_bench.cli agent declare-incumbent <candidate-id>
   python -m autotrain_bench.cli agent lease-stop
   python -m autotrain_bench.cli agent finish
 - lease-exec runs inside an isolated Training Container. In that command, the
-  workspace is /workspace and visible training data is /benchmark/train.
+  workspace is /workspace, visible training data is /benchmark/train, and the
+  lease-owned artifact directory is /output. Candidates must be written under
+  /output; the Agent process cannot modify that directory after the lease stops.
+- Before commit, validate the public Candidate ABI inside the active lease with:
+  python -m autotrain_bench.candidate_preflight --candidate /output/<candidate-directory> ...
 - Committing a candidate ends the active lease and produces exactly one aggregate
   VAL result. It does not update the incumbent. After interpreting that result,
   explicitly declare the candidate you would submit if the episode ended now.

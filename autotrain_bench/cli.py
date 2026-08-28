@@ -76,6 +76,7 @@ def command_prepare(args: argparse.Namespace) -> int:
     config = TaskConfig.load(args.task)
     runtime = DockerRuntime()
     runtime.prepare(config, pull_missing=not args.no_pull)
+    runtime_environment = runtime.environment_manifest(config)
     _print(
         {
             "status": "ready",
@@ -89,6 +90,7 @@ def command_prepare(args: argparse.Namespace) -> int:
             "policy_violations": config.policy_violations,
             "evaluator_backend": config.evaluator_backend,
             "inference_enabled": config.inference is not None,
+            "runtime_environment": runtime_environment,
         }
     )
     return 0
@@ -152,6 +154,7 @@ def command_start(args: argparse.Namespace) -> int:
         raise ConfigError(f"agent environment variable is not set: {names}")
     runtime = DockerRuntime()
     runtime.prepare(config, pull_missing=False)
+    runtime_environment = runtime.environment_manifest(config)
     episode_dir = (
         args.episode_dir.resolve()
         if args.episode_dir
@@ -170,6 +173,7 @@ def command_start(args: argparse.Namespace) -> int:
         track=args.track,
         episode_dir=episode_dir,
         runtime=runtime,
+        runtime_environment=runtime_environment,
     )
     runtime_id = uuid.uuid5(uuid.NAMESPACE_URL, str(episode_dir)).hex[:12]
     prefix = f"atb-{runtime_id}"
@@ -439,7 +443,11 @@ def build_parser() -> argparse.ArgumentParser:
     lease_logs.set_defaults(function=command_agent)
 
     lease_commit = agent_subparsers.add_parser("lease-commit")
-    lease_commit.add_argument("candidate")
+    lease_commit.add_argument(
+        "candidate",
+        metavar="/output/CANDIDATE",
+        help="lease-owned Candidate directory produced inside the Training Container",
+    )
     lease_commit.set_defaults(function=command_agent)
 
     declare_incumbent = agent_subparsers.add_parser("declare-incumbent")

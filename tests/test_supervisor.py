@@ -1,4 +1,6 @@
 import json
+import os
+import shutil
 import tempfile
 import threading
 import time
@@ -13,6 +15,7 @@ from autotrain_bench.supervisor import ProtocolError, Supervisor
 
 
 ROOT = Path(__file__).resolve().parents[1]
+TASK = ROOT / "tests/fixtures/task/task.json"
 
 
 class FakeClock:
@@ -34,10 +37,15 @@ class FakeRuntime:
         self.val_nlls = []
 
     def start_training(self, *, name, config, lease_dir):
-        del config, lease_dir
         if self.fail_start:
             self.fail_start = False
             raise RuntimeFailure("simulated infrastructure failure")
+        output = lease_dir / "output" / "candidate"
+        output.mkdir(parents=True)
+        shutil.copy2(
+            config.agent_workspace / "candidate/candidate.py",
+            output / "candidate.py",
+        )
         self.running.add(name)
 
     def exec_training(self, *, name, argv, timeout_seconds):
@@ -75,7 +83,7 @@ class SupervisorTests(unittest.TestCase):
             "def next_token_logits(model, input_ids): return []\n",
             encoding="utf-8",
         )
-        base = TaskConfig.load(ROOT / "examples/toy/task.json")
+        base = TaskConfig.load(TASK)
         self.config = replace(base, agent_workspace=workspace)
         self.workspace = workspace
         self.runtime = FakeRuntime()
@@ -101,16 +109,13 @@ class SupervisorTests(unittest.TestCase):
         supervisor = self.supervisor()
         self.assertEqual(supervisor.state["agent_system"]["network"], "disabled")
         self.assertTrue(supervisor.state["agent_system"]["policy_compliant"])
-        self.assertFalse(supervisor.state["policy_compliant"])
-        self.assertEqual(
-            supervisor.state["policy_violations"],
-            ["insecure_reference_evaluator"],
-        )
+        self.assertTrue(supervisor.state["policy_compliant"])
+        self.assertEqual(supervisor.state["policy_violations"], [])
         self.assertEqual(
             supervisor.state["evaluation_system"]["backend"],
-            "insecure_reference",
+            "isolated_candidate",
         )
-        self.assertFalse(
+        self.assertTrue(
             supervisor.state["evaluation_system"]["policy_compliant"]
         )
         self.assertEqual(
@@ -120,7 +125,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(lease["lease_id"], "lease-0001")
         command = supervisor.exec_lease(["python", "train.py"])
         self.assertEqual(command["exit_code"], 0)
-        committed = supervisor.commit_lease("candidate")
+        committed = supervisor.commit_lease("/output/candidate")
         self.assertEqual(committed["val_nll"], 1.25)
         self.assertIsNone(supervisor.state["active_lease"])
         self.assertIsNone(supervisor.state["incumbent_id"])
@@ -128,7 +133,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(declared["incumbent_id"], committed["candidate_id"])
 
         with self.assertRaises(ProtocolError):
-            supervisor.commit_lease("candidate")
+            supervisor.commit_lease("/output/candidate")
 
         supervisor.start_lease()
         supervisor.stop_lease()
@@ -170,6 +175,59 @@ class SupervisorTests(unittest.TestCase):
         supervisor.start_lease()
         self.assertEqual(supervisor.state["leases_used"], 1)
 
+    def test_commit_accepts_only_stopped_lease_output(self):
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+        with self.assertRaises(ProtocolError) as caught:
+            supervisor.commit_lease("/workspace/candidate")
+        self.assertEqual(caught.exception.code, "invalid_candidate")
+        self.assertIsNone(supervisor.state["active_lease"])
+        self.assertEqual(supervisor.state["candidates"], {})
+
+    def test_candidate_output_symlink_is_rejected_after_lease_stop(self):
+        supervisor = self.supervisor()
+        lease = supervisor.start_lease()
+        candidate = (
+            supervisor.runs_dir / lease["lease_id"] / "output" / "candidate"
+        )
+        (candidate / "candidate.py").unlink()
+        (candidate / "candidate.py").symlink_to(self.config.val_path)
+        with self.assertRaises(ProtocolError) as caught:
+            supervisor.commit_lease("/output/candidate")
+        self.assertEqual(caught.exception.code, "invalid_candidate")
+        self.assertIsNone(supervisor.state["active_lease"])
+
+    def test_candidate_output_hard_link_is_rejected_after_lease_stop(self):
+        supervisor = self.supervisor()
+        lease = supervisor.start_lease()
+        candidate_file = (
+            supervisor.runs_dir
+            / lease["lease_id"]
+            / "output/candidate/candidate.py"
+        )
+        candidate_file.unlink()
+        os.link(self.workspace / "candidate/candidate.py", candidate_file)
+        with self.assertRaises(ProtocolError) as caught:
+            supervisor.commit_lease("/output/candidate")
+        self.assertEqual(caught.exception.code, "invalid_candidate")
+        self.assertIsNone(supervisor.state["active_lease"])
+
+    def test_timing_report_separates_lease_use_and_unused_track_a_budget(self):
+        supervisor = self.supervisor(
+            track="A", config=replace(self.config, track_a_total_seconds=100)
+        )
+        supervisor.start_lease(10)
+        self.clock.advance(3)
+        candidate = supervisor.commit_lease("/output/candidate")
+        supervisor.declare_incumbent(candidate["candidate_id"])
+        final = supervisor.finish()
+        timing = final["timing"]
+        self.assertEqual(timing["official_elapsed_seconds"], 3.0)
+        self.assertEqual(timing["training_lease_seconds"], 3.0)
+        self.assertEqual(timing["validation_evaluation_seconds"], 0.0)
+        self.assertEqual(timing["agent_and_runtime_seconds"], 0.0)
+        self.assertEqual(timing["unused_budget_seconds"], 97.0)
+
     def test_track_a_deadline_revokes_lease_and_closes_episode(self):
         config = replace(self.config, track_a_total_seconds=5)
         supervisor = self.supervisor(track="A", config=config)
@@ -190,7 +248,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(unknown.exception.code, "unknown_candidate")
 
         supervisor.start_lease(10)
-        first = supervisor.commit_lease("candidate")
+        first = supervisor.commit_lease("/output/candidate")
         self.assertIsNone(supervisor.state["incumbent_id"])
         supervisor.declare_incumbent(first["candidate_id"])
 
@@ -201,7 +259,7 @@ class SupervisorTests(unittest.TestCase):
             encoding="utf-8",
         )
         supervisor.start_lease(10)
-        later = supervisor.commit_lease("candidate")
+        later = supervisor.commit_lease("/output/candidate")
         self.assertNotEqual(first["candidate_id"], later["candidate_id"])
         self.assertEqual(supervisor.state["incumbent_id"], first["candidate_id"])
 
@@ -231,6 +289,18 @@ class SupervisorTests(unittest.TestCase):
         serialized = json.dumps(result)
         self.assertNotIn(str(self.config.val_path), serialized)
         self.assertNotIn(str(self.config.test_path), serialized)
+
+    def test_mailbox_rejects_agent_created_request_symlinks(self):
+        supervisor = self.supervisor()
+        request = supervisor.inbox / "attack.json"
+        request.symlink_to(supervisor.state_path)
+        self.assertTrue(supervisor.process_one_request())
+        response = json.loads(
+            (supervisor.outbox / "attack.json").read_text(encoding="utf-8")
+        )
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error"]["code"], "invalid_request")
+        self.assertTrue(supervisor.state_path.is_file())
 
     def test_host_cli_runner_is_recorded_as_non_compliant(self):
         config = replace(
@@ -269,9 +339,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(status["agent_drain_seconds"], 2.5)
         self.assertFalse(status["policy_compliant"])
         self.assertIn("agent_execution_boundary", status["policy_violations"])
-        self.assertIn(
-            "insecure_reference_evaluator", status["policy_violations"]
-        )
+        self.assertEqual(status["policy_violations"], ["agent_execution_boundary"])
 
     def test_registered_inference_usage_is_summarized_from_trusted_trace(self):
         inference = InferenceConfig(

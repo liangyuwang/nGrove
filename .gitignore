@@ -4,7 +4,5 @@ __pycache__/
 *.egg-info/
 .coverage
 .pytest_cache/
-examples/toy/agent/candidate-*/
 examples/mini_lm/agent/candidate-*/
 examples/mini_lm/data/
-examples/gpu_lm/agent/candidate-*/

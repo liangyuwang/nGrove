@@ -8,11 +8,12 @@ from autotrain_bench.config import ConfigError, TaskConfig
 
 
 ROOT = Path(__file__).resolve().parents[1]
+TASK = ROOT / "tests/fixtures/task/task.json"
 
 
 class ConfigTests(unittest.TestCase):
     def test_public_manifest_hides_private_splits(self):
-        config = TaskConfig.load(ROOT / "examples/toy/task.json")
+        config = TaskConfig.load(TASK)
         serialized = json.dumps(config.public_manifest("B"))
         self.assertNotIn(str(config.val_path), serialized)
         self.assertNotIn(str(config.test_path), serialized)
@@ -32,21 +33,26 @@ class ConfigTests(unittest.TestCase):
             config.public_manifest("B")["agent_environment"]["workspace_scope"],
             "episode_copy",
         )
-        self.assertEqual(config.evaluator_batch_size, 1)
+        self.assertEqual(config.evaluator_batch_size, 2)
         self.assertEqual(config.evaluator_device, "cpu")
-        self.assertEqual(config.evaluator_backend, "insecure_reference")
+        self.assertEqual(config.evaluator_backend, "isolated_candidate")
         self.assertTrue(config.agent_policy_compliant)
-        self.assertFalse(config.evaluator_policy_compliant)
-        self.assertFalse(config.policy_compliant)
-        self.assertEqual(
-            config.policy_violations, ["insecure_reference_evaluator"]
-        )
-        self.assertFalse(
+        self.assertTrue(config.evaluator_policy_compliant)
+        self.assertTrue(config.policy_compliant)
+        self.assertEqual(config.policy_violations, [])
+        self.assertTrue(
             config.public_manifest("B")["evaluation"]["policy_compliant"]
         )
+        boundary = config.public_manifest("B")["evaluation"]["candidate_boundary"]
+        self.assertEqual(boundary["hidden_data_mount"], "none")
+        self.assertEqual(boundary["network"], "ephemeral_internal_only")
+        limits = config.public_manifest("B")["evaluation"][
+            "candidate_artifact_limits"
+        ]
+        self.assertEqual(limits, {"max_bytes": 1048576, "max_files": 100})
 
     def _write_task(self, directory, *, mode="sandboxed", environment=None, inference=None):
-        source = ROOT / "examples/toy/task.json"
+        source = TASK
         payload = json.loads(source.read_text(encoding="utf-8"))
         base = source.parent
         for key, value in payload["paths"].items():
@@ -88,7 +94,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_host_cli_runner_is_distinct_from_container_inference(self):
         with tempfile.TemporaryDirectory() as directory:
-            source = ROOT / "examples/toy/task.json"
+            source = TASK
             payload = json.loads(source.read_text(encoding="utf-8"))
             base = source.parent
             for key, value in payload["paths"].items():
@@ -202,7 +208,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_legacy_network_configuration_migrates(self):
         with tempfile.TemporaryDirectory() as directory:
-            source = ROOT / "examples/toy/task.json"
+            source = TASK
             payload = json.loads(source.read_text(encoding="utf-8"))
             base = source.parent
             for key, value in payload["paths"].items():

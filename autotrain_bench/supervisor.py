@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import threading
 import time
 import uuid
@@ -26,6 +27,56 @@ class ProtocolError(RuntimeError):
         self.code = code
 
 
+def _read_untrusted_request(path: Path, maximum_bytes: int) -> Dict[str, Any]:
+    """Read one mailbox request without following Agent-created filesystem links."""
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(str(path), flags)
+    except OSError as exc:
+        raise ProtocolError("invalid_request", "request must be a regular file") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ProtocolError("invalid_request", "request must be a regular file")
+        if metadata.st_size > maximum_bytes:
+            raise ProtocolError("request_too_large", "request exceeds 1 MiB")
+        with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+            descriptor = -1
+            payload = json.load(stream)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if not isinstance(payload, dict):
+        raise ProtocolError("invalid_request", "request must be an object")
+    return payload
+
+
+def _write_untrusted_response(directory: Path, request_id: str, response: Dict[str, Any]) -> None:
+    """Publish a mailbox response without following Agent-created symlinks."""
+
+    temporary = directory / f".{request_id}.{uuid.uuid4().hex}.tmp"
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open(str(temporary), flags, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            descriptor = -1
+            json.dump(response, stream, sort_keys=True)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    try:
+        os.replace(str(temporary), str(directory / f"{request_id}.json"))
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 class Supervisor:
     """Own timers, lease counters, container lifecycle, and evaluator access."""
 
@@ -36,6 +87,7 @@ class Supervisor:
         track: str,
         episode_dir: Path,
         runtime: Any,
+        runtime_environment: Optional[Dict[str, Any]] = None,
         monotonic: Callable[[], float] = time.monotonic,
         wall_time: Callable[[], float] = time.time,
     ) -> None:
@@ -119,11 +171,19 @@ class Supervisor:
             "evaluation_system": {
                 "backend": config.evaluator_backend,
                 "image": config.evaluator_image,
+                "candidate_image": config.candidate_image,
+                "boundary": "isolated_candidate_container",
                 "policy_compliant": config.evaluator_policy_compliant,
             },
+            "runtime_environment": dict(runtime_environment or {}),
             "status": "created",
             "started_at": None,
             "elapsed_seconds": 0.0,
+            "timing": {
+                "training_lease_seconds": 0.0,
+                "validation_evaluation_seconds": 0.0,
+                "test_evaluation_seconds": 0.0,
+            },
             "lease_serial": 0,
             "leases_used": 0,
             "active_lease": None,
@@ -180,6 +240,35 @@ class Supervisor:
     def _track_a_remaining(self) -> float:
         return max(0.0, self.config.track_a_total_seconds - self._elapsed())
 
+    def _timing_summary(self) -> Dict[str, Any]:
+        elapsed = self._elapsed()
+        lease_seconds = float(self.state["timing"]["training_lease_seconds"])
+        active = self.state.get("active_lease")
+        if active:
+            lease_seconds += min(
+                active["duration_seconds"],
+                max(0.0, self.monotonic() - active["started_monotonic"]),
+            )
+        validation_seconds = float(
+            self.state["timing"]["validation_evaluation_seconds"]
+        )
+        result: Dict[str, Any] = {
+            "official_elapsed_seconds": round(elapsed, 6),
+            "training_lease_seconds": round(lease_seconds, 6),
+            "validation_evaluation_seconds": round(validation_seconds, 6),
+            "agent_and_runtime_seconds": round(
+                max(0.0, elapsed - lease_seconds - validation_seconds), 6
+            ),
+            "test_evaluation_seconds": round(
+                float(self.state["timing"]["test_evaluation_seconds"]), 6
+            ),
+        }
+        if self.track == "A":
+            result["unused_budget_seconds"] = round(
+                max(0.0, self.config.track_a_total_seconds - elapsed), 6
+            )
+        return result
+
     def _event(self, event_type: str, **data: Any) -> None:
         self.sequence += 1
         event = {
@@ -193,6 +282,7 @@ class Supervisor:
 
     def _save_state(self) -> None:
         self.state["elapsed_seconds"] = round(self._elapsed(), 6)
+        self.state["timing_summary"] = self._timing_summary()
         temporary = self.state_path.with_suffix(".json.tmp")
         temporary.write_text(
             json.dumps(self.state, indent=2, sort_keys=True) + "\n",
@@ -245,6 +335,7 @@ class Supervisor:
                 "agent_drain_seconds": self.state["agent_system"]["drain_seconds"],
                 "status": self.state["status"],
                 "elapsed_seconds": round(self._elapsed(), 3),
+                "timing": self._timing_summary(),
                 "leases_used": self.state["leases_used"],
                 "active_lease": None,
                 "incumbent_id": self.state["incumbent_id"],
@@ -447,11 +538,22 @@ class Supervisor:
         active = self.state.get("active_lease")
         if not active:
             return None
+        ended = self.monotonic()
+        used_seconds = min(
+            active["duration_seconds"],
+            max(0.0, ended - active["started_monotonic"]),
+        )
         self.runtime.stop_container(active["container_name"])
         lease_id = active["lease_id"]
+        self.state["timing"]["training_lease_seconds"] += used_seconds
         self.state["active_lease"] = None
         self.state["last_lease_id"] = lease_id
-        self._event("LEASE_ENDED", lease_id=lease_id, reason=reason)
+        self._event(
+            "LEASE_ENDED",
+            lease_id=lease_id,
+            reason=reason,
+            used_seconds=round(used_seconds, 6),
+        )
         self._save_state()
         return lease_id
 
@@ -462,37 +564,61 @@ class Supervisor:
             self._end_active_lease("agent_stopped_without_candidate")
             return {"lease_id": lease_id, "candidate_id": None, "val_nll": None}
 
-    def _candidate_source(self, candidate_path: Any) -> Path:
+    def _candidate_source(self, candidate_path: Any, lease_id: str) -> Path:
         if not isinstance(candidate_path, str) or not candidate_path:
             raise ProtocolError("invalid_candidate", "candidate path is required")
-        if candidate_path == "/workspace":
-            source = self.config.agent_workspace
-        elif candidate_path.startswith("/workspace/"):
-            source = self.config.agent_workspace / candidate_path[len("/workspace/") :]
+        output_root = (self.runs_dir / lease_id / "output").resolve()
+        if candidate_path == "/output":
+            source = output_root
+        elif candidate_path.startswith("/output/"):
+            source = output_root / candidate_path[len("/output/") :]
         else:
-            raw = Path(candidate_path)
-            if raw.is_absolute():
-                raise ProtocolError(
-                    "invalid_candidate", "candidate must be inside /workspace"
-                )
-            source = self.config.agent_workspace / raw
+            raise ProtocolError(
+                "invalid_candidate",
+                "candidate must be an absolute path inside /output",
+            )
         if source.is_symlink():
             raise ProtocolError("invalid_candidate", "candidate may not be a symlink")
         resolved = source.resolve()
         try:
-            resolved.relative_to(self.config.agent_workspace.resolve())
+            resolved.relative_to(output_root)
         except ValueError as exc:
             raise ProtocolError(
-                "invalid_candidate", "candidate escapes the agent workspace"
+                "invalid_candidate", "candidate escapes the lease output directory"
             ) from exc
         if not resolved.is_dir():
             raise ProtocolError(
                 "invalid_candidate", f"candidate directory does not exist: {candidate_path}"
             )
+        file_count = 0
+        total_bytes = 0
         for item in resolved.rglob("*"):
             if item.is_symlink():
                 raise ProtocolError(
                     "invalid_candidate", "candidate bundles may not contain symlinks"
+                )
+            metadata = item.lstat()
+            if stat.S_ISDIR(metadata.st_mode):
+                continue
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ProtocolError(
+                    "invalid_candidate",
+                    "candidate bundles may contain only directories and regular files",
+                )
+            if metadata.st_nlink != 1:
+                raise ProtocolError(
+                    "invalid_candidate",
+                    "candidate bundle files may not be hard-linked",
+                )
+            file_count += 1
+            total_bytes += metadata.st_size
+            if (
+                file_count > self.config.candidate_max_files
+                or total_bytes > self.config.candidate_max_bytes
+            ):
+                raise ProtocolError(
+                    "invalid_candidate",
+                    "candidate bundle exceeds the mini benchmark artifact limit",
                 )
         if not (resolved / "candidate.py").is_file():
             raise ProtocolError(
@@ -539,10 +665,20 @@ class Supervisor:
         with self.lock:
             self._require_active()
             active = self._active_lease()
-            source = self._candidate_source(candidate_path)
-            snapshot = self._snapshot_candidate(source)
             lease_id = active["lease_id"]
-            self._end_active_lease("candidate_committed")
+            self._end_active_lease("candidate_commit_requested")
+            try:
+                source = self._candidate_source(candidate_path, lease_id)
+                snapshot = self._snapshot_candidate(source)
+            except ProtocolError as exc:
+                self._event(
+                    "CANDIDATE_REJECTED",
+                    lease_id=lease_id,
+                    code=exc.code,
+                    message=str(exc),
+                )
+                self._save_state()
+                raise
             candidate_id = snapshot["candidate_id"]
             metadata = {
                 "candidate_id": candidate_id,
@@ -556,6 +692,7 @@ class Supervisor:
                 lease_id=lease_id,
                 candidate_id=candidate_id,
             )
+            evaluation_started = self.monotonic()
             try:
                 val_nll = self.runtime.run_evaluator(
                     config=self.config,
@@ -576,6 +713,13 @@ class Supervisor:
                     candidate_id=candidate_id,
                     message=str(exc),
                 )
+            finally:
+                evaluation_seconds = max(
+                    0.0, self.monotonic() - evaluation_started
+                )
+                self.state["timing"][
+                    "validation_evaluation_seconds"
+                ] += evaluation_seconds
             self._save_state()
             return dict(metadata)
 
@@ -684,6 +828,8 @@ class Supervisor:
 
         digest = candidate_id.split(":", 1)[1]
         candidate_dir = self.candidates_dir / digest
+        evaluation_started = self.monotonic()
+        test_nll: Optional[float] = None
         try:
             test_nll = self.runtime.run_evaluator(
                 config=self.config,
@@ -698,6 +844,12 @@ class Supervisor:
                 candidate_id=candidate_id,
                 message=str(exc),
             )
+        finally:
+            self.state["timing"]["test_evaluation_seconds"] += max(
+                0.0, self.monotonic() - evaluation_started
+            )
+
+        if test_nll is None:
             self._save_state()
             return self.public_status()
 
@@ -758,11 +910,7 @@ class Supervisor:
         request_path = paths[0]
         request_id = request_path.stem
         try:
-            if request_path.stat().st_size > 1024 * 1024:
-                raise ProtocolError("request_too_large", "request exceeds 1 MiB")
-            request = json.loads(request_path.read_text(encoding="utf-8"))
-            if not isinstance(request, dict):
-                raise ProtocolError("invalid_request", "request must be an object")
+            request = _read_untrusted_request(request_path, 1024 * 1024)
             result = self.handle(request)
             response = {"ok": True, "result": result}
         except ProtocolError as exc:
@@ -785,8 +933,5 @@ class Supervisor:
         finally:
             request_path.unlink(missing_ok=True)
 
-        temporary = self.outbox / f".{request_id}.tmp"
-        destination = self.outbox / f"{request_id}.json"
-        temporary.write_text(json.dumps(response, sort_keys=True), encoding="utf-8")
-        os.replace(str(temporary), str(destination))
+        _write_untrusted_response(self.outbox, request_id, response)
         return True

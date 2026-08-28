@@ -1,82 +1,140 @@
-"""Train a sparse byte n-gram language model on the visible TinyStories split."""
+"""Train the starter Transformer inside one GPU Training Lease."""
 
 import argparse
 import json
 import shutil
-from collections import defaultdict
+import time
 from pathlib import Path
 
+import torch
+from torch.nn import functional as F
 
-VOCAB_SIZE = 257
+from model import ByteTransformer
 
 
-def _context_key(context):
-    return ",".join(str(token) for token in context)
+def load_rows(path, context_length):
+    sequences = json.loads(Path(path).read_text(encoding="utf-8"))["sequences"]
+    rows = [row[: context_length + 1] for row in sequences if len(row) > context_length]
+    if len(rows) < 40:
+        raise RuntimeError("training split has too few full context windows")
+    return torch.tensor(rows, dtype=torch.long)
+
+
+@torch.inference_mode()
+def local_validation_loss(model, rows):
+    model.eval()
+    losses = []
+    for start in range(0, len(rows), 64):
+        batch = rows[start : start + 64]
+        inputs, targets = batch[:, :-1], batch[:, 1:]
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            logits = model(inputs)
+            loss = F.cross_entropy(
+                logits.reshape(-1, logits.shape[-1]), targets.reshape(-1)
+            )
+        losses.append(loss.float())
+    model.train()
+    return float(torch.stack(losses).mean())
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--order", type=int, required=True)
-    parser.add_argument("--smoothing", type=float, required=True)
-    parser.add_argument("--max-contexts", type=int, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--seconds", type=float, default=55)
+    parser.add_argument("--context-length", type=int, required=True)
+    parser.add_argument("--d-model", type=int, default=256)
+    parser.add_argument("--layers", type=int, default=4)
+    parser.add_argument("--heads", type=int, default=4)
+    parser.add_argument("--dropout", type=float, default=0.0)
+    parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument("--learning-rate", type=float, default=3e-4)
+    parser.add_argument("--weight-decay", type=float, default=0.1)
+    parser.add_argument("--seed", type=int, default=1337)
     args = parser.parse_args()
-    if not 1 <= args.order <= 5:
-        raise ValueError("order must be between 1 and 5")
-    if args.smoothing <= 0:
-        raise ValueError("smoothing must be positive")
-    if args.max_contexts <= 0:
-        raise ValueError("max-contexts must be positive")
+    if args.d_model % args.heads:
+        raise ValueError("d-model must be divisible by heads")
+    if args.seconds <= 15:
+        raise ValueError("seconds must leave enough time to save a candidate")
 
-    train_path = Path("/benchmark/train/train.json")
-    sequences = json.loads(train_path.read_text(encoding="utf-8"))["sequences"]
-    tables = [defaultdict(dict) for _ in range(args.order)]
-    targets = 0
-    for sequence in sequences:
-        for position in range(1, len(sequence)):
-            target = sequence[position]
-            targets += 1
-            for width in range(min(args.order - 1, position) + 1):
-                context = tuple(sequence[position - width : position]) if width else ()
-                counts = tables[width][context]
-                counts[target] = counts.get(target, 0) + 1
-
-    serialized_tables = []
-    for width, table in enumerate(tables):
-        items = list(table.items())
-        if width >= 2 and len(items) > args.max_contexts:
-            items.sort(key=lambda item: (-sum(item[1].values()), item[0]))
-            items = items[: args.max_contexts]
-        items.sort(key=lambda item: item[0])
-        serialized_tables.append(
-            {
-                _context_key(context): sorted(counts.items())
-                for context, counts in items
-            }
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+    torch.set_float32_matmul_precision("high")
+    device = torch.device("cuda")
+    rows = load_rows("/benchmark/train/train.json", args.context_length)
+    local_val = rows[::20].to(device)
+    train_rows = torch.cat([rows[offset::20] for offset in range(1, 20)]).to(device)
+    config = {
+        "vocab_size": 257,
+        "context_length": args.context_length,
+        "d_model": args.d_model,
+        "n_layers": args.layers,
+        "n_heads": args.heads,
+        "dropout": args.dropout,
+    }
+    model = ByteTransformer(config).to(device)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=args.learning_rate,
+        weight_decay=args.weight_decay,
+        fused=True,
+    )
+    deadline = time.monotonic() + args.seconds - 8
+    best_loss = local_validation_loss(model, local_val)
+    best_state = {
+        key: value.detach().clone() for key, value in model.state_dict().items()
+    }
+    step = 0
+    tokens = 0
+    started = time.monotonic()
+    while time.monotonic() < deadline:
+        indices = torch.randint(
+            train_rows.shape[0], (args.batch_size,), device=device
         )
+        batch = train_rows[indices]
+        inputs, targets = batch[:, :-1], batch[:, 1:]
+        optimizer.zero_grad(set_to_none=True)
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            logits = model(inputs)
+            loss = F.cross_entropy(
+                logits.reshape(-1, logits.shape[-1]), targets.reshape(-1)
+            )
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        optimizer.step()
+        step += 1
+        tokens += inputs.numel()
+        if step % 50 == 0:
+            validation_loss = local_validation_loss(model, local_val)
+            if validation_loss < best_loss:
+                best_loss = validation_loss
+                best_state = {
+                    key: value.detach().clone()
+                    for key, value in model.state_dict().items()
+                }
+            if step == 50 or step % 250 == 0:
+                elapsed = time.monotonic() - started
+                print(
+                    f"step={step} train_loss={float(loss.detach()):.6f} "
+                    f"local_val_nll={validation_loss:.6f} "
+                    f"tokens_per_second={tokens / max(elapsed, 1e-6):.0f}",
+                    flush=True,
+                )
 
+    model.load_state_dict(best_state)
     if args.output.exists():
         shutil.rmtree(args.output)
     args.output.mkdir(parents=True)
-    model = {
-        "type": "sparse_byte_ngram",
-        "vocab_size": VOCAB_SIZE,
-        "order": args.order,
-        "smoothing": args.smoothing,
-        "training_targets": targets,
-        "contexts_per_width": [len(table) for table in serialized_tables],
-        "tables": serialized_tables,
-    }
-    (args.output / "model.json").write_text(
-        json.dumps(model, separators=(",", ":")) + "\n",
-        encoding="utf-8",
+    torch.save(model.state_dict(), args.output / "model.pt")
+    (args.output / "config.json").write_text(
+        json.dumps(config, sort_keys=True) + "\n", encoding="utf-8"
     )
-    shutil.copy2(
-        Path("/workspace/candidate_template.py"), args.output / "candidate.py"
-    )
+    shutil.copy2(Path("/workspace/model.py"), args.output / "model.py")
+    shutil.copy2(Path("/workspace/candidate.py"), args.output / "candidate.py")
+    elapsed = time.monotonic() - started
     print(
-        f"trained order={args.order} targets={targets} "
-        f"contexts={model['contexts_per_width']}"
+        f"saved={args.output} steps={step} tokens={tokens} elapsed={elapsed:.2f} "
+        f"best_local_val_nll={best_loss:.6f}",
+        flush=True,
     )
 
 
