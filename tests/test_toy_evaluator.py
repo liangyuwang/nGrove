@@ -37,7 +37,43 @@ class ToyEvaluatorTests(unittest.TestCase):
             )
             self.assertAlmostEqual(loss, math.log(3), places=7)
 
+    def test_prefixes_are_batched_without_exposing_future_tokens(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            candidate = root / "candidate"
+            candidate.mkdir()
+            (candidate / "candidate.py").write_text(
+                """import json
+from pathlib import Path
+
+def load(candidate_dir, device):
+    return {"root": Path(candidate_dir), "device": device}
+
+def next_token_logits(model, input_ids):
+    path = model["root"] / "calls.jsonl"
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({"device": model["device"], "prefixes": input_ids}) + "\\n")
+    return [[[[0.0, 0.0, 0.0] for _ in prefix][index] for index in range(len(prefix))] for prefix in input_ids]
+""",
+                encoding="utf-8",
+            )
+            data = root / "data.json"
+            data.write_text(
+                json.dumps({"sequences": [[0, 1, 2, 0], [2, 1, 0, 2]]}),
+                encoding="utf-8",
+            )
+
+            loss = evaluate(candidate, data, vocab_size=3, batch_size=3, device="cpu")
+
+            self.assertAlmostEqual(loss, math.log(3), places=7)
+            calls = [
+                json.loads(line)
+                for line in (candidate / "calls.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual([len(call["prefixes"]) for call in calls], [3, 3])
+            self.assertTrue(all(call["device"] == "cpu" for call in calls))
+            self.assertEqual(calls[0]["prefixes"], [[0], [0, 1], [0, 1, 2]])
+
 
 if __name__ == "__main__":
     unittest.main()
-

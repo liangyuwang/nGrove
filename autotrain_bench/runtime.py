@@ -495,7 +495,13 @@ class DockerRuntime:
             f"/output/{split}.json",
             "--vocab-size",
             str(config.vocab_size),
+            "--batch-size",
+            str(config.evaluator_batch_size),
+            "--device",
+            config.evaluator_device,
         ]
+        if config.evaluator_device == "cuda":
+            args[1:1] = ["--gpus", str(config.gpu_count)]
         try:
             self._run(args, timeout=config.evaluator_timeout_seconds)
         except RuntimeFailure:

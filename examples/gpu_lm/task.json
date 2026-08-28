@@ -1,0 +1,46 @@
+{
+  "task_id": "tinystories-byte-transformer-gpu-smoke-v0",
+  "paths": {
+    "train": "../mini_lm/data/train",
+    "val": "../mini_lm/data/private/val.json",
+    "test": "../mini_lm/data/private/test.json",
+    "agent_workspace": "agent"
+  },
+  "images": {
+    "agent": "python@sha256:1042b61448fef4ba92d16a8c7eb4996d027568ce64792a7877fd88511e0af7c6",
+    "training": "pytorch/pytorch@sha256:c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2",
+    "evaluator": "pytorch/pytorch@sha256:c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2",
+    "inference_gateway": "python@sha256:1042b61448fef4ba92d16a8c7eb4996d027568ce64792a7877fd88511e0af7c6"
+  },
+  "agent": {
+    "runner": "container",
+    "command": [
+      "python",
+      "/workspace/agent.py"
+    ],
+    "environment": [],
+    "mode": "sandboxed",
+    "inference": {
+      "enabled": false
+    }
+  },
+  "hardware": {
+    "gpu_count": 1,
+    "gpu_model": null
+  },
+  "evaluation": {
+    "metric": "autoregressive_nll",
+    "vocab_size": 257,
+    "context_length": 128,
+    "batch_size": 64,
+    "device": "cuda",
+    "timeout_seconds": 240
+  },
+  "track_a": {
+    "total_seconds": 600
+  },
+  "track_b": {
+    "max_leases": 3,
+    "lease_seconds": 180
+  }
+}

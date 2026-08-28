@@ -111,6 +111,20 @@ tokenizer, hidden 8K-token VAL/TEST splits, pinned container images, and three
 validation-guided training leases. See `examples/mini_lm/README.md` for the full
 official-to-mini mapping and reproducibility details.
 
+For a single-GPU rehearsal, `examples/gpu_lm` replaces the n-gram starter with a
+small PyTorch causal Transformer while retaining the same fixed TinyStories
+data and protocol. After obtaining a machine where Docker can access one
+compatible NVIDIA GPU, run:
+
+```bash
+python3 examples/mini_lm/prepare_data.py
+autotrain-bench prepare --task examples/gpu_lm/task.json
+autotrain-bench start --task examples/gpu_lm/task.json --track B
+```
+
+Machine allocation remains outside AutoTrain-Bench. The task uses the same
+single-host Docker reference runtime and isolation contract as other tasks.
+
 A participant Agent Container can be selected without changing the benchmark task:
 
 ```bash

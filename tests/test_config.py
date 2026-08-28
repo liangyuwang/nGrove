@@ -32,6 +32,8 @@ class ConfigTests(unittest.TestCase):
             config.public_manifest("B")["agent_environment"]["workspace_scope"],
             "episode_copy",
         )
+        self.assertEqual(config.evaluator_batch_size, 1)
+        self.assertEqual(config.evaluator_device, "cpu")
 
     def _write_task(self, directory, *, mode="sandboxed", environment=None, inference=None):
         source = ROOT / "examples/toy/task.json"
@@ -161,6 +163,24 @@ class ConfigTests(unittest.TestCase):
             config = TaskConfig.load(task)
             self.assertIsNotNone(config.inference)
             self.assertIsNone(config.inference.api_key_env)
+
+    def test_gpu_evaluator_settings_are_public_and_validated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = self._write_task(directory)
+            payload = json.loads(task.read_text(encoding="utf-8"))
+            payload["hardware"] = {"gpu_count": 1, "gpu_model": None}
+            payload["evaluation"]["batch_size"] = 64
+            payload["evaluation"]["device"] = "cuda"
+            task.write_text(json.dumps(payload), encoding="utf-8")
+            config = TaskConfig.load(task)
+            evaluation = config.public_manifest("A")["evaluation"]
+            self.assertEqual(evaluation["batch_size"], 64)
+            self.assertEqual(evaluation["device"], "cuda")
+
+            with self.assertRaises(ConfigError):
+                replace(config, gpu_count=0, gpu_model=None).validate()
+            with self.assertRaises(ConfigError):
+                replace(config, evaluator_device="mps").validate()
 
     def test_legacy_network_configuration_migrates(self):
         with tempfile.TemporaryDirectory() as directory:

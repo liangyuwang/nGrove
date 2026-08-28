@@ -20,7 +20,7 @@ class EvaluationError(RuntimeError):
     pass
 
 
-def _load_candidate(candidate_dir: Path) -> Any:
+def _load_candidate(candidate_dir: Path, device: str) -> Any:
     module_path = candidate_dir / "candidate.py"
     if not module_path.is_file():
         raise EvaluationError("candidate.py is missing")
@@ -36,7 +36,7 @@ def _load_candidate(candidate_dir: Path) -> Any:
         raise EvaluationError(
             "candidate.py must define next_token_logits(model, input_ids)"
         )
-    model = module.load(candidate_dir, "cpu")
+    model = module.load(candidate_dir, device)
     return module, model
 
 
@@ -63,9 +63,11 @@ def _sequences(data_path: Path, vocab_size: int) -> List[List[int]]:
     return result
 
 
-def _last_logits(value: Any, prefix_length: int, vocab_size: int) -> Sequence[float]:
+def _last_logits(
+    value: Any, batch_index: int, prefix_length: int, vocab_size: int
+) -> Sequence[float]:
     try:
-        row = value[0][prefix_length - 1]
+        row = value[batch_index][prefix_length - 1]
     except (IndexError, KeyError, TypeError) as exc:
         raise EvaluationError(
             "next_token_logits must return [batch, sequence, vocabulary]"
@@ -81,21 +83,45 @@ def _last_logits(value: Any, prefix_length: int, vocab_size: int) -> Sequence[fl
     return logits
 
 
-def evaluate(candidate_dir: Path, data_path: Path, vocab_size: int) -> float:
-    module, model = _load_candidate(candidate_dir)
+def evaluate(
+    candidate_dir: Path,
+    data_path: Path,
+    vocab_size: int,
+    *,
+    batch_size: int = 1,
+    device: str = "cpu",
+) -> float:
+    if batch_size <= 0:
+        raise EvaluationError("batch size must be positive")
+    module, model = _load_candidate(candidate_dir, device)
     total_nll = 0.0
     token_count = 0
-    for sequence in _sequences(data_path, vocab_size):
-        for position in range(1, len(sequence)):
-            prefix = sequence[:position]
-            output = module.next_token_logits(model, [prefix])
-            logits = _last_logits(output, len(prefix), vocab_size)
+    prefixes: List[List[int]] = []
+    targets: List[int] = []
+
+    def evaluate_batch() -> None:
+        nonlocal total_nll, token_count
+        if not prefixes:
+            return
+        output = module.next_token_logits(model, prefixes)
+        for index, (prefix, target) in enumerate(zip(prefixes, targets)):
+            logits = _last_logits(output, index, len(prefix), vocab_size)
             maximum = max(logits)
             log_normalizer = maximum + math.log(
                 sum(math.exp(value - maximum) for value in logits)
             )
-            total_nll += log_normalizer - logits[sequence[position]]
+            total_nll += log_normalizer - logits[target]
             token_count += 1
+        prefixes.clear()
+        targets.clear()
+
+    for sequence in _sequences(data_path, vocab_size):
+        for position in range(1, len(sequence)):
+            prefixes.append(sequence[:position])
+            targets.append(sequence[position])
+            if len(prefixes) >= batch_size:
+                evaluate_batch()
+    evaluate_batch()
     if token_count == 0:
         raise EvaluationError("evaluation data contains no prediction targets")
     return total_nll / token_count
@@ -107,8 +133,16 @@ def main() -> None:
     parser.add_argument("--data", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--vocab-size", required=True, type=int)
+    parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     args = parser.parse_args()
-    loss = evaluate(args.candidate, args.data, args.vocab_size)
+    loss = evaluate(
+        args.candidate,
+        args.data,
+        args.vocab_size,
+        batch_size=args.batch_size,
+        device=args.device,
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps({"metric": "autoregressive_nll", "nll": loss}, sort_keys=True)
@@ -119,4 +153,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

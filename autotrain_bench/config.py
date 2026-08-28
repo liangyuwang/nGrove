@@ -206,6 +206,8 @@ class TaskConfig:
     track_b_max_leases: int
     track_b_lease_seconds: int
     evaluator_timeout_seconds: int
+    evaluator_batch_size: int
+    evaluator_device: str
 
     @classmethod
     def load(cls, path: Path) -> "TaskConfig":
@@ -332,6 +334,14 @@ class TaskConfig:
                 evaluation.get("timeout_seconds", 120),
                 "evaluation.timeout_seconds",
             ),
+            evaluator_batch_size=_positive_int(
+                evaluation.get("batch_size", 1),
+                "evaluation.batch_size",
+            ),
+            evaluator_device=_string(
+                evaluation.get("device", "cpu"),
+                "evaluation.device",
+            ),
         )
 
         return config.validate()
@@ -371,6 +381,10 @@ class TaskConfig:
             raise ConfigError("v0 only implements evaluation.metric='autoregressive_nll'")
         if self.gpu_count == 0 and self.gpu_model:
             raise ConfigError("hardware.gpu_model requires hardware.gpu_count > 0")
+        if self.evaluator_device not in {"cpu", "cuda"}:
+            raise ConfigError("evaluation.device must be 'cpu' or 'cuda'")
+        if self.evaluator_device == "cuda" and self.gpu_count == 0:
+            raise ConfigError("evaluation.device='cuda' requires hardware.gpu_count > 0")
         return self
 
     @property
@@ -436,6 +450,8 @@ class TaskConfig:
                 "metric": self.metric,
                 "vocab_size": self.vocab_size,
                 "context_length": self.context_length,
+                "batch_size": self.evaluator_batch_size,
+                "device": self.evaluator_device,
             },
             "hardware": {
                 "gpu_count": self.gpu_count,
