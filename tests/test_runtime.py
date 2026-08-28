@@ -304,6 +304,23 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 training_command[training_command.index("--network") + 1], "none"
             )
 
+    def test_evaluator_entrypoint_comes_from_the_explicit_task_backend(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = TaskConfig.load(ROOT / "examples/toy/task.json")
+            runtime = CapturingDockerRuntime()
+            output = Path(directory) / "output"
+            with self.assertRaises(RuntimeFailure):
+                runtime.run_evaluator(
+                    config=config,
+                    candidate_dir=ROOT / "examples/toy/agent",
+                    split="val",
+                    output_dir=output,
+                )
+            command = runtime.calls[-1]
+            serialized = "\n".join(command)
+            self.assertIn(str(config.evaluator_entrypoint), serialized)
+            self.assertNotIn("autotrain_bench/toy_evaluator.py", serialized)
+
     def test_missing_inference_credential_fails_before_gateway_start(self):
         with tempfile.TemporaryDirectory() as directory:
             inference = InferenceConfig(

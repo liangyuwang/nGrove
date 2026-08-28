@@ -87,6 +87,8 @@ class Supervisor:
             "episode_id": self.episode_dir.name,
             "task_id": config.task_id,
             "track": self.track,
+            "policy_compliant": config.policy_compliant,
+            "policy_violations": config.policy_violations,
             "agent_system": {
                 "runner": config.agent_runner,
                 "image": (
@@ -95,7 +97,7 @@ class Supervisor:
                 "command": list(config.agent_command),
                 "mode": config.agent_mode,
                 "network": config.agent_network,
-                "policy_compliant": config.policy_compliant,
+                "policy_compliant": config.agent_policy_compliant,
                 "exit_code": None,
                 "termination_reason": None,
                 "finish_observed": False,
@@ -113,6 +115,11 @@ class Supervisor:
                 "initial_workspace_sha256": self._tree_hash(
                     config.agent_workspace
                 ),
+            },
+            "evaluation_system": {
+                "backend": config.evaluator_backend,
+                "image": config.evaluator_image,
+                "policy_compliant": config.evaluator_policy_compliant,
             },
             "status": "created",
             "started_at": None,
@@ -220,6 +227,11 @@ class Supervisor:
                 "agent_mode": self.config.agent_mode,
                 "agent_network": self.config.agent_network,
                 "policy_compliant": self.config.policy_compliant,
+                "policy_violations": self.config.policy_violations,
+                "evaluator_backend": self.config.evaluator_backend,
+                "evaluator_policy_compliant": (
+                    self.config.evaluator_policy_compliant
+                ),
                 "inference_enabled": self.config.inference is not None,
                 "inference_usage": dict(self.state["inference_usage"]),
                 "agent_usage": self.state["agent_usage"],

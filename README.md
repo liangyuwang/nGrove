@@ -71,6 +71,12 @@ The repository now contains an executable, single-host Docker prototype of the b
 
 The prototype deliberately assumes that the user has already obtained a machine matching the task's hardware specification. AutoTrain-Bench verifies and consumes resources visible on that machine; it does **not** allocate machines or integrate with Slurm, Kubernetes, or a cloud scheduler.
 
+All bundled tasks explicitly select the example-only
+`insecure_reference` evaluator. It imports participant candidate code in the
+same process that can read the hidden split, so every bundled example reports
+`policy_compliant: false`. These tasks validate the protocol and user
+experience; they are not official results or leaderboard submissions.
+
 ## Quick start
 
 Requirements:
@@ -337,17 +343,23 @@ task reveal
 
 The reference implementation uses an official host-side Supervisor, either an
 Agent Container or a non-compliant host CLI process, a thin trusted Inference
-Gateway when registered, disposable Training Containers, and evaluator-only Eval
-Containers. No participant container receives the Docker socket or VAL/TEST
-content. Agent public networking is disabled in policy-compliant runs. The
-Gateway handles only frozen researcher-inference endpoints while the Supervisor
-independently enforces episode and GPU-lease deadlines. Training and Eval
-networking remains disabled. `unrestricted-dev` and `host_cli` exist only as
-non-compliant local integration modes.
+Gateway when registered, disposable Training Containers, and an example Eval
+Container. Agent and Training Containers receive neither the Docker socket nor
+VAL/TEST mounts, and sandboxed Agent networking is disabled. The Gateway handles
+only frozen researcher-inference endpoints while the Supervisor independently
+enforces episode and GPU-lease deadlines. Training and Eval networking remains
+disabled. `unrestricted-dev` and `host_cli` exist only as non-compliant local
+integration modes.
 
 The v0 threat model protects benchmark policy from the Agent, not from the user or machine administrator. Docker isolation is a development reference boundary and is not presented as protection against kernel, container-runtime, or GPU-driver exploits. Official adversarial evaluation may require stronger worker or VM isolation.
 
-The bundled evaluator uses a provisional dependency-free Candidate ABI. It is intentionally not the final high-performance serving interface.
+The bundled evaluator lives under
+`examples/evaluators/insecure_reference/` and must be selected explicitly by a
+task. It uses a provisional dependency-free Candidate ABI and directly imports
+untrusted candidate code while the hidden split is mounted. A candidate can
+therefore read VAL/TEST content, so this backend is always non-compliant. A
+formal release must replace it with a trusted evaluator and a separate,
+ephemeral untrusted Candidate serving boundary.
 
 ---
 
@@ -429,21 +441,30 @@ This distinction is fundamental to the benchmark.
 
 # System Boundaries
 
-AutoTrain-Bench v0 separates four components.
+The local v0 prototype separates four components, but its example evaluator is
+not a formal security boundary.
 
 ```text
 User-owned host
 └── trusted AutoTrain-Bench Supervisor
     ├── untrusted Agent Container
     ├── disposable Training Container
-    └── evaluator-only Eval Container
+    └── insecure example Eval Container
+        └── trusted scoring code and untrusted candidate share one process
 ```
 
 The official Supervisor records task reveal time, owns Track A deadlines and Track B lease counters, controls container lifecycle, exposes already-allocated local GPUs, and invokes evaluation. The Agent cannot access the Supervisor's state or Docker socket.
 
 The Agent receives interactive access to a Training Container only through the Supervisor's narrow command channel during an active **Training Lease**. It may inspect logs, edit the shared workspace, compile code, profile, and run any number of TRAIN-only experiments inside that lease.
 
-VAL and TEST content exists only in Eval Containers. A committed candidate receives at most one official VAL evaluation per lease, and the Agent receives only the permitted aggregate metric. TEST cannot run until the episode has been permanently closed.
+VAL and TEST files are mounted only in Eval Containers. The current example
+backend nevertheless imports candidate code beside those files and is therefore
+not suitable for adversarial evaluation. In the formal architecture, a trusted
+Evaluator alone owns the split and communicates with a separate ephemeral
+Candidate Container through a restricted inference protocol. A committed
+candidate receives at most one official VAL evaluation per lease, and the Agent
+receives only the permitted aggregate metric. TEST cannot run until the episode
+has been permanently closed.
 
 ---
 
@@ -1410,6 +1431,8 @@ The executable v0 task manifest is JSON and keeps task and track budgets in one 
   "track_a": { "total_seconds": 120 },
   "track_b": { "max_leases": 2, "lease_seconds": 30 },
   "evaluation": {
+    "backend": "insecure_reference",
+    "entrypoint": "../evaluators/insecure_reference/evaluator.py",
     "metric": "autoregressive_nll",
     "vocab_size": 3,
     "context_length": 16
@@ -1572,11 +1595,11 @@ The repository contains a working v0 local reference prototype with:
 * candidate hashing and immutable snapshots;
 * sandboxed Agent execution with an optional trusted streaming inference sidecar;
 * a generic host CLI runner and a logged-in Codex CLI adapter;
-* hidden VAL and post-closure TEST evaluation;
+* example hidden-split lifecycle and post-closure TEST evaluation;
 * append-only benchmark, inference, and host-Agent JSONL traces;
 * a deterministic CPU toy task plus a reproducible real-data TinyStories mini benchmark.
 
-The first official benchmark instance has not been selected. Major remaining release decisions include the real TRAIN/VAL/TEST construction, tokenizer, hardware and budgets, fixed software image, production Candidate ABI, additional inference-provider adapters, synthetic-data policy, and stronger official isolation.
+The first official benchmark instance has not been selected. Major remaining release decisions include the real TRAIN/VAL/TEST construction, tokenizer, hardware and budgets, fixed software image, a trusted Evaluator plus isolated Candidate serving protocol, additional inference-provider adapters, synthetic-data policy, and stronger official isolation.
 
 The v0 prototype is intentionally single-host and resource-allocation agnostic. Users obtain a machine matching the release specification before starting AutoTrain-Bench.
 

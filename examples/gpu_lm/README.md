@@ -5,6 +5,11 @@ replaces the CPU n-gram starter with a small PyTorch causal Transformer. It is a
 low-cost rehearsal of a real single-GPU release rather than a competitive model
 quality benchmark.
 
+Like the other bundled tasks, it explicitly uses
+`examples/evaluators/insecure_reference`. That evaluator is intentionally not a
+secure Candidate serving boundary, so runs are always reported as
+`policy_compliant: false` and are unsuitable for leaderboard submission.
+
 Fixed resources:
 
 - one CUDA-compatible NVIDIA GPU supplied by the user;

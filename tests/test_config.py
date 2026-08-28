@@ -34,6 +34,16 @@ class ConfigTests(unittest.TestCase):
         )
         self.assertEqual(config.evaluator_batch_size, 1)
         self.assertEqual(config.evaluator_device, "cpu")
+        self.assertEqual(config.evaluator_backend, "insecure_reference")
+        self.assertTrue(config.agent_policy_compliant)
+        self.assertFalse(config.evaluator_policy_compliant)
+        self.assertFalse(config.policy_compliant)
+        self.assertEqual(
+            config.policy_violations, ["insecure_reference_evaluator"]
+        )
+        self.assertFalse(
+            config.public_manifest("B")["evaluation"]["policy_compliant"]
+        )
 
     def _write_task(self, directory, *, mode="sandboxed", environment=None, inference=None):
         source = ROOT / "examples/toy/task.json"
@@ -41,6 +51,9 @@ class ConfigTests(unittest.TestCase):
         base = source.parent
         for key, value in payload["paths"].items():
             payload["paths"][key] = str((base / value).resolve())
+        payload["evaluation"]["entrypoint"] = str(
+            (base / payload["evaluation"]["entrypoint"]).resolve()
+        )
         payload["agent"].pop("network", None)
         payload["agent"]["mode"] = mode
         payload["agent"]["environment"] = environment or []
@@ -62,6 +75,7 @@ class ConfigTests(unittest.TestCase):
             config = TaskConfig.load(task)
             self.assertEqual(config.agent_mode, "unrestricted-dev")
             self.assertFalse(config.policy_compliant)
+            self.assertFalse(config.agent_policy_compliant)
             self.assertEqual(config.agent_environment, ["AGENT_TOKEN"])
 
             invalid_mode = self._write_task(directory, mode="host")
@@ -79,6 +93,9 @@ class ConfigTests(unittest.TestCase):
             base = source.parent
             for key, value in payload["paths"].items():
                 payload["paths"][key] = str((base / value).resolve())
+            payload["evaluation"]["entrypoint"] = str(
+                (base / payload["evaluation"]["entrypoint"]).resolve()
+            )
             payload["images"].pop("agent")
             payload["agent"].pop("mode", None)
             payload["agent"].pop("network", None)
@@ -93,6 +110,7 @@ class ConfigTests(unittest.TestCase):
             self.assertIsNone(config.agent_mode)
             self.assertEqual(config.agent_network, "host_managed")
             self.assertFalse(config.policy_compliant)
+            self.assertFalse(config.agent_policy_compliant)
             self.assertNotIn(None, config.images)
             public = config.public_manifest("A")["agent_environment"]
             self.assertEqual(public["runner"], "host_cli")
@@ -189,6 +207,9 @@ class ConfigTests(unittest.TestCase):
             base = source.parent
             for key, value in payload["paths"].items():
                 payload["paths"][key] = str((base / value).resolve())
+            payload["evaluation"]["entrypoint"] = str(
+                (base / payload["evaluation"]["entrypoint"]).resolve()
+            )
             payload["agent"].pop("mode", None)
             payload["agent"]["network"] = "none"
             destination = Path(directory) / "task.json"
@@ -197,6 +218,20 @@ class ConfigTests(unittest.TestCase):
             payload["agent"]["network"] = "open"
             destination.write_text(json.dumps(payload), encoding="utf-8")
             self.assertEqual(TaskConfig.load(destination).agent_mode, "unrestricted-dev")
+
+    def test_evaluator_backend_is_explicit_and_never_core_defaulted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = self._write_task(directory)
+            payload = json.loads(task.read_text(encoding="utf-8"))
+            payload["evaluation"].pop("backend")
+            task.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaises(ConfigError):
+                TaskConfig.load(task)
+
+            payload["evaluation"]["backend"] = "official_container"
+            task.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaises(ConfigError):
+                TaskConfig.load(task)
 
 
 if __name__ == "__main__":

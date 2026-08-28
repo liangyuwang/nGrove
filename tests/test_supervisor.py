@@ -101,6 +101,18 @@ class SupervisorTests(unittest.TestCase):
         supervisor = self.supervisor()
         self.assertEqual(supervisor.state["agent_system"]["network"], "disabled")
         self.assertTrue(supervisor.state["agent_system"]["policy_compliant"])
+        self.assertFalse(supervisor.state["policy_compliant"])
+        self.assertEqual(
+            supervisor.state["policy_violations"],
+            ["insecure_reference_evaluator"],
+        )
+        self.assertEqual(
+            supervisor.state["evaluation_system"]["backend"],
+            "insecure_reference",
+        )
+        self.assertFalse(
+            supervisor.state["evaluation_system"]["policy_compliant"]
+        )
         self.assertEqual(
             len(supervisor.state["agent_system"]["initial_workspace_sha256"]), 64
         )
@@ -255,6 +267,11 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(status["agent_termination_reason"], "exited")
         self.assertTrue(status["agent_finish_observed"])
         self.assertEqual(status["agent_drain_seconds"], 2.5)
+        self.assertFalse(status["policy_compliant"])
+        self.assertIn("agent_execution_boundary", status["policy_violations"])
+        self.assertIn(
+            "insecure_reference_evaluator", status["policy_violations"]
+        )
 
     def test_registered_inference_usage_is_summarized_from_trusted_trace(self):
         inference = InferenceConfig(

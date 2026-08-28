@@ -86,6 +86,8 @@ def command_prepare(args: argparse.Namespace) -> int:
             "agent_runner": config.agent_runner,
             "agent_mode": config.agent_mode,
             "policy_compliant": config.policy_compliant,
+            "policy_violations": config.policy_violations,
+            "evaluator_backend": config.evaluator_backend,
             "inference_enabled": config.inference is not None,
         }
     )

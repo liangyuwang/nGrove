@@ -3,7 +3,12 @@
 This example is a low-cost rehearsal for an official AutoTrain-Bench release. It
 uses real TinyStories text, hidden validation and test splits, a fixed tokenizer,
 immutable candidate snapshots, both benchmark tracks, and the same autonomous
-Agent/Supervisor/Training/Eval container boundary as a full run.
+Agent/Supervisor/Training lifecycle intended for a full run.
+
+It explicitly uses `examples/evaluators/insecure_reference`. That evaluator
+imports candidate code in the same process that can read the hidden split, so
+every run is reported as `policy_compliant: false` and must not be treated as an
+official result.
 
 The data preparation follows the small-compute direction recommended by
 [Karpathy's `autoresearch`](https://github.com/karpathy/autoresearch): use the
@@ -66,11 +71,12 @@ copy, and exposes only the public task plus mailbox interface by contract. Codex
 stdout is stored in `agent.stdout.log`, stderr in `agent.stderr.log`, and parsed
 token/tool usage in the final report under `agent_usage`.
 
-This mode is deliberately marked `policy_compliant: false`. Codex executes on
-the host so v0 cannot technically prevent access outside the episode directory;
-the adapter disables web search, MCP/user configuration, and persistent rollout
-files, but those controls are not a replacement for a hard container or VM
-boundary.
+The host CLI adds an `agent_execution_boundary` violation because Codex executes
+on the host and v0 cannot technically prevent access outside the episode
+directory. The adapter disables web search, MCP/user configuration, and
+persistent rollout files, but those controls are not a replacement for a hard
+container or VM boundary. The example evaluator independently contributes the
+`insecure_reference_evaluator` violation.
 
 ## Full-size to mini mapping
 

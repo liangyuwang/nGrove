@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import math
 import shutil
@@ -5,13 +6,22 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from autotrain_bench.toy_evaluator import evaluate
-
 
 ROOT = Path(__file__).resolve().parents[1]
+EVALUATOR = (
+    ROOT / "examples/evaluators/insecure_reference/evaluator.py"
+)
+SPEC = importlib.util.spec_from_file_location(
+    "insecure_reference_evaluator", EVALUATOR
+)
+if SPEC is None or SPEC.loader is None:  # pragma: no cover - repository invariant
+    raise RuntimeError(f"cannot import evaluator at {EVALUATOR}")
+MODULE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(MODULE)
+evaluate = MODULE.evaluate
 
 
-class ToyEvaluatorTests(unittest.TestCase):
+class InsecureReferenceEvaluatorTests(unittest.TestCase):
     def test_candidate_abi_produces_finite_nll(self):
         with tempfile.TemporaryDirectory() as directory:
             candidate = Path(directory)
@@ -68,7 +78,9 @@ def next_token_logits(model, input_ids):
             self.assertAlmostEqual(loss, math.log(3), places=7)
             calls = [
                 json.loads(line)
-                for line in (candidate / "calls.jsonl").read_text(encoding="utf-8").splitlines()
+                for line in (candidate / "calls.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
             ]
             self.assertEqual([len(call["prefixes"]) for call in calls], [3, 3])
             self.assertTrue(all(call["device"] == "cpu" for call in calls))

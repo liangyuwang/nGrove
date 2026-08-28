@@ -16,6 +16,7 @@ class ConfigError(ValueError):
 
 AGENT_RUNNERS = {"container", "host_cli"}
 AGENT_MODES = {"sandboxed", "unrestricted-dev"}
+EVALUATOR_BACKENDS = {"insecure_reference"}
 RESERVED_AGENT_ENVIRONMENT = {
     "AUTOTRAIN_BENCH_CONTROL_DIR",
     "AUTOTRAIN_BENCH_FORWARDED_ENVIRONMENT",
@@ -100,6 +101,13 @@ def agent_mode(value: Any, field: str = "agent.mode") -> str:
 def agent_runner(value: Any, field: str = "agent.runner") -> str:
     if not isinstance(value, str) or value not in AGENT_RUNNERS:
         allowed = ", ".join(sorted(AGENT_RUNNERS))
+        raise ConfigError(f"{field} must be one of: {allowed}")
+    return value
+
+
+def evaluator_backend(value: Any, field: str = "evaluation.backend") -> str:
+    if not isinstance(value, str) or value not in EVALUATOR_BACKENDS:
+        allowed = ", ".join(sorted(EVALUATOR_BACKENDS))
         raise ConfigError(f"{field} must be one of: {allowed}")
     return value
 
@@ -208,6 +216,8 @@ class TaskConfig:
     evaluator_timeout_seconds: int
     evaluator_batch_size: int
     evaluator_device: str
+    evaluator_backend: str
+    evaluator_entrypoint: Path
 
     @classmethod
     def load(cls, path: Path) -> "TaskConfig":
@@ -238,6 +248,16 @@ class TaskConfig:
             if not directory and not value.is_file():
                 raise ConfigError(f"paths.{key} is not a file: {value}")
             return value
+
+        configured_evaluator_entrypoint = _string(
+            evaluation.get("entrypoint"), "evaluation.entrypoint"
+        )
+        evaluator_entrypoint = (base / configured_evaluator_entrypoint).resolve()
+        if not evaluator_entrypoint.is_file():
+            raise ConfigError(
+                "evaluation.entrypoint is not a file: "
+                f"{evaluator_entrypoint}"
+            )
 
         command = agent.get("command")
         if not isinstance(command, list) or not command or not all(
@@ -342,6 +362,8 @@ class TaskConfig:
                 evaluation.get("device", "cpu"),
                 "evaluation.device",
             ),
+            evaluator_backend=evaluator_backend(evaluation.get("backend")),
+            evaluator_entrypoint=evaluator_entrypoint,
         )
 
         return config.validate()
@@ -385,6 +407,12 @@ class TaskConfig:
             raise ConfigError("evaluation.device must be 'cpu' or 'cuda'")
         if self.evaluator_device == "cuda" and self.gpu_count == 0:
             raise ConfigError("evaluation.device='cuda' requires hardware.gpu_count > 0")
+        evaluator_backend(self.evaluator_backend)
+        if not self.evaluator_entrypoint.is_file():
+            raise ConfigError(
+                "evaluation.entrypoint is not a file: "
+                f"{self.evaluator_entrypoint}"
+            )
         return self
 
     @property
@@ -397,8 +425,25 @@ class TaskConfig:
         return sorted(images)
 
     @property
-    def policy_compliant(self) -> bool:
+    def agent_policy_compliant(self) -> bool:
         return self.agent_runner == "container" and self.agent_mode == "sandboxed"
+
+    @property
+    def evaluator_policy_compliant(self) -> bool:
+        return self.evaluator_backend != "insecure_reference"
+
+    @property
+    def policy_violations(self) -> List[str]:
+        violations: List[str] = []
+        if not self.agent_policy_compliant:
+            violations.append("agent_execution_boundary")
+        if not self.evaluator_policy_compliant:
+            violations.append("insecure_reference_evaluator")
+        return violations
+
+    @property
+    def policy_compliant(self) -> bool:
+        return not self.policy_violations
 
     @property
     def agent_network(self) -> str:
@@ -447,11 +492,13 @@ class TaskConfig:
                 "feedback": "after_episode_close",
             },
             "evaluation": {
+                "backend": self.evaluator_backend,
                 "metric": self.metric,
                 "vocab_size": self.vocab_size,
                 "context_length": self.context_length,
                 "batch_size": self.evaluator_batch_size,
                 "device": self.evaluator_device,
+                "policy_compliant": self.evaluator_policy_compliant,
             },
             "hardware": {
                 "gpu_count": self.gpu_count,
@@ -469,11 +516,15 @@ class TaskConfig:
                 "control": "file_mailbox",
                 "forwarded_environment": list(self.agent_environment),
                 "inference": inference_manifest,
-                "policy_compliant": self.policy_compliant,
+                "policy_compliant": self.agent_policy_compliant,
             },
             "training_environment": {
                 "image": self.training_image,
                 "network": "disabled",
                 "interactive_within_lease": True,
+            },
+            "policy": {
+                "compliant": self.policy_compliant,
+                "violations": self.policy_violations,
             },
         }

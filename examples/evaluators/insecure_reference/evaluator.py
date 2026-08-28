@@ -1,8 +1,8 @@
-"""Provisional, dependency-free candidate evaluator used by the toy task.
+"""Insecure evaluator for examples and tests only.
 
-This is intentionally not the final high-performance Candidate ABI. It calls
-the candidate once per prefix so future tokens are never supplied to
-participant code.
+This process imports untrusted candidate code while the hidden split is mounted.
+It is deliberately outside the core package and must not be used for official
+benchmark results.
 """
 
 from __future__ import annotations

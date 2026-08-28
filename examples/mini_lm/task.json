@@ -29,6 +29,8 @@
     "gpu_model": null
   },
   "evaluation": {
+    "backend": "insecure_reference",
+    "entrypoint": "../evaluators/insecure_reference/evaluator.py",
     "metric": "autoregressive_nll",
     "vocab_size": 257,
     "context_length": 128,

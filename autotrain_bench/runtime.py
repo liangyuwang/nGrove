@@ -454,7 +454,6 @@ class DockerRuntime:
         if split not in {"val", "test"}:
             raise RuntimeFailure(f"invalid evaluator split: {split}")
         data_path = config.val_path if split == "val" else config.test_path
-        evaluator = Path(__file__).resolve().parent / "toy_evaluator.py"
         output_dir.mkdir(parents=True, exist_ok=True)
         result_path = output_dir / f"{split}.json"
         container_name = f"atb-eval-{uuid.uuid4().hex[:12]}"
@@ -479,7 +478,11 @@ class DockerRuntime:
             "--mount",
             self._mount(data_path, "/eval-data/split.json", read_only=True),
             "--mount",
-            self._mount(evaluator, "/opt/evaluator.py", read_only=True),
+            self._mount(
+                config.evaluator_entrypoint,
+                "/opt/evaluator.py",
+                read_only=True,
+            ),
             "--mount",
             self._mount(output_dir, "/output", read_only=False),
             "--env",
