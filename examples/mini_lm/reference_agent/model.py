@@ -1,4 +1,4 @@
-"""Small causal Transformer shared by the starter trainer and Candidate ABI."""
+"""Small causal Transformer used only by the reference participant."""
 
 import torch
 from torch import nn

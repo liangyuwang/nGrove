@@ -1,6 +1,7 @@
-"""Train the starter Transformer inside one GPU Training Lease."""
+"""Train the optional reference participant inside one Training Lease."""
 
 import argparse
+import contextlib
 import json
 import shutil
 import time
@@ -21,13 +22,19 @@ def load_rows(path, context_length):
 
 
 @torch.inference_mode()
-def local_validation_loss(model, rows):
+def autocast_context(device):
+    if device.type == "cuda":
+        return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+    return contextlib.nullcontext()
+
+
+def local_validation_loss(model, rows, device):
     model.eval()
     losses = []
-    for start in range(0, len(rows), 64):
-        batch = rows[start : start + 64]
+    for start in range(0, len(rows), 16):
+        batch = rows[start : start + 16]
         inputs, targets = batch[:, :-1], batch[:, 1:]
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        with autocast_context(device):
             logits = model(inputs)
             loss = F.cross_entropy(
                 logits.reshape(-1, logits.shape[-1]), targets.reshape(-1)
@@ -46,7 +53,7 @@ def main():
     parser.add_argument("--layers", type=int, default=4)
     parser.add_argument("--heads", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.0)
-    parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--weight-decay", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=1337)
@@ -57,9 +64,10 @@ def main():
         raise ValueError("seconds must leave enough time to save a candidate")
 
     torch.manual_seed(args.seed)
-    torch.cuda.manual_seed_all(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
     torch.set_float32_matmul_precision("high")
-    device = torch.device("cuda")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     rows = load_rows("/benchmark/train/train.json", args.context_length)
     local_val = rows[::20].to(device)
     train_rows = torch.cat([rows[offset::20] for offset in range(1, 20)]).to(device)
@@ -72,14 +80,15 @@ def main():
         "dropout": args.dropout,
     }
     model = ByteTransformer(config).to(device)
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=args.learning_rate,
-        weight_decay=args.weight_decay,
-        fused=True,
-    )
+    optimizer_options = {
+        "lr": args.learning_rate,
+        "weight_decay": args.weight_decay,
+    }
+    if device.type == "cuda":
+        optimizer_options["fused"] = True
+    optimizer = torch.optim.AdamW(model.parameters(), **optimizer_options)
     deadline = time.monotonic() + args.seconds - 8
-    best_loss = local_validation_loss(model, local_val)
+    best_loss = local_validation_loss(model, local_val, device)
     best_state = {
         key: value.detach().clone() for key, value in model.state_dict().items()
     }
@@ -93,7 +102,7 @@ def main():
         batch = train_rows[indices]
         inputs, targets = batch[:, :-1], batch[:, 1:]
         optimizer.zero_grad(set_to_none=True)
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        with autocast_context(device):
             logits = model(inputs)
             loss = F.cross_entropy(
                 logits.reshape(-1, logits.shape[-1]), targets.reshape(-1)
@@ -104,7 +113,7 @@ def main():
         step += 1
         tokens += inputs.numel()
         if step % 50 == 0:
-            validation_loss = local_validation_loss(model, local_val)
+            validation_loss = local_validation_loss(model, local_val, device)
             if validation_loss < best_loss:
                 best_loss = validation_loss
                 best_state = {

@@ -1,4 +1,4 @@
-"""Deterministic baseline Agent for the comparable mini benchmark."""
+"""Optional reference participant for the mini challenge."""
 
 import json
 import os
@@ -15,7 +15,7 @@ def main():
     evaluation = public_task["evaluation"]
     incumbent = None
     for index, (width, layers, learning_rate) in enumerate(
-        ((192, 3, 4e-4), (256, 4, 3e-4), (320, 5, 2e-4)), start=1
+        ((32, 1, 8e-4), (48, 2, 6e-4), (64, 2, 4e-4)), start=1
     ):
         status = client.status()
         if status["status"] != "active":

@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from autotrain_bench.cli import (
+    _initialize_agent_workspace,
     _snapshot_agent_workspace,
     _terminal_agent_action,
     build_parser,
@@ -11,6 +12,13 @@ from autotrain_bench.config import ConfigError
 
 
 class WorkspaceSnapshotTests(unittest.TestCase):
+    def test_default_episode_workspace_is_empty(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "episode-workspace"
+            _initialize_agent_workspace(None, destination)
+            self.assertTrue(destination.is_dir())
+            self.assertEqual(list(destination.iterdir()), [])
+
     def test_episode_workspace_is_an_independent_copy(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -69,6 +77,30 @@ class WorkspaceSnapshotTests(unittest.TestCase):
         )
         self.assertEqual(args.agent_command, "declare-incumbent")
         self.assertEqual(args.candidate_id, "sha256:candidate")
+
+    def test_training_resources_are_episode_arguments(self):
+        args = build_parser().parse_args(
+            [
+                "start",
+                "--task",
+                "task.json",
+                "--track",
+                "A",
+                "--agent-runner",
+                "host_cli",
+                "--agent-command",
+                "example-agent",
+                "--training-gpus",
+                "2",
+                "--training-gpu-model",
+                "H100",
+                "--training-device",
+                "/dev/accel0",
+            ]
+        )
+        self.assertEqual(args.training_gpus, 2)
+        self.assertEqual(args.training_gpu_model, "H100")
+        self.assertEqual(args.training_devices, ["/dev/accel0"])
 
 
 if __name__ == "__main__":

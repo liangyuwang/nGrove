@@ -8,7 +8,12 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from autotrain_bench.config import InferenceConfig, TaskConfig
+from autotrain_bench.config import (
+    AgentConfig,
+    InferenceConfig,
+    TaskConfig,
+    TrainingResources,
+)
 from autotrain_bench.runtime import DockerRuntime, RuntimeFailure
 from autotrain_bench.host_agent import summarize_host_agent_trace
 
@@ -28,6 +33,14 @@ class CapturingDockerRuntime(DockerRuntime):
 
 
 class RuntimeBoundaryTests(unittest.TestCase):
+    def test_task_preparation_has_no_implicit_agent_image(self):
+        config = TaskConfig.load(TASK)
+        runtime = CapturingDockerRuntime()
+        runtime.prepare(config)
+        serialized = "\n".join(" ".join(call) for call in runtime.calls)
+        self.assertNotIn("test-agent", serialized)
+        self.assertNotIn("test-gateway", serialized)
+
     def test_host_cli_runner_uses_workspace_and_a_minimal_environment(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -46,14 +59,11 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 "'visible': os.environ.get('VISIBLE'), "
                 "'leaked': os.environ.get('SHOULD_NOT_LEAK')}))"
             )
-            config = replace(
-                TaskConfig.load(TASK),
-                agent_workspace=workspace,
-                agent_runner="host_cli",
-                agent_mode=None,
-                agent_command=[sys.executable, "-c", script],
-                agent_environment=["VISIBLE"],
-                inference=None,
+            agent = AgentConfig(
+                workspace=workspace,
+                runner="host_cli",
+                command=[sys.executable, "-c", script],
+                environment=["VISIBLE"],
             )
             runtime = DockerRuntime(docker_binary="docker")
             with patch.dict(
@@ -62,7 +72,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 clear=False,
             ):
                 handle = runtime.start_host_agent(
-                    config=config,
+                    agent=agent,
                     control_dir=control,
                     public_task_path=public_task,
                     stdout_path=stdout_path,
@@ -163,14 +173,19 @@ class RuntimeBoundaryTests(unittest.TestCase):
             control.mkdir()
             public_task = root / "task.json"
             public_task.write_text("{}", encoding="utf-8")
-            config = replace(
-                TaskConfig.load(TASK),
-                agent_workspace=workspace,
+            config = TaskConfig.load(TASK)
+            agent = AgentConfig(
+                workspace=workspace,
+                runner="container",
+                command=["python", "/workspace/agent.py"],
+                image="python:test-agent",
+                mode="sandboxed",
             )
             runtime = CapturingDockerRuntime()
             runtime.start_agent(
                 name="agent",
                 config=config,
+                agent=agent,
                 control_dir=control,
                 public_task_path=public_task,
             )
@@ -178,6 +193,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             self.assertIn("dst=/opt/autotrain_bench,readonly", command)
             self.assertIn("/agent-home:rw,nosuid,size=1g,mode=1777", command)
             self.assertIn("HOME=/agent-home", command)
+            self.assertNotIn("reference_agent", command)
             self.assertNotIn(str(TASK.parent / "private"), command)
             self.assertNotIn(str(config.val_path), command)
             self.assertNotIn(str(config.test_path), command)
@@ -201,11 +217,13 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 allowed_paths=("/v1/responses",),
                 timeout_seconds=300,
             )
-            config = replace(
-                TaskConfig.load(TASK),
-                agent_workspace=workspace,
-                agent_command=["node", "/workspace/agent.js"],
-                agent_mode="sandboxed",
+            config = TaskConfig.load(TASK)
+            agent = AgentConfig(
+                workspace=workspace,
+                runner="container",
+                command=["node", "/workspace/agent.js"],
+                image="python:test-agent",
+                mode="sandboxed",
                 inference=inference,
             )
             runtime = CapturingDockerRuntime()
@@ -217,16 +235,24 @@ class RuntimeBoundaryTests(unittest.TestCase):
                     agent_network="agent-net",
                     egress_network="egress-net",
                     config=config,
+                    agent=agent,
                     audit_dir=audit,
                 )
             runtime.start_agent(
                 name="agent",
                 config=config,
+                agent=agent,
                 control_dir=control,
                 public_task_path=public_task,
                 inference_network="agent-net",
             )
-            runtime.start_training(name="training", config=config, lease_dir=lease)
+            runtime.start_training(
+                name="training",
+                config=config,
+                workspace=workspace,
+                resources=TrainingResources(),
+                lease_dir=lease,
+            )
 
             self.assertIn("--internal", runtime.calls[0])
             run_calls = [call for call in runtime.calls if call and call[0] == "run"]
@@ -284,19 +310,29 @@ class RuntimeBoundaryTests(unittest.TestCase):
             control.mkdir()
             public_task = root / "task.json"
             public_task.write_text("{}", encoding="utf-8")
-            config = replace(
-                TaskConfig.load(TASK),
-                agent_workspace=workspace,
-                agent_mode="unrestricted-dev",
+            config = TaskConfig.load(TASK)
+            agent = AgentConfig(
+                workspace=workspace,
+                runner="container",
+                command=["python", "/workspace/agent.py"],
+                image="python:test-agent",
+                mode="unrestricted-dev",
             )
             runtime = CapturingDockerRuntime()
             runtime.start_agent(
                 name="agent",
                 config=config,
+                agent=agent,
                 control_dir=control,
                 public_task_path=public_task,
             )
-            runtime.start_training(name="training", config=config, lease_dir=lease)
+            runtime.start_training(
+                name="training",
+                config=config,
+                workspace=workspace,
+                resources=TrainingResources(),
+                lease_dir=lease,
+            )
             agent_command, training_command = runtime.calls
             self.assertEqual(
                 agent_command[agent_command.index("--network") + 1], "bridge"
@@ -305,18 +341,39 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 training_command[training_command.index("--network") + 1], "none"
             )
 
+    def test_training_devices_come_from_episode_resources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            runtime = CapturingDockerRuntime()
+            runtime.start_training(
+                name="training",
+                config=TaskConfig.load(TASK),
+                workspace=workspace,
+                resources=TrainingResources(
+                    nvidia_gpu_count=2,
+                    devices=["/dev/accel0"],
+                ),
+                lease_dir=root / "lease",
+            )
+            command = runtime.calls[0]
+            self.assertEqual(command[command.index("--gpus") + 1], "2")
+            self.assertEqual(command[command.index("--device") + 1], "/dev/accel0")
+
     def test_evaluator_and_candidate_use_separate_internal_containers(self):
         with tempfile.TemporaryDirectory() as directory:
             config = replace(
                 TaskConfig.load(TASK),
-                gpu_count=1,
                 evaluator_device="cuda",
             ).validate()
+            resources = TrainingResources(nvidia_gpu_count=1)
             runtime = CapturingDockerRuntime()
             output = Path(directory) / "output"
             with self.assertRaises(RuntimeFailure):
                 runtime.run_evaluator(
                     config=config,
+                    resources=resources,
                     candidate_dir=TASK.parent / "agent",
                     split="val",
                     output_dir=output,
@@ -349,8 +406,13 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 allowed_paths=("/v1/responses",),
                 timeout_seconds=300,
             )
-            config = replace(
-                TaskConfig.load(TASK),
+            config = TaskConfig.load(TASK)
+            agent = AgentConfig(
+                workspace=Path(directory),
+                runner="container",
+                command=["agent"],
+                image="agent:image",
+                mode="sandboxed",
                 inference=inference,
             )
             runtime = CapturingDockerRuntime()
@@ -362,6 +424,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                         agent_network="agent-net",
                         egress_network="egress-net",
                         config=config,
+                        agent=agent,
                         audit_dir=Path(directory) / "audit",
                     )
             self.assertEqual(runtime.calls, [])

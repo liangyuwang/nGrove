@@ -1,54 +1,67 @@
-# Comparable TinyStories mini benchmark
+# Mini LM challenge
 
-`mini_lm` is the repository's only bundled benchmark task. It keeps the shape of
-a release benchmark and reduces only its scale: a fixed real corpus, fixed
-tokenizer and images, exact hardware, hidden VAL/TEST, immutable Candidate
-artifacts, explicit incumbent decisions, and the same Track A/Track B protocol.
+`mini_lm` has the same task/participant boundary, Track A/Track B state
+machine, hidden evaluation, Candidate isolation, and incumbent semantics as a
+full AutoTrain-Bench challenge. Only the corpus and time budgets are smaller.
+It is an example challenge, not a smoke test and not a starter-code task.
 
-The default task is policy-compliant. Its Agent and Training environments have
-no public network, and hidden evaluation uses two separate containers:
+## Ownership boundary
 
-```text
-ephemeral internal Docker network
-├── trusted Evaluator: hidden split, no Candidate files
-└── untrusted Candidate: Candidate files, no hidden split, no public network
-```
+The challenge owns only:
 
-The Evaluator sends only input prefixes to the Candidate's
-`next_token_logits_v1` endpoint and receives one `[batch, vocabulary]` logit
-matrix. The network and both evaluation containers are destroyed after each VAL
-or TEST query.
+- the public TRAIN split and its preparation recipe;
+- the hidden VAL/TEST splits and trusted Evaluator;
+- the public metric and Candidate ABI;
+- the Training, Candidate, Evaluator, and Gateway images;
+- the Track A/Track B budgets and artifact limits.
 
-## Fixed mini release
+The participant owns the Agent image or CLI, its command, and every initial
+workspace file. If `--agent-workspace` is omitted, AutoTrain-Bench creates an
+empty episode workspace. The Agent must create its own training program, model,
+experiments, Candidate implementation, and incumbent decisions after task
+reveal.
 
-| Release property | Fixed mini value |
+`reference_agent/` is an optional public baseline. It is not named by
+`task.json`, copied into an episode, or mounted into a Training Container unless
+the user explicitly selects it with `--agent-workspace`. A sandboxed Agent sees
+only its episode workspace, TRAIN, the public task manifest, and the control
+mailbox; it cannot see the repository or the reference baseline.
+
+## Fixed mini task
+
+| Challenge property | Mini value |
 | --- | --- |
 | Corpus | 1,200 pinned TinyStories documents |
 | TRAIN | 1,000 documents, about 818K target bytes |
 | VAL / TEST | 8,192 hidden target bytes each |
-| Tokenizer | UTF-8 bytes plus BOS, vocabulary 257 |
-| Context length | 128, defined by `task.json` |
-| Accelerator | Exactly one NVIDIA H200 |
-| Training / Candidate image | Pinned PyTorch 2.7.1 + CUDA 12.8 digest |
+| Token representation | UTF-8 bytes plus BOS, vocabulary 257 |
+| Evaluation prefix limit | 128 tokens |
 | Track A | 300 seconds total wall clock |
 | Track B | Three leases, at most 75 seconds each |
 | Metric | Autoregressive NLL |
+| Candidate protocol | `next_token_logits_v1` |
 
-Different GPU models are intentionally rejected. A portable smoke test and a
-comparable benchmark are different products: the latter needs identical
-hardware and immutable images.
+The reference configuration requires Docker, not an NVIDIA GPU or a particular
+accelerator. Its trusted evaluation path runs on CPU. A participant may train
+with any approach supported by the allocated Training Environment and must
+export a Candidate that satisfies the public ABI. Concrete runtime provenance
+belongs to the episode result; it does not change whether the isolation policy
+is compliant.
 
-## Prepare and run
+Training resources are selected when the episode starts, never by `task.json`.
+The default exposes CPU only. For example, a user with an NVIDIA runtime can add
+`--training-gpus 1`; an optional
+`--training-gpu-model "NVIDIA H100"` turns the model name into a host-side
+preflight requirement. `--training-device /dev/DEVICE` exposes a generic Docker
+device to Training Containers for runtimes that support it. Device requests and
+the discovered GPU inventory are recorded in episode provenance. Results from
+materially different runtime profiles should be compared separately.
 
-The host must already expose exactly one H200 through Docker and the NVIDIA
-Container Toolkit. AutoTrain-Bench does not allocate Slurm, Kubernetes, cloud,
-or other infrastructure.
+## Prepare
 
 ```bash
 python3 examples/mini_lm/prepare_data.py
 autotrain-bench prepare --task examples/mini_lm/task.json
-autotrain-bench start --task examples/mini_lm/task.json --track A
-autotrain-bench start --task examples/mini_lm/task.json --track B
 ```
 
 Preparation downloads a deterministic slice of
@@ -56,57 +69,95 @@ Preparation downloads a deterministic slice of
 `0397e27157956705a0260709da3095bb9c43d6a7`, verifies the ordered source digest,
 and writes ignored generated artifacts under `examples/mini_lm/data/`.
 
-The bundled baseline trains three causal Transformers, uses a TRAIN-only local
-holdout for checkpointing, runs a public Candidate ABI preflight, commits at
-most one Candidate per lease, interprets aggregate VAL itself, explicitly
-declares its incumbent, and receives TEST only after closing the episode.
+## Run a participant Agent
 
-## Candidate artifact contract
-
-Training commands must write artifacts under the lease-owned `/output` mount,
-not the shared `/workspace`. Before commit, a participant can check the public
-ABI without consuming a VAL query:
+A compliant participant is supplied explicitly as a sandboxed Agent Container.
+The image contains the Agent executable, while the writable episode workspace
+starts empty:
 
 ```bash
-python -m autotrain_bench.cli agent lease-exec -- \
-  python -m autotrain_bench.candidate_preflight \
-  --candidate /output/candidate \
-  --device cuda --vocab-size 257 --context-length 128
-
-python -m autotrain_bench.cli agent lease-commit /output/candidate
+autotrain-bench start \
+  --task examples/mini_lm/task.json \
+  --track A \
+  --agent-runner container \
+  --agent-image participant-agent@sha256:DIGEST \
+  --agent-command "participant-agent run"
 ```
 
-Commit first stops the Training Container, then validates and snapshots the
-now-immutable output. Candidate bundles may contain only regular files and
-directories, may not contain symbolic or hard links, must fit the task-defined
-artifact limits, and are content-addressed.
-
-`candidate.py` must define:
-
-```python
-def load(candidate_dir, device): ...
-def next_token_logits(model, input_ids): ...  # [batch, vocabulary]
-```
-
-## Agent execution and compliance
-
-The bundled sandboxed container Agent produces `policy_compliant: true`. A
-participant may substitute another registered Agent image and command while
-keeping the container runner and sandboxed mode.
-
-A logged-in CLI tool such as Codex can still be used for local rehearsal:
+The same challenge can expose a GPU without modifying the task:
 
 ```bash
-python3 -m autotrain_bench.cli start \
+autotrain-bench start \
+  --task examples/mini_lm/task.json \
+  --track A \
+  --agent-runner container \
+  --agent-image participant-agent@sha256:DIGEST \
+  --agent-command "participant-agent run" \
+  --training-gpus 1
+```
+
+To exercise the optional public baseline, explicitly snapshot its files:
+
+```bash
+autotrain-bench start \
+  --task examples/mini_lm/task.json \
+  --track B \
+  --agent-runner container \
+  --agent-image python@sha256:1042b61448fef4ba92d16a8c7eb4996d027568ce64792a7877fd88511e0af7c6 \
+  --agent-command "python /workspace/agent.py" \
+  --agent-workspace examples/mini_lm/reference_agent
+```
+
+A logged-in CLI such as Codex can be rehearsed from the same default empty
+workspace by omitting `--agent-workspace`:
+
+```bash
+autotrain-bench start \
   --task examples/mini_lm/task.json \
   --track A \
   --agent-runner host_cli \
   --agent-command "python3 -m autotrain_bench.cli_adapters.codex --model MODEL --reasoning-effort high"
 ```
 
-That override reports `policy_compliant: false` with only the
-`agent_execution_boundary` violation. Candidate/Evaluator isolation remains
-compliant, but v0 cannot prove that a host process avoided unrelated files and
-its own network. A comparable official Agent run therefore needs a sandboxed
-Agent container (optionally with the registered inference Gateway), or a future
-equivalent VM/remote-tool boundary.
+The `host_cli` run reports `policy_compliant: false` because a host process can
+access files and networking outside the enforced episode boundary. The
+Candidate/Evaluator boundary remains isolated. A formal compliant result uses a
+sandboxed participant container or an equivalent isolated worker/VM.
+
+## Candidate artifact contract
+
+Training commands write Candidate artifacts beneath the lease-owned `/output`
+mount. A participant can validate the public ABI before spending its one VAL
+query for the lease:
+
+```bash
+python -m autotrain_bench.cli agent lease-exec -- \
+  python -m autotrain_bench.candidate_preflight \
+  --candidate /output/candidate \
+  --device cpu --vocab-size 257 --context-length 128
+
+python -m autotrain_bench.cli agent lease-commit /output/candidate
+```
+
+Commit stops the Training Container before validating and snapshotting the
+artifact. Candidate bundles may contain only regular files and directories,
+may not contain symbolic or hard links, and must fit the task-defined file and
+byte limits.
+
+`candidate.py` defines:
+
+```python
+def load(candidate_dir, device): ...
+def next_token_logits(model, input_ids): ...  # [batch, vocabulary]
+```
+
+During VAL/TEST, a fresh internal Docker network connects two short-lived
+containers:
+
+```text
+trusted Evaluator: hidden split, no Candidate files
+untrusted Candidate: Candidate files, no hidden split, no public network
+```
+
+Only input prefixes and one `[batch, vocabulary]` logit matrix cross this
+boundary. Both containers and the network are removed after every query.

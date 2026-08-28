@@ -8,7 +8,12 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from autotrain_bench.config import InferenceConfig, TaskConfig
+from autotrain_bench.config import (
+    AgentConfig,
+    InferenceConfig,
+    TaskConfig,
+    TrainingResources,
+)
 from autotrain_bench.client import Client
 from autotrain_bench.runtime import ExecResult, RuntimeFailure
 from autotrain_bench.supervisor import ProtocolError, Supervisor
@@ -36,14 +41,15 @@ class FakeRuntime:
         self.evaluations = []
         self.val_nlls = []
 
-    def start_training(self, *, name, config, lease_dir):
+    def start_training(self, *, name, config, workspace, resources, lease_dir):
+        del config, resources
         if self.fail_start:
             self.fail_start = False
             raise RuntimeFailure("simulated infrastructure failure")
         output = lease_dir / "output" / "candidate"
         output.mkdir(parents=True)
         shutil.copy2(
-            config.agent_workspace / "candidate/candidate.py",
+            workspace / "candidate/candidate.py",
             output / "candidate.py",
         )
         self.running.add(name)
@@ -62,8 +68,8 @@ class FakeRuntime:
     def stop_container(self, name):
         self.running.discard(name)
 
-    def run_evaluator(self, *, config, candidate_dir, split, output_dir):
-        del config, candidate_dir, output_dir
+    def run_evaluator(self, *, config, resources, candidate_dir, split, output_dir):
+        del config, resources, candidate_dir, output_dir
         self.evaluations.append(split)
         if split == "val" and self.val_nlls:
             return self.val_nlls.pop(0)
@@ -83,8 +89,15 @@ class SupervisorTests(unittest.TestCase):
             "def next_token_logits(model, input_ids): return []\n",
             encoding="utf-8",
         )
-        base = TaskConfig.load(TASK)
-        self.config = replace(base, agent_workspace=workspace)
+        self.config = TaskConfig.load(TASK)
+        self.agent = AgentConfig(
+            workspace=workspace,
+            runner="container",
+            command=["python", "/workspace/agent.py"],
+            image="python:test-agent",
+            mode="sandboxed",
+        )
+        self.resources = TrainingResources()
         self.workspace = workspace
         self.runtime = FakeRuntime()
         self.clock = FakeClock()
@@ -93,9 +106,11 @@ class SupervisorTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
-    def supervisor(self, track="B", config=None):
+    def supervisor(self, track="B", config=None, agent=None):
         supervisor = Supervisor(
             config=config or self.config,
+            agent=agent or self.agent,
+            resources=self.resources,
             track=track,
             episode_dir=self.episode,
             runtime=self.runtime,
@@ -121,6 +136,20 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(
             len(supervisor.state["agent_system"]["initial_workspace_sha256"]), 64
         )
+        public_task = json.loads(
+            supervisor.public_task_path.read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            public_task["agent_environment"]["initial_workspace"],
+            "participant_supplied",
+        )
+        self.assertEqual(
+            public_task["training_environment"]["resources"][
+                "nvidia_gpu_count"
+            ],
+            0,
+        )
+        self.assertEqual(public_task["policy"]["violations"], [])
         lease = supervisor.start_lease()
         self.assertEqual(lease["lease_id"], "lease-0001")
         command = supervisor.exec_lease(["python", "train.py"])
@@ -303,13 +332,12 @@ class SupervisorTests(unittest.TestCase):
         self.assertTrue(supervisor.state_path.is_file())
 
     def test_host_cli_runner_is_recorded_as_non_compliant(self):
-        config = replace(
-            self.config,
-            agent_runner="host_cli",
-            agent_mode=None,
-            inference=None,
+        agent = AgentConfig(
+            workspace=self.workspace,
+            runner="host_cli",
+            command=["example-agent"],
         )
-        supervisor = self.supervisor(config=config)
+        supervisor = self.supervisor(agent=agent)
         self.assertEqual(supervisor.state["agent_system"]["runner"], "host_cli")
         self.assertIsNone(supervisor.state["agent_system"]["image"])
         self.assertEqual(supervisor.state["agent_system"]["network"], "host_managed")
@@ -350,8 +378,8 @@ class SupervisorTests(unittest.TestCase):
             allowed_paths=("/v1/responses",),
             timeout_seconds=30,
         )
-        config = replace(self.config, inference=inference)
-        supervisor = self.supervisor(config=config)
+        agent = replace(self.agent, inference=inference)
+        supervisor = self.supervisor(agent=agent)
 
         records = [
             {

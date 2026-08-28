@@ -1,4 +1,4 @@
-"""Candidate ABI for the starter byte-level Transformer."""
+"""Candidate ABI for the optional reference participant."""
 
 import json
 from pathlib import Path

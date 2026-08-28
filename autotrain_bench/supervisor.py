@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from .config import TaskConfig
+from .config import AgentConfig, TaskConfig, TrainingResources
 from .inference import summarize_inference_trace
 from .runtime import ExecResult, RuntimeFailure
 
@@ -84,6 +84,8 @@ class Supervisor:
         self,
         *,
         config: TaskConfig,
+        agent: AgentConfig,
+        resources: TrainingResources,
         track: str,
         episode_dir: Path,
         runtime: Any,
@@ -95,6 +97,8 @@ class Supervisor:
         if normalized not in {"A", "B"}:
             raise ValueError("track must be A or B")
         self.config = config
+        self.agent = agent.validate()
+        self.resources = resources.validate_for(config)
         self.track = normalized
         self.episode_dir = episode_dir.resolve()
         self.runtime = runtime
@@ -134,38 +138,43 @@ class Supervisor:
         if self.state_path.exists() or self.events_path.exists():
             raise ValueError(f"episode directory already contains state: {self.episode_dir}")
 
+        policy_violations = []
+        if not agent.policy_compliant:
+            policy_violations.append("agent_execution_boundary")
+        if not config.evaluator_policy_compliant:
+            policy_violations.append("candidate_evaluator_isolation")
+        policy_compliant = not policy_violations
+
         self.state: Dict[str, Any] = {
             "protocol_version": 1,
             "episode_id": self.episode_dir.name,
             "task_id": config.task_id,
             "track": self.track,
-            "policy_compliant": config.policy_compliant,
-            "policy_violations": config.policy_violations,
+            "policy_compliant": policy_compliant,
+            "policy_violations": policy_violations,
             "agent_system": {
-                "runner": config.agent_runner,
-                "image": (
-                    config.agent_image if config.agent_runner == "container" else None
-                ),
-                "command": list(config.agent_command),
-                "mode": config.agent_mode,
-                "network": config.agent_network,
-                "policy_compliant": config.agent_policy_compliant,
+                "runner": agent.runner,
+                "image": agent.image if agent.runner == "container" else None,
+                "command": list(agent.command),
+                "mode": agent.mode,
+                "network": agent.network,
+                "policy_compliant": agent.policy_compliant,
                 "exit_code": None,
                 "termination_reason": None,
                 "finish_observed": False,
                 "drain_seconds": None,
                 "inference": {
-                    "enabled": config.inference is not None,
-                    "protocol": config.inference.protocol if config.inference else None,
+                    "enabled": agent.inference is not None,
+                    "protocol": agent.inference.protocol if agent.inference else None,
                     "gateway_image": (
-                        config.inference_gateway_image if config.inference else None
+                        config.inference_gateway_image if agent.inference else None
                     ),
-                    "allowed_models": list(config.inference.allowed_models) if config.inference else [],
-                    "allowed_paths": list(config.inference.allowed_paths) if config.inference else [],
+                    "allowed_models": list(agent.inference.allowed_models) if agent.inference else [],
+                    "allowed_paths": list(agent.inference.allowed_paths) if agent.inference else [],
                 },
-                "forwarded_environment": list(config.agent_environment),
+                "forwarded_environment": list(agent.environment),
                 "initial_workspace_sha256": self._tree_hash(
-                    config.agent_workspace
+                    agent.workspace
                 ),
             },
             "evaluation_system": {
@@ -198,8 +207,19 @@ class Supervisor:
             "failure": None,
         }
         self.sequence = 0
+        public_manifest = config.public_manifest(self.track)
+        public_manifest["agent_environment"] = agent.public_manifest(
+            config.inference_gateway_image
+        )
+        public_manifest["training_environment"]["resources"] = (
+            resources.public_manifest()
+        )
+        public_manifest["policy"] = {
+            "compliant": policy_compliant,
+            "violations": policy_violations,
+        }
         self.public_task_path.write_text(
-            json.dumps(config.public_manifest(self.track), indent=2, sort_keys=True)
+            json.dumps(public_manifest, indent=2, sort_keys=True)
             + "\n",
             encoding="utf-8",
         )
@@ -217,9 +237,9 @@ class Supervisor:
             self._event(
                 "TASK_REVEALED",
                 track=self.track,
-                agent_runner=self.config.agent_runner,
-                agent_mode=self.config.agent_mode,
-                inference_enabled=self.config.inference is not None,
+                agent_runner=self.agent.runner,
+                agent_mode=self.agent.mode,
+                inference_enabled=self.agent.inference is not None,
             )
             self._save_state()
 
@@ -313,16 +333,16 @@ class Supervisor:
                 "episode_id": self.state["episode_id"],
                 "task_id": self.config.task_id,
                 "track": self.track,
-                "agent_runner": self.config.agent_runner,
-                "agent_mode": self.config.agent_mode,
-                "agent_network": self.config.agent_network,
-                "policy_compliant": self.config.policy_compliant,
-                "policy_violations": self.config.policy_violations,
+                "agent_runner": self.agent.runner,
+                "agent_mode": self.agent.mode,
+                "agent_network": self.agent.network,
+                "policy_compliant": self.state["policy_compliant"],
+                "policy_violations": list(self.state["policy_violations"]),
                 "evaluator_backend": self.config.evaluator_backend,
                 "evaluator_policy_compliant": (
                     self.config.evaluator_policy_compliant
                 ),
-                "inference_enabled": self.config.inference is not None,
+                "inference_enabled": self.agent.inference is not None,
                 "inference_usage": dict(self.state["inference_usage"]),
                 "agent_usage": self.state["agent_usage"],
                 "agent_exit_code": self.state["agent_system"]["exit_code"],
@@ -424,6 +444,8 @@ class Supervisor:
                 self.runtime.start_training(
                     name=container_name,
                     config=self.config,
+                    workspace=self.agent.workspace,
+                    resources=self.resources,
                     lease_dir=lease_dir,
                 )
             except RuntimeFailure as exc:
@@ -696,6 +718,7 @@ class Supervisor:
             try:
                 val_nll = self.runtime.run_evaluator(
                     config=self.config,
+                    resources=self.resources,
                     candidate_dir=snapshot["path"],
                     split="val",
                     output_dir=self.evaluations_dir / snapshot["path"].name,
@@ -788,7 +811,7 @@ class Supervisor:
             self.state["agent_usage"] = dict(usage) if usage is not None else None
             self._event(
                 "AGENT_PROCESS_EXITED",
-                runner=self.config.agent_runner,
+                runner=self.agent.runner,
                 exit_code=int(exit_code),
                 termination_reason=termination_reason,
                 finish_observed=self.state["agent_system"]["finish_observed"],
@@ -833,6 +856,7 @@ class Supervisor:
         try:
             test_nll = self.runtime.run_evaluator(
                 config=self.config,
+                resources=self.resources,
                 candidate_dir=candidate_dir,
                 split="test",
                 output_dir=self.evaluations_dir / digest,

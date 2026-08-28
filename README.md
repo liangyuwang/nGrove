@@ -20,7 +20,7 @@ Instead of fixing a small model and asking:
 
 AutoTrain-Bench asks:
 
-> **Given a fixed task, fixed data, fixed training hardware, and a constrained opportunity to interact with the training environment, how good a model can an autonomous research system produce?**
+> **Given a fixed task, fixed data, a fixed evaluation contract, and a constrained opportunity to interact with the training environment, how good a model can an autonomous research system produce?**
 
 The benchmark intentionally leaves most of the training stack open.
 
@@ -69,21 +69,31 @@ under the resource constraints of the selected benchmark track.
 
 The repository now contains an executable, single-host Docker prototype of the benchmark protocol. It is intended to validate episode lifecycle, Training Lease accounting, hidden evaluation, and the agent-facing control surface before the first official benchmark instance is selected.
 
-The prototype deliberately assumes that the user has already obtained a machine matching the task's hardware specification. AutoTrain-Bench verifies and consumes resources visible on that machine; it does **not** allocate machines or integrate with Slurm, Kubernetes, or a cloud scheduler.
+The reference runtime requires a machine that can run Docker. AutoTrain-Bench
+consumes the environment the user has already obtained; it does **not** allocate
+machines or integrate with Slurm, Kubernetes, or a cloud scheduler.
 
 The repository contains one bundled task, `examples/mini_lm`. It is a comparable
-mini release rather than a collection of unrelated toys: exact H200 hardware,
-pinned images, a real fixed corpus, both tracks, and an isolated Candidate
-serving boundary. Its default sandboxed run reports `policy_compliant: true`.
+mini challenge rather than a smoke test: a real fixed corpus, pinned task
+images, both tracks, and an isolated Candidate serving boundary. It has no
+default Agent or starter training program. A sandboxed participant run reports
+`policy_compliant: true`.
+
+Hardware allocation is likewise not part of the task. An episode defaults to
+CPU and may explicitly expose NVIDIA GPUs with `--training-gpus` or generic
+Docker devices with `--training-device`. The requested resources and discovered
+runtime inventory are recorded with the result.
 
 ## Quick start
 
 Requirements:
 
 * Python 3.9 or newer;
-* Docker;
-* NVIDIA Container Toolkit;
-* exactly one visible NVIDIA H200 GPU.
+* Docker.
+
+CPU episodes need nothing else. NVIDIA GPU episodes additionally require the
+NVIDIA Container Toolkit; other accelerators require a Docker-compatible device
+and support in the task's pinned Training image.
 
 Install the local CLI:
 
@@ -91,20 +101,18 @@ Install the local CLI:
 python3 -m pip install -e .
 ```
 
-Prepare the fixed TinyStories data and images, then run the five-minute Track A
-or the three-lease Track B:
+Prepare the fixed TinyStories data and task images:
 
 ```bash
 python3 examples/mini_lm/prepare_data.py
 autotrain-bench prepare --task examples/mini_lm/task.json
-autotrain-bench start --task examples/mini_lm/task.json --track A
-autotrain-bench start --task examples/mini_lm/task.json --track B
 ```
 
-The task downloads about 0.98 MB of real text, uses a fixed byte tokenizer,
-hidden 8K-token VAL/TEST splits, and trains small causal Transformers. See
-`examples/mini_lm/README.md` for the release-to-mini mapping, Candidate ABI,
-isolation boundary, and reproducibility details.
+The task downloads about 0.98 MB of real text and uses hidden 8K-token VAL/TEST
+splits. By default the selected Agent receives an empty workspace and must
+create its own training system. See `examples/mini_lm/README.md` for the task
+boundary, Candidate ABI, optional public reference Agent, and reproducibility
+details.
 
 A participant Agent Container can be selected without changing the benchmark task:
 
@@ -112,15 +120,16 @@ A participant Agent Container can be selected without changing the benchmark tas
 autotrain-bench start \
   --task path/to/task.json \
   --track B \
+  --agent-runner container \
   --agent-image participant-agent:version \
-  --agent-command "python /workspace/agent.py"
+  --agent-command "participant-agent run"
 ```
 
 ## Bring your own Agent: host-native CLI tools
 
 AutoTrain-Bench supports two Agent runners:
 
-* `container` (the default) runs a participant command in an Agent Container;
+* `container` runs a participant command in an Agent Container;
 * `host_cli` runs any autonomous, non-interactive CLI command on the host while
   the Supervisor, Training Containers, hidden evaluation, deadlines, and mailbox
   protocol remain unchanged.
@@ -213,32 +222,23 @@ http://inference-gateway:8765/v1
 
 The Agent has no route from that internal network to the public Internet. The
 official Gateway alone also joins a separate egress network and owns the real
-provider credential. It is not a generic HTTP proxy: the task configuration fixes
-the upstream origin, allowed API paths, and model names before task reveal;
+provider credential. It is not a generic HTTP proxy: the episode registration
+fixes the upstream origin, allowed API paths, and model names before task reveal;
 redirects and provider-hosted external tools are rejected. The Agent never
 receives the provider credential or chooses arbitrary destinations.
 
-A minimal configuration looks like:
+A minimal launch looks like:
 
-```json
-{
-  "images": {
-    "inference_gateway": "python:3.11-slim"
-  },
-  "agent": {
-    "runner": "container",
-    "command": ["python", "/workspace/agent.py"],
-    "mode": "sandboxed",
-    "environment": [],
-    "inference": {
-      "protocol": "openai_compatible",
-      "base_url": "https://api.openai.com",
-      "api_key_env": "OPENAI_API_KEY",
-      "allowed_models": ["registered-researcher-model"],
-      "allowed_paths": ["/v1/responses", "/v1/chat/completions"]
-    }
-  }
-}
+```bash
+autotrain-bench start \
+  --task path/to/task.json \
+  --track B \
+  --agent-runner container \
+  --agent-image participant-agent@sha256:DIGEST \
+  --agent-command "participant-agent run" \
+  --inference-base-url https://api.openai.com \
+  --inference-api-key-env OPENAI_API_KEY \
+  --inference-model registered-researcher-model
 ```
 
 For a credentialed endpoint, the user exports the credential only in the host
@@ -246,12 +246,11 @@ environment before starting the episode:
 
 ```bash
 export OPENAI_API_KEY="..."
-autotrain-bench start --task path/to/task.json --track B
 ```
 
-For a trusted local endpoint that requires no authentication, set
-`"api_key_env": null`; the Gateway still freezes the origin, paths, and model
-identities and records usage.
+For a trusted local endpoint that requires no authentication, omit
+`--inference-api-key-env`; the Gateway still freezes the origin, paths, and
+model identities and records usage.
 
 For compatibility with common OpenAI-style clients, the Agent Container receives
 `OPENAI_BASE_URL=http://inference-gateway:8765/v1` and a dummy local API key. The
@@ -326,7 +325,7 @@ containers receive neither the Docker socket nor VAL/TEST mounts. Sandboxed
 Agent and Training networking is disabled; Candidate evaluation uses only an
 ephemeral internal network shared with its Evaluator. The Gateway handles only
 frozen researcher-inference endpoints while the Supervisor independently
-enforces episode and GPU-lease deadlines. `unrestricted-dev` and `host_cli`
+enforces episode and Training-Lease deadlines. `unrestricted-dev` and `host_cli`
 exist only as non-compliant local integration modes.
 
 The v0 threat model protects benchmark policy from the Agent, not from the user or machine administrator. Docker isolation is a development reference boundary and is not presented as protection against kernel, container-runtime, or GPU-driver exploits. Official adversarial evaluation may require stronger worker or VM isolation.
@@ -430,7 +429,10 @@ User-owned host
         └── untrusted Candidate Container without hidden files or public network
 ```
 
-The official Supervisor records task reveal time, owns Track A deadlines and Track B lease counters, controls container lifecycle, exposes already-allocated local GPUs, and invokes evaluation. The Agent cannot access the Supervisor's state or Docker socket.
+The official Supervisor records task reveal time, owns Track A deadlines and
+Track B lease counters, controls container lifecycle, exposes only the
+pre-allocated Training Environment, and invokes evaluation. The Agent cannot
+access the Supervisor's state or Docker socket.
 
 The Agent receives interactive access to a Training Container only through the Supervisor's narrow command channel during an active **Training Lease**. It may inspect logs, edit the shared workspace, compile code, profile, and run any number of TRAIN-only experiments inside that lease.
 
@@ -689,7 +691,8 @@ Choosing the appropriate model scale is itself part of the benchmark.
 
 # Training Leases
 
-A **Training Lease** is a fixed-duration interactive window in which the Agent may use the benchmark's already-allocated training hardware.
+A **Training Lease** is a fixed-duration interactive window in which the Agent
+may use the benchmark's already-allocated Training Environment.
 
 ```text
 Agent
@@ -713,7 +716,10 @@ lease permanently ends
 
 The Agent interacts with the Training Container only through Supervisor-controlled operations. It never receives Docker or host control.
 
-Within a lease, the search process is unrestricted by experiment count. The Agent may repeatedly change architecture, optimization, data policy, kernels, distributed code, or its own research tools as long as it remains within the lease's hardware and time limits.
+Within a lease, the search process is unrestricted by experiment count. The
+Agent may repeatedly change architecture, optimization, data policy, kernels,
+distributed code, or its own research tools as long as it remains within the
+visible Training Environment and time limits.
 
 Each lease may commit at most one candidate. Commit immediately terminates the lease before VAL is evaluated, so VAL feedback can influence only a later lease. A lease may also end without a candidate because of failure, timeout, or an explicit stop.
 
@@ -816,7 +822,8 @@ Agent Research Time:       Unbounded by benchmark score
 
 The AutoTrain system may reason, write code, analyze previous results, and autonomously improve for as long as it chooses between Training Leases.
 
-However, it may obtain interactive access to the training hardware only a fixed number of times.
+However, it may obtain interactive access to the Training Environment only a
+fixed number of times.
 
 Conceptually:
 
@@ -867,7 +874,7 @@ for the final incumbent selected by the AutoTrain system.
 
 Track B asks:
 
-> **How effectively can an autonomous researcher use a limited number of training-hardware windows and official validation-feedback rounds?**
+> **How effectively can an autonomous researcher use a limited number of Training Environment windows and official validation-feedback rounds?**
 
 It emphasizes:
 
@@ -876,7 +883,7 @@ It emphasizes:
 * information gained per lease and VAL query;
 * interpretation of failures;
 * hypothesis quality;
-* efficiency of autonomous research under bounded accelerator access.
+* efficiency of autonomous research under bounded Training Environment access.
 
 Track B intentionally does **not** optimize total research wall-clock.
 
@@ -896,11 +903,11 @@ The two tracks constrain different scarce resources.
 | Per-lease time      | Bounded by remaining total time  | Fixed maximum                                  |
 | Agent research time | Counts against deadline          | Not score-limited                              |
 | Number of leases    | Unlimited within deadline        | Fixed                                          |
-| Experiments in lease| Unlimited within time/hardware   | Unlimited within time/hardware                 |
+| Experiments in lease| Unlimited within time/environment| Unlimited within time/environment              |
 | Official VAL        | At most once per committed lease | At most once per committed lease               |
 | Self-improvement    | Allowed                          | Allowed                                        |
 | Human intervention  | Forbidden                        | Forbidden                                      |
-| Primary question    | How fast can the system improve? | How well can it use bounded GPU access?         |
+| Primary question    | How fast can the system improve? | How well can it use bounded training access?    |
 
 Together they expose two different scaling behaviors.
 
@@ -1237,7 +1244,7 @@ It may request and interact with a Training Container only through the Superviso
 
 The Training Environment:
 
-* executes on fixed, already-allocated local hardware;
+* executes in an already-allocated local Docker environment;
 * shares the Agent workspace during an active lease;
 * permits repeated interactive commands inside that lease;
 * has no Docker socket, public network, VAL, or TEST access;
@@ -1378,7 +1385,8 @@ training compute
 model size
 ```
 
-Different benchmark releases may use different hardware or budget scales and should not be mixed into a single leaderboard.
+Results from materially different runtime profiles or budget scales should not
+be mixed into a single leaderboard comparison.
 
 ---
 
@@ -1388,26 +1396,17 @@ The executable v0 task manifest is JSON and keeps task and track budgets in one 
 
 ```json
 {
-  "task_id": "tinystories-byte-transformer-mini-v1",
+  "task_id": "tinystories-byte-lm-mini-v1",
   "paths": {
     "train": "data/train",
     "val": "data/private/val.json",
-    "test": "data/private/test.json",
-    "agent_workspace": "agent"
+    "test": "data/private/test.json"
   },
   "images": {
-    "agent": "python@sha256:<digest>",
     "training": "pytorch/pytorch@sha256:<digest>",
     "candidate": "pytorch/pytorch@sha256:<digest>",
     "evaluator": "python@sha256:<digest>"
   },
-  "agent": {
-    "runner": "container",
-    "command": ["python", "/workspace/agent.py"],
-    "mode": "sandboxed",
-    "environment": []
-  },
-  "hardware": { "gpu_count": 1, "gpu_model": "NVIDIA H200" },
   "track_a": { "total_seconds": 300 },
   "track_b": { "max_leases": 3, "lease_seconds": 75 },
   "evaluation": {
@@ -1416,8 +1415,8 @@ The executable v0 task manifest is JSON and keeps task and track budgets in one 
     "metric": "autoregressive_nll",
     "vocab_size": 257,
     "context_length": 128,
-    "batch_size": 64,
-    "device": "cuda",
+    "batch_size": 16,
+    "device": "cpu",
     "max_candidate_bytes": 2147483648,
     "max_candidate_files": 10000
   }
@@ -1425,7 +1424,9 @@ The executable v0 task manifest is JSON and keeps task and track budgets in one 
 ```
 
 See `examples/mini_lm/task.json` for the complete runnable manifest with exact
-image digests.
+image digests. Agent image, command, runner, and optional initial workspace are
+participant-owned launch inputs and are intentionally absent from the task.
+Hardware/device allocation is an episode runtime input and is also absent.
 
 ---
 
@@ -1435,7 +1436,8 @@ AutoTrain-Bench follows several principles.
 
 ### 1. Fix the task, not the solution
 
-The benchmark fixes the environment and evaluation semantics while leaving the training system open.
+The benchmark fixes the Training Environment contract and evaluation semantics
+while leaving the participant's training system open.
 
 ### 2. TEST, not rules, should punish overfitting
 
@@ -1582,15 +1584,17 @@ The repository contains a working v0 local reference prototype with:
 * a generic host CLI runner and a logged-in Codex CLI adapter;
 * isolated hidden-split lifecycle and post-closure TEST evaluation;
 * append-only benchmark, inference, and host-Agent JSONL traces;
-* one reproducible, fixed-hardware TinyStories mini benchmark.
+* one reproducible TinyStories mini challenge with no injected training code.
 
-The comparable mini release fixes its TRAIN/VAL/TEST construction, tokenizer,
-H200 hardware, budgets, software images, and isolated Candidate serving
-protocol. A future long-duration release may scale those fixed concepts, while
-additional inference-provider adapters, synthetic-data policy, and isolation
-beyond the v0 Docker threat model remain open design work.
+The mini challenge fixes its TRAIN/VAL/TEST construction, public evaluation
+contract, budgets, task-owned software images, and isolated Candidate serving
+protocol. The selected Agent and its initial workspace remain participant-owned.
+A future long-duration release can scale the same boundaries, while additional
+inference-provider adapters, synthetic-data policy, and isolation beyond the v0
+Docker threat model remain open design work.
 
-The v0 prototype is intentionally single-host and resource-allocation agnostic. Users obtain a machine matching the release specification before starting AutoTrain-Bench.
+The v0 prototype is intentionally single-host and resource-allocation agnostic.
+Users obtain a Docker-capable environment before starting AutoTrain-Bench.
 
 ---
 
@@ -1615,7 +1619,7 @@ $$
 $$
 
 $$
-\boxed{\text{Fixed training hardware}}
+\boxed{\text{Fixed Training Environment contract}}
 $$
 
 $$

@@ -1,33 +1,15 @@
 {
-  "task_id": "tinystories-byte-transformer-mini-v1",
+  "task_id": "tinystories-byte-lm-mini-v1",
   "paths": {
     "train": "data/train",
     "val": "data/private/val.json",
-    "test": "data/private/test.json",
-    "agent_workspace": "agent"
+    "test": "data/private/test.json"
   },
   "images": {
-    "agent": "python@sha256:1042b61448fef4ba92d16a8c7eb4996d027568ce64792a7877fd88511e0af7c6",
     "training": "pytorch/pytorch@sha256:c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2",
     "candidate": "pytorch/pytorch@sha256:c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2",
     "evaluator": "python@sha256:1042b61448fef4ba92d16a8c7eb4996d027568ce64792a7877fd88511e0af7c6",
     "inference_gateway": "python@sha256:1042b61448fef4ba92d16a8c7eb4996d027568ce64792a7877fd88511e0af7c6"
-  },
-  "agent": {
-    "runner": "container",
-    "command": [
-      "python",
-      "/workspace/agent.py"
-    ],
-    "environment": [],
-    "mode": "sandboxed",
-    "inference": {
-      "enabled": false
-    }
-  },
-  "hardware": {
-    "gpu_count": 1,
-    "gpu_model": "NVIDIA H200"
   },
   "evaluation": {
     "backend": "isolated_candidate",
@@ -35,8 +17,8 @@
     "metric": "autoregressive_nll",
     "vocab_size": 257,
     "context_length": 128,
-    "batch_size": 64,
-    "device": "cuda",
+    "batch_size": 16,
+    "device": "cpu",
     "max_candidate_bytes": 2147483648,
     "max_candidate_files": 10000,
     "timeout_seconds": 240

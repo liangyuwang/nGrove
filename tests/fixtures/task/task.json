@@ -3,24 +3,14 @@
   "paths": {
     "train": "train",
     "val": "private/val.json",
-    "test": "private/test.json",
-    "agent_workspace": "agent"
+    "test": "private/test.json"
   },
   "images": {
-    "agent": "python@sha256:test-agent",
     "training": "python@sha256:test-training",
     "candidate": "python@sha256:test-candidate",
     "evaluator": "python@sha256:test-evaluator",
     "inference_gateway": "python@sha256:test-gateway"
   },
-  "agent": {
-    "runner": "container",
-    "command": ["python", "/workspace/agent.py"],
-    "environment": [],
-    "mode": "sandboxed",
-    "inference": {"enabled": false}
-  },
-  "hardware": {"gpu_count": 0, "gpu_model": null},
   "evaluation": {
     "backend": "isolated_candidate",
     "entrypoint": "evaluator.py",

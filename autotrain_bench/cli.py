@@ -10,15 +10,17 @@ import shutil
 import sys
 import time
 import uuid
-from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .client import Client, ClientError
 from .config import (
+    AgentConfig,
     ConfigError,
+    InferenceConfig,
     TaskConfig,
+    TrainingResources,
     agent_environment_names,
     agent_mode,
     agent_runner,
@@ -57,6 +59,17 @@ def _snapshot_agent_workspace(source: Path, destination: Path) -> None:
         raise ConfigError(f"failed to snapshot agent workspace: {exc}") from exc
 
 
+def _initialize_agent_workspace(
+    source: Optional[Path], destination: Path
+) -> None:
+    """Create an empty episode workspace or snapshot explicit participant files."""
+
+    if source is None:
+        destination.mkdir()
+    else:
+        _snapshot_agent_workspace(source.resolve(), destination)
+
+
 def _terminal_agent_action(
     *, runner: str, running: bool, drain_elapsed_seconds: float
 ) -> str:
@@ -82,14 +95,8 @@ def command_prepare(args: argparse.Namespace) -> int:
             "status": "ready",
             "task_id": config.task_id,
             "images": config.images,
-            "gpu_count": config.gpu_count,
-            "gpu_model": config.gpu_model,
-            "agent_runner": config.agent_runner,
-            "agent_mode": config.agent_mode,
-            "policy_compliant": config.policy_compliant,
-            "policy_violations": config.policy_violations,
             "evaluator_backend": config.evaluator_backend,
-            "inference_enabled": config.inference is not None,
+            "evaluator_policy_compliant": config.evaluator_policy_compliant,
             "runtime_environment": runtime_environment,
         }
     )
@@ -98,63 +105,39 @@ def command_prepare(args: argparse.Namespace) -> int:
 
 def command_start(args: argparse.Namespace) -> int:
     config = TaskConfig.load(args.task)
-    if (
-        args.agent_image
-        or args.agent_command_override
-        or args.agent_runner
-        or args.agent_mode
-        or args.agent_environment
-    ):
-        command = (
-            shlex.split(args.agent_command_override)
-            if args.agent_command_override
-            else config.agent_command
-        )
-        if not command:
-            raise ConfigError("--agent-command must not be empty")
-        environment = agent_environment_names(
-            [*config.agent_environment, *args.agent_environment],
-            "--agent-env",
-        )
-        resolved_runner = agent_runner(
-            args.agent_runner or config.agent_runner,
-            "--agent-runner",
-        )
-        if resolved_runner == "host_cli":
-            if args.agent_image:
-                raise ConfigError("--agent-image is not valid with host_cli")
-            if args.agent_mode:
-                raise ConfigError("--agent-mode is not valid with host_cli")
-            if config.agent_runner != "host_cli" and not args.agent_command_override:
-                raise ConfigError(
-                    "--agent-command is required when overriding a task to host_cli"
-                )
-            resolved_mode = None
-        else:
-            resolved_mode = agent_mode(
-                args.agent_mode
-                or (config.agent_mode if config.agent_runner == "container" else "sandboxed"),
-                "--agent-mode",
-            )
-        config = replace(
-            config,
-            agent_image=args.agent_image or config.agent_image,
-            agent_command=command,
-            agent_runner=resolved_runner,
-            agent_mode=resolved_mode,
-            agent_environment=environment,
-        ).validate()
+    resources = TrainingResources(
+        nvidia_gpu_count=args.training_gpus,
+        required_gpu_model=args.training_gpu_model,
+        devices=args.training_devices,
+    ).validate_for(config)
+    resolved_runner = agent_runner(args.agent_runner, "--agent-runner")
+    if resolved_runner == "host_cli":
+        if args.agent_mode:
+            raise ConfigError("--agent-mode is not valid with host_cli")
+        resolved_mode = None
     else:
-        config.validate()
-    missing_environment = [
-        name for name in config.agent_environment if name not in os.environ
-    ]
-    if missing_environment:
-        names = ", ".join(missing_environment)
-        raise ConfigError(f"agent environment variable is not set: {names}")
-    runtime = DockerRuntime()
-    runtime.prepare(config, pull_missing=False)
-    runtime_environment = runtime.environment_manifest(config)
+        resolved_mode = agent_mode(args.agent_mode or "sandboxed", "--agent-mode")
+    command = shlex.split(args.agent_command)
+    environment = agent_environment_names(args.agent_environment, "--agent-env")
+
+    inference = None
+    if args.inference_base_url:
+        inference = InferenceConfig.load(
+            {
+                "base_url": args.inference_base_url,
+                "api_key_env": args.inference_api_key_env,
+                "allowed_models": args.inference_models,
+                "allowed_paths": args.inference_paths
+                or ["/v1/responses", "/v1/chat/completions"],
+                "timeout_seconds": args.inference_timeout,
+            },
+            "inference",
+        )
+    elif args.inference_api_key_env or args.inference_models or args.inference_paths:
+        raise ConfigError(
+            "--inference-base-url is required when configuring registered inference"
+        )
+
     episode_dir = (
         args.episode_dir.resolve()
         if args.episode_dir
@@ -163,13 +146,42 @@ def command_start(args: argparse.Namespace) -> int:
     episode_dir.mkdir(parents=True, exist_ok=False)
     workspace = episode_dir / "workspace"
     try:
-        _snapshot_agent_workspace(config.agent_workspace, workspace)
+        _initialize_agent_workspace(args.agent_workspace, workspace)
+        agent = AgentConfig(
+            workspace=workspace,
+            runner=resolved_runner,
+            command=command,
+            image=args.agent_image,
+            mode=resolved_mode,
+            environment=environment,
+            inference=inference,
+        ).validate()
+        missing_environment = [
+            name for name in agent.environment if name not in os.environ
+        ]
+        if missing_environment:
+            names = ", ".join(missing_environment)
+            raise ConfigError(f"agent environment variable is not set: {names}")
+        runtime = DockerRuntime()
+        runtime.prepare(
+            config,
+            agent=agent,
+            resources=resources,
+            pull_missing=False,
+        )
+        runtime_environment = runtime.environment_manifest(
+            config,
+            agent=agent,
+            resources=resources,
+        )
     except Exception:
         shutil.rmtree(episode_dir, ignore_errors=True)
         raise
-    config = replace(config, agent_workspace=workspace).validate()
+
     supervisor = Supervisor(
         config=config,
+        agent=agent,
+        resources=resources,
         track=args.track,
         episode_dir=episode_dir,
         runtime=runtime,
@@ -187,10 +199,10 @@ def command_start(args: argparse.Namespace) -> int:
     networks_created: List[str] = []
     print(f"Episode: {episode_dir}", flush=True)
     try:
-        if config.inference is not None:
+        if agent.inference is not None:
             runtime.create_network(
                 agent_network,
-                internal=config.agent_mode == "sandboxed",
+                internal=agent.mode == "sandboxed",
             )
             networks_created.append(agent_network)
             runtime.create_network(egress_network, internal=False)
@@ -200,21 +212,23 @@ def command_start(args: argparse.Namespace) -> int:
                 agent_network=agent_network,
                 egress_network=egress_network,
                 config=config,
+                agent=agent,
                 audit_dir=supervisor.inference_dir,
             )
             gateway_started = True
         supervisor.begin()
-        if config.agent_runner == "container":
+        if agent.runner == "container":
             runtime.start_agent(
                 name=agent_name,
                 config=config,
+                agent=agent,
                 control_dir=supervisor.control_dir,
                 public_task_path=supervisor.public_task_path,
-                inference_network=agent_network if config.inference is not None else None,
+                inference_network=agent_network if agent.inference is not None else None,
             )
         else:
             host_agent = runtime.start_host_agent(
-                config=config,
+                agent=agent,
                 control_dir=supervisor.control_dir,
                 public_task_path=supervisor.public_task_path,
                 stdout_path=episode_dir / "agent.stdout.log",
@@ -223,7 +237,7 @@ def command_start(args: argparse.Namespace) -> int:
         agent_started = True
     except Exception:
         supervisor.agent_exited_without_finish()
-        if config.agent_runner == "container":
+        if agent.runner == "container":
             runtime.stop_container(agent_name)
         elif host_agent is not None:
             host_agent.stop()
@@ -242,13 +256,13 @@ def command_start(args: argparse.Namespace) -> int:
             status = supervisor.public_status()["status"]
             agent_running = (
                 runtime.container_running(agent_name)
-                if config.agent_runner == "container"
+                if agent.runner == "container"
                 else bool(host_agent and host_agent.running)
             )
 
             if (
                 status == "active"
-                and config.inference is not None
+                and agent.inference is not None
                 and not runtime.container_running(gateway_name)
             ):
                 supervisor.infrastructure_failed(
@@ -268,12 +282,12 @@ def command_start(args: argparse.Namespace) -> int:
                 if terminal_at is None:
                     terminal_at = time.monotonic()
                 terminal_action = _terminal_agent_action(
-                    runner=config.agent_runner,
+                    runner=agent.runner,
                     running=agent_running,
                     drain_elapsed_seconds=time.monotonic() - terminal_at,
                 )
                 if terminal_action != "wait":
-                    if config.agent_runner == "host_cli":
+                    if agent.runner == "host_cli":
                         host_termination_reason = terminal_action
                     break
             if not processed:
@@ -286,14 +300,14 @@ def command_start(args: argparse.Namespace) -> int:
         if active:
             runtime.stop_container(active["container_name"])
         try:
-            if config.agent_runner == "container":
+            if agent.runner == "container":
                 agent_log = runtime.container_logs(agent_name) if agent_started else ""
                 agent_log_path = episode_dir / "agent.log"
                 agent_log_path.write_text(agent_log, encoding="utf-8")
                 agent_log_path.chmod(0o600)
         except (OSError, RuntimeFailure):
             pass
-        if config.agent_runner == "container":
+        if agent.runner == "container":
             runtime.stop_container(agent_name)
         elif host_agent is not None:
             if host_termination_reason is None:
@@ -384,23 +398,24 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--episode-dir", type=Path)
     start.add_argument(
         "--agent-runner",
+        required=True,
         choices=["container", "host_cli"],
-        help="override how the Agent process is launched",
+        help="how the participant-owned Agent process is launched",
     )
     start.add_argument(
         "--agent-image",
-        help="override the registered Agent Container image for this episode",
+        help="participant Agent image (required for the container runner)",
     )
     start.add_argument(
         "--agent-command",
-        dest="agent_command_override",
-        help="override the command executed by the selected Agent runner",
+        required=True,
+        help="participant Agent command",
     )
     start.add_argument(
         "--agent-mode",
         choices=["sandboxed", "unrestricted-dev"],
         help=(
-            "override Agent execution mode; unrestricted-dev is convenient for "
+            "Agent execution mode; unrestricted-dev is convenient for "
             "debugging but is not policy-compliant"
         ),
     )
@@ -411,6 +426,45 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         metavar="NAME",
         help="forward a named host environment variable to the selected Agent runner",
+    )
+    start.add_argument(
+        "--agent-workspace",
+        type=Path,
+        help=(
+            "snapshot participant-owned initial files into the episode; omit for "
+            "an empty workspace"
+        ),
+    )
+    start.add_argument("--inference-base-url")
+    start.add_argument("--inference-api-key-env")
+    start.add_argument(
+        "--inference-model", dest="inference_models", action="append", default=[]
+    )
+    start.add_argument(
+        "--inference-path", dest="inference_paths", action="append", default=[]
+    )
+    start.add_argument("--inference-timeout", type=int, default=300)
+    start.add_argument(
+        "--training-gpus",
+        type=int,
+        default=0,
+        metavar="COUNT",
+        help=(
+            "expose COUNT NVIDIA GPUs to Training Containers and, when the "
+            "task requests CUDA evaluation, Candidate Containers"
+        ),
+    )
+    start.add_argument(
+        "--training-gpu-model",
+        help="require the trusted host GPU inventory to contain this model string",
+    )
+    start.add_argument(
+        "--training-device",
+        dest="training_devices",
+        action="append",
+        default=[],
+        metavar="/DEV/PATH",
+        help="expose an additional Docker device to Training Containers",
     )
     start.add_argument(
         "--episodes-root", type=Path, default=Path(".autotrain/episodes")

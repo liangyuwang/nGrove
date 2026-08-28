@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-from .config import TaskConfig
+from .config import AgentConfig, TaskConfig, TrainingResources
 from .host_agent import HostAgentProcess, start_host_agent_process
 
 
@@ -78,24 +78,41 @@ class DockerRuntime:
             value += ",readonly"
         return value
 
-    def prepare(self, config: TaskConfig, *, pull_missing: bool = True) -> None:
+    def prepare(
+        self,
+        config: TaskConfig,
+        *,
+        agent: Optional[AgentConfig] = None,
+        resources: Optional[TrainingResources] = None,
+        pull_missing: bool = True,
+    ) -> None:
         self._run(["info"], timeout=20)
-        for image in config.images:
+        images = set(config.images)
+        if agent is not None:
+            agent.validate()
+            if agent.image:
+                images.add(agent.image)
+            if agent.inference is not None:
+                images.add(config.inference_gateway_image)
+        for image in sorted(images):
             inspected = self._run(["image", "inspect", image], check=False)
             if inspected.returncode == 0:
                 continue
             if not pull_missing:
                 raise RuntimeFailure(f"required image is missing: {image}")
             self._run(["pull", image])
-        self.validate_hardware(config)
+        if resources is not None:
+            resources.validate_for(config)
+            self.validate_hardware(resources)
 
-    def validate_hardware(self, config: TaskConfig) -> None:
-        if config.gpu_count == 0:
+    def validate_hardware(self, resources: TrainingResources) -> None:
+        resources.validate()
+        if resources.nvidia_gpu_count == 0:
             return
         nvidia_smi = shutil.which("nvidia-smi")
         if not nvidia_smi:
             raise RuntimeFailure(
-                f"task requires {config.gpu_count} GPU(s), but nvidia-smi is unavailable"
+                "episode requests NVIDIA GPUs, but nvidia-smi is unavailable"
             )
         result = subprocess.run(
             [nvidia_smi, "--query-gpu=name", "--format=csv,noheader"],
@@ -106,30 +123,56 @@ class DockerRuntime:
         if result.returncode != 0:
             raise RuntimeFailure(result.stderr.strip() or "nvidia-smi failed")
         names = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-        if len(names) != config.gpu_count:
+        if len(names) < resources.nvidia_gpu_count:
             raise RuntimeFailure(
-                f"task requires exactly {config.gpu_count} visible GPU(s); found {len(names)}"
+                "episode requests "
+                f"{resources.nvidia_gpu_count} NVIDIA GPU(s); found {len(names)}"
             )
-        if config.gpu_model and any(config.gpu_model not in name for name in names):
+        if resources.required_gpu_model and sum(
+            resources.required_gpu_model in name for name in names
+        ) < resources.nvidia_gpu_count:
             raise RuntimeFailure(
-                f"task requires GPU model containing {config.gpu_model!r}; found {names}"
+                "episode requires GPU model containing "
+                f"{resources.required_gpu_model!r}; found {names}"
             )
 
-    def environment_manifest(self, config: TaskConfig) -> Dict[str, Any]:
+    def environment_manifest(
+        self,
+        config: TaskConfig,
+        *,
+        agent: Optional[AgentConfig] = None,
+        resources: Optional[TrainingResources] = None,
+    ) -> Dict[str, Any]:
         """Record the concrete runtime used for a comparable episode."""
 
         docker_version = self._run(
             ["version", "--format", "{{.Server.Version}}"], timeout=20
         ).stdout.strip()
+        docker_resources = {
+            "cpu_count": self._run(
+                ["info", "--format", "{{.NCPU}}"], timeout=20
+            ).stdout.strip(),
+            "memory_bytes": self._run(
+                ["info", "--format", "{{.MemTotal}}"], timeout=20
+            ).stdout.strip(),
+            "architecture": self._run(
+                ["info", "--format", "{{.Architecture}}"], timeout=20
+            ).stdout.strip(),
+            "operating_system": self._run(
+                ["info", "--format", "{{.OperatingSystem}}"], timeout=20
+            ).stdout.strip(),
+        }
         images: Dict[str, Dict[str, str]] = {}
         for role, reference in (
-            ("agent", config.agent_image),
+            ("agent", agent.image if agent is not None else None),
             ("training", config.training_image),
             ("candidate", config.candidate_image),
             ("evaluator", config.evaluator_image),
             (
                 "inference_gateway",
-                config.inference_gateway_image if config.inference else None,
+                config.inference_gateway_image
+                if agent is not None and agent.inference is not None
+                else None,
             ),
         ):
             if not reference:
@@ -143,8 +186,13 @@ class DockerRuntime:
                 "image_id": inspected.stdout.strip(),
             }
 
+        resolved_resources = resources or TrainingResources()
+        if resources is None:
+            resolved_resources.validate()
+        else:
+            resolved_resources.validate_for(config)
         gpus: List[Dict[str, str]] = []
-        if config.gpu_count:
+        if resolved_resources.nvidia_gpu_count:
             nvidia_smi = shutil.which("nvidia-smi")
             if not nvidia_smi:  # guarded by validate_hardware
                 raise RuntimeFailure("nvidia-smi disappeared after hardware validation")
@@ -172,39 +220,45 @@ class DockerRuntime:
                         "memory_mib": fields[3],
                     }
                 )
-        return {
+        manifest = {
             "docker_server_version": docker_version,
+            "docker_resources": docker_resources,
             "images": images,
             "gpus": gpus,
         }
+        if resources is not None:
+            manifest["training_resources"] = resolved_resources.public_manifest()
+        return manifest
 
     def start_agent(
         self,
         *,
         name: str,
         config: TaskConfig,
+        agent: AgentConfig,
         control_dir: Path,
         public_task_path: Path,
         inference_network: Optional[str] = None,
     ) -> None:
         config.validate()
-        if config.agent_runner != "container":
+        agent.validate()
+        if agent.runner != "container":
             raise RuntimeFailure("start_agent requires the container runner")
-        if not config.agent_image:  # guarded by TaskConfig.validate
+        if not agent.image:  # guarded by AgentConfig.validate
             raise RuntimeFailure("container runner has no Agent image")
         package_dir = Path(__file__).resolve().parent
         missing_environment = [
-            name for name in config.agent_environment if name not in os.environ
+            name for name in agent.environment if name not in os.environ
         ]
         if missing_environment:
             names = ", ".join(missing_environment)
             raise RuntimeFailure(f"agent environment variable is not set: {names}")
-        if config.inference is not None and not inference_network:
+        if agent.inference is not None and not inference_network:
             raise RuntimeFailure("inference_network is required when inference is enabled")
         agent_network = (
             inference_network
-            if config.inference is not None
-            else ("none" if config.agent_mode == "sandboxed" else "bridge")
+            if agent.inference is not None
+            else ("none" if agent.mode == "sandboxed" else "bridge")
         )
         args: List[str] = [
             "run",
@@ -226,7 +280,7 @@ class DockerRuntime:
             "--tmpfs",
             "/agent-home:rw,nosuid,size=1g,mode=1777",
             "--mount",
-            self._mount(config.agent_workspace, "/workspace", read_only=False),
+            self._mount(agent.workspace, "/workspace", read_only=False),
             "--mount",
             self._mount(config.train_dir, "/benchmark/train", read_only=True),
             "--mount",
@@ -246,12 +300,12 @@ class DockerRuntime:
             "--workdir",
             "/workspace",
         ]
-        for name in config.agent_environment:
+        for name in agent.environment:
             # Passing only the name makes Docker copy the value from the trusted
             # Supervisor environment without putting the value in argv or traces.
             args.extend(["--env", name])
 
-        if config.inference is not None:
+        if agent.inference is not None:
             args.extend(
                 [
                     "--env",
@@ -263,30 +317,30 @@ class DockerRuntime:
                     "OPENAI_API_KEY=autotrain-bench-gateway",
                 ]
             )
-        args.extend([config.agent_image, *config.agent_command])
+        args.extend([agent.image, *agent.command])
         self._run(args)
 
     def start_host_agent(
         self,
         *,
-        config: TaskConfig,
+        agent: AgentConfig,
         control_dir: Path,
         public_task_path: Path,
         stdout_path: Path,
         stderr_path: Path,
     ) -> HostAgentProcess:
-        config.validate()
-        if config.agent_runner != "host_cli":
+        agent.validate()
+        if agent.runner != "host_cli":
             raise RuntimeFailure("start_host_agent requires the host_cli runner")
         package_root = Path(__file__).resolve().parent.parent
         try:
             return start_host_agent_process(
-                command=config.agent_command,
-                workspace=config.agent_workspace,
+                command=agent.command,
+                workspace=agent.workspace,
                 control_dir=control_dir,
                 public_task_path=public_task_path,
                 package_root=package_root,
-                forwarded_environment=config.agent_environment,
+                forwarded_environment=agent.environment,
                 stdout_path=stdout_path,
                 stderr_path=stderr_path,
             )
@@ -311,11 +365,13 @@ class DockerRuntime:
         agent_network: str,
         egress_network: str,
         config: TaskConfig,
+        agent: AgentConfig,
         audit_dir: Path,
         readiness_timeout_seconds: float = 10,
     ) -> None:
         config.validate()
-        inference = config.inference
+        agent.validate()
+        inference = agent.inference
         if inference is None:
             raise RuntimeFailure("cannot start inference gateway without configuration")
         if inference.api_key_env and not os.environ.get(inference.api_key_env):
@@ -419,6 +475,8 @@ class DockerRuntime:
         *,
         name: str,
         config: TaskConfig,
+        workspace: Path,
+        resources: TrainingResources,
         lease_dir: Path,
     ) -> None:
         scratch = lease_dir / "scratch"
@@ -443,7 +501,7 @@ class DockerRuntime:
             "--tmpfs",
             "/tmp:rw,exec,nosuid,size=2g",
             "--mount",
-            self._mount(config.agent_workspace, "/workspace", read_only=False),
+            self._mount(workspace, "/workspace", read_only=False),
             "--mount",
             self._mount(config.train_dir, "/benchmark/train", read_only=True),
             "--mount",
@@ -463,8 +521,11 @@ class DockerRuntime:
             "--workdir",
             "/workspace",
         ]
-        if config.gpu_count:
-            args.extend(["--gpus", str(config.gpu_count)])
+        resources.validate_for(config)
+        if resources.nvidia_gpu_count:
+            args.extend(["--gpus", str(resources.nvidia_gpu_count)])
+        for device in resources.devices:
+            args.extend(["--device", device])
         args.extend([config.training_image, "sleep", "infinity"])
         self._run(args)
 
@@ -515,10 +576,12 @@ class DockerRuntime:
         self,
         *,
         config: TaskConfig,
+        resources: TrainingResources,
         candidate_dir: Path,
         split: str,
         output_dir: Path,
     ) -> float:
+        resources.validate_for(config)
         if split not in {"val", "test"}:
             raise RuntimeFailure(f"invalid evaluator split: {split}")
         if config.evaluator_backend != "isolated_candidate":
@@ -572,7 +635,7 @@ class DockerRuntime:
             "/candidate",
         ]
         if config.evaluator_device == "cuda":
-            candidate_args.extend(["--gpus", str(config.gpu_count)])
+            candidate_args.extend(["--gpus", str(resources.nvidia_gpu_count)])
         candidate_args.extend(
             [
                 config.candidate_image,

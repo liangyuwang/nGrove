@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
@@ -183,11 +183,157 @@ class InferenceConfig:
 
 
 @dataclass(frozen=True)
+class AgentConfig:
+    """Participant-owned Agent selection for one benchmark episode.
+
+    This is deliberately separate from :class:`TaskConfig`: a challenge
+    defines data, budgets, evaluation, and the Training Environment, while the
+    participant supplies the Agent image/command and any initial workspace.
+    """
+
+    workspace: Path
+    runner: str
+    command: List[str]
+    image: Optional[str] = None
+    mode: Optional[str] = None
+    environment: List[str] = dataclass_field(default_factory=list)
+    inference: Optional[InferenceConfig] = None
+
+    def validate(self) -> "AgentConfig":
+        resolved_runner = agent_runner(self.runner, "agent runner")
+        if resolved_runner == "container":
+            agent_mode(self.mode, "agent mode")
+            if not self.image:
+                raise ConfigError("--agent-image is required for the container runner")
+        else:
+            if self.mode is not None:
+                raise ConfigError("--agent-mode is not valid with the host_cli runner")
+            if self.image is not None:
+                raise ConfigError("--agent-image is not valid with the host_cli runner")
+            if self.inference is not None:
+                raise ConfigError(
+                    "registered inference is not available with the host_cli runner; "
+                    "the host tool manages its own authenticated inference"
+                )
+        if not self.workspace.is_dir():
+            raise ConfigError(f"agent workspace is not a directory: {self.workspace}")
+        if not self.command or not all(
+            isinstance(item, str) and item for item in self.command
+        ):
+            raise ConfigError("--agent-command must be a non-empty command")
+        normalized_environment = agent_environment_names(
+            self.environment or [], "agent environment"
+        )
+        if normalized_environment != (self.environment or []):
+            raise ConfigError(
+                "agent environment must be normalized and duplicate-free"
+            )
+        if (
+            self.inference
+            and self.inference.api_key_env
+            and self.inference.api_key_env in normalized_environment
+        ):
+            raise ConfigError(
+                "the inference API credential may not be forwarded into the "
+                "Agent Container"
+            )
+        return self
+
+    @property
+    def policy_compliant(self) -> bool:
+        return self.runner == "container" and self.mode == "sandboxed"
+
+    @property
+    def network(self) -> str:
+        if self.runner == "host_cli":
+            return "host_managed"
+        return "disabled" if self.mode == "sandboxed" else "unrestricted_dev"
+
+    def public_manifest(self, gateway_image: str) -> Dict[str, Any]:
+        inference_manifest: Dict[str, Any] = {"enabled": False}
+        if self.inference is not None:
+            inference_manifest = {
+                "enabled": True,
+                "protocol": self.inference.protocol,
+                "local_base_url": "http://inference-gateway:8765/v1",
+                "gateway_image": gateway_image,
+                "allowed_models": list(self.inference.allowed_models),
+                "allowed_paths": list(self.inference.allowed_paths),
+                "provider_hosted_tools": "forbidden_except_function_tools",
+            }
+        return {
+            "runner": self.runner,
+            "mode": self.mode,
+            "network": self.network,
+            "workspace": "." if self.runner == "host_cli" else "/workspace",
+            "training_workspace": "/workspace",
+            "workspace_scope": "episode_snapshot",
+            "initial_workspace": "participant_supplied",
+            "control": "file_mailbox",
+            "forwarded_environment": list(self.environment or []),
+            "inference": inference_manifest,
+            "policy_compliant": self.policy_compliant,
+        }
+
+
+@dataclass(frozen=True)
+class TrainingResources:
+    """Trusted episode-time device allocation for the Docker runtime."""
+
+    nvidia_gpu_count: int = 0
+    required_gpu_model: Optional[str] = None
+    devices: List[str] = dataclass_field(default_factory=list)
+
+    def validate(self) -> "TrainingResources":
+        _positive_int(
+            self.nvidia_gpu_count,
+            "--training-gpus",
+            allow_zero=True,
+        )
+        if self.required_gpu_model is not None:
+            _string(self.required_gpu_model, "--training-gpu-model")
+            if self.nvidia_gpu_count == 0:
+                raise ConfigError(
+                    "--training-gpu-model requires --training-gpus greater than zero"
+                )
+        normalized: List[str] = []
+        for device in self.devices:
+            if not isinstance(device, str) or not device.startswith("/") or ":" in device:
+                raise ConfigError(
+                    "--training-device must be an absolute device path without ':'"
+                )
+            if device not in normalized:
+                normalized.append(device)
+        if normalized != self.devices:
+            raise ConfigError(
+                "training devices must be normalized and duplicate-free"
+            )
+        return self
+
+    def validate_for(self, task: "TaskConfig") -> "TrainingResources":
+        self.validate()
+        if task.evaluator_device == "cuda" and self.nvidia_gpu_count == 0:
+            raise ConfigError(
+                "evaluation.device='cuda' requires --training-gpus greater than zero"
+            )
+        return self
+
+    def public_manifest(self) -> Dict[str, Any]:
+        return {
+            "nvidia_gpu_count": self.nvidia_gpu_count,
+            "required_gpu_model": self.required_gpu_model,
+            "devices": list(self.devices),
+            "selection": "episode_runtime",
+        }
+
+
+@dataclass(frozen=True)
 class TaskConfig:
     """Fully resolved benchmark task configuration.
 
-    Private evaluator paths and inference credentials stay in trusted
-    host/Gateway components and are never included in :meth:`public_manifest`.
+    Participant execution is intentionally absent. Private evaluator paths stay
+    in trusted host components and are never included in
+    :meth:`public_manifest`.
     """
 
     source: Path
@@ -195,19 +341,10 @@ class TaskConfig:
     train_dir: Path
     val_path: Path
     test_path: Path
-    agent_workspace: Path
-    agent_image: Optional[str]
     training_image: str
     candidate_image: str
     evaluator_image: str
     inference_gateway_image: str
-    agent_command: List[str]
-    agent_runner: str
-    agent_mode: Optional[str]
-    agent_environment: List[str]
-    inference: Optional[InferenceConfig]
-    gpu_count: int
-    gpu_model: Optional[str]
     metric: str
     vocab_size: int
     context_length: int
@@ -235,8 +372,22 @@ class TaskConfig:
         root = _mapping(raw, "root")
         paths = _mapping(root.get("paths"), "paths")
         images = _mapping(root.get("images"), "images")
-        agent = _mapping(root.get("agent"), "agent")
-        hardware = _mapping(root.get("hardware"), "hardware")
+        if "agent" in root:
+            raise ConfigError(
+                "agent configuration is participant-owned and may not appear in a task"
+            )
+        if "agent_workspace" in paths:
+            raise ConfigError(
+                "paths.agent_workspace is participant-owned and may not appear in a task"
+            )
+        if "agent" in images:
+            raise ConfigError(
+                "images.agent is participant-owned and may not appear in a task"
+            )
+        if "hardware" in root:
+            raise ConfigError(
+                "hardware allocation is episode-owned and may not appear in a task"
+            )
         evaluation = _mapping(root.get("evaluation"), "evaluation")
         track_a = _mapping(root.get("track_a"), "track_a")
         track_b = _mapping(root.get("track_b"), "track_b")
@@ -262,66 +413,12 @@ class TaskConfig:
                 f"{evaluator_entrypoint}"
             )
 
-        command = agent.get("command")
-        if not isinstance(command, list) or not command or not all(
-            isinstance(item, str) and item for item in command
-        ):
-            raise ConfigError("agent.command must be a non-empty string array")
-
-        resolved_agent_runner = agent_runner(agent.get("runner", "container"))
-        if resolved_agent_runner == "container":
-            if "mode" in agent and "network" in agent:
-                raise ConfigError("agent.mode and legacy agent.network may not both be set")
-            if "mode" in agent:
-                resolved_agent_mode: Optional[str] = agent_mode(agent.get("mode"))
-            else:
-                # Backward-compatible migration for the first local prototype.
-                legacy_network = agent.get("network", "none")
-                if legacy_network == "none":
-                    resolved_agent_mode = "sandboxed"
-                elif legacy_network == "open":
-                    resolved_agent_mode = "unrestricted-dev"
-                else:
-                    raise ConfigError("legacy agent.network must be 'none' or 'open'")
-        else:
-            if "mode" in agent or "network" in agent:
-                raise ConfigError(
-                    "agent.mode and legacy agent.network apply only to the container runner"
-                )
-            resolved_agent_mode = None
-
-        inference = InferenceConfig.load(agent.get("inference"))
-        if resolved_agent_runner == "host_cli" and inference is not None:
-            raise ConfigError(
-                "agent.inference is not available with the host_cli runner; "
-                "the host tool manages its own authenticated inference"
-            )
-        environment = agent_environment_names(agent.get("environment", []))
-        if inference and inference.api_key_env and inference.api_key_env in environment:
-            raise ConfigError(
-                "agent.environment may not forward the inference API credential into the Agent Container"
-            )
-
-        gpu_model_value = hardware.get("gpu_model")
-        if gpu_model_value is not None and not isinstance(gpu_model_value, str):
-            raise ConfigError("hardware.gpu_model must be a string or null")
-
         config = cls(
             source=source,
             task_id=_string(root.get("task_id"), "task_id"),
             train_dir=resolved_path("train", directory=True),
             val_path=resolved_path("val", directory=False),
             test_path=resolved_path("test", directory=False),
-            agent_workspace=resolved_path("agent_workspace", directory=True),
-            agent_image=(
-                _string(images.get("agent"), "images.agent")
-                if resolved_agent_runner == "container"
-                else (
-                    _string(images.get("agent"), "images.agent")
-                    if images.get("agent") is not None
-                    else None
-                )
-            ),
             training_image=_string(images.get("training"), "images.training"),
             candidate_image=_string(images.get("candidate"), "images.candidate"),
             evaluator_image=_string(images.get("evaluator"), "images.evaluator"),
@@ -329,15 +426,6 @@ class TaskConfig:
                 images.get("inference_gateway", "python:3.11-slim"),
                 "images.inference_gateway",
             ),
-            agent_command=list(command),
-            agent_runner=resolved_agent_runner,
-            agent_mode=resolved_agent_mode,
-            agent_environment=environment,
-            inference=inference,
-            gpu_count=_positive_int(
-                hardware.get("gpu_count"), "hardware.gpu_count", allow_zero=True
-            ),
-            gpu_model=gpu_model_value,
             metric=_string(evaluation.get("metric"), "evaluation.metric"),
             vocab_size=_positive_int(
                 evaluation.get("vocab_size"), "evaluation.vocab_size"
@@ -381,44 +469,11 @@ class TaskConfig:
         return config.validate()
 
     def validate(self) -> "TaskConfig":
-        """Validate the final effective configuration, including CLI overrides."""
-
-        agent_runner(self.agent_runner)
-        if self.agent_runner == "container":
-            agent_mode(self.agent_mode)
-            if not self.agent_image:
-                raise ConfigError("images.agent is required for the container runner")
-        else:
-            if self.agent_mode is not None:
-                raise ConfigError("agent.mode must be null for the host_cli runner")
-            if self.inference is not None:
-                raise ConfigError(
-                    "agent.inference is not available with the host_cli runner"
-                )
-        normalized_environment = agent_environment_names(self.agent_environment)
-        if normalized_environment != self.agent_environment:
-            raise ConfigError("agent.environment must be normalized and duplicate-free")
-        if not self.agent_command or not all(
-            isinstance(item, str) and item for item in self.agent_command
-        ):
-            raise ConfigError("agent.command must be a non-empty string array")
-        if (
-            self.inference
-            and self.inference.api_key_env
-            and self.inference.api_key_env in self.agent_environment
-        ):
-            raise ConfigError(
-                "agent.environment may not forward the inference API credential "
-                "into the Agent Container"
-            )
+        """Validate the immutable challenge definition."""
         if self.metric != "autoregressive_nll":
             raise ConfigError("v0 only implements evaluation.metric='autoregressive_nll'")
-        if self.gpu_count == 0 and self.gpu_model:
-            raise ConfigError("hardware.gpu_model requires hardware.gpu_count > 0")
         if self.evaluator_device not in {"cpu", "cuda"}:
             raise ConfigError("evaluation.device must be 'cpu' or 'cuda'")
-        if self.evaluator_device == "cuda" and self.gpu_count == 0:
-            raise ConfigError("evaluation.device='cuda' requires hardware.gpu_count > 0")
         evaluator_backend(self.evaluator_backend)
         if not self.evaluator_entrypoint.is_file():
             raise ConfigError(
@@ -429,43 +484,17 @@ class TaskConfig:
 
     @property
     def images(self) -> List[str]:
-        images = {
-            self.training_image,
-            self.candidate_image,
-            self.evaluator_image,
-        }
-        if self.agent_runner == "container" and self.agent_image:
-            images.add(self.agent_image)
-        if self.inference is not None:
-            images.add(self.inference_gateway_image)
-        return sorted(images)
-
-    @property
-    def agent_policy_compliant(self) -> bool:
-        return self.agent_runner == "container" and self.agent_mode == "sandboxed"
+        return sorted(
+            {
+                self.training_image,
+                self.candidate_image,
+                self.evaluator_image,
+            }
+        )
 
     @property
     def evaluator_policy_compliant(self) -> bool:
         return self.evaluator_backend == "isolated_candidate"
-
-    @property
-    def policy_violations(self) -> List[str]:
-        violations: List[str] = []
-        if not self.agent_policy_compliant:
-            violations.append("agent_execution_boundary")
-        if not self.evaluator_policy_compliant:
-            violations.append("candidate_evaluator_isolation")
-        return violations
-
-    @property
-    def policy_compliant(self) -> bool:
-        return not self.policy_violations
-
-    @property
-    def agent_network(self) -> str:
-        if self.agent_runner == "host_cli":
-            return "host_managed"
-        return "disabled" if self.agent_mode == "sandboxed" else "unrestricted_dev"
 
     def public_manifest(self, track: str) -> Dict[str, Any]:
         normalized = track.upper()
@@ -480,18 +509,6 @@ class TaskConfig:
                 "max_leases": self.track_b_max_leases,
                 "max_seconds_per_lease": self.track_b_lease_seconds,
                 "official_val_queries_per_lease": 1,
-            }
-
-        inference_manifest: Dict[str, Any] = {"enabled": False}
-        if self.inference is not None:
-            inference_manifest = {
-                "enabled": True,
-                "protocol": self.inference.protocol,
-                "local_base_url": "http://inference-gateway:8765/v1",
-                "gateway_image": self.inference_gateway_image,
-                "allowed_models": list(self.inference.allowed_models),
-                "allowed_paths": list(self.inference.allowed_paths),
-                "provider_hosted_tools": "forbidden_except_function_tools",
             }
 
         return {
@@ -526,31 +543,10 @@ class TaskConfig:
                     "protocol": "next_token_logits_v1",
                 },
             },
-            "hardware": {
-                "gpu_count": self.gpu_count,
-                "gpu_model": self.gpu_model,
-                "allocation": "provided_by_user_before_episode",
-            },
             "budget": budget,
-            "agent_environment": {
-                "runner": self.agent_runner,
-                "mode": self.agent_mode,
-                "network": self.agent_network,
-                "workspace": "." if self.agent_runner == "host_cli" else "/workspace",
-                "training_workspace": "/workspace",
-                "workspace_scope": "episode_copy",
-                "control": "file_mailbox",
-                "forwarded_environment": list(self.agent_environment),
-                "inference": inference_manifest,
-                "policy_compliant": self.agent_policy_compliant,
-            },
             "training_environment": {
                 "image": self.training_image,
                 "network": "disabled",
                 "interactive_within_lease": True,
-            },
-            "policy": {
-                "compliant": self.policy_compliant,
-                "violations": self.policy_violations,
             },
         }
