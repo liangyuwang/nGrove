@@ -23,12 +23,14 @@ TASK = ROOT / "tests/fixtures/task/task.json"
 
 
 class CapturingDockerRuntime(DockerRuntime):
-    def __init__(self):
-        super().__init__(docker_binary="docker")
+    def __init__(self, *, monotonic=None):
+        super().__init__(docker_binary="docker", monotonic=monotonic)
         self.calls = []
+        self.call_kwargs = []
 
     def _run(self, args, **kwargs):
         self.calls.append(list(args))
+        self.call_kwargs.append(dict(kwargs))
         return subprocess.CompletedProcess(args, 0, "container-id\n", "")
 
 
@@ -368,7 +370,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 evaluator_device="cuda",
             ).validate()
             resources = TrainingResources(nvidia_gpu_count=1)
-            runtime = CapturingDockerRuntime()
+            runtime = CapturingDockerRuntime(monotonic=lambda: 100.0)
             output = Path(directory) / "output"
             with self.assertRaises(RuntimeFailure):
                 runtime.run_evaluator(
@@ -377,6 +379,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                     candidate_dir=TASK.parent / "agent",
                     split="val",
                     output_dir=output,
+                    timeout_seconds=7,
                 )
             create = runtime.calls[0]
             run_calls = [call for call in runtime.calls if call and call[0] == "run"]
@@ -395,6 +398,97 @@ class RuntimeBoundaryTests(unittest.TestCase):
             self.assertEqual(candidate[candidate.index("--network") + 1], network)
             self.assertEqual(evaluator[evaluator.index("--network") + 1], network)
             self.assertIn(["network", "rm", network], runtime.calls)
+            evaluator_index = next(
+                index
+                for index, call in enumerate(runtime.calls)
+                if "/opt/evaluator.py" in call
+            )
+            self.assertEqual(runtime.call_kwargs[evaluator_index]["timeout"], 7)
+
+    def test_evaluator_deadline_includes_network_and_candidate_startup(self):
+        class FakeClock:
+            value = 100.0
+
+            def __call__(self):
+                return self.value
+
+            def advance(self, seconds):
+                self.value += seconds
+
+        clock = FakeClock()
+
+        class AdvancingRuntime(CapturingDockerRuntime):
+            def _run(self, args, **kwargs):
+                result = super()._run(args, **kwargs)
+                if args[:2] == ["network", "create"]:
+                    clock.advance(2)
+                elif "candidate_server" in " ".join(args):
+                    clock.advance(3)
+                return result
+
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = AdvancingRuntime(monotonic=clock)
+            config = TaskConfig.load(TASK)
+            with self.assertRaises(RuntimeFailure):
+                runtime.run_evaluator(
+                    config=config,
+                    resources=TrainingResources(),
+                    candidate_dir=TASK.parent / "agent",
+                    split="val",
+                    output_dir=Path(directory) / "output",
+                    timeout_seconds=7,
+                )
+
+            network_index = next(
+                index
+                for index, call in enumerate(runtime.calls)
+                if call[:2] == ["network", "create"]
+            )
+            candidate_index = next(
+                index
+                for index, call in enumerate(runtime.calls)
+                if "candidate_server" in " ".join(call)
+            )
+            evaluator_index = next(
+                index
+                for index, call in enumerate(runtime.calls)
+                if "/opt/evaluator.py" in call
+            )
+            self.assertEqual(runtime.call_kwargs[network_index]["timeout"], 7)
+            self.assertEqual(runtime.call_kwargs[candidate_index]["timeout"], 5)
+            self.assertEqual(runtime.call_kwargs[evaluator_index]["timeout"], 2)
+
+    def test_candidate_logs_are_private_and_never_enter_runtime_error(self):
+        class FailingRuntime(CapturingDockerRuntime):
+            def _run(self, args, **kwargs):
+                self.calls.append(list(args))
+                self.call_kwargs.append(dict(kwargs))
+                if args and args[0] == "logs":
+                    return subprocess.CompletedProcess(
+                        args, 0, "hidden input_ids: [0, 1, 2]\n", ""
+                    )
+                if "/opt/evaluator.py" in args:
+                    raise RuntimeFailure("secret evaluator detail")
+                return subprocess.CompletedProcess(args, 0, "container-id\n", "")
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "evaluation"
+            runtime = FailingRuntime()
+            config = TaskConfig.load(TASK)
+            with self.assertRaisesRegex(
+                RuntimeFailure, "^isolated evaluation failed$"
+            ) as caught:
+                runtime.run_evaluator(
+                    config=config,
+                    resources=TrainingResources(),
+                    candidate_dir=TASK.parent / "agent",
+                    split="val",
+                    output_dir=output,
+                )
+            self.assertNotIn("input_ids", str(caught.exception))
+            diagnostic = output / "val.failure.log"
+            self.assertEqual(diagnostic.stat().st_mode & 0o777, 0o600)
+            self.assertIn("hidden input_ids", diagnostic.read_text(encoding="utf-8"))
 
     def test_missing_inference_credential_fails_before_gateway_start(self):
         with tempfile.TemporaryDirectory() as directory:

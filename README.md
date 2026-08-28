@@ -333,9 +333,12 @@ The v0 threat model protects benchmark policy from the Agent, not from the user 
 The `isolated_candidate` backend starts a fresh internal Docker network per
 query. The trusted Evaluator mounts only the selected hidden split and output;
 the untrusted Candidate mounts only its content-addressed artifact. The
-Evaluator sends input prefixes over `next_token_logits_v1` and validates a
-bounded `[batch, vocabulary]` response. Candidate and Evaluator are destroyed
-after each query. This backend satisfies the v0 reference isolation contract.
+Evaluator sends same-length, prefix-free batches over `next_token_logits_v1`
+and validates a bounded `[batch, vocabulary]` response. It scores each response
+before revealing longer prefixes. Candidate failures return only fixed error
+codes to the Agent; raw Candidate logs stay in the trusted episode directory.
+Candidate and Evaluator are destroyed after each query. This backend satisfies
+the v0 reference isolation contract.
 
 ---
 
@@ -772,7 +775,11 @@ A system may choose to:
 * rewrite its training stack;
 * improve its own autonomous workflow.
 
-All of these decisions compete for the same wall-clock budget.
+All of these decisions compete for the same wall-clock budget. Official VAL
+evaluation receives at most the Track A time remaining when a Candidate is
+committed. At the deadline its containers are terminated, an unfinished or late
+VAL result is discarded, and TEST runs only on the previously declared
+incumbent.
 
 The primary Track A score is:
 

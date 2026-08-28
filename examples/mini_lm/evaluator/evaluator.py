@@ -145,13 +145,21 @@ def evaluate(
         prefixes.clear()
         targets.clear()
 
-    for sequence in _sequences(data_path, vocab_size):
-        for position in range(1, len(sequence)):
+    sequences = _sequences(data_path, vocab_size)
+    maximum_length = max(len(sequence) for sequence in sequences)
+    # Batch one position across independent sequences.  Every prefix in a
+    # request therefore has the same length, so no row can reveal the target
+    # token for a shorter row in that same request.  The response is scored
+    # before any longer prefix is sent to the Candidate.
+    for position in range(1, maximum_length):
+        for sequence in sequences:
+            if position >= len(sequence):
+                continue
             prefixes.append(sequence[:position])
             targets.append(sequence[position])
             if len(prefixes) >= batch_size:
                 evaluate_batch()
-    evaluate_batch()
+        evaluate_batch()
     if token_count == 0:
         raise EvaluationError("evaluation data contains no prediction targets")
     return total_nll / token_count

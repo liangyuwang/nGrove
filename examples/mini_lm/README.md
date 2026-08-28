@@ -159,5 +159,8 @@ trusted Evaluator: hidden split, no Candidate files
 untrusted Candidate: Candidate files, no hidden split, no public network
 ```
 
-Only input prefixes and one `[batch, vocabulary]` logit matrix cross this
-boundary. Both containers and the network are removed after every query.
+Only same-length, prefix-free input batches and one `[batch, vocabulary]` logit
+matrix cross this boundary. Each response is scored before any longer prefix is
+sent. Candidate failures expose only a fixed error code to the Agent; raw logs
+remain private to the trusted episode directory. Both containers and the
+network are removed after every query.

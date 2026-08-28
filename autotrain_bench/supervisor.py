@@ -253,12 +253,29 @@ class Supervisor:
         )
         return max(0.0, end - self.started_monotonic)
 
-    def _freeze_elapsed(self) -> None:
+    def _freeze_elapsed(self, at_monotonic: Optional[float] = None) -> None:
         if self.closed_monotonic is None:
-            self.closed_monotonic = self.monotonic()
+            self.closed_monotonic = (
+                self.monotonic() if at_monotonic is None else at_monotonic
+            )
+
+    def _track_a_deadline_monotonic(self) -> float:
+        if self.started_monotonic is None:
+            raise ProtocolError("invalid_state", "episode has not started")
+        return self.started_monotonic + self.config.track_a_total_seconds
 
     def _track_a_remaining(self) -> float:
         return max(0.0, self.config.track_a_total_seconds - self._elapsed())
+
+    def _close_at_track_a_deadline(self) -> Dict[str, Any]:
+        """Close Track A at its fixed deadline and TEST the prior incumbent."""
+
+        self._freeze_elapsed(self._track_a_deadline_monotonic())
+        if self.state["active_lease"] is not None:
+            self._end_active_lease("track_a_deadline")
+        return self._close_and_test(
+            self.state["incumbent_id"], reason="track_a_deadline"
+        )
 
     def _timing_summary(self) -> Dict[str, Any]:
         elapsed = self._elapsed()
@@ -715,35 +732,72 @@ class Supervisor:
                 candidate_id=candidate_id,
             )
             evaluation_started = self.monotonic()
+            deadline_reached = False
             try:
+                timeout_seconds = float(self.config.evaluator_timeout_seconds)
+                if self.track == "A":
+                    remaining = self._track_a_remaining()
+                    if remaining <= 0:
+                        deadline_reached = True
+                    else:
+                        timeout_seconds = min(timeout_seconds, remaining)
+                if deadline_reached:
+                    raise RuntimeFailure("evaluation deadline reached")
                 val_nll = self.runtime.run_evaluator(
                     config=self.config,
                     resources=self.resources,
                     candidate_dir=snapshot["path"],
                     split="val",
                     output_dir=self.evaluations_dir / snapshot["path"].name,
+                    timeout_seconds=timeout_seconds,
                 )
-                metadata["val_nll"] = val_nll
-                self._event(
-                    "VAL_EVALUATED",
-                    candidate_id=candidate_id,
-                    nll=val_nll,
+                deadline_reached = (
+                    self.track == "A" and self._track_a_remaining() <= 0
                 )
-            except RuntimeFailure as exc:
-                metadata["evaluation_error"] = str(exc)
-                self._event(
-                    "VAL_EVALUATION_FAILED",
-                    candidate_id=candidate_id,
-                    message=str(exc),
+                if not deadline_reached:
+                    metadata["val_nll"] = val_nll
+                    self._event(
+                        "VAL_EVALUATED",
+                        candidate_id=candidate_id,
+                        nll=val_nll,
+                    )
+            except RuntimeFailure:
+                deadline_reached = (
+                    self.track == "A" and self._track_a_remaining() <= 0
                 )
+                if not deadline_reached:
+                    metadata["evaluation_error"] = "evaluation_failed"
+                    self._event(
+                        "VAL_EVALUATION_FAILED",
+                        candidate_id=candidate_id,
+                        code="evaluation_failed",
+                    )
             finally:
                 evaluation_seconds = max(
                     0.0, self.monotonic() - evaluation_started
                 )
+                if self.track == "A":
+                    evaluation_seconds = min(
+                        evaluation_seconds,
+                        max(
+                            0.0,
+                            self._track_a_deadline_monotonic()
+                            - evaluation_started,
+                        ),
+                    )
                 self.state["timing"][
                     "validation_evaluation_seconds"
                 ] += evaluation_seconds
+            if deadline_reached:
+                metadata["evaluation_error"] = "track_a_deadline"
+                self._event(
+                    "VAL_EVALUATION_DISCARDED",
+                    candidate_id=candidate_id,
+                    code="track_a_deadline",
+                )
             self._save_state()
+            if deadline_reached:
+                self._close_at_track_a_deadline()
             return dict(metadata)
 
     def declare_incumbent(self, candidate_id: Any) -> Dict[str, Any]:
@@ -860,13 +914,14 @@ class Supervisor:
                 candidate_dir=candidate_dir,
                 split="test",
                 output_dir=self.evaluations_dir / digest,
+                timeout_seconds=float(self.config.evaluator_timeout_seconds),
             )
-        except RuntimeFailure as exc:
-            self.state["failure"] = f"test evaluation failed: {exc}"
+        except RuntimeFailure:
+            self.state["failure"] = "test_evaluation_failed"
             self._event(
                 "TEST_EVALUATION_FAILED",
                 candidate_id=candidate_id,
-                message=str(exc),
+                code="evaluation_failed",
             )
         finally:
             self.state["timing"]["test_evaluation_seconds"] += max(
@@ -890,12 +945,7 @@ class Supervisor:
                 return False
             active = self.state.get("active_lease")
             if self.track == "A" and self._track_a_remaining() <= 0:
-                self._freeze_elapsed()
-                if self.state["active_lease"] is not None:
-                    self._end_active_lease("track_a_deadline")
-                self._close_and_test(
-                    self.state["incumbent_id"], reason="track_a_deadline"
-                )
+                self._close_at_track_a_deadline()
                 return True
             if active and self.monotonic() >= active["deadline_monotonic"]:
                 self._end_active_lease("timeout")

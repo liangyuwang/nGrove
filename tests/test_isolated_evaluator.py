@@ -22,7 +22,7 @@ SPEC.loader.exec_module(MODULE)
 
 
 class IsolatedEvaluatorTests(unittest.TestCase):
-    def test_prefixes_are_batched_without_exposing_future_tokens(self):
+    def test_prefix_batches_are_same_length_and_do_not_expose_future_tokens(self):
         with tempfile.TemporaryDirectory() as directory:
             data = Path(directory) / "data.json"
             data.write_text(
@@ -38,8 +38,44 @@ class IsolatedEvaluatorTests(unittest.TestCase):
             loss = MODULE.evaluate(data, 3, predict, batch_size=3)
 
             self.assertAlmostEqual(loss, math.log(3), places=7)
-            self.assertEqual([len(call) for call in calls], [3, 3])
-            self.assertEqual(calls[0], [[0], [0, 1], [0, 1, 2]])
+            self.assertEqual([len(call) for call in calls], [2, 2, 2])
+            self.assertEqual(calls[0], [[0], [2]])
+            self.assertEqual(calls[1], [[0, 1], [2, 1]])
+            self.assertEqual(calls[2], [[0, 1, 2], [2, 1, 0]])
+            for call in calls:
+                self.assertEqual(len({len(prefix) for prefix in call}), 1)
+
+    def test_candidate_cannot_read_a_target_from_a_longer_prefix_in_the_batch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = Path(directory) / "data.json"
+            data.write_text(
+                json.dumps({"sequences": [[0, 1, 2, 0], [2, 1, 0, 2]]}),
+                encoding="utf-8",
+            )
+
+            def exploit(prefixes):
+                rows = []
+                for prefix in prefixes:
+                    leaked_target = None
+                    for longer in prefixes:
+                        if (
+                            len(longer) > len(prefix)
+                            and list(longer[: len(prefix)]) == list(prefix)
+                        ):
+                            leaked_target = longer[len(prefix)]
+                            break
+                    rows.append(
+                        [
+                            100.0 if leaked_target == token else 0.0
+                            for token in range(3)
+                        ]
+                        if leaked_target is not None
+                        else [0.0, 0.0, 0.0]
+                    )
+                return rows
+
+            loss = MODULE.evaluate(data, 3, exploit, batch_size=16)
+            self.assertAlmostEqual(loss, math.log(3), places=7)
 
     def test_candidate_abi_is_batch_by_vocabulary(self):
         with tempfile.TemporaryDirectory() as directory:

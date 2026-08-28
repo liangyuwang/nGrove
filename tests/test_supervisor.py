@@ -39,6 +39,9 @@ class FakeRuntime:
         self.running = set()
         self.fail_start = False
         self.evaluations = []
+        self.evaluation_timeouts = []
+        self.evaluation_hook = None
+        self.evaluation_failure = None
         self.val_nlls = []
 
     def start_training(self, *, name, config, workspace, resources, lease_dir):
@@ -68,9 +71,23 @@ class FakeRuntime:
     def stop_container(self, name):
         self.running.discard(name)
 
-    def run_evaluator(self, *, config, resources, candidate_dir, split, output_dir):
+    def run_evaluator(
+        self,
+        *,
+        config,
+        resources,
+        candidate_dir,
+        split,
+        output_dir,
+        timeout_seconds=None,
+    ):
         del config, resources, candidate_dir, output_dir
         self.evaluations.append(split)
+        self.evaluation_timeouts.append(timeout_seconds)
+        if self.evaluation_hook is not None:
+            self.evaluation_hook(timeout_seconds)
+        if self.evaluation_failure is not None:
+            raise RuntimeFailure(self.evaluation_failure)
         if split == "val" and self.val_nlls:
             return self.val_nlls.pop(0)
         return 1.25 if split == "val" else 1.5
@@ -264,8 +281,46 @@ class SupervisorTests(unittest.TestCase):
         self.clock.advance(6)
         self.assertTrue(supervisor.enforce_deadlines())
         self.assertEqual(supervisor.state["status"], "finalized")
+        self.assertEqual(supervisor.state["elapsed_seconds"], 5.0)
         self.assertIsNone(supervisor.state["active_lease"])
         self.assertFalse(self.runtime.running)
+
+    def test_track_a_val_uses_remaining_time_and_discards_late_result(self):
+        config = replace(
+            self.config,
+            track_a_total_seconds=5,
+            evaluator_timeout_seconds=30,
+        )
+        supervisor = self.supervisor(track="A", config=config)
+        supervisor.start_lease(4)
+        self.clock.advance(4)
+        self.runtime.evaluation_hook = lambda timeout: self.clock.advance(2)
+
+        committed = supervisor.commit_lease("/output/candidate")
+
+        self.assertEqual(self.runtime.evaluation_timeouts[0], 1.0)
+        self.assertIsNone(committed["val_nll"])
+        self.assertEqual(committed["evaluation_error"], "track_a_deadline")
+        self.assertEqual(supervisor.state["status"], "finalized")
+        self.assertEqual(supervisor.state["closure_reason"], "track_a_deadline")
+        self.assertEqual(supervisor.state["elapsed_seconds"], 5.0)
+        self.assertEqual(
+            supervisor.state["timing"]["validation_evaluation_seconds"], 1.0
+        )
+        self.assertIsNone(supervisor.state["final_candidate_id"])
+
+    def test_validation_failures_expose_only_a_fixed_error_code(self):
+        supervisor = self.supervisor()
+        self.runtime.evaluation_failure = "hidden input_ids: [0, 1, 2]"
+        supervisor.start_lease()
+
+        committed = supervisor.commit_lease("/output/candidate")
+
+        self.assertEqual(committed["evaluation_error"], "evaluation_failed")
+        public = json.dumps(supervisor.public_status())
+        events = supervisor.events_path.read_text(encoding="utf-8")
+        self.assertNotIn("input_ids", public)
+        self.assertNotIn("input_ids", events)
 
     def test_track_a_deadline_uses_only_agent_declared_incumbent(self):
         config = replace(self.config, track_a_total_seconds=100)

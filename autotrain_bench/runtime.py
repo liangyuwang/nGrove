@@ -16,7 +16,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from .config import AgentConfig, TaskConfig, TrainingResources
 from .host_agent import HostAgentProcess, start_host_agent_process
@@ -37,8 +37,14 @@ class ExecResult:
 class DockerRuntime:
     """Minimal Docker implementation for the local reference prototype."""
 
-    def __init__(self, docker_binary: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        docker_binary: Optional[str] = None,
+        *,
+        monotonic: Optional[Callable[[], float]] = None,
+    ) -> None:
         self.docker = docker_binary or shutil.which("docker") or ""
+        self.monotonic = monotonic or time.monotonic
 
     def _require_docker(self) -> None:
         if not self.docker:
@@ -347,12 +353,18 @@ class DockerRuntime:
         except OSError as exc:
             raise RuntimeFailure(f"failed to start host Agent: {exc}") from exc
 
-    def create_network(self, name: str, *, internal: bool) -> None:
+    def create_network(
+        self,
+        name: str,
+        *,
+        internal: bool,
+        timeout_seconds: Optional[float] = None,
+    ) -> None:
         args = ["network", "create", "--driver", "bridge"]
         if internal:
             args.append("--internal")
         args.append(name)
-        self._run(args)
+        self._run(args, timeout=timeout_seconds)
 
     def remove_network(self, name: str) -> None:
         if name:
@@ -562,8 +574,12 @@ class DockerRuntime:
         )
         return result.returncode == 0 and result.stdout.strip() == "true"
 
-    def container_logs(self, name: str) -> str:
-        result = self._run(["logs", name], check=False)
+    def container_logs(
+        self, name: str, *, timeout_seconds: Optional[float] = None
+    ) -> str:
+        result = self._run(
+            ["logs", name], check=False, timeout=timeout_seconds
+        )
         parts = [value for value in (result.stdout, result.stderr) if value]
         return "".join(parts)
 
@@ -580,6 +596,7 @@ class DockerRuntime:
         candidate_dir: Path,
         split: str,
         output_dir: Path,
+        timeout_seconds: Optional[float] = None,
     ) -> float:
         resources.validate_for(config)
         if split not in {"val", "test"}:
@@ -696,19 +713,55 @@ class DockerRuntime:
             "--batch-size",
             str(config.evaluator_batch_size),
         ]
+        effective_timeout = float(config.evaluator_timeout_seconds)
+        if timeout_seconds is not None:
+            if timeout_seconds <= 0:
+                raise RuntimeFailure("evaluation deadline reached")
+            effective_timeout = min(effective_timeout, float(timeout_seconds))
+        evaluation_deadline = self.monotonic() + effective_timeout
+
+        def remaining_seconds() -> float:
+            remaining = evaluation_deadline - self.monotonic()
+            if remaining <= 0:
+                raise RuntimeFailure("evaluation deadline reached")
+            return remaining
+
         evaluator_started = False
         try:
-            self.create_network(network_name, internal=True)
-            self._run(candidate_args)
+            self.create_network(
+                network_name,
+                internal=True,
+                timeout_seconds=remaining_seconds(),
+            )
+            self._run(candidate_args, timeout=remaining_seconds())
             evaluator_started = True
             self._run(
                 evaluator_args,
-                timeout=config.evaluator_timeout_seconds,
+                timeout=remaining_seconds(),
             )
         except RuntimeFailure as exc:
-            candidate_logs = self.container_logs(candidate_name).strip()[-4000:]
-            detail = f"; Candidate logs: {candidate_logs}" if candidate_logs else ""
-            raise RuntimeFailure(f"isolated evaluation failed: {exc}{detail}") from exc
+            # Candidate output may contain hidden evaluator inputs.  Preserve it
+            # only in the trusted episode directory and never include it in the
+            # exception that crosses the Agent-facing Supervisor API.
+            try:
+                candidate_logs = self.container_logs(
+                    candidate_name,
+                    timeout_seconds=remaining_seconds(),
+                ).strip()[-4000:]
+            except RuntimeFailure:
+                candidate_logs = "<candidate logs unavailable>"
+            diagnostic_path = output_dir / f"{split}.failure.log"
+            try:
+                diagnostic_path.write_text(
+                    f"Runtime failure: {exc}\nCandidate logs:\n{candidate_logs}\n",
+                    encoding="utf-8",
+                )
+                diagnostic_path.chmod(0o600)
+            except OSError:
+                # Diagnostic persistence must never change the fixed public
+                # failure returned across the untrusted boundary.
+                pass
+            raise RuntimeFailure("isolated evaluation failed") from None
         finally:
             if evaluator_started:
                 self.stop_container(evaluator_name)
