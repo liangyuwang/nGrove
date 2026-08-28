@@ -185,6 +185,12 @@ fields are allowed):
 Without an adapter or these records, the episode itself still runs normally;
 the final report simply marks Agent token usage as incomplete.
 
+After an episode closes, a host Agent receives a 30-second drain period to finish
+its current response and emit final usage records. Candidates, TEST results, and
+official elapsed time are frozen before this drain period begins. If the command
+does not exit, the Supervisor terminates it and records `drain_timeout` without
+changing the benchmark result.
+
 `host_cli` is always reported as `policy_compliant: false`: the v0 reference
 implementation cannot prove that a host process was unable to inspect unrelated
 host files or use its own network. It is a faithful local rehearsal and agent

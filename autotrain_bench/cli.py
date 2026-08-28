@@ -29,6 +29,10 @@ from .runtime import DockerRuntime, RuntimeFailure
 from .supervisor import Supervisor
 
 
+CONTAINER_AGENT_DRAIN_SECONDS = 3.0
+HOST_AGENT_DRAIN_SECONDS = 30.0
+
+
 def _print(payload: Dict[str, Any]) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True))
 
@@ -51,6 +55,21 @@ def _snapshot_agent_workspace(source: Path, destination: Path) -> None:
         shutil.copytree(resolved_source, resolved_destination, symlinks=True)
     except OSError as exc:
         raise ConfigError(f"failed to snapshot agent workspace: {exc}") from exc
+
+
+def _terminal_agent_action(
+    *, runner: str, running: bool, drain_elapsed_seconds: float
+) -> str:
+    """Return whether a terminal episode should keep draining its Agent."""
+
+    if not running:
+        return "exited"
+    limit = (
+        HOST_AGENT_DRAIN_SECONDS
+        if runner == "host_cli"
+        else CONTAINER_AGENT_DRAIN_SECONDS
+    )
+    return "drain_timeout" if drain_elapsed_seconds >= limit else "wait"
 
 
 def command_prepare(args: argparse.Namespace) -> int:
@@ -208,7 +227,8 @@ def command_start(args: argparse.Namespace) -> int:
             runtime.remove_network(network)
         raise
 
-    finalized_at: Optional[float] = None
+    terminal_at: Optional[float] = None
+    host_termination_reason: Optional[str] = None
     try:
         while True:
             processed = supervisor.process_one_request()
@@ -239,14 +259,22 @@ def command_start(args: argparse.Namespace) -> int:
                     runtime.stop_container(gateway_name)
                     gateway_started = False
                     supervisor.refresh_inference_usage()
-                if finalized_at is None:
-                    finalized_at = time.monotonic()
-                if not agent_running or time.monotonic() - finalized_at >= 3:
+                if terminal_at is None:
+                    terminal_at = time.monotonic()
+                terminal_action = _terminal_agent_action(
+                    runner=config.agent_runner,
+                    running=agent_running,
+                    drain_elapsed_seconds=time.monotonic() - terminal_at,
+                )
+                if terminal_action != "wait":
+                    if config.agent_runner == "host_cli":
+                        host_termination_reason = terminal_action
                     break
             if not processed:
                 time.sleep(0.05)
     except KeyboardInterrupt:
         supervisor.agent_exited_without_finish()
+        host_termination_reason = "supervisor_interrupted"
     finally:
         active = supervisor.state.get("active_lease")
         if active:
@@ -262,9 +290,23 @@ def command_start(args: argparse.Namespace) -> int:
         if config.agent_runner == "container":
             runtime.stop_container(agent_name)
         elif host_agent is not None:
+            if host_termination_reason is None:
+                host_termination_reason = (
+                    "supervisor_shutdown" if host_agent.running else "exited"
+                )
             exit_code = host_agent.stop()
             usage = summarize_host_agent_trace(host_agent.stdout_path)
-            supervisor.record_agent_execution(exit_code=exit_code, usage=usage)
+            drain_seconds = (
+                max(0.0, time.monotonic() - terminal_at)
+                if terminal_at is not None
+                else 0.0
+            )
+            supervisor.record_agent_execution(
+                exit_code=exit_code,
+                usage=usage,
+                termination_reason=host_termination_reason,
+                drain_seconds=drain_seconds,
+            )
         if gateway_started:
             runtime.stop_container(gateway_name)
         supervisor.refresh_inference_usage()

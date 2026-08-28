@@ -120,6 +120,7 @@ class SupervisorTests(unittest.TestCase):
         final = supervisor.finish(committed["candidate_id"])
         self.assertEqual(final["status"], "finalized")
         self.assertEqual(final["test_nll"], 1.5)
+        self.assertTrue(final["agent_finish_observed"])
         self.assertEqual(self.runtime.evaluations, ["val", "test"])
         with self.assertRaises(ProtocolError):
             supervisor.start_lease()
@@ -130,6 +131,15 @@ class SupervisorTests(unittest.TestCase):
         ]
         types = [event["type"] for event in events]
         self.assertLess(types.index("EPISODE_CLOSED"), types.index("TEST_EVALUATED"))
+
+    def test_official_elapsed_time_freezes_before_agent_drain(self):
+        supervisor = self.supervisor()
+        self.clock.advance(4)
+        supervisor.finish()
+        self.assertEqual(supervisor.public_status()["elapsed_seconds"], 4.0)
+        self.clock.advance(30)
+        self.assertEqual(supervisor.public_status()["elapsed_seconds"], 4.0)
+        self.assertEqual(supervisor.state["elapsed_seconds"], 4.0)
 
     def test_infrastructure_failure_does_not_consume_lease(self):
         supervisor = self.supervisor()
@@ -186,13 +196,28 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(supervisor.state["agent_system"]["network"], "host_managed")
         self.assertFalse(supervisor.state["agent_system"]["policy_compliant"])
         usage = {"tool": "codex", "total_tokens": 42}
-        supervisor.record_agent_execution(exit_code=0, usage=usage)
+        supervisor.finish()
+        supervisor.record_agent_execution(
+            exit_code=0,
+            usage=usage,
+            termination_reason="exited",
+            drain_seconds=2.5,
+        )
         self.assertEqual(supervisor.state["agent_system"]["exit_code"], 0)
+        self.assertEqual(
+            supervisor.state["agent_system"]["termination_reason"], "exited"
+        )
+        self.assertTrue(supervisor.state["agent_system"]["finish_observed"])
+        self.assertEqual(supervisor.state["agent_system"]["drain_seconds"], 2.5)
         self.assertEqual(supervisor.state["agent_usage"], usage)
         status = supervisor.public_status()
         self.assertEqual(status["agent_runner"], "host_cli")
         self.assertIsNone(status["agent_mode"])
         self.assertEqual(status["agent_usage"], usage)
+        self.assertEqual(status["agent_exit_code"], 0)
+        self.assertEqual(status["agent_termination_reason"], "exited")
+        self.assertTrue(status["agent_finish_observed"])
+        self.assertEqual(status["agent_drain_seconds"], 2.5)
 
     def test_registered_inference_usage_is_summarized_from_trusted_trace(self):
         inference = InferenceConfig(

@@ -50,6 +50,7 @@ class Supervisor:
         self.wall_time = wall_time
         self.lock = threading.RLock()
         self.started_monotonic: Optional[float] = None
+        self.closed_monotonic: Optional[float] = None
 
         self.control_dir = self.episode_dir / "control"
         self.inbox = self.control_dir / "inbox"
@@ -96,6 +97,9 @@ class Supervisor:
                 "network": config.agent_network,
                 "policy_compliant": config.policy_compliant,
                 "exit_code": None,
+                "termination_reason": None,
+                "finish_observed": False,
+                "drain_seconds": None,
                 "inference": {
                     "enabled": config.inference is not None,
                     "protocol": config.inference.protocol if config.inference else None,
@@ -121,6 +125,7 @@ class Supervisor:
             "incumbent_id": None,
             "final_candidate_id": None,
             "test_nll": None,
+            "closure_reason": None,
             "inference_usage": summarize_inference_trace(self.inference_trace_path),
             "agent_usage": None,
             "failure": None,
@@ -154,7 +159,16 @@ class Supervisor:
     def _elapsed(self) -> float:
         if self.started_monotonic is None:
             return 0.0
-        return max(0.0, self.monotonic() - self.started_monotonic)
+        end = (
+            self.closed_monotonic
+            if self.closed_monotonic is not None
+            else self.monotonic()
+        )
+        return max(0.0, end - self.started_monotonic)
+
+    def _freeze_elapsed(self) -> None:
+        if self.closed_monotonic is None:
+            self.closed_monotonic = self.monotonic()
 
     def _track_a_remaining(self) -> float:
         return max(0.0, self.config.track_a_total_seconds - self._elapsed())
@@ -209,6 +223,14 @@ class Supervisor:
                 "inference_enabled": self.config.inference is not None,
                 "inference_usage": dict(self.state["inference_usage"]),
                 "agent_usage": self.state["agent_usage"],
+                "agent_exit_code": self.state["agent_system"]["exit_code"],
+                "agent_termination_reason": self.state["agent_system"][
+                    "termination_reason"
+                ],
+                "agent_finish_observed": self.state["agent_system"][
+                    "finish_observed"
+                ],
+                "agent_drain_seconds": self.state["agent_system"]["drain_seconds"],
                 "status": self.state["status"],
                 "elapsed_seconds": round(self._elapsed(), 3),
                 "leases_used": self.state["leases_used"],
@@ -552,17 +574,32 @@ class Supervisor:
             return dict(summary)
 
     def record_agent_execution(
-        self, *, exit_code: int, usage: Optional[Dict[str, Any]] = None
+        self,
+        *,
+        exit_code: int,
+        usage: Optional[Dict[str, Any]] = None,
+        termination_reason: str = "exited",
+        drain_seconds: float = 0.0,
     ) -> None:
         """Attach trusted runner metadata after the Agent process exits."""
 
         with self.lock:
             self.state["agent_system"]["exit_code"] = int(exit_code)
+            self.state["agent_system"]["termination_reason"] = termination_reason
+            self.state["agent_system"]["finish_observed"] = (
+                self.state["closure_reason"] == "agent_finished"
+            )
+            self.state["agent_system"]["drain_seconds"] = round(
+                max(0.0, float(drain_seconds)), 6
+            )
             self.state["agent_usage"] = dict(usage) if usage is not None else None
             self._event(
                 "AGENT_PROCESS_EXITED",
                 runner=self.config.agent_runner,
                 exit_code=int(exit_code),
+                termination_reason=termination_reason,
+                finish_observed=self.state["agent_system"]["finish_observed"],
+                drain_seconds=self.state["agent_system"]["drain_seconds"],
             )
             self._save_state()
 
@@ -581,7 +618,10 @@ class Supervisor:
     def _close_and_test(
         self, candidate_id: Optional[str], *, reason: str
     ) -> Dict[str, Any]:
+        self._freeze_elapsed()
         self.state["status"] = "closed"
+        self.state["closure_reason"] = reason
+        self.state["agent_system"]["finish_observed"] = reason == "agent_finished"
         self.state["final_candidate_id"] = candidate_id
         self._event(
             "EPISODE_CLOSED", reason=reason, candidate_id=candidate_id
@@ -625,24 +665,27 @@ class Supervisor:
             if self.state["status"] != "active":
                 return False
             active = self.state.get("active_lease")
-            if active and self.monotonic() >= active["deadline_monotonic"]:
-                self._end_active_lease("timeout")
             if self.track == "A" and self._track_a_remaining() <= 0:
+                self._freeze_elapsed()
                 if self.state["active_lease"] is not None:
                     self._end_active_lease("track_a_deadline")
                 self._close_and_test(
                     self.state["incumbent_id"], reason="track_a_deadline"
                 )
                 return True
+            if active and self.monotonic() >= active["deadline_monotonic"]:
+                self._end_active_lease("timeout")
             return False
 
     def agent_exited_without_finish(self) -> None:
         with self.lock:
             if self.state["status"] != "active":
                 return
+            self._freeze_elapsed()
             if self.state["active_lease"] is not None:
                 self._end_active_lease("agent_exited")
             self.state["status"] = "dnf"
+            self.state["closure_reason"] = "agent_exited_without_finish"
             self.state["failure"] = "agent exited without finishing the episode"
             self._event("EPISODE_DNF", reason="agent_exited_without_finish")
             self._save_state()
@@ -651,9 +694,11 @@ class Supervisor:
         with self.lock:
             if self.state["status"] != "active":
                 return
+            self._freeze_elapsed()
             if self.state["active_lease"] is not None:
                 self._end_active_lease("infrastructure_failure")
             self.state["status"] = "infrastructure_failure"
+            self.state["closure_reason"] = "infrastructure_failure"
             self.state["failure"] = message
             self._event("EPISODE_INFRASTRUCTURE_FAILURE", message=message)
             self._save_state()

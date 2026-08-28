@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from autotrain_bench.cli import _snapshot_agent_workspace
+from autotrain_bench.cli import _snapshot_agent_workspace, _terminal_agent_action
 from autotrain_bench.config import ConfigError
 
 
@@ -30,6 +30,34 @@ class WorkspaceSnapshotTests(unittest.TestCase):
             source.mkdir()
             with self.assertRaises(ConfigError):
                 _snapshot_agent_workspace(source, source / "episode")
+
+    def test_host_agent_can_exit_during_drain(self):
+        self.assertEqual(
+            _terminal_agent_action(
+                runner="host_cli", running=True, drain_elapsed_seconds=29.9
+            ),
+            "wait",
+        )
+        self.assertEqual(
+            _terminal_agent_action(
+                runner="host_cli", running=False, drain_elapsed_seconds=29.9
+            ),
+            "exited",
+        )
+
+    def test_host_agent_drain_has_a_bounded_timeout(self):
+        self.assertEqual(
+            _terminal_agent_action(
+                runner="host_cli", running=True, drain_elapsed_seconds=30.0
+            ),
+            "drain_timeout",
+        )
+        self.assertEqual(
+            _terminal_agent_action(
+                runner="container", running=True, drain_elapsed_seconds=3.0
+            ),
+            "drain_timeout",
+        )
 
 
 if __name__ == "__main__":

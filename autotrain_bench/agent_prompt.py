@@ -27,6 +27,8 @@ Allowed information and actions:
 - In Track A, check status before each new experiment. Reserve at least 15% of the
   total budget (and never less than 30 seconds) to select an already committed
   candidate and call finish explicitly with --candidate-id.
+- After agent finish returns, run no more commands. Immediately produce your final
+  response and end the Agent process so the runner can collect final usage.
 
 Forbidden:
 - Do not inspect the parent episode directory, mailbox files, supervisor state,
