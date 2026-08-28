@@ -102,8 +102,11 @@ class Client:
     def commit(self, candidate_path: str) -> Dict[str, Any]:
         return self.request("lease_commit", candidate_path=candidate_path)
 
+    def declare_incumbent(self, candidate_id: str) -> Dict[str, Any]:
+        return self.request("declare_incumbent", candidate_id=candidate_id)
+
     def stop_lease(self) -> Dict[str, Any]:
         return self.request("lease_stop")
 
-    def finish(self, candidate_id: Optional[str] = None) -> Dict[str, Any]:
-        return self.request("finish", candidate_id=candidate_id)
+    def finish(self) -> Dict[str, Any]:
+        return self.request("finish")

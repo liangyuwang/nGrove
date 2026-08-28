@@ -2,7 +2,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from autotrain_bench.cli import _snapshot_agent_workspace, _terminal_agent_action
+from autotrain_bench.cli import (
+    _snapshot_agent_workspace,
+    _terminal_agent_action,
+    build_parser,
+)
 from autotrain_bench.config import ConfigError
 
 
@@ -58,6 +62,13 @@ class WorkspaceSnapshotTests(unittest.TestCase):
             ),
             "drain_timeout",
         )
+
+    def test_declare_incumbent_command_is_explicit(self):
+        args = build_parser().parse_args(
+            ["agent", "declare-incumbent", "sha256:candidate"]
+        )
+        self.assertEqual(args.agent_command, "declare-incumbent")
+        self.assertEqual(args.candidate_id, "sha256:candidate")
 
 
 if __name__ == "__main__":

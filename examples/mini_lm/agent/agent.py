@@ -34,28 +34,38 @@ def run_experiment(client, index, *, order, smoothing, max_contexts):
 
 def main():
     client = Client()
-    candidates = [
-        run_experiment(
-            client, 1, order=2, smoothing=1.0, max_contexts=20_000
-        ),
+    candidates = []
+    incumbent = None
+
+    def record(candidate):
+        nonlocal incumbent
+        candidates.append(candidate)
+        if candidate["val_nll"] is not None and (
+            incumbent is None or candidate["val_nll"] < incumbent["val_nll"]
+        ):
+            client.declare_incumbent(candidate["candidate_id"])
+            incumbent = candidate
+
+    record(run_experiment(client, 1, order=2, smoothing=1.0, max_contexts=20_000))
+    record(
         run_experiment(
             client, 2, order=3, smoothing=0.25, max_contexts=30_000
-        ),
-    ]
+        )
+    )
 
     valid = [candidate for candidate in candidates if candidate["val_nll"] is not None]
     if valid and min(valid, key=lambda candidate: candidate["val_nll"])["order"] >= 3:
         revision = {"order": 4, "smoothing": 0.1, "max_contexts": 40_000}
     else:
         revision = {"order": 2, "smoothing": 0.1, "max_contexts": 30_000}
-    candidates.append(run_experiment(client, 3, **revision))
+    record(run_experiment(client, 3, **revision))
 
     valid = [candidate for candidate in candidates if candidate["val_nll"] is not None]
     if not valid:
         client.finish()
         return
     best = min(valid, key=lambda candidate: candidate["val_nll"])
-    final = client.finish(best["candidate_id"])
+    final = client.finish()
     print(
         "selected "
         f"order={best['order']} smoothing={best['smoothing']} "

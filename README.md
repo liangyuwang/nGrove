@@ -293,8 +293,15 @@ python -m autotrain_bench.cli agent status
 python -m autotrain_bench.cli agent lease-start
 python -m autotrain_bench.cli agent lease-exec -- python /workspace/train.py
 python -m autotrain_bench.cli agent lease-commit candidate
+python -m autotrain_bench.cli agent declare-incumbent sha256:<candidate-hash>
 python -m autotrain_bench.cli agent finish
 ```
+
+`lease-commit` snapshots the artifact and returns one aggregate VAL result, but
+does not change the incumbent. After interpreting that scalar, the Agent must
+explicitly call `declare-incumbent` for the model it would submit if the episode
+ended immediately. `finish` and an automatic Track A deadline test only that
+last Agent-declared incumbent.
 
 The submitted Agent command must be autonomous and non-interactive. Docker does
 not attach a user input stream after task reveal, so the user cannot continue
@@ -1087,6 +1094,10 @@ Discovering when and how to use them is part of the task.
 The benchmark should not record only a single final score.
 
 Throughout an episode, the AutoTrain system may declare a **current incumbent**: the model it would submit if the benchmark ended immediately.
+
+Candidate commitment and incumbent declaration are separate operations. The
+Supervisor never infers an incumbent by sorting VAL scores or by choosing the
+most recently committed candidate; that decision belongs to the Agent.
 
 Each incumbent declaration records:
 

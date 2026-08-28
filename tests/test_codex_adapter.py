@@ -46,7 +46,7 @@ class CodexAdapterTests(unittest.TestCase):
             command,
         )
         self.assertIn(
-            "agent finish [--candidate-id <candidate-id>]",
+            "agent declare-incumbent <candidate-id>",
             HOST_CLI_PROMPT,
         )
 

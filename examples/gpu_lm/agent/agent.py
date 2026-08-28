@@ -14,6 +14,7 @@ def main():
     )
     context_length = int(public_task["evaluation"]["context_length"])
     candidates = []
+    incumbent = None
     for index, (width, layers, learning_rate) in enumerate(
         ((192, 3, 4e-4), (256, 4, 3e-4), (320, 5, 2e-4)), start=1
     ):
@@ -55,11 +56,15 @@ def main():
         if result["exit_code"] != 0:
             client.stop_lease()
             continue
-        candidates.append(client.commit(output))
+        candidate = client.commit(output)
+        candidates.append(candidate)
+        if candidate["val_nll"] is not None and (
+            incumbent is None or candidate["val_nll"] < incumbent["val_nll"]
+        ):
+            client.declare_incumbent(candidate["candidate_id"])
+            incumbent = candidate
 
-    valid = [candidate for candidate in candidates if candidate["val_nll"] is not None]
-    best = min(valid, key=lambda candidate: candidate["val_nll"]) if valid else None
-    client.finish(best["candidate_id"] if best else None)
+    client.finish()
 
 
 if __name__ == "__main__":

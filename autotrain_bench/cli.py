@@ -346,10 +346,12 @@ def command_agent(args: argparse.Namespace) -> int:
         result = client.logs(args.limit)
     elif args.agent_command == "lease-commit":
         result = client.commit(args.candidate)
+    elif args.agent_command == "declare-incumbent":
+        result = client.declare_incumbent(args.candidate_id)
     elif args.agent_command == "lease-stop":
         result = client.stop_lease()
     elif args.agent_command == "finish":
-        result = client.finish(args.candidate_id)
+        result = client.finish()
     else:  # pragma: no cover - argparse prevents this
         raise ClientError(f"unknown agent command: {args.agent_command}")
     _print(result)
@@ -438,11 +440,14 @@ def build_parser() -> argparse.ArgumentParser:
     lease_commit.add_argument("candidate")
     lease_commit.set_defaults(function=command_agent)
 
+    declare_incumbent = agent_subparsers.add_parser("declare-incumbent")
+    declare_incumbent.add_argument("candidate_id")
+    declare_incumbent.set_defaults(function=command_agent)
+
     lease_stop = agent_subparsers.add_parser("lease-stop")
     lease_stop.set_defaults(function=command_agent)
 
     finish = agent_subparsers.add_parser("finish")
-    finish.add_argument("--candidate-id")
     finish.set_defaults(function=command_agent)
     return parser
 

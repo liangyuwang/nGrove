@@ -6,6 +6,7 @@ from autotrain_bench.client import Client
 def main():
     client = Client()
     candidates = []
+    incumbent = None
     for index, smoothing in enumerate((1.0, 0.1), start=1):
         client.start_lease()
         candidate_path = f"candidate-{index}"
@@ -22,17 +23,21 @@ def main():
         if result["exit_code"] != 0:
             client.stop_lease()
             raise RuntimeError(result["stderr"] or "toy training failed")
-        candidates.append(client.commit(candidate_path))
+        candidate = client.commit(candidate_path)
+        candidates.append(candidate)
+        if candidate["val_nll"] is not None and (
+            incumbent is None or candidate["val_nll"] < incumbent["val_nll"]
+        ):
+            client.declare_incumbent(candidate["candidate_id"])
+            incumbent = candidate
 
     valid = [candidate for candidate in candidates if candidate["val_nll"] is not None]
     if not valid:
         client.finish()
         return
-    best = min(valid, key=lambda candidate: candidate["val_nll"])
-    final = client.finish(best["candidate_id"])
+    final = client.finish()
     print(f"final TEST NLL: {final['test_nll']}")
 
 
 if __name__ == "__main__":
     main()
-

@@ -18,15 +18,18 @@ Allowed information and actions:
   python -m autotrain_bench.cli agent lease-exec [--timeout N] -- <command>
   python -m autotrain_bench.cli agent lease-logs [--limit N]
   python -m autotrain_bench.cli agent lease-commit <candidate-relative-path>
+  python -m autotrain_bench.cli agent declare-incumbent <candidate-id>
   python -m autotrain_bench.cli agent lease-stop
-  python -m autotrain_bench.cli agent finish [--candidate-id <candidate-id>]
+  python -m autotrain_bench.cli agent finish
 - lease-exec runs inside an isolated Training Container. In that command, the
   workspace is /workspace and visible training data is /benchmark/train.
 - Committing a candidate ends the active lease and produces exactly one aggregate
-  VAL result. Start a new lease before committing another candidate.
+  VAL result. It does not update the incumbent. After interpreting that result,
+  explicitly declare the candidate you would submit if the episode ended now.
+  Start a new lease before committing another candidate.
 - In Track A, check status before each new experiment. Reserve at least 15% of the
   total budget (and never less than 30 seconds) to select an already committed
-  candidate and call finish explicitly with --candidate-id.
+  candidate, declare it as incumbent, and call finish explicitly.
 - After agent finish returns, run no more commands. Immediately produce your final
   response and end the Agent process so the runner can collect final usage.
 
@@ -37,7 +40,7 @@ Forbidden:
 - Do not use network retrieval, web search, MCP, plugins, or external data.
 - Never attempt to reveal hidden evaluation content.
 
-Inspect the supplied workspace, improve it, use VAL feedback efficiently, and call
-agent finish with the strongest committed candidate. A completed attempt is better
-than timing out.
+Inspect the supplied workspace, improve it, use VAL feedback efficiently, declare
+your chosen incumbent, and call agent finish. A completed attempt is better than
+timing out.
 """

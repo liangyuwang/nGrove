@@ -275,10 +275,12 @@ class Supervisor:
             return self.lease_logs(request.get("limit", 50))
         if operation == "lease_commit":
             return self.commit_lease(request.get("candidate_path"))
+        if operation == "declare_incumbent":
+            return self.declare_incumbent(request.get("candidate_id"))
         if operation == "lease_stop":
             return self.stop_lease()
         if operation == "finish":
-            return self.finish(request.get("candidate_id"))
+            return self.finish()
         raise ProtocolError("unknown_operation", f"unknown operation: {operation!r}")
 
     def start_lease(self, requested_seconds: Any = None) -> Dict[str, Any]:
@@ -537,7 +539,6 @@ class Supervisor:
                 "evaluation_error": None,
             }
             self.state["candidates"][candidate_id] = metadata
-            self.state["incumbent_id"] = candidate_id
             self._event(
                 "CANDIDATE_COMMITTED",
                 lease_id=lease_id,
@@ -565,6 +566,42 @@ class Supervisor:
                 )
             self._save_state()
             return dict(metadata)
+
+    def declare_incumbent(self, candidate_id: Any) -> Dict[str, Any]:
+        """Record the candidate the Agent would submit if the episode ended now."""
+
+        with self.lock:
+            self._require_active()
+            if not isinstance(candidate_id, str) or not candidate_id:
+                raise ProtocolError(
+                    "invalid_candidate", "candidate_id must be a non-empty string"
+                )
+            candidate = self.state["candidates"].get(candidate_id)
+            if candidate is None:
+                raise ProtocolError(
+                    "unknown_candidate", "candidate is not registered"
+                )
+            if candidate.get("val_nll") is None:
+                raise ProtocolError(
+                    "candidate_not_validated",
+                    "candidate has no successful VAL result",
+                )
+            previous_id = self.state["incumbent_id"]
+            self.state["incumbent_id"] = candidate_id
+            self._event(
+                "INCUMBENT_DECLARED",
+                candidate_id=candidate_id,
+                previous_candidate_id=previous_id,
+                source_lease=candidate["source_lease"],
+                val_nll=candidate["val_nll"],
+                leases_used=self.state["leases_used"],
+            )
+            self._save_state()
+            return {
+                "incumbent_id": candidate_id,
+                "previous_incumbent_id": previous_id,
+                "val_nll": candidate["val_nll"],
+            }
 
     def refresh_inference_usage(self) -> Dict[str, Any]:
         with self.lock:
@@ -603,17 +640,16 @@ class Supervisor:
             )
             self._save_state()
 
-    def finish(self, candidate_id: Any = None) -> Dict[str, Any]:
+    def finish(self) -> Dict[str, Any]:
         with self.lock:
             self._require_active()
             if self.state["active_lease"] is not None:
                 raise ProtocolError(
                     "lease_active", "commit or stop the active lease before finish"
                 )
-            selected = candidate_id or self.state["incumbent_id"]
-            if selected is not None and selected not in self.state["candidates"]:
-                raise ProtocolError("unknown_candidate", "candidate is not registered")
-            return self._close_and_test(selected, reason="agent_finished")
+            return self._close_and_test(
+                self.state["incumbent_id"], reason="agent_finished"
+            )
 
     def _close_and_test(
         self, candidate_id: Optional[str], *, reason: str

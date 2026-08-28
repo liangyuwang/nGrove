@@ -31,6 +31,7 @@ class FakeRuntime:
         self.running = set()
         self.fail_start = False
         self.evaluations = []
+        self.val_nlls = []
 
     def start_training(self, *, name, config, lease_dir):
         del config, lease_dir
@@ -56,6 +57,8 @@ class FakeRuntime:
     def run_evaluator(self, *, config, candidate_dir, split, output_dir):
         del config, candidate_dir, output_dir
         self.evaluations.append(split)
+        if split == "val" and self.val_nlls:
+            return self.val_nlls.pop(0)
         return 1.25 if split == "val" else 1.5
 
 
@@ -108,6 +111,9 @@ class SupervisorTests(unittest.TestCase):
         committed = supervisor.commit_lease("candidate")
         self.assertEqual(committed["val_nll"], 1.25)
         self.assertIsNone(supervisor.state["active_lease"])
+        self.assertIsNone(supervisor.state["incumbent_id"])
+        declared = supervisor.declare_incumbent(committed["candidate_id"])
+        self.assertEqual(declared["incumbent_id"], committed["candidate_id"])
 
         with self.assertRaises(ProtocolError):
             supervisor.commit_lease("candidate")
@@ -117,7 +123,7 @@ class SupervisorTests(unittest.TestCase):
         with self.assertRaises(ProtocolError):
             supervisor.start_lease()
 
-        final = supervisor.finish(committed["candidate_id"])
+        final = supervisor.finish()
         self.assertEqual(final["status"], "finalized")
         self.assertEqual(final["test_nll"], 1.5)
         self.assertTrue(final["agent_finish_observed"])
@@ -130,6 +136,7 @@ class SupervisorTests(unittest.TestCase):
             for line in supervisor.events_path.read_text(encoding="utf-8").splitlines()
         ]
         types = [event["type"] for event in events]
+        self.assertLess(types.index("VAL_EVALUATED"), types.index("INCUMBENT_DECLARED"))
         self.assertLess(types.index("EPISODE_CLOSED"), types.index("TEST_EVALUATED"))
 
     def test_official_elapsed_time_freezes_before_agent_drain(self):
@@ -160,6 +167,36 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(supervisor.state["status"], "finalized")
         self.assertIsNone(supervisor.state["active_lease"])
         self.assertFalse(self.runtime.running)
+
+    def test_track_a_deadline_uses_only_agent_declared_incumbent(self):
+        config = replace(self.config, track_a_total_seconds=100)
+        supervisor = self.supervisor(track="A", config=config)
+        self.runtime.val_nlls = [1.0, 2.0]
+
+        with self.assertRaises(ProtocolError) as unknown:
+            supervisor.declare_incumbent("sha256:missing")
+        self.assertEqual(unknown.exception.code, "unknown_candidate")
+
+        supervisor.start_lease(10)
+        first = supervisor.commit_lease("candidate")
+        self.assertIsNone(supervisor.state["incumbent_id"])
+        supervisor.declare_incumbent(first["candidate_id"])
+
+        (self.workspace / "candidate/candidate.py").write_text(
+            "def load(candidate_dir, device): return None\n"
+            "def next_token_logits(model, input_ids): return []\n"
+            "# a distinct later candidate\n",
+            encoding="utf-8",
+        )
+        supervisor.start_lease(10)
+        later = supervisor.commit_lease("candidate")
+        self.assertNotEqual(first["candidate_id"], later["candidate_id"])
+        self.assertEqual(supervisor.state["incumbent_id"], first["candidate_id"])
+
+        self.clock.advance(101)
+        self.assertTrue(supervisor.enforce_deadlines())
+        self.assertEqual(supervisor.state["final_candidate_id"], first["candidate_id"])
+        self.assertEqual(supervisor.state["test_nll"], 1.5)
 
     def test_agent_mailbox_exposes_only_public_status(self):
         supervisor = self.supervisor()
