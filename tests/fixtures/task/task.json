@@ -1,5 +1,7 @@
 {
   "task_id": "test-byte-lm-v1",
+  "task_kind": "development_smoke",
+  "leaderboard_eligible": false,
   "paths": {
     "train": "train",
     "val": "private/val.json",

@@ -17,6 +17,7 @@ class ConfigError(ValueError):
 AGENT_RUNNERS = {"container", "host_cli"}
 AGENT_MODES = {"sandboxed", "unrestricted-dev"}
 EVALUATOR_BACKENDS = {"isolated_candidate"}
+TASK_KINDS = {"benchmark_challenge", "development_smoke"}
 RESERVED_AGENT_ENVIRONMENT = {
     "AUTOTRAIN_BENCH_CONTROL_DIR",
     "AUTOTRAIN_BENCH_FORWARDED_ENVIRONMENT",
@@ -112,6 +113,19 @@ def evaluator_backend(value: Any, field: str = "evaluation.backend") -> str:
     return value
 
 
+def task_kind(value: Any, field: str = "task_kind") -> str:
+    if not isinstance(value, str) or value not in TASK_KINDS:
+        allowed = ", ".join(sorted(TASK_KINDS))
+        raise ConfigError(f"{field} must be one of: {allowed}")
+    return value
+
+
+def _boolean(value: Any, field: str) -> bool:
+    if not isinstance(value, bool):
+        raise ConfigError(f"{field} must be a boolean")
+    return value
+
+
 @dataclass(frozen=True)
 class InferenceConfig:
     """Registered external researcher inference channel.
@@ -186,7 +200,7 @@ class InferenceConfig:
 class AgentConfig:
     """Participant-owned Agent selection for one benchmark episode.
 
-    This is deliberately separate from :class:`TaskConfig`: a challenge
+    This is deliberately separate from :class:`TaskConfig`: a task package
     defines data, budgets, evaluation, and the Training Environment, while the
     participant supplies the Agent image/command and any initial workspace.
     """
@@ -338,6 +352,8 @@ class TaskConfig:
 
     source: Path
     task_id: str
+    task_kind: str
+    leaderboard_eligible: bool
     train_dir: Path
     val_path: Path
     test_path: Path
@@ -416,6 +432,10 @@ class TaskConfig:
         config = cls(
             source=source,
             task_id=_string(root.get("task_id"), "task_id"),
+            task_kind=task_kind(root.get("task_kind")),
+            leaderboard_eligible=_boolean(
+                root.get("leaderboard_eligible"), "leaderboard_eligible"
+            ),
             train_dir=resolved_path("train", directory=True),
             val_path=resolved_path("val", directory=False),
             test_path=resolved_path("test", directory=False),
@@ -469,7 +489,12 @@ class TaskConfig:
         return config.validate()
 
     def validate(self) -> "TaskConfig":
-        """Validate the immutable challenge definition."""
+        """Validate the immutable task definition and its release classification."""
+        task_kind(self.task_kind)
+        if self.task_kind == "development_smoke" and self.leaderboard_eligible:
+            raise ConfigError(
+                "development smoke tasks may not be leaderboard eligible"
+            )
         if self.metric != "autoregressive_nll":
             raise ConfigError("v0 only implements evaluation.metric='autoregressive_nll'")
         if self.evaluator_device not in {"cpu", "cuda"}:
@@ -514,6 +539,8 @@ class TaskConfig:
         return {
             "protocol_version": 1,
             "task_id": self.task_id,
+            "task_kind": self.task_kind,
+            "leaderboard_eligible": self.leaderboard_eligible,
             "track": normalized,
             "train": {"path": "/benchmark/train", "visibility": "read_only"},
             "validation": {

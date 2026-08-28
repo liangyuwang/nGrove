@@ -368,6 +368,8 @@ class SupervisorTests(unittest.TestCase):
         thread.join(timeout=1)
         self.assertFalse(thread.is_alive())
         self.assertEqual(result["status"], "active")
+        self.assertEqual(result["task_kind"], "development_smoke")
+        self.assertFalse(result["leaderboard_eligible"])
         self.assertEqual(result["agent_network"], "disabled")
         self.assertEqual(result["agent_mode"], "sandboxed")
         serialized = json.dumps(result)

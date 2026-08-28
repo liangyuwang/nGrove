@@ -149,6 +149,8 @@ class Supervisor:
             "protocol_version": 1,
             "episode_id": self.episode_dir.name,
             "task_id": config.task_id,
+            "task_kind": config.task_kind,
+            "leaderboard_eligible": config.leaderboard_eligible,
             "track": self.track,
             "policy_compliant": policy_compliant,
             "policy_violations": policy_violations,
@@ -349,6 +351,8 @@ class Supervisor:
             status: Dict[str, Any] = {
                 "episode_id": self.state["episode_id"],
                 "task_id": self.config.task_id,
+                "task_kind": self.config.task_kind,
+                "leaderboard_eligible": self.config.leaderboard_eligible,
                 "track": self.track,
                 "agent_runner": self.agent.runner,
                 "agent_mode": self.agent.mode,
@@ -657,7 +661,7 @@ class Supervisor:
             ):
                 raise ProtocolError(
                     "invalid_candidate",
-                    "candidate bundle exceeds the mini benchmark artifact limit",
+                    "candidate bundle exceeds the task artifact limit",
                 )
         if not (resolved / "candidate.py").is_file():
             raise ProtocolError(

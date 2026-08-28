@@ -4,5 +4,4 @@ __pycache__/
 *.egg-info/
 .coverage
 .pytest_cache/
-examples/mini_lm/agent/candidate-*/
-examples/mini_lm/data/
+dev_tasks/smoke_lm/data/

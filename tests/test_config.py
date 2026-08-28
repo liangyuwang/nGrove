@@ -39,6 +39,8 @@ class ConfigTests(unittest.TestCase):
         self.assertNotIn("agent_environment", public)
         self.assertNotIn("agent", public)
         self.assertNotIn("hardware", public)
+        self.assertEqual(public["task_kind"], "development_smoke")
+        self.assertFalse(public["leaderboard_eligible"])
         self.assertEqual(public["budget"]["official_val_queries_per_lease"], 1)
         self.assertEqual(config.evaluator_batch_size, 2)
         self.assertEqual(config.evaluator_device, "cpu")
@@ -76,6 +78,29 @@ class ConfigTests(unittest.TestCase):
             task.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaisesRegex(ConfigError, "episode-owned"):
                 TaskConfig.load(task)
+
+    def test_task_classification_is_explicit_and_smoke_is_never_ranked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = self._write_task(directory)
+            payload = json.loads(task.read_text(encoding="utf-8"))
+
+            payload.pop("task_kind")
+            task.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ConfigError, "task_kind"):
+                TaskConfig.load(task)
+
+            payload["task_kind"] = "development_smoke"
+            payload["leaderboard_eligible"] = True
+            task.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ConfigError, "may not be leaderboard"):
+                TaskConfig.load(task)
+
+            payload["task_kind"] = "benchmark_challenge"
+            payload["leaderboard_eligible"] = False
+            task.write_text(json.dumps(payload), encoding="utf-8")
+            config = TaskConfig.load(task)
+            self.assertEqual(config.task_kind, "benchmark_challenge")
+            self.assertFalse(config.leaderboard_eligible)
 
     def test_agent_mode_environment_and_host_runner_are_separate(self):
         with tempfile.TemporaryDirectory() as directory:

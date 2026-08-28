@@ -2,9 +2,9 @@
 
 **An open-ended benchmark for autonomous training research and recursive self-improvement.**
 
-> **Status:** v0 local reference prototype
+> **Status:** v0 local reference runtime; no official challenge released yet
 > **Project name:** AutoTrain-Bench
-> Dataset, hardware, and concrete resource budgets are intentionally not fixed yet.
+> The repository includes one leaderboard-ineligible development smoke task.
 
 ---
 
@@ -73,11 +73,15 @@ The reference runtime requires a machine that can run Docker. AutoTrain-Bench
 consumes the environment the user has already obtained; it does **not** allocate
 machines or integrate with Slurm, Kubernetes, or a cloud scheduler.
 
-The repository contains one bundled task, `examples/mini_lm`. It is a comparable
-mini challenge rather than a smoke test: a real fixed corpus, pinned task
-images, both tracks, and an isolated Candidate serving boundary. It has no
-default Agent or starter training program. A sandboxed participant run reports
-`policy_compliant: true`.
+The repository contains one bundled development task,
+`dev_tasks/smoke_lm`. It is an end-to-end smoke test for Agent and runtime
+development, not a benchmark challenge and not a leaderboard task. It exercises
+a real fixed corpus, pinned task images, both tracks, and the isolated Candidate
+serving boundary. The optional `reference_agent/` is a known-good development
+fixture and is never injected unless the user selects it explicitly.
+
+Future official task packages will live under `challenges/`. None has been
+released yet.
 
 Hardware allocation is likewise not part of the task. An episode defaults to
 CPU and may explicitly expose NVIDIA GPUs with `--training-gpus` or generic
@@ -101,20 +105,20 @@ Install the local CLI:
 python3 -m pip install -e .
 ```
 
-Prepare the fixed TinyStories data and task images:
+Prepare the TinyStories smoke-task data and pinned images:
 
 ```bash
-python3 examples/mini_lm/prepare_data.py
-autotrain-bench prepare --task examples/mini_lm/task.json
+python3 dev_tasks/smoke_lm/prepare_data.py
+autotrain-bench prepare --task dev_tasks/smoke_lm/task.json
 ```
 
-The task downloads about 0.98 MB of real text and uses hidden 8K-token VAL/TEST
-splits. By default the selected Agent receives an empty workspace and must
-create its own training system. See `examples/mini_lm/README.md` for the task
-boundary, Candidate ABI, optional public reference Agent, and reproducibility
-details.
+The smoke task downloads about 0.98 MB of real text and uses hidden 8K-token
+VAL/TEST splits. By default the selected Agent receives an empty workspace and
+must create its own training system. See `dev_tasks/smoke_lm/README.md` for the
+development workflow, Candidate ABI, optional reference Agent, and
+reproducibility details. Smoke-task scores are not benchmark results.
 
-A participant Agent Container can be selected without changing the benchmark task:
+A participant Agent Container can be selected without changing the task:
 
 ```bash
 autotrain-bench start \
@@ -139,7 +143,7 @@ knows how to operate the benchmark protocol:
 
 ```bash
 autotrain-bench start \
-  --task examples/mini_lm/task.json \
+  --task dev_tasks/smoke_lm/task.json \
   --track A \
   --agent-runner host_cli \
   --agent-command "your-agent-cli --non-interactive ..."
@@ -162,7 +166,7 @@ confirms an existing login, run the TinyStories Track A with a fixed Codex model
 
 ```bash
 python3 -m autotrain_bench.cli start \
-  --task examples/mini_lm/task.json \
+  --task dev_tasks/smoke_lm/task.json \
   --track A \
   --agent-runner host_cli \
   --agent-command "python3 -m autotrain_bench.cli_adapters.codex --model YOUR_CODEX_MODEL --reasoning-effort high"
@@ -1397,13 +1401,15 @@ be mixed into a single leaderboard comparison.
 
 ---
 
-# Example Benchmark Configuration
+# Development Task Configuration
 
 The executable v0 task manifest is JSON and keeps task and track budgets in one small file:
 
 ```json
 {
-  "task_id": "tinystories-byte-lm-mini-v1",
+  "task_id": "tinystories-byte-lm-smoke-v1",
+  "task_kind": "development_smoke",
+  "leaderboard_eligible": false,
   "paths": {
     "train": "data/train",
     "val": "data/private/val.json",
@@ -1430,10 +1436,11 @@ The executable v0 task manifest is JSON and keeps task and track budgets in one 
 }
 ```
 
-See `examples/mini_lm/task.json` for the complete runnable manifest with exact
-image digests. Agent image, command, runner, and optional initial workspace are
-participant-owned launch inputs and are intentionally absent from the task.
-Hardware/device allocation is an episode runtime input and is also absent.
+See `dev_tasks/smoke_lm/task.json` for the complete runnable development
+manifest with exact image digests. Agent image, command, runner, and optional
+initial workspace are participant-owned launch inputs and are intentionally
+absent from the task. Hardware/device allocation is an episode runtime input
+and is also absent.
 
 ---
 
@@ -1591,14 +1598,20 @@ The repository contains a working v0 local reference prototype with:
 * a generic host CLI runner and a logged-in Codex CLI adapter;
 * isolated hidden-split lifecycle and post-closure TEST evaluation;
 * append-only benchmark, inference, and host-Agent JSONL traces;
-* one reproducible TinyStories mini challenge with no injected training code.
+* one reproducible TinyStories development smoke task with an optional
+  reference Agent and no implicitly injected training code.
 
-The mini challenge fixes its TRAIN/VAL/TEST construction, public evaluation
-contract, budgets, task-owned software images, and isolated Candidate serving
-protocol. The selected Agent and its initial workspace remain participant-owned.
-A future long-duration release can scale the same boundaries, while additional
-inference-provider adapters, synthetic-data policy, and isolation beyond the v0
-Docker threat model remain open design work.
+The smoke task fixes its TRAIN/VAL/TEST construction, public evaluation contract,
+budgets, task-owned software images, and isolated Candidate serving protocol so
+developers can verify a complete episode cheaply. It is explicitly marked
+`leaderboard_eligible: false`. The selected Agent and its initial workspace
+remain participant-owned.
+
+No official benchmark challenge has been released. Future challenge definitions
+will live under `challenges/`; dataset scale, hardware profiles, official
+budgets, submission policy, and leaderboard infrastructure remain open release
+work. Additional inference-provider adapters, synthetic-data policy, and
+isolation beyond the v0 Docker threat model also remain open design work.
 
 The v0 prototype is intentionally single-host and resource-allocation agnostic.
 Users obtain a Docker-capable environment before starting AutoTrain-Bench.

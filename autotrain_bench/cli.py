@@ -94,6 +94,8 @@ def command_prepare(args: argparse.Namespace) -> int:
         {
             "status": "ready",
             "task_id": config.task_id,
+            "task_kind": config.task_kind,
+            "leaderboard_eligible": config.leaderboard_eligible,
             "images": config.images,
             "evaluator_backend": config.evaluator_backend,
             "evaluator_policy_compliant": config.evaluator_policy_compliant,

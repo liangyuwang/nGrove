@@ -4,14 +4,14 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PREPARE_PATH = ROOT / "examples/mini_lm/prepare_data.py"
-SPEC = importlib.util.spec_from_file_location("mini_lm_prepare_data", PREPARE_PATH)
+PREPARE_PATH = ROOT / "dev_tasks/smoke_lm/prepare_data.py"
+SPEC = importlib.util.spec_from_file_location("smoke_lm_prepare_data", PREPARE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 PREPARE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PREPARE)
 
 
-class MiniLmPreparationTests(unittest.TestCase):
+class SmokeLmPreparationTests(unittest.TestCase):
     def test_sequences_use_bos_bytes_and_respect_record_size(self):
         long_text = "a" * (PREPARE.SEQUENCE_TARGET_TOKENS + 1)
         sequences = PREPARE.make_sequences([long_text])

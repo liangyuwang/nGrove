@@ -13,8 +13,8 @@ from autotrain_bench.candidate_protocol import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EVALUATOR = ROOT / "examples/mini_lm/evaluator/evaluator.py"
-SPEC = importlib.util.spec_from_file_location("mini_lm_evaluator", EVALUATOR)
+EVALUATOR = ROOT / "dev_tasks/smoke_lm/evaluator/evaluator.py"
+SPEC = importlib.util.spec_from_file_location("smoke_lm_evaluator", EVALUATOR)
 if SPEC is None or SPEC.loader is None:  # pragma: no cover - repository invariant
     raise RuntimeError(f"cannot import evaluator at {EVALUATOR}")
 MODULE = importlib.util.module_from_spec(SPEC)

@@ -1,5 +1,7 @@
 {
-  "task_id": "tinystories-byte-lm-mini-v1",
+  "task_id": "tinystories-byte-lm-smoke-v1",
+  "task_kind": "development_smoke",
+  "leaderboard_eligible": false,
   "paths": {
     "train": "data/train",
     "val": "data/private/val.json",

@@ -1,4 +1,4 @@
-"""Optional reference participant for the mini challenge."""
+"""Known-good reference Agent for the Smoke LM development task."""
 
 import json
 import os

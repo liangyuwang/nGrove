@@ -1,13 +1,15 @@
-# Mini LM challenge
+# Smoke LM development task
 
-`mini_lm` has the same task/participant boundary, Track A/Track B state
-machine, hidden evaluation, Candidate isolation, and incumbent semantics as a
-full AutoTrain-Bench challenge. Only the corpus and time budgets are smaller.
-It is an example challenge, not a smoke test and not a starter-code task.
+`smoke_lm` is the single bundled end-to-end development smoke task for
+AutoTrain-Bench. It exercises the same task/participant boundary, Track A/Track
+B state machine, hidden evaluation, Candidate isolation, and incumbent
+semantics that a future benchmark challenge will use. Its purpose is to help
+runtime and Agent authors verify their integrations cheaply; its scores are not
+benchmark results and it is never leaderboard eligible.
 
 ## Ownership boundary
 
-The challenge owns only:
+The smoke task owns only:
 
 - the public TRAIN split and its preparation recipe;
 - the hidden VAL/TEST splits and trusted Evaluator;
@@ -21,15 +23,16 @@ empty episode workspace. The Agent must create its own training program, model,
 experiments, Candidate implementation, and incumbent decisions after task
 reveal.
 
-`reference_agent/` is an optional public baseline. It is not named by
+`reference_agent/` is an optional known-good development fixture, not a
+competitive baseline. It is not named by
 `task.json`, copied into an episode, or mounted into a Training Container unless
 the user explicitly selects it with `--agent-workspace`. A sandboxed Agent sees
 only its episode workspace, TRAIN, the public task manifest, and the control
-mailbox; it cannot see the repository or the reference baseline.
+mailbox; it cannot see the repository or the reference Agent.
 
-## Fixed mini task
+## Fixed smoke task
 
-| Challenge property | Mini value |
+| Smoke-task property | Value |
 | --- | --- |
 | Corpus | 1,200 pinned TinyStories documents |
 | TRAIN | 1,000 documents, about 818K target bytes |
@@ -60,16 +63,16 @@ materially different runtime profiles should be compared separately.
 ## Prepare
 
 ```bash
-python3 examples/mini_lm/prepare_data.py
-autotrain-bench prepare --task examples/mini_lm/task.json
+python3 dev_tasks/smoke_lm/prepare_data.py
+autotrain-bench prepare --task dev_tasks/smoke_lm/task.json
 ```
 
 Preparation downloads a deterministic slice of
 `karpathy/tinystories-gpt4-clean` at revision
 `0397e27157956705a0260709da3095bb9c43d6a7`, verifies the ordered source digest,
-and writes ignored generated artifacts under `examples/mini_lm/data/`.
+and writes ignored generated artifacts under `dev_tasks/smoke_lm/data/`.
 
-## Run a participant Agent
+## Run an Agent integration
 
 A compliant participant is supplied explicitly as a sandboxed Agent Container.
 The image contains the Agent executable, while the writable episode workspace
@@ -77,18 +80,18 @@ starts empty:
 
 ```bash
 autotrain-bench start \
-  --task examples/mini_lm/task.json \
+  --task dev_tasks/smoke_lm/task.json \
   --track A \
   --agent-runner container \
   --agent-image participant-agent@sha256:DIGEST \
   --agent-command "participant-agent run"
 ```
 
-The same challenge can expose a GPU without modifying the task:
+The same smoke task can expose a GPU without modifying the task:
 
 ```bash
 autotrain-bench start \
-  --task examples/mini_lm/task.json \
+  --task dev_tasks/smoke_lm/task.json \
   --track A \
   --agent-runner container \
   --agent-image participant-agent@sha256:DIGEST \
@@ -96,16 +99,16 @@ autotrain-bench start \
   --training-gpus 1
 ```
 
-To exercise the optional public baseline, explicitly snapshot its files:
+To exercise the optional reference Agent, explicitly snapshot its files:
 
 ```bash
 autotrain-bench start \
-  --task examples/mini_lm/task.json \
+  --task dev_tasks/smoke_lm/task.json \
   --track B \
   --agent-runner container \
   --agent-image python@sha256:1042b61448fef4ba92d16a8c7eb4996d027568ce64792a7877fd88511e0af7c6 \
   --agent-command "python /workspace/agent.py" \
-  --agent-workspace examples/mini_lm/reference_agent
+  --agent-workspace dev_tasks/smoke_lm/reference_agent
 ```
 
 A logged-in CLI such as Codex can be rehearsed from the same default empty
@@ -113,7 +116,7 @@ workspace by omitting `--agent-workspace`:
 
 ```bash
 autotrain-bench start \
-  --task examples/mini_lm/task.json \
+  --task dev_tasks/smoke_lm/task.json \
   --track A \
   --agent-runner host_cli \
   --agent-command "python3 -m autotrain_bench.cli_adapters.codex --model MODEL --reasoning-effort high"
@@ -121,8 +124,9 @@ autotrain-bench start \
 
 The `host_cli` run reports `policy_compliant: false` because a host process can
 access files and networking outside the enforced episode boundary. The
-Candidate/Evaluator boundary remains isolated. A formal compliant result uses a
-sandboxed participant container or an equivalent isolated worker/VM.
+Candidate/Evaluator boundary remains isolated. A sandboxed participant
+container exercises the policy-compliant v0 path, but neither mode turns this
+development task into a formal benchmark result.
 
 ## Candidate artifact contract
 
