@@ -21,7 +21,9 @@ from .config import (
     TaskConfig,
     agent_environment_names,
     agent_mode,
+    agent_runner,
 )
+from .host_agent import HostAgentProcess, summarize_host_agent_trace
 from .inference import summarize_inference_trace
 from .runtime import DockerRuntime, RuntimeFailure
 from .supervisor import Supervisor
@@ -62,6 +64,7 @@ def command_prepare(args: argparse.Namespace) -> int:
             "images": config.images,
             "gpu_count": config.gpu_count,
             "gpu_model": config.gpu_model,
+            "agent_runner": config.agent_runner,
             "agent_mode": config.agent_mode,
             "policy_compliant": config.policy_compliant,
             "inference_enabled": config.inference is not None,
@@ -75,6 +78,7 @@ def command_start(args: argparse.Namespace) -> int:
     if (
         args.agent_image
         or args.agent_command_override
+        or args.agent_runner
         or args.agent_mode
         or args.agent_environment
     ):
@@ -89,14 +93,32 @@ def command_start(args: argparse.Namespace) -> int:
             [*config.agent_environment, *args.agent_environment],
             "--agent-env",
         )
+        resolved_runner = agent_runner(
+            args.agent_runner or config.agent_runner,
+            "--agent-runner",
+        )
+        if resolved_runner == "host_cli":
+            if args.agent_image:
+                raise ConfigError("--agent-image is not valid with host_cli")
+            if args.agent_mode:
+                raise ConfigError("--agent-mode is not valid with host_cli")
+            if config.agent_runner != "host_cli" and not args.agent_command_override:
+                raise ConfigError(
+                    "--agent-command is required when overriding a task to host_cli"
+                )
+            resolved_mode = None
+        else:
+            resolved_mode = agent_mode(
+                args.agent_mode
+                or (config.agent_mode if config.agent_runner == "container" else "sandboxed"),
+                "--agent-mode",
+            )
         config = replace(
             config,
             agent_image=args.agent_image or config.agent_image,
             agent_command=command,
-            agent_mode=agent_mode(
-                args.agent_mode or config.agent_mode,
-                "--agent-mode",
-            ),
+            agent_runner=resolved_runner,
+            agent_mode=resolved_mode,
             agent_environment=environment,
         ).validate()
     else:
@@ -135,6 +157,7 @@ def command_start(args: argparse.Namespace) -> int:
     agent_network = f"{prefix}-agent-net"
     egress_network = f"{prefix}-egress-net"
     agent_started = False
+    host_agent: Optional[HostAgentProcess] = None
     gateway_started = False
     networks_created: List[str] = []
     print(f"Episode: {episode_dir}", flush=True)
@@ -156,17 +179,29 @@ def command_start(args: argparse.Namespace) -> int:
             )
             gateway_started = True
         supervisor.begin()
-        runtime.start_agent(
-            name=agent_name,
-            config=config,
-            control_dir=supervisor.control_dir,
-            public_task_path=supervisor.public_task_path,
-            inference_network=agent_network if config.inference is not None else None,
-        )
+        if config.agent_runner == "container":
+            runtime.start_agent(
+                name=agent_name,
+                config=config,
+                control_dir=supervisor.control_dir,
+                public_task_path=supervisor.public_task_path,
+                inference_network=agent_network if config.inference is not None else None,
+            )
+        else:
+            host_agent = runtime.start_host_agent(
+                config=config,
+                control_dir=supervisor.control_dir,
+                public_task_path=supervisor.public_task_path,
+                stdout_path=episode_dir / "agent.stdout.log",
+                stderr_path=episode_dir / "agent.stderr.log",
+            )
         agent_started = True
     except Exception:
         supervisor.agent_exited_without_finish()
-        runtime.stop_container(agent_name)
+        if config.agent_runner == "container":
+            runtime.stop_container(agent_name)
+        elif host_agent is not None:
+            host_agent.stop()
         if gateway_started:
             runtime.stop_container(gateway_name)
         for network in reversed(networks_created):
@@ -179,7 +214,11 @@ def command_start(args: argparse.Namespace) -> int:
             processed = supervisor.process_one_request()
             supervisor.enforce_deadlines()
             status = supervisor.public_status()["status"]
-            agent_running = runtime.container_running(agent_name)
+            agent_running = (
+                runtime.container_running(agent_name)
+                if config.agent_runner == "container"
+                else bool(host_agent and host_agent.running)
+            )
 
             if (
                 status == "active"
@@ -213,13 +252,19 @@ def command_start(args: argparse.Namespace) -> int:
         if active:
             runtime.stop_container(active["container_name"])
         try:
-            agent_log = runtime.container_logs(agent_name) if agent_started else ""
-            agent_log_path = episode_dir / "agent.log"
-            agent_log_path.write_text(agent_log, encoding="utf-8")
-            agent_log_path.chmod(0o600)
+            if config.agent_runner == "container":
+                agent_log = runtime.container_logs(agent_name) if agent_started else ""
+                agent_log_path = episode_dir / "agent.log"
+                agent_log_path.write_text(agent_log, encoding="utf-8")
+                agent_log_path.chmod(0o600)
         except (OSError, RuntimeFailure):
             pass
-        runtime.stop_container(agent_name)
+        if config.agent_runner == "container":
+            runtime.stop_container(agent_name)
+        elif host_agent is not None:
+            exit_code = host_agent.stop()
+            usage = summarize_host_agent_trace(host_agent.stdout_path)
+            supervisor.record_agent_execution(exit_code=exit_code, usage=usage)
         if gateway_started:
             runtime.stop_container(gateway_name)
         supervisor.refresh_inference_usage()
@@ -288,13 +333,18 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--track", required=True, choices=["A", "B", "a", "b"])
     start.add_argument("--episode-dir", type=Path)
     start.add_argument(
+        "--agent-runner",
+        choices=["container", "host_cli"],
+        help="override how the Agent process is launched",
+    )
+    start.add_argument(
         "--agent-image",
         help="override the registered Agent Container image for this episode",
     )
     start.add_argument(
         "--agent-command",
         dest="agent_command_override",
-        help="override the command executed in the Agent Container",
+        help="override the command executed by the selected Agent runner",
     )
     start.add_argument(
         "--agent-mode",
@@ -310,7 +360,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         metavar="NAME",
-        help="forward a named host environment variable to the Agent Container",
+        help="forward a named host environment variable to the selected Agent runner",
     )
     start.add_argument(
         "--episodes-root", type=Path, default=Path(".autotrain/episodes")
@@ -322,7 +372,7 @@ def build_parser() -> argparse.ArgumentParser:
     report.set_defaults(function=command_report)
 
     agent = subparsers.add_parser(
-        "agent", help="commands used from inside the Agent Container"
+        "agent", help="mailbox commands used by the selected Agent runner"
     )
     agent_subparsers = agent.add_subparsers(dest="agent_command", required=True)
 

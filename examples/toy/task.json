@@ -12,6 +12,7 @@
     "evaluator": "python:3.11-slim"
   },
   "agent": {
+    "runner": "container",
     "command": [
       "python",
       "/workspace/agent.py"

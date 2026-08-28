@@ -121,10 +121,82 @@ autotrain-bench start \
   --agent-command "python /workspace/agent.py"
 ```
 
+## Bring your own Agent: host-native CLI tools
+
+AutoTrain-Bench supports two Agent runners:
+
+* `container` (the default) runs a participant command in an Agent Container;
+* `host_cli` runs any autonomous, non-interactive CLI command on the host while
+  the Supervisor, Training Containers, hidden evaluation, deadlines, and mailbox
+  protocol remain unchanged.
+
+The core runner is tool-independent. A CLI can be used directly when it already
+knows how to operate the benchmark protocol:
+
+```bash
+autotrain-bench start \
+  --task examples/mini_lm/task.json \
+  --track A \
+  --agent-runner host_cli \
+  --agent-command "your-agent-cli --non-interactive ..."
+```
+
+The command starts with its working directory set to the private episode
+workspace and with stdin disconnected. It receives
+`AUTOTRAIN_BENCH_WORKSPACE`, `AUTOTRAIN_BENCH_TASK`, and
+`AUTOTRAIN_BENCH_CONTROL_DIR`; it must use the `autotrain-bench agent ...`
+mailbox commands, call `agent finish`, and exit without further user input. A
+custom wrapper may reuse the tool-independent prompt in
+`autotrain_bench.agent_prompt.HOST_CLI_PROMPT`.
+
+Tool-specific adapters are optional conveniences, not part of the benchmark
+protocol. They translate the generic contract into a particular CLI's flags,
+prompt input, authentication environment, sandbox settings, and event stream.
+For example, the bundled Codex adapter allows an existing ChatGPT-authenticated
+Codex CLI installation to be used without an API key. After `codex login status`
+confirms an existing login, run the TinyStories Track A with a fixed Codex model:
+
+```bash
+python3 -m autotrain_bench.cli start \
+  --task examples/mini_lm/task.json \
+  --track A \
+  --agent-runner host_cli \
+  --agent-command "python3 -m autotrain_bench.cli_adapters.codex --model YOUR_CODEX_MODEL --reasoning-effort high"
+```
+
+The generic host runner captures stdout/stderr and enforces the same episode
+deadline. The optional Codex adapter invokes
+`codex exec --ephemeral --json`, disables web search and user configuration, and
+reuses the CLI's existing login. It never copies `auth.json` into an Agent
+Container and does not require an inference Gateway. These behaviors follow the
+official Codex documentation for
+[non-interactive mode](https://developers.openai.com/codex/noninteractive/) and
+[ChatGPT authentication](https://developers.openai.com/codex/auth/).
+
+Any CLI wrapper can make usage accounting portable by writing newline-delimited
+JSON to stdout. The runner recognizes these tool-independent records (additional
+fields are allowed):
+
+```json
+{"type":"autotrain_bench.agent_metadata","tool":"my-cli","tool_version":"1.0","model":"model-id","reasoning_effort":"high"}
+{"type":"autotrain_bench.agent_usage","usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":30,"reasoning_output_tokens":5},"usage_complete":true}
+```
+
+Without an adapter or these records, the episode itself still runs normally;
+the final report simply marks Agent token usage as incomplete.
+
+`host_cli` is always reported as `policy_compliant: false`: the v0 reference
+implementation cannot prove that a host process was unable to inspect unrelated
+host files or use its own network. It is a faithful local rehearsal and agent
+comparison mode, not yet a closed leaderboard submission boundary. A future
+policy-compliant host-tool runner requires an OS/VM or remote-tool boundary that
+confines every model-generated action to the episode workspace and mailbox.
+
 ## Bring your own Agent: controlled inference
 
 AutoTrain-Bench is intended to benchmark participant-defined autonomous Agent
-systems, including systems whose researcher model is served remotely. The Agent
+systems, including systems whose researcher model is served through an
+OpenAI-compatible remote or local endpoint. The Agent
 execution loop still runs inside the Agent Container so the benchmark can enforce
 its policy boundary; remote model inference is exposed through a narrow
 official Gateway sidecar rather than arbitrary public Internet access.
@@ -153,6 +225,7 @@ A minimal configuration looks like:
     "inference_gateway": "python:3.11-slim"
   },
   "agent": {
+    "runner": "container",
     "command": ["python", "/workspace/agent.py"],
     "mode": "sandboxed",
     "environment": [],
@@ -167,13 +240,17 @@ A minimal configuration looks like:
 }
 ```
 
-The user exports the credential only in the host environment before starting the
-episode:
+For a credentialed endpoint, the user exports the credential only in the host
+environment before starting the episode:
 
 ```bash
 export OPENAI_API_KEY="..."
 autotrain-bench start --task path/to/task.json --track B
 ```
+
+For a trusted local endpoint that requires no authentication, set
+`"api_key_env": null`; the Gateway still freezes the origin, paths, and model
+identities and records usage.
 
 For compatibility with common OpenAI-style clients, the Agent Container receives
 `OPENAI_BASE_URL=http://inference-gateway:8765/v1` and a dummy local API key. The
@@ -231,7 +308,15 @@ task reveal
 
 ## v0 scope and security
 
-The reference implementation uses an official host-side Supervisor, an Agent Container, a thin trusted Inference Gateway when registered, disposable Training Containers, and evaluator-only Eval Containers. No participant container receives the Docker socket or VAL/TEST content. Agent public networking is disabled in policy-compliant runs. The Gateway handles only frozen researcher-inference endpoints while the Supervisor independently enforces episode and GPU-lease deadlines. Training and Eval networking remains disabled. `unrestricted-dev` exists only as a non-compliant debugging mode.
+The reference implementation uses an official host-side Supervisor, either an
+Agent Container or a non-compliant host CLI process, a thin trusted Inference
+Gateway when registered, disposable Training Containers, and evaluator-only Eval
+Containers. No participant container receives the Docker socket or VAL/TEST
+content. Agent public networking is disabled in policy-compliant runs. The
+Gateway handles only frozen researcher-inference endpoints while the Supervisor
+independently enforces episode and GPU-lease deadlines. Training and Eval
+networking remains disabled. `unrestricted-dev` and `host_cli` exist only as
+non-compliant local integration modes.
 
 The v0 threat model protects benchmark policy from the Agent, not from the user or machine administrator. Docker isolation is a development reference boundary and is not presented as protection against kernel, container-runtime, or GPU-driver exploits. Official adversarial evaluation may require stronger worker or VM isolation.
 
@@ -1152,7 +1237,13 @@ Each release separates an online **Preparation Phase** from the benchmark episod
 
 The first official Training Environment will be fixed by the benchmark release rather than extended by each user. In policy-compliant runs, Agent and Training Containers have no arbitrary public-network access. The fixed training environment may still include CUDA, Triton, compilers, headers, source trees, and other tools that allow the Agent to build or replace participant-controlled infrastructure within its resource budget.
 
-Remote researcher inference is allowed only through a registered, Supervisor-managed trusted Gateway. The upstream origin, permitted API paths, and permitted model identities are frozen before task reveal; provider credentials remain outside the Agent Container. The Gateway cannot redirect to another origin and records calls and provider-reported token usage as part of the episode trace.
+In policy-compliant container runs, remote researcher inference is allowed only
+through a registered, Supervisor-managed trusted Gateway. The upstream origin,
+permitted API paths, and permitted model identities are frozen before task reveal;
+provider credentials remain outside the Agent Container. The Gateway cannot
+redirect to another origin and records calls and provider-reported token usage as
+part of the episode trace. The non-compliant `host_cli` runner instead uses the
+selected tool's own host login and network path.
 
 The exact policy for synthetic training examples generated autonomously by the submitted system will be specified before the first official dataset release.
 
@@ -1279,6 +1370,7 @@ The executable v0 task manifest is JSON and keeps task and track budgets in one 
     "evaluator": "python:3.11-slim"
   },
   "agent": {
+    "runner": "container",
     "command": ["python", "/workspace/agent.py"],
     "mode": "sandboxed",
     "environment": []
@@ -1448,8 +1540,9 @@ The repository contains a working v0 local reference prototype with:
 * disposable Docker Training Containers;
 * candidate hashing and immutable snapshots;
 * sandboxed Agent execution with an optional trusted streaming inference sidecar;
+* a generic host CLI runner and a logged-in Codex CLI adapter;
 * hidden VAL and post-closure TEST evaluation;
-* append-only `events.jsonl` and `inference/inference.jsonl` traces;
+* append-only benchmark, inference, and host-Agent JSONL traces;
 * a deterministic CPU toy task plus a reproducible real-data TinyStories mini benchmark.
 
 The first official benchmark instance has not been selected. Major remaining release decisions include the real TRAIN/VAL/TEST construction, tokenizer, hardware and budgets, fixed software image, production Candidate ABI, additional inference-provider adapters, synthetic-data policy, and stronger official isolation.

@@ -173,6 +173,27 @@ class SupervisorTests(unittest.TestCase):
         self.assertNotIn(str(self.config.val_path), serialized)
         self.assertNotIn(str(self.config.test_path), serialized)
 
+    def test_host_cli_runner_is_recorded_as_non_compliant(self):
+        config = replace(
+            self.config,
+            agent_runner="host_cli",
+            agent_mode=None,
+            inference=None,
+        )
+        supervisor = self.supervisor(config=config)
+        self.assertEqual(supervisor.state["agent_system"]["runner"], "host_cli")
+        self.assertIsNone(supervisor.state["agent_system"]["image"])
+        self.assertEqual(supervisor.state["agent_system"]["network"], "host_managed")
+        self.assertFalse(supervisor.state["agent_system"]["policy_compliant"])
+        usage = {"tool": "codex", "total_tokens": 42}
+        supervisor.record_agent_execution(exit_code=0, usage=usage)
+        self.assertEqual(supervisor.state["agent_system"]["exit_code"], 0)
+        self.assertEqual(supervisor.state["agent_usage"], usage)
+        status = supervisor.public_status()
+        self.assertEqual(status["agent_runner"], "host_cli")
+        self.assertIsNone(status["agent_mode"])
+        self.assertEqual(status["agent_usage"], usage)
+
     def test_registered_inference_usage_is_summarized_from_trusted_trace(self):
         inference = InferenceConfig(
             protocol="openai_compatible",

@@ -14,11 +14,17 @@ class ConfigError(ValueError):
     """Raised when a task configuration is invalid."""
 
 
+AGENT_RUNNERS = {"container", "host_cli"}
 AGENT_MODES = {"sandboxed", "unrestricted-dev"}
 RESERVED_AGENT_ENVIRONMENT = {
     "AUTOTRAIN_BENCH_CONTROL_DIR",
+    "AUTOTRAIN_BENCH_FORWARDED_ENVIRONMENT",
+    "AUTOTRAIN_BENCH_HOST_RUNNER",
     "AUTOTRAIN_BENCH_INFERENCE_BASE_URL",
     "AUTOTRAIN_BENCH_TASK",
+    "AUTOTRAIN_BENCH_TRAIN_DIR",
+    "AUTOTRAIN_BENCH_TRAIN_WORKSPACE",
+    "AUTOTRAIN_BENCH_WORKSPACE",
     "HOME",
     "OPENAI_BASE_URL",
     "PYTHONPATH",
@@ -87,6 +93,13 @@ def agent_environment_names(value: Any, field: str = "agent.environment") -> Lis
 def agent_mode(value: Any, field: str = "agent.mode") -> str:
     if not isinstance(value, str) or value not in AGENT_MODES:
         allowed = ", ".join(sorted(AGENT_MODES))
+        raise ConfigError(f"{field} must be one of: {allowed}")
+    return value
+
+
+def agent_runner(value: Any, field: str = "agent.runner") -> str:
+    if not isinstance(value, str) or value not in AGENT_RUNNERS:
+        allowed = ", ".join(sorted(AGENT_RUNNERS))
         raise ConfigError(f"{field} must be one of: {allowed}")
     return value
 
@@ -175,12 +188,13 @@ class TaskConfig:
     val_path: Path
     test_path: Path
     agent_workspace: Path
-    agent_image: str
+    agent_image: Optional[str]
     training_image: str
     evaluator_image: str
     inference_gateway_image: str
     agent_command: List[str]
-    agent_mode: str
+    agent_runner: str
+    agent_mode: Optional[str]
     agent_environment: List[str]
     inference: Optional[InferenceConfig]
     gpu_count: int
@@ -229,21 +243,34 @@ class TaskConfig:
         ):
             raise ConfigError("agent.command must be a non-empty string array")
 
-        if "mode" in agent and "network" in agent:
-            raise ConfigError("agent.mode and legacy agent.network may not both be set")
-        if "mode" in agent:
-            resolved_agent_mode = agent_mode(agent.get("mode"))
-        else:
-            # Backward-compatible migration for the first local prototype.
-            legacy_network = agent.get("network", "none")
-            if legacy_network == "none":
-                resolved_agent_mode = "sandboxed"
-            elif legacy_network == "open":
-                resolved_agent_mode = "unrestricted-dev"
+        resolved_agent_runner = agent_runner(agent.get("runner", "container"))
+        if resolved_agent_runner == "container":
+            if "mode" in agent and "network" in agent:
+                raise ConfigError("agent.mode and legacy agent.network may not both be set")
+            if "mode" in agent:
+                resolved_agent_mode: Optional[str] = agent_mode(agent.get("mode"))
             else:
-                raise ConfigError("legacy agent.network must be 'none' or 'open'")
+                # Backward-compatible migration for the first local prototype.
+                legacy_network = agent.get("network", "none")
+                if legacy_network == "none":
+                    resolved_agent_mode = "sandboxed"
+                elif legacy_network == "open":
+                    resolved_agent_mode = "unrestricted-dev"
+                else:
+                    raise ConfigError("legacy agent.network must be 'none' or 'open'")
+        else:
+            if "mode" in agent or "network" in agent:
+                raise ConfigError(
+                    "agent.mode and legacy agent.network apply only to the container runner"
+                )
+            resolved_agent_mode = None
 
         inference = InferenceConfig.load(agent.get("inference"))
+        if resolved_agent_runner == "host_cli" and inference is not None:
+            raise ConfigError(
+                "agent.inference is not available with the host_cli runner; "
+                "the host tool manages its own authenticated inference"
+            )
         environment = agent_environment_names(agent.get("environment", []))
         if inference and inference.api_key_env and inference.api_key_env in environment:
             raise ConfigError(
@@ -261,7 +288,15 @@ class TaskConfig:
             val_path=resolved_path("val", directory=False),
             test_path=resolved_path("test", directory=False),
             agent_workspace=resolved_path("agent_workspace", directory=True),
-            agent_image=_string(images.get("agent"), "images.agent"),
+            agent_image=(
+                _string(images.get("agent"), "images.agent")
+                if resolved_agent_runner == "container"
+                else (
+                    _string(images.get("agent"), "images.agent")
+                    if images.get("agent") is not None
+                    else None
+                )
+            ),
             training_image=_string(images.get("training"), "images.training"),
             evaluator_image=_string(images.get("evaluator"), "images.evaluator"),
             inference_gateway_image=_string(
@@ -269,6 +304,7 @@ class TaskConfig:
                 "images.inference_gateway",
             ),
             agent_command=list(command),
+            agent_runner=resolved_agent_runner,
             agent_mode=resolved_agent_mode,
             agent_environment=environment,
             inference=inference,
@@ -303,7 +339,18 @@ class TaskConfig:
     def validate(self) -> "TaskConfig":
         """Validate the final effective configuration, including CLI overrides."""
 
-        agent_mode(self.agent_mode)
+        agent_runner(self.agent_runner)
+        if self.agent_runner == "container":
+            agent_mode(self.agent_mode)
+            if not self.agent_image:
+                raise ConfigError("images.agent is required for the container runner")
+        else:
+            if self.agent_mode is not None:
+                raise ConfigError("agent.mode must be null for the host_cli runner")
+            if self.inference is not None:
+                raise ConfigError(
+                    "agent.inference is not available with the host_cli runner"
+                )
         normalized_environment = agent_environment_names(self.agent_environment)
         if normalized_environment != self.agent_environment:
             raise ConfigError("agent.environment must be normalized and duplicate-free")
@@ -328,14 +375,22 @@ class TaskConfig:
 
     @property
     def images(self) -> List[str]:
-        images = {self.agent_image, self.training_image, self.evaluator_image}
+        images = {self.training_image, self.evaluator_image}
+        if self.agent_runner == "container" and self.agent_image:
+            images.add(self.agent_image)
         if self.inference is not None:
             images.add(self.inference_gateway_image)
         return sorted(images)
 
     @property
     def policy_compliant(self) -> bool:
-        return self.agent_mode == "sandboxed"
+        return self.agent_runner == "container" and self.agent_mode == "sandboxed"
+
+    @property
+    def agent_network(self) -> str:
+        if self.agent_runner == "host_cli":
+            return "host_managed"
+        return "disabled" if self.agent_mode == "sandboxed" else "unrestricted_dev"
 
     def public_manifest(self, track: str) -> Dict[str, Any]:
         normalized = track.upper()
@@ -389,9 +444,11 @@ class TaskConfig:
             },
             "budget": budget,
             "agent_environment": {
+                "runner": self.agent_runner,
                 "mode": self.agent_mode,
-                "network": "disabled" if self.agent_mode == "sandboxed" else "unrestricted_dev",
-                "workspace": "/workspace",
+                "network": self.agent_network,
+                "workspace": "." if self.agent_runner == "host_cli" else "/workspace",
+                "training_workspace": "/workspace",
                 "workspace_scope": "episode_copy",
                 "control": "file_mailbox",
                 "forwarded_environment": list(self.agent_environment),

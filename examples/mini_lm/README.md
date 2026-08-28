@@ -42,6 +42,36 @@ autotrain-bench start --task examples/mini_lm/task.json --track B
 
 It allows three leases of at most 60 seconds each.
 
+## Run a logged-in Codex CLI as the Agent
+
+Codex CLI can run as a host-native Agent without an API key or inference
+Gateway. First confirm that the CLI already has a ChatGPT login:
+
+```bash
+codex login status
+```
+
+Then choose an available Codex model and launch the five-minute Track A:
+
+```bash
+python3 -m autotrain_bench.cli start \
+  --task examples/mini_lm/task.json \
+  --track A \
+  --agent-runner host_cli \
+  --agent-command "python3 -m autotrain_bench.cli_adapters.codex --model YOUR_CODEX_MODEL --reasoning-effort high"
+```
+
+The Supervisor snapshots the same initial Agent workspace, starts Codex in that
+copy, and exposes only the public task plus mailbox interface by contract. Codex
+stdout is stored in `agent.stdout.log`, stderr in `agent.stderr.log`, and parsed
+token/tool usage in the final report under `agent_usage`.
+
+This mode is deliberately marked `policy_compliant: false`. Codex executes on
+the host so v0 cannot technically prevent access outside the episode directory;
+the adapter disables web search, MCP/user configuration, and persistent rollout
+files, but those controls are not a replacement for a hard container or VM
+boundary.
+
 ## Full-size to mini mapping
 
 | Release concept | Mini setting |

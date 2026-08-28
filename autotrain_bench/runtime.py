@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import List, Optional, Sequence
 
 from .config import TaskConfig
+from .host_agent import HostAgentProcess, start_host_agent_process
 
 
 class RuntimeFailure(RuntimeError):
@@ -124,6 +125,10 @@ class DockerRuntime:
         inference_network: Optional[str] = None,
     ) -> None:
         config.validate()
+        if config.agent_runner != "container":
+            raise RuntimeFailure("start_agent requires the container runner")
+        if not config.agent_image:  # guarded by TaskConfig.validate
+            raise RuntimeFailure("container runner has no Agent image")
         package_dir = Path(__file__).resolve().parent
         missing_environment = [
             name for name in config.agent_environment if name not in os.environ
@@ -197,6 +202,33 @@ class DockerRuntime:
             )
         args.extend([config.agent_image, *config.agent_command])
         self._run(args)
+
+    def start_host_agent(
+        self,
+        *,
+        config: TaskConfig,
+        control_dir: Path,
+        public_task_path: Path,
+        stdout_path: Path,
+        stderr_path: Path,
+    ) -> HostAgentProcess:
+        config.validate()
+        if config.agent_runner != "host_cli":
+            raise RuntimeFailure("start_host_agent requires the host_cli runner")
+        package_root = Path(__file__).resolve().parent.parent
+        try:
+            return start_host_agent_process(
+                command=config.agent_command,
+                workspace=config.agent_workspace,
+                control_dir=control_dir,
+                public_task_path=public_task_path,
+                package_root=package_root,
+                forwarded_environment=config.agent_environment,
+                stdout_path=stdout_path,
+                stderr_path=stderr_path,
+            )
+        except OSError as exc:
+            raise RuntimeFailure(f"failed to start host Agent: {exc}") from exc
 
     def create_network(self, name: str, *, internal: bool) -> None:
         args = ["network", "create", "--driver", "bridge"]

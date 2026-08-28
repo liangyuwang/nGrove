@@ -87,11 +87,15 @@ class Supervisor:
             "task_id": config.task_id,
             "track": self.track,
             "agent_system": {
-                "image": config.agent_image,
+                "runner": config.agent_runner,
+                "image": (
+                    config.agent_image if config.agent_runner == "container" else None
+                ),
                 "command": list(config.agent_command),
                 "mode": config.agent_mode,
-                "network": "disabled" if config.agent_mode == "sandboxed" else "unrestricted_dev",
+                "network": config.agent_network,
                 "policy_compliant": config.policy_compliant,
+                "exit_code": None,
                 "inference": {
                     "enabled": config.inference is not None,
                     "protocol": config.inference.protocol if config.inference else None,
@@ -118,6 +122,7 @@ class Supervisor:
             "final_candidate_id": None,
             "test_nll": None,
             "inference_usage": summarize_inference_trace(self.inference_trace_path),
+            "agent_usage": None,
             "failure": None,
         }
         self.sequence = 0
@@ -140,6 +145,7 @@ class Supervisor:
             self._event(
                 "TASK_REVEALED",
                 track=self.track,
+                agent_runner=self.config.agent_runner,
                 agent_mode=self.config.agent_mode,
                 inference_enabled=self.config.inference is not None,
             )
@@ -196,11 +202,13 @@ class Supervisor:
                 "episode_id": self.state["episode_id"],
                 "task_id": self.config.task_id,
                 "track": self.track,
+                "agent_runner": self.config.agent_runner,
                 "agent_mode": self.config.agent_mode,
-                "agent_network": "disabled" if self.config.agent_mode == "sandboxed" else "unrestricted_dev",
+                "agent_network": self.config.agent_network,
                 "policy_compliant": self.config.policy_compliant,
                 "inference_enabled": self.config.inference is not None,
                 "inference_usage": dict(self.state["inference_usage"]),
+                "agent_usage": self.state["agent_usage"],
                 "status": self.state["status"],
                 "elapsed_seconds": round(self._elapsed(), 3),
                 "leases_used": self.state["leases_used"],
@@ -542,6 +550,21 @@ class Supervisor:
             self.state["inference_usage"] = summary
             self._save_state()
             return dict(summary)
+
+    def record_agent_execution(
+        self, *, exit_code: int, usage: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Attach trusted runner metadata after the Agent process exits."""
+
+        with self.lock:
+            self.state["agent_system"]["exit_code"] = int(exit_code)
+            self.state["agent_usage"] = dict(usage) if usage is not None else None
+            self._event(
+                "AGENT_PROCESS_EXITED",
+                runner=self.config.agent_runner,
+                exit_code=int(exit_code),
+            )
+            self._save_state()
 
     def finish(self, candidate_id: Any = None) -> Dict[str, Any]:
         with self.lock:

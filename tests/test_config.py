@@ -70,6 +70,48 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaises(ConfigError):
                 TaskConfig.load(reserved)
 
+    def test_host_cli_runner_is_distinct_from_container_inference(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = ROOT / "examples/toy/task.json"
+            payload = json.loads(source.read_text(encoding="utf-8"))
+            base = source.parent
+            for key, value in payload["paths"].items():
+                payload["paths"][key] = str((base / value).resolve())
+            payload["images"].pop("agent")
+            payload["agent"].pop("mode", None)
+            payload["agent"].pop("network", None)
+            payload["agent"]["runner"] = "host_cli"
+            destination = Path(directory) / "task.json"
+            destination.write_text(json.dumps(payload), encoding="utf-8")
+
+            config = TaskConfig.load(destination)
+            self.assertEqual(config.agent_runner, "host_cli")
+            self.assertIsNone(config.agent_mode)
+            self.assertIsNone(config.agent_image)
+            self.assertIsNone(config.agent_mode)
+            self.assertEqual(config.agent_network, "host_managed")
+            self.assertFalse(config.policy_compliant)
+            self.assertNotIn(None, config.images)
+            public = config.public_manifest("A")["agent_environment"]
+            self.assertEqual(public["runner"], "host_cli")
+            self.assertEqual(public["workspace"], ".")
+            self.assertEqual(public["training_workspace"], "/workspace")
+
+            payload["agent"]["mode"] = "sandboxed"
+            destination.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaises(ConfigError):
+                TaskConfig.load(destination)
+
+            payload["agent"].pop("mode")
+            payload["agent"]["inference"] = {
+                "base_url": "https://api.example.com",
+                "api_key_env": None,
+                "allowed_models": ["local-model"],
+            }
+            destination.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaises(ConfigError):
+                TaskConfig.load(destination)
+
     def test_inference_gateway_registration_and_secret_isolation(self):
         inference = {
             "protocol": "openai_compatible",
@@ -106,6 +148,19 @@ class ConfigTests(unittest.TestCase):
                     config,
                     agent_environment=["OPENAI_API_KEY"],
                 ).validate()
+
+    def test_inference_gateway_allows_an_auth_free_local_endpoint(self):
+        inference = {
+            "protocol": "openai_compatible",
+            "base_url": "http://host.docker.internal:8000",
+            "api_key_env": None,
+            "allowed_models": ["local-model"],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            task = self._write_task(directory, inference=inference)
+            config = TaskConfig.load(task)
+            self.assertIsNotNone(config.inference)
+            self.assertIsNone(config.inference.api_key_env)
 
     def test_legacy_network_configuration_migrates(self):
         with tempfile.TemporaryDirectory() as directory:
