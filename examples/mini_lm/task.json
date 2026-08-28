@@ -1,0 +1,43 @@
+{
+  "task_id": "tinystories-byte-lm-mini-v0",
+  "paths": {
+    "train": "data/train",
+    "val": "data/private/val.json",
+    "test": "data/private/test.json",
+    "agent_workspace": "agent"
+  },
+  "images": {
+    "agent": "python@sha256:1042b61448fef4ba92d16a8c7eb4996d027568ce64792a7877fd88511e0af7c6",
+    "training": "python@sha256:1042b61448fef4ba92d16a8c7eb4996d027568ce64792a7877fd88511e0af7c6",
+    "evaluator": "python@sha256:1042b61448fef4ba92d16a8c7eb4996d027568ce64792a7877fd88511e0af7c6",
+    "inference_gateway": "python@sha256:1042b61448fef4ba92d16a8c7eb4996d027568ce64792a7877fd88511e0af7c6"
+  },
+  "agent": {
+    "command": [
+      "python",
+      "/workspace/agent.py"
+    ],
+    "environment": [],
+    "mode": "sandboxed",
+    "inference": {
+      "enabled": false
+    }
+  },
+  "hardware": {
+    "gpu_count": 0,
+    "gpu_model": null
+  },
+  "evaluation": {
+    "metric": "autoregressive_nll",
+    "vocab_size": 257,
+    "context_length": 128,
+    "timeout_seconds": 60
+  },
+  "track_a": {
+    "total_seconds": 300
+  },
+  "track_b": {
+    "max_leases": 3,
+    "lease_seconds": 60
+  }
+}

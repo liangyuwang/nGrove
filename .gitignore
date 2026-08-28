@@ -5,4 +5,5 @@ __pycache__/
 .coverage
 .pytest_cache/
 examples/toy/agent/candidate-*/
-
+examples/mini_lm/agent/candidate-*/
+examples/mini_lm/data/

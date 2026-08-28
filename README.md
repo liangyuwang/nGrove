@@ -97,6 +97,20 @@ Run a complete Track B episode with the example autonomous agent:
 autotrain-bench start --task examples/toy/task.json --track B
 ```
 
+For a still inexpensive but substantially more realistic rehearsal, prepare the
+fixed TinyStories mini benchmark and run its five-minute Track A:
+
+```bash
+python3 examples/mini_lm/prepare_data.py
+autotrain-bench prepare --task examples/mini_lm/task.json
+autotrain-bench start --task examples/mini_lm/task.json --track A
+```
+
+This second example downloads about 0.98 MB of real text, uses a fixed byte-level
+tokenizer, hidden 8K-token VAL/TEST splits, pinned container images, and three
+validation-guided training leases. See `examples/mini_lm/README.md` for the full
+official-to-mini mapping and reproducibility details.
+
 A participant Agent Container can be selected without changing the benchmark task:
 
 ```bash
@@ -1436,7 +1450,7 @@ The repository contains a working v0 local reference prototype with:
 * sandboxed Agent execution with an optional trusted streaming inference sidecar;
 * hidden VAL and post-closure TEST evaluation;
 * append-only `events.jsonl` and `inference/inference.jsonl` traces;
-* a deterministic CPU toy task and example autonomous agent.
+* a deterministic CPU toy task plus a reproducible real-data TinyStories mini benchmark.
 
 The first official benchmark instance has not been selected. Major remaining release decisions include the real TRAIN/VAL/TEST construction, tokenizer, hardware and budgets, fixed software image, production Candidate ABI, additional inference-provider adapters, synthetic-data policy, and stronger official isolation.
 
