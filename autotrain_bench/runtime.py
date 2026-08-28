@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import shutil
 import subprocess
 import uuid
@@ -121,15 +122,20 @@ class DockerRuntime:
         public_task_path: Path,
     ) -> None:
         package_dir = Path(__file__).resolve().parent
-        home = config.agent_workspace / ".autotrain-home"
-        home.mkdir(parents=True, exist_ok=True)
+        missing_environment = [
+            name for name in config.agent_environment if name not in os.environ
+        ]
+        if missing_environment:
+            names = ", ".join(missing_environment)
+            raise RuntimeFailure(f"agent environment variable is not set: {names}")
         args: List[str] = [
             "run",
             "--detach",
+            "--init",
             "--name",
             name,
             "--network",
-            "none",
+            "none" if config.agent_network == "none" else "bridge",
             "--cap-drop",
             "ALL",
             "--security-opt",
@@ -139,6 +145,8 @@ class DockerRuntime:
             "--read-only",
             "--tmpfs",
             "/tmp:rw,nosuid,size=256m",
+            "--tmpfs",
+            "/agent-home:rw,nosuid,size=1g,mode=1777",
             "--mount",
             self._mount(config.agent_workspace, "/workspace", read_only=False),
             "--mount",
@@ -156,12 +164,15 @@ class DockerRuntime:
             "--env",
             "AUTOTRAIN_BENCH_TASK=/benchmark/task.json",
             "--env",
-            "HOME=/workspace/.autotrain-home",
+            "HOME=/agent-home",
             "--workdir",
             "/workspace",
-            config.agent_image,
-            *config.agent_command,
         ]
+        for name in config.agent_environment:
+            # Passing only the name makes Docker copy the value from the trusted
+            # Supervisor environment without putting the secret in argv or traces.
+            args.extend(["--env", name])
+        args.extend([config.agent_image, *config.agent_command])
         self._run(args)
 
     def start_training(
@@ -245,6 +256,11 @@ class DockerRuntime:
             ["inspect", "--format", "{{.State.Running}}", name], check=False
         )
         return result.returncode == 0 and result.stdout.strip() == "true"
+
+    def container_logs(self, name: str) -> str:
+        result = self._run(["logs", name], check=False)
+        parts = [value for value in (result.stdout, result.stderr) if value]
+        return "".join(parts)
 
     def stop_container(self, name: str) -> None:
         if not name:

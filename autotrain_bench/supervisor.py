@@ -11,7 +11,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Optional
 
 from .config import TaskConfig
 from .runtime import ExecResult, RuntimeFailure
@@ -81,6 +81,15 @@ class Supervisor:
             "episode_id": self.episode_dir.name,
             "task_id": config.task_id,
             "track": self.track,
+            "agent_system": {
+                "image": config.agent_image,
+                "command": list(config.agent_command),
+                "network": config.agent_network,
+                "forwarded_environment": list(config.agent_environment),
+                "initial_workspace_sha256": self._tree_hash(
+                    config.agent_workspace
+                ),
+            },
             "status": "created",
             "started_at": None,
             "elapsed_seconds": 0.0,
@@ -111,7 +120,11 @@ class Supervisor:
                 self.wall_time(), tz=timezone.utc
             ).isoformat()
             self.state.update(status="active", started_at=started_at)
-            self._event("TASK_REVEALED", track=self.track)
+            self._event(
+                "TASK_REVEALED",
+                track=self.track,
+                agent_network=self.config.agent_network,
+            )
             self._save_state()
 
     def _elapsed(self) -> float:
@@ -165,6 +178,7 @@ class Supervisor:
                 "episode_id": self.state["episode_id"],
                 "task_id": self.config.task_id,
                 "track": self.track,
+                "agent_network": self.config.agent_network,
                 "status": self.state["status"],
                 "elapsed_seconds": round(self._elapsed(), 3),
                 "leases_used": self.state["leases_used"],
@@ -423,8 +437,19 @@ class Supervisor:
     @staticmethod
     def _tree_hash(root: Path) -> str:
         digest = hashlib.sha256()
-        for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        for path in sorted(root.rglob("*")):
             relative = path.relative_to(root).as_posix().encode("utf-8")
+            if path.is_symlink():
+                target = os.readlink(path).encode("utf-8")
+                digest.update(b"symlink\0")
+                digest.update(len(relative).to_bytes(8, "big"))
+                digest.update(relative)
+                digest.update(len(target).to_bytes(8, "big"))
+                digest.update(target)
+                continue
+            if not path.is_file():
+                continue
+            digest.update(b"file\0")
             digest.update(len(relative).to_bytes(8, "big"))
             digest.update(relative)
             with path.open("rb") as stream:
@@ -609,4 +634,3 @@ class Supervisor:
         temporary.write_text(json.dumps(response, sort_keys=True), encoding="utf-8")
         os.replace(str(temporary), str(destination))
         return True
-

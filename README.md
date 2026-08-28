@@ -107,6 +107,83 @@ autotrain-bench start \
   --agent-command "python /workspace/agent.py"
 ```
 
+## Bring your own Agent: Open mode
+
+The reference runtime can launch an existing autonomous Agent system without
+owning or replacing that system's model client, authentication, prompts, tools,
+or reasoning loop. Codex-like agents are one example; the interface is not tied
+to any particular provider or Agent implementation.
+
+Open Agent mode is independent of Track A and Track B. The track still defines
+the benchmark resource budget, while `--agent-network open` controls only the
+Agent Container's network access:
+
+```bash
+export PROVIDER_API_KEY="..."
+
+autotrain-bench start \
+  --task path/to/task.json \
+  --track B \
+  --agent-image my-autonomous-agent:v1 \
+  --agent-command "my-agent --non-interactive" \
+  --agent-network open \
+  --agent-env PROVIDER_API_KEY
+```
+
+`--agent-env NAME` may be repeated. Only the environment variable name is
+placed in Docker arguments and episode metadata; its value is copied from the
+Supervisor environment directly into the Agent Container. Reserved benchmark
+variables such as `HOME`, `PYTHONPATH`, and the control paths cannot be
+overridden this way. The Agent can nevertheless read and transmit any value it
+receives, so Open mode should be used only with an Agent and provider account
+the user trusts. Agent stdout and stderr are saved to the private `agent.log`
+episode artifact; an Agent should not print credential values.
+
+The Agent does not need to use a benchmark-owned inference client. It keeps its
+native remote model connection and uses the benchmark package only as a narrow
+control plane. Python-based Agent images can import
+`autotrain_bench.client.Client`, as the toy Agent does, or invoke the same
+operations as commands:
+
+```bash
+python -m autotrain_bench.cli agent status
+python -m autotrain_bench.cli agent lease-start
+python -m autotrain_bench.cli agent lease-exec -- python /workspace/train.py
+python -m autotrain_bench.cli agent lease-commit candidate
+python -m autotrain_bench.cli agent finish
+```
+
+The submitted Agent command must be autonomous and non-interactive. Docker does
+not attach a user input stream after task reveal, so the user cannot continue
+steering the Agent during the episode.
+
+Each episode receives a private copy of the prepared Agent workspace. The Agent
+and Training Containers may modify that copy through `/workspace`, while the
+source workspace selected by the task is never mounted or modified. The Agent
+root filesystem is read-only and its temporary `HOME` is not shared with the
+Training Container. At episode end, the Agent Container and its temporary home
+are destroyed; the episode workspace, candidates, trace, and `agent.log` remain
+as artifacts.
+
+The equivalent task defaults are optional:
+
+```json
+{
+  "agent": {
+    "command": ["my-agent", "--non-interactive"],
+    "network": "open",
+    "environment": ["PROVIDER_API_KEY"]
+  }
+}
+```
+
+Open mode deliberately permits arbitrary Agent egress, including remote model
+inference. Training and Eval Containers still use `--network none`, receive no
+Agent credentials, and retain the same TRAIN/VAL/TEST boundaries. Open-mode
+results record a useful whole-system capability measurement, but are not
+directly comparable unless participants use equivalent external-resource
+policies.
+
 The Supervisor prints the episode directory. Its final state can be inspected later with:
 
 ```bash
@@ -129,7 +206,7 @@ task reveal
 
 ## v0 scope and security
 
-The reference implementation uses an official host-side Supervisor, an Agent Container, disposable Training Containers, and evaluator-only Eval Containers. Agent and Training Containers receive no Docker socket, no arbitrary Internet access, and no VAL or TEST content.
+The reference implementation uses an official host-side Supervisor, an Agent Container, disposable Training Containers, and evaluator-only Eval Containers. No participant container receives the Docker socket or VAL/TEST content. Agent networking is disabled by default and may be explicitly opened for Bring Your Own Agent experiments; Training and Eval networking remains disabled.
 
 The v0 threat model protects benchmark policy from the Agent, not from the user or machine administrator. Docker isolation is a development reference boundary and is not presented as protection against kernel, container-runtime, or GPU-driver exploits. Official adversarial evaluation may require stronger worker or VM isolation.
 
@@ -1048,7 +1125,7 @@ The default direction for the core track is:
 
 Each release separates an online **Preparation Phase** from the benchmark episode. Preparation may download versioned official images, the tokenized TRAIN corpus, tokenizer assets, compilers, frameworks, and an offline package bundle. Dataset and image hashes are verified before task reveal.
 
-The first official Training Environment will be fixed by the benchmark release rather than extended by each user. During the episode, Agent and Training Containers run without arbitrary public-network access. The fixed environment may still include CUDA, Triton, compilers, headers, source trees, and other tools that allow the Agent to build or replace participant-controlled infrastructure within its resource budget.
+The first official Training Environment will be fixed by the benchmark release rather than extended by each user. In the default closed policy, Agent and Training Containers run without arbitrary public-network access. Open Agent mode is an explicitly labeled exception for Bring Your Own Agent experiments: only the Agent Container receives ordinary egress, while Training and Eval Containers remain offline. The fixed training environment may still include CUDA, Triton, compilers, headers, source trees, and other tools that allow the Agent to build or replace participant-controlled infrastructure within its resource budget.
 
 Remote inference required by the registered AutoTrain system may be exposed through a benchmark-controlled interface.
 
@@ -1177,6 +1254,11 @@ The executable v0 task manifest is JSON and keeps task and track budgets in one 
     "agent": "python:3.11-slim",
     "training": "python:3.11-slim",
     "evaluator": "python:3.11-slim"
+  },
+  "agent": {
+    "command": ["python", "/workspace/agent.py"],
+    "network": "none",
+    "environment": []
   },
   "hardware": { "gpu_count": 0, "gpu_model": null },
   "track_a": { "total_seconds": 120 },

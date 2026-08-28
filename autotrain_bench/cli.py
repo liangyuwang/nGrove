@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
+import shutil
 import sys
 import time
 import uuid
@@ -14,7 +16,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .client import Client, ClientError
-from .config import ConfigError, TaskConfig
+from .config import (
+    ConfigError,
+    TaskConfig,
+    agent_environment_names,
+    agent_network_policy,
+)
 from .runtime import DockerRuntime, RuntimeFailure
 from .supervisor import Supervisor
 
@@ -28,6 +35,21 @@ def _episode_directory(root: Path) -> Path:
     return (root / f"{timestamp}-{uuid.uuid4().hex[:8]}").resolve()
 
 
+def _snapshot_agent_workspace(source: Path, destination: Path) -> None:
+    resolved_source = source.resolve()
+    resolved_destination = destination.resolve()
+    try:
+        resolved_destination.relative_to(resolved_source)
+    except ValueError:
+        pass
+    else:
+        raise ConfigError("episode workspace may not be inside the source workspace")
+    try:
+        shutil.copytree(resolved_source, resolved_destination, symlinks=True)
+    except OSError as exc:
+        raise ConfigError(f"failed to snapshot agent workspace: {exc}") from exc
+
+
 def command_prepare(args: argparse.Namespace) -> int:
     config = TaskConfig.load(args.task)
     runtime = DockerRuntime()
@@ -39,6 +61,7 @@ def command_prepare(args: argparse.Namespace) -> int:
             "images": config.images,
             "gpu_count": config.gpu_count,
             "gpu_model": config.gpu_model,
+            "agent_network": config.agent_network,
         }
     )
     return 0
@@ -46,7 +69,12 @@ def command_prepare(args: argparse.Namespace) -> int:
 
 def command_start(args: argparse.Namespace) -> int:
     config = TaskConfig.load(args.task)
-    if args.agent_image or args.agent_command_override:
+    if (
+        args.agent_image
+        or args.agent_command_override
+        or args.agent_network
+        or args.agent_environment
+    ):
         command = (
             shlex.split(args.agent_command_override)
             if args.agent_command_override
@@ -54,11 +82,26 @@ def command_start(args: argparse.Namespace) -> int:
         )
         if not command:
             raise ConfigError("--agent-command must not be empty")
+        environment = agent_environment_names(
+            [*config.agent_environment, *args.agent_environment],
+            "--agent-env",
+        )
         config = replace(
             config,
             agent_image=args.agent_image or config.agent_image,
             agent_command=command,
+            agent_network=agent_network_policy(
+                args.agent_network or config.agent_network,
+                "--agent-network",
+            ),
+            agent_environment=environment,
         )
+    missing_environment = [
+        name for name in config.agent_environment if name not in os.environ
+    ]
+    if missing_environment:
+        names = ", ".join(missing_environment)
+        raise ConfigError(f"agent environment variable is not set: {names}")
     runtime = DockerRuntime()
     runtime.prepare(config, pull_missing=False)
     episode_dir = (
@@ -67,6 +110,13 @@ def command_start(args: argparse.Namespace) -> int:
         else _episode_directory(args.episodes_root)
     )
     episode_dir.mkdir(parents=True, exist_ok=False)
+    workspace = episode_dir / "workspace"
+    try:
+        _snapshot_agent_workspace(config.agent_workspace, workspace)
+    except Exception:
+        shutil.rmtree(episode_dir, ignore_errors=True)
+        raise
+    config = replace(config, agent_workspace=workspace)
     supervisor = Supervisor(
         config=config,
         track=args.track,
@@ -112,6 +162,13 @@ def command_start(args: argparse.Namespace) -> int:
         active = supervisor.state.get("active_lease")
         if active:
             runtime.stop_container(active["container_name"])
+        try:
+            agent_log = runtime.container_logs(agent_name)
+            agent_log_path = episode_dir / "agent.log"
+            agent_log_path.write_text(agent_log, encoding="utf-8")
+            agent_log_path.chmod(0o600)
+        except (OSError, RuntimeFailure):
+            pass
         runtime.stop_container(agent_name)
 
     _print(supervisor.public_status())
@@ -179,6 +236,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--agent-command",
         dest="agent_command_override",
         help="override the command executed in the Agent Container",
+    )
+    start.add_argument(
+        "--agent-network",
+        choices=["none", "open"],
+        help="override Agent Container network policy (default: task policy)",
+    )
+    start.add_argument(
+        "--agent-env",
+        dest="agent_environment",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="forward a named host environment variable to the Agent Container",
     )
     start.add_argument(
         "--episodes-root", type=Path, default=Path(".autotrain/episodes")

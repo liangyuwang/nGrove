@@ -96,6 +96,10 @@ class SupervisorTests(unittest.TestCase):
 
     def test_track_b_interactive_lease_commit_and_finish(self):
         supervisor = self.supervisor()
+        self.assertEqual(supervisor.state["agent_system"]["network"], "none")
+        self.assertEqual(
+            len(supervisor.state["agent_system"]["initial_workspace_sha256"]), 64
+        )
         lease = supervisor.start_lease()
         self.assertEqual(lease["lease_id"], "lease-0001")
         command = supervisor.exec_lease(["python", "train.py"])
@@ -162,6 +166,7 @@ class SupervisorTests(unittest.TestCase):
         thread.join(timeout=1)
         self.assertFalse(thread.is_alive())
         self.assertEqual(result["status"], "active")
+        self.assertEqual(result["agent_network"], "none")
         serialized = json.dumps(result)
         self.assertNotIn(str(self.config.val_path), serialized)
         self.assertNotIn(str(self.config.test_path), serialized)

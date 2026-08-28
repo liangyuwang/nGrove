@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -10,6 +11,16 @@ from typing import Any, Dict, List, Optional
 
 class ConfigError(ValueError):
     """Raised when a task configuration is invalid."""
+
+
+AGENT_NETWORK_POLICIES = {"none", "open"}
+RESERVED_AGENT_ENVIRONMENT = {
+    "AUTOTRAIN_BENCH_CONTROL_DIR",
+    "AUTOTRAIN_BENCH_TASK",
+    "HOME",
+    "PYTHONPATH",
+}
+_ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _mapping(value: Any, field: str) -> Dict[str, Any]:
@@ -34,6 +45,29 @@ def _string(value: Any, field: str) -> str:
     return value
 
 
+def agent_environment_names(value: Any, field: str = "agent.environment") -> List[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ConfigError(f"{field} must be a string array")
+    names: List[str] = []
+    for item in value:
+        if not isinstance(item, str) or not _ENVIRONMENT_NAME.fullmatch(item):
+            raise ConfigError(f"{field} contains an invalid environment variable name")
+        if item in RESERVED_AGENT_ENVIRONMENT:
+            raise ConfigError(f"{field} may not override reserved variable {item}")
+        if item not in names:
+            names.append(item)
+    return names
+
+
+def agent_network_policy(value: Any, field: str = "agent.network") -> str:
+    if not isinstance(value, str) or value not in AGENT_NETWORK_POLICIES:
+        allowed = ", ".join(sorted(AGENT_NETWORK_POLICIES))
+        raise ConfigError(f"{field} must be one of: {allowed}")
+    return value
+
+
 @dataclass(frozen=True)
 class TaskConfig:
     """Fully resolved benchmark task configuration.
@@ -52,6 +86,8 @@ class TaskConfig:
     training_image: str
     evaluator_image: str
     agent_command: List[str]
+    agent_network: str
+    agent_environment: List[str]
     gpu_count: int
     gpu_model: Optional[str]
     metric: str
@@ -113,6 +149,8 @@ class TaskConfig:
             training_image=_string(images.get("training"), "images.training"),
             evaluator_image=_string(images.get("evaluator"), "images.evaluator"),
             agent_command=list(command),
+            agent_network=agent_network_policy(agent.get("network", "none")),
+            agent_environment=agent_environment_names(agent.get("environment", [])),
             gpu_count=_positive_int(
                 hardware.get("gpu_count"), "hardware.gpu_count", allow_zero=True
             ),
@@ -192,10 +230,16 @@ class TaskConfig:
                 "allocation": "provided_by_user_before_episode",
             },
             "budget": budget,
+            "agent_environment": {
+                "network": self.agent_network,
+                "workspace": "/workspace",
+                "workspace_scope": "episode_copy",
+                "control": "file_mailbox",
+                "forwarded_environment": list(self.agent_environment),
+            },
             "training_environment": {
                 "image": self.training_image,
                 "network": "disabled",
                 "interactive_within_lease": True,
             },
         }
-
