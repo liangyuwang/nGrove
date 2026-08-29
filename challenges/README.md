@@ -32,6 +32,10 @@ when all four comparison-key fields match:
 challenge_id + track + track_config + runtime_profile
 ```
 
+Runtime-profile preflight confirms that the execution environment satisfies
+the hardware requirements declared by the selected profile, including host
+count and accelerator vendor, model, count, and minimum memory.
+
 Preview profile maps can be inspected without preparing challenge data:
 
 ```bash
