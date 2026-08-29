@@ -94,7 +94,7 @@ a real fixed corpus, pinned task images, both tracks, and the isolated Candidate
 serving boundary. The optional `reference_agent/` is a known-good development
 fixture and is never injected unless the user selects it explicitly.
 
-Future official task packages live under `challenges/`. `pretrain_v1/` now
+Future official task packages live under `challenges/`. `lm-pretrain-v1/` now
 contains a runnable-after-preparation preview task, evaluator, data builder, and
 provisional comparison profiles; no frozen, leaderboard-eligible challenge has
 been released yet.
@@ -1323,7 +1323,7 @@ selected tool's own host login and network path.
 
 Synthetic training examples generated autonomously during the episode by the
 frozen initial system through registered capabilities are allowed by the
-`pretrain-v1` preview direction. Human intervention after task reveal,
+`lm-pretrain-v1` preview direction. Human intervention after task reveal,
 unregistered external access, extra mounted corpora, and a submitted initial
 workspace or image containing an external target-model checkpoint or extra
 training corpus are outside policy. The runtime enforces the untrusted Agent
@@ -1458,14 +1458,14 @@ Inspect a release's supported maps with:
 
 ```bash
 autotrain-bench challenge-info \
-  --challenge challenges/pretrain_v1/challenge.json
+  --challenge challenges/lm-pretrain-v1/challenge.json
 ```
 
 In challenge mode, `--track-config` selects both the track and its budget, while
 `--runtime-profile` supplies the concrete resources. Manual `--track` and GPU
 overrides are rejected so the recorded key cannot disagree with the run.
 
-The `pretrain-v1` TRAIN mount contains both raw FineWeb-Edu TRAIN documents with
+The `lm-pretrain-v1` TRAIN mount contains both raw FineWeb-Edu TRAIN documents with
 source metadata and official GPT-2 token shards linked by document IDs and
 token spans. The Agent may use either representation. Preview VAL/TEST rows are
 excluded from both Agent-visible forms and remain evaluator-only.
@@ -1678,7 +1678,7 @@ developers can verify a complete episode cheaply. It is explicitly marked
 `leaderboard_eligible: false`. The selected Agent and its initial workspace
 remain participant-owned.
 
-No frozen benchmark challenge has been released. The `pretrain-v1` preview under
+No frozen benchmark challenge has been released. The `lm-pretrain-v1` preview under
 `challenges/` now defines provisional track configurations, a deliberately
 small set of single-host A100/H100 runtime profiles, the four-field comparison
 key, the initial external-resource policy, a task/evaluator, and a builder that

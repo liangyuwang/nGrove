@@ -1,5 +1,5 @@
 {
-  "task_id": "pretrain-v1",
+  "task_id": "lm-pretrain-v1",
   "task_kind": "benchmark_challenge",
   "leaderboard_eligible": false,
   "paths": {

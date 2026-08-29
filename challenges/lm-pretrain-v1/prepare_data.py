@@ -1,4 +1,4 @@
-"""Build the pretrain-v1 preview from pinned FineWeb-Edu Parquet files.
+"""Build the lm-pretrain-v1 preview from pinned FineWeb-Edu Parquet files.
 
 The default build downloads roughly 28.5 GB of source Parquet and emits about
 10 billion GPT-2 tokens. Optional dependencies are deliberately lazy-loaded so
@@ -334,7 +334,7 @@ def _load_dependencies() -> Tuple[Any, Any, Any, Any]:
     except ImportError as exc:
         raise PreparationError(
             "data dependencies are missing; run: "
-            "python -m pip install -r challenges/pretrain_v1/data/requirements.txt"
+            "python -m pip install -r challenges/lm-pretrain-v1/data/requirements.txt"
         ) from exc
     return snapshot_download, pyarrow, parquet, tiktoken
 

@@ -191,13 +191,13 @@ class SupervisorTests(unittest.TestCase):
 
     def test_comparison_key_and_release_are_recorded_publicly(self):
         comparison_key = {
-            "challenge_id": "pretrain-v1",
+            "challenge_id": "lm-pretrain-v1",
             "track": "B",
             "track_config": "preview-b-6x1h",
             "runtime_profile": "h100-sxm-80gb-x4",
         }
         release = {
-            "challenge_id": "pretrain-v1",
+            "challenge_id": "lm-pretrain-v1",
             "release_stage": "preview",
             "leaderboard_eligible": False,
         }

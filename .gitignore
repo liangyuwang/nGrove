@@ -5,5 +5,5 @@ __pycache__/
 .coverage
 .pytest_cache/
 dev_tasks/smoke_lm/data/
-challenges/pretrain_v1/data/generated/
-challenges/pretrain_v1/data/raw/
+challenges/lm-pretrain-v1/data/generated/
+challenges/lm-pretrain-v1/data/raw/

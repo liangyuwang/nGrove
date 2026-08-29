@@ -1,6 +1,6 @@
-# Pretrain v1 preview
+# LM pretrain v1 preview
 
-`pretrain-v1` is the first formal pretraining challenge preview. Its identity
+`lm-pretrain-v1` is the first formal language-model pretraining challenge preview. Its identity
 is independent of its initial corpus: this version builds an approximately
 10-billion-token TRAIN pool from a pinned FineWeb-Edu revision and fixes GPT-2
 token IDs only at the evaluation boundary.
@@ -40,21 +40,21 @@ Evaluation always sends and scores GPT-2 vocabulary IDs.
 Install the isolated preparation dependencies:
 
 ```bash
-python3 -m pip install -r challenges/pretrain_v1/data/requirements.txt
+python3 -m pip install -r challenges/lm-pretrain-v1/data/requirements.txt
 ```
 
 The default source download is roughly 28.5 GB and the tokenized output is
 about 20 GB, in addition to the public raw TRAIN Parquet:
 
 ```bash
-python3 challenges/pretrain_v1/prepare_data.py --accept-large-download
-autotrain-bench prepare --task challenges/pretrain_v1/task.json
+python3 challenges/lm-pretrain-v1/prepare_data.py --accept-large-download
+autotrain-bench prepare --task challenges/lm-pretrain-v1/task.json
 ```
 
 An existing pinned FineWeb-Edu `sample/10BT` download can be reused:
 
 ```bash
-python3 challenges/pretrain_v1/prepare_data.py \
+python3 challenges/lm-pretrain-v1/prepare_data.py \
   --source-dir /path/to/fineweb-edu-sample-10BT
 ```
 
@@ -83,7 +83,7 @@ Inspect the finite maps:
 
 ```bash
 autotrain-bench challenge-info \
-  --challenge challenges/pretrain_v1/challenge.json
+  --challenge challenges/lm-pretrain-v1/challenge.json
 ```
 
 After data preparation, start a profile-bound episode. `task.json` is inferred
@@ -91,7 +91,7 @@ from the challenge release:
 
 ```bash
 autotrain-bench start \
-  --challenge challenges/pretrain_v1/challenge.json \
+  --challenge challenges/lm-pretrain-v1/challenge.json \
   --track-config preview-b-6x1h \
   --runtime-profile h100-sxm-80gb-x4 \
   --agent-runner container \

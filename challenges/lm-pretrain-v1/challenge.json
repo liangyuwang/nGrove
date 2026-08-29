@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "challenge_id": "pretrain-v1",
-  "task_id": "pretrain-v1",
+  "challenge_id": "lm-pretrain-v1",
+  "task_id": "lm-pretrain-v1",
   "task": "task.json",
   "release_stage": "preview",
   "leaderboard_eligible": false,

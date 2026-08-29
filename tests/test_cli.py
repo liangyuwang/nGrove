@@ -15,7 +15,7 @@ from autotrain_bench.config import ConfigError, TaskConfig
 
 ROOT = Path(__file__).resolve().parents[1]
 TASK = ROOT / "tests/fixtures/task/task.json"
-PRETRAIN_PREVIEW = ROOT / "challenges/pretrain_v1/challenge.json"
+LM_PRETRAIN_PREVIEW = ROOT / "challenges/lm-pretrain-v1/challenge.json"
 
 
 class WorkspaceSnapshotTests(unittest.TestCase):
@@ -133,10 +133,10 @@ class WorkspaceSnapshotTests(unittest.TestCase):
 
         task = replace(
             TaskConfig.load(TASK),
-            task_id="pretrain-v1",
+            task_id="lm-pretrain-v1",
             task_kind="benchmark_challenge",
         ).validate()
-        args.challenge = PRETRAIN_PREVIEW
+        args.challenge = LM_PRETRAIN_PREVIEW
         resolved = _resolve_challenge_run(args, task)
         self.assertIsNotNone(resolved)
         self.assertEqual(resolved.track, "B")
