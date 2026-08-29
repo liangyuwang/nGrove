@@ -21,9 +21,10 @@ trusted benchmark operator, not as the Tested Agent.
 
 Treat requests such as "start this project," "run it," "launch the benchmark,"
 or "test an Agent" as requests to establish a benchmark run contract. They do
-not select a local machine, development task, Track, runtime profile, reference
-Agent, or execution backend by implication. Do not recommend or preselect the
-repository's reference Agent merely because the request is underspecified.
+not select a local machine, development task, Track, runtime profile, Tested
+Agent, or execution backend by implication. Do not recommend, synthesize, or
+preselect a Tested Agent merely because the request is underspecified. The
+repository does not bundle a reference Agent.
 
 Before changing files, preparing data, pulling images, allocating resources, or
 starting an episode:
@@ -121,8 +122,8 @@ hidden VAL/TEST data outside the Research Worker. Lease-owned Candidate output
 also remains separate from the Agent workspace.
 
 The Agent image, command, initial workspace, inference registration, and model
-identity must be fixed before the episode starts. Do not inject the repository's
-reference Agent unless the user explicitly selects it as the Tested Agent.
+identity must be fixed before the episode starts. Do not create or inject an
+operator-provided reference Agent as an implicit fallback.
 
 Prefer the sandboxed container runner. Route registered remote inference only
 through the benchmark's controlled inference gateway. `host_cli` and

@@ -95,23 +95,57 @@ class ChallengeReleaseTests(unittest.TestCase):
                 },
             )
 
-    def test_release_rejects_unknown_or_non_challenge_tasks(self):
+    def test_nonleaderboard_release_accepts_development_task(self):
         with tempfile.TemporaryDirectory() as directory:
             release = ChallengeRelease.load(self._write_release(directory))
             task = TaskConfig.load(TASK)
-            with self.assertRaisesRegex(ConfigError, "task_kind"):
-                release.resolve(
-                    task,
-                    track_config_id="a-1h",
-                    runtime_profile_id="h100-80gb-x4",
-                )
-            challenge_task = replace(task, task_kind="benchmark_challenge").validate()
+            resolved = release.resolve(
+                task,
+                track_config_id="a-1h",
+                runtime_profile_id="h100-80gb-x4",
+            )
+            self.assertEqual(resolved.task.task_kind, "development_smoke")
             with self.assertRaisesRegex(ConfigError, "unknown track config"):
                 release.resolve(
-                    challenge_task,
+                    task,
                     track_config_id="missing",
                     runtime_profile_id="h100-80gb-x4",
                 )
+
+    def test_leaderboard_release_rejects_development_task(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._write_release(directory)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["leaderboard_eligible"] = True
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            release = ChallengeRelease.load(path)
+            with self.assertRaisesRegex(ConfigError, "development smoke"):
+                release.resolve(
+                    TaskConfig.load(TASK),
+                    track_config_id="a-1h",
+                    runtime_profile_id="h100-80gb-x4",
+                )
+
+    def test_runtime_profile_can_explicitly_require_no_accelerator(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._write_release(directory)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["runtime_profiles"]["cpu-local"] = {
+                "host_count": 1,
+                "provisional": True,
+                "accelerator": None,
+            }
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            release = ChallengeRelease.load(path)
+            profile = release.public_manifest()["runtime_profiles"]["cpu-local"]
+            self.assertIsNone(profile["accelerator"])
+            resolved = release.resolve(
+                TaskConfig.load(TASK),
+                track_config_id="a-1h",
+                runtime_profile_id="cpu-local",
+            )
+            self.assertEqual(resolved.resources.nvidia_gpu_count, 0)
+            self.assertIsNone(resolved.resources.required_gpu_model)
 
     def test_release_rejects_unsupported_runtime_shapes(self):
         with tempfile.TemporaryDirectory() as directory:

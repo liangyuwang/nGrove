@@ -1,11 +1,13 @@
 # Smoke LM development task
 
 `smoke_lm` is the single bundled end-to-end development smoke task for
-AutoTrain-Bench. It exercises the same task/participant boundary, Track A/Track
-B state machine, hidden evaluation, Candidate isolation, and incumbent
-semantics that a future benchmark challenge will use. Its purpose is to help
-runtime and Agent authors verify their integrations cheaply; its scores are not
-benchmark results and it is never leaderboard eligible.
+AutoTrain-Bench. It exercises the same release-bound launch contract,
+task/participant boundary, Policy, trusted Evaluator implementation, Track
+A/Track B state machine, Candidate isolation, and incumbent semantics as
+`lm-pretrain-v1`. Its corpus, tokenization, context, data layout, split recipe,
+evaluation resources, and budgets are deliberately smaller development
+choices. Its scores are not benchmark results and it is never leaderboard
+eligible.
 
 ## Ownership boundary
 
@@ -15,20 +17,16 @@ The smoke task owns only:
 - the hidden VAL/TEST splits and trusted Evaluator;
 - the public metric and Candidate ABI;
 - the Training, Candidate, Evaluator, and Gateway images;
-- the Track A/Track B budgets and artifact limits.
+- the finite Track/runtime profile maps, budgets, and artifact limits;
+- the release Policy.
 
 The participant owns the Agent image or CLI, its command, and every initial
 workspace file. If `--agent-workspace` is omitted, AutoTrain-Bench creates an
 empty episode workspace. The Agent must create its own training program, model,
 experiments, Candidate implementation, and incumbent decisions after task
-reveal.
-
-`reference_agent/` is an optional known-good development fixture, not a
-competitive baseline. It is not named by
-`task.json`, copied into an episode, or mounted into a Training Container unless
-the user explicitly selects it with `--agent-workspace`. A sandboxed Agent sees
-only its episode workspace, TRAIN, the public task manifest, and the control
-mailbox; it cannot see the repository or the reference Agent.
+reveal. This task does not ship a reference or starter Agent. A sandboxed Agent
+sees only its episode workspace, TRAIN, the public task manifest, and the
+control mailbox; it cannot see the trusted Core checkout.
 
 ## Fixed smoke task
 
@@ -44,22 +42,21 @@ mailbox; it cannot see the repository or the reference Agent.
 | Metric | Autoregressive NLL |
 | Candidate protocol | `next_token_logits_v1` |
 
-The reference configuration requires Docker, not an NVIDIA GPU or a particular
-accelerator. Its trusted evaluation path runs on CPU. A participant may train
-with any approach supported by the allocated Training Environment and must
-export a Candidate that satisfies the public ABI. Concrete runtime provenance
-and Worker capability evidence belong to the episode result. A development
-deployment cannot become leaderboard eligible merely by reporting the expected
-hardware.
+The trusted evaluation path runs on CPU. A participant may train with any
+approach supported by the selected Training Environment and must export a
+Candidate that satisfies the public ABI. Concrete runtime provenance and Worker
+capability evidence belong to the episode result. A development deployment
+cannot become leaderboard eligible merely by reporting the expected hardware.
 
-Training resources are selected when the episode starts, never by `task.json`.
-The default exposes CPU only. For example, a user with an NVIDIA runtime can add
-`--training-gpus 1`; an optional
-`--training-gpu-model "NVIDIA H100"` turns the model name into a host-side
-preflight requirement. `--training-device /dev/DEVICE` exposes a generic Docker
-device to Training Containers for runtimes that support it. Device requests and
-the discovered GPU inventory are recorded in episode provenance. Results from
-materially different runtime profiles should be compared separately.
+Training resources are selected from the finite map in `challenge.json`, never
+by `task.json` or ad-hoc launch flags. `cpu-local` keeps the smoke path cheap;
+the A100/H100 profiles exercise the same accelerator-profile contract as
+`lm-pretrain-v1`. Inspect the supported Track and runtime choices before launch:
+
+```bash
+autotrain-bench challenge-info \
+  --challenge dev_tasks/smoke_lm/challenge.json
+```
 
 ## Prepare
 
@@ -81,35 +78,25 @@ starts empty:
 
 ```bash
 autotrain-bench start \
-  --task dev_tasks/smoke_lm/task.json \
-  --track A \
+  --challenge dev_tasks/smoke_lm/challenge.json \
+  --track-config smoke-a-5m \
+  --runtime-profile cpu-local \
   --agent-runner container \
   --agent-image participant-agent@sha256:DIGEST \
   --agent-command "participant-agent run"
 ```
 
-The same smoke task can expose a GPU without modifying the task:
+The same smoke task can exercise a published accelerator profile without
+changing the task or using manual resource overrides:
 
 ```bash
 autotrain-bench start \
-  --task dev_tasks/smoke_lm/task.json \
-  --track A \
+  --challenge dev_tasks/smoke_lm/challenge.json \
+  --track-config smoke-a-5m \
+  --runtime-profile h100-sxm-80gb-x4 \
   --agent-runner container \
   --agent-image participant-agent@sha256:DIGEST \
-  --agent-command "participant-agent run" \
-  --training-gpus 1
-```
-
-To exercise the optional reference Agent, explicitly snapshot its files:
-
-```bash
-autotrain-bench start \
-  --task dev_tasks/smoke_lm/task.json \
-  --track B \
-  --agent-runner container \
-  --agent-image python@sha256:1042b61448fef4ba92d16a8c7eb4996d027568ce64792a7877fd88511e0af7c6 \
-  --agent-command "python /workspace/agent.py" \
-  --agent-workspace dev_tasks/smoke_lm/reference_agent
+  --agent-command "participant-agent run"
 ```
 
 A logged-in CLI such as Codex can be rehearsed from the same default empty
@@ -117,8 +104,9 @@ workspace by omitting `--agent-workspace`:
 
 ```bash
 autotrain-bench start \
-  --task dev_tasks/smoke_lm/task.json \
-  --track A \
+  --challenge dev_tasks/smoke_lm/challenge.json \
+  --track-config smoke-a-5m \
+  --runtime-profile cpu-local \
   --agent-runner host_cli \
   --agent-command "python3 -m autotrain_bench.cli_adapters.codex --model MODEL --reasoning-effort high"
 ```
@@ -129,6 +117,10 @@ Candidate/Evaluator boundary remains isolated. A sandboxed participant
 container exercises the strongest local v0 path, but the bundled Worker is a
 Development deployment and its deadline guard shares the Coordinator process.
 It therefore cannot produce a formal leaderboard result.
+
+The Tested Agent is governed by the same [preview Policy](POLICY.md) as
+`lm-pretrain-v1`. In particular, the initial Agent image/workspace may not
+contain extra training corpora or a pretrained target-model checkpoint.
 
 ## Candidate artifact contract
 

@@ -139,11 +139,11 @@ class RuntimeProfile:
     profile_id: str
     label: str
     host_count: int
-    accelerator_vendor: str
-    accelerator_model: str
+    accelerator_vendor: Optional[str]
+    accelerator_model: Optional[str]
     accelerator_count: int
-    minimum_memory_mib: int
-    gpu_model_match: str
+    minimum_memory_mib: Optional[int]
+    gpu_model_match: Optional[str]
     provisional: bool = False
 
     @classmethod
@@ -151,7 +151,33 @@ class RuntimeProfile:
         field = f"runtime_profiles.{profile_id}"
         _identifier(profile_id, f"{field} key")
         raw = _mapping(value, field)
-        accelerator = _mapping(raw.get("accelerator"), f"{field}.accelerator")
+        if "accelerator" not in raw:
+            raise ConfigError(f"{field}.accelerator must be an object or null")
+        accelerator_value = raw["accelerator"]
+        accelerator = (
+            None
+            if accelerator_value is None
+            else _mapping(accelerator_value, f"{field}.accelerator")
+        )
+        host_count = _positive_int(raw.get("host_count"), f"{field}.host_count")
+        if host_count != 1:
+            raise ConfigError(f"{field}.host_count must be 1 in the v0 runtime")
+        provisional = _boolean(
+            raw.get("provisional", False), f"{field}.provisional"
+        )
+        label = _string(raw.get("label", profile_id), f"{field}.label")
+        if accelerator is None:
+            return cls(
+                profile_id=profile_id,
+                label=label,
+                host_count=host_count,
+                accelerator_vendor=None,
+                accelerator_model=None,
+                accelerator_count=0,
+                minimum_memory_mib=None,
+                gpu_model_match=None,
+                provisional=provisional,
+            )
         vendor = _string(
             accelerator.get("vendor"), f"{field}.accelerator.vendor"
         ).lower()
@@ -159,12 +185,9 @@ class RuntimeProfile:
             raise ConfigError(
                 f"{field}.accelerator.vendor must be 'nvidia' in the v0 runtime"
             )
-        host_count = _positive_int(raw.get("host_count"), f"{field}.host_count")
-        if host_count != 1:
-            raise ConfigError(f"{field}.host_count must be 1 in the v0 runtime")
         return cls(
             profile_id=profile_id,
-            label=_string(raw.get("label", profile_id), f"{field}.label"),
+            label=label,
             host_count=host_count,
             accelerator_vendor=vendor,
             accelerator_model=_string(
@@ -181,9 +204,7 @@ class RuntimeProfile:
                 accelerator.get("model_match"),
                 f"{field}.accelerator.model_match",
             ),
-            provisional=_boolean(
-                raw.get("provisional", False), f"{field}.provisional"
-            ),
+            provisional=provisional,
         )
 
     def training_resources(self) -> TrainingResources:
@@ -194,18 +215,23 @@ class RuntimeProfile:
         ).validate()
 
     def public_manifest(self) -> Dict[str, Any]:
-        return {
+        manifest = {
             "label": self.label,
             "host_count": self.host_count,
             "provisional": self.provisional,
-            "accelerator": {
+        }
+        manifest["accelerator"] = (
+            None
+            if self.accelerator_vendor is None
+            else {
                 "vendor": self.accelerator_vendor,
                 "model": self.accelerator_model,
                 "count": self.accelerator_count,
                 "minimum_memory_mib": self.minimum_memory_mib,
                 "model_match": self.gpu_model_match,
-            },
-        }
+            }
+        )
+        return manifest
 
 
 @dataclass(frozen=True)
@@ -317,8 +343,10 @@ class ChallengeRelease:
             raise ConfigError(
                 f"challenge expects task_id {self.task_id!r}, received {task.task_id!r}"
             )
-        if task.task_kind != "benchmark_challenge":
-            raise ConfigError("challenge releases require task_kind='benchmark_challenge'")
+        if task.task_kind == "development_smoke" and self.leaderboard_eligible:
+            raise ConfigError(
+                "development smoke releases may not be leaderboard eligible"
+            )
         if self.leaderboard_eligible and not task.leaderboard_eligible:
             raise ConfigError(
                 "a leaderboard-eligible release requires a leaderboard-eligible task"

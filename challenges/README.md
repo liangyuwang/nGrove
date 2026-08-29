@@ -44,4 +44,6 @@ autotrain-bench challenge-info \
 ```
 
 For the lightweight end-to-end development task, use
-`dev_tasks/smoke_lm/`.
+`dev_tasks/smoke_lm/`. It remains permanently non-leaderboard, but uses the
+same profile-bound start command, Policy boundary, and trusted Evaluator
+implementation as the challenge preview.

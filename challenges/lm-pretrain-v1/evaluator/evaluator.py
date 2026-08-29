@@ -1,4 +1,4 @@
-"""Trusted GPT-2-token NLL evaluator for the lm-pretrain-v1 Candidate ABI."""
+"""Trusted NLL evaluator for the AutoTrain-Bench Candidate ABI."""
 
 from __future__ import annotations
 

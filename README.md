@@ -89,21 +89,22 @@ machines or integrate with Slurm, Kubernetes, or a cloud scheduler.
 
 The repository contains one bundled development task,
 `dev_tasks/smoke_lm`. It is an end-to-end smoke test for Agent and runtime
-development, not a benchmark challenge and not a leaderboard task. It exercises
-a real fixed corpus, pinned task images, both tracks, and the isolated Candidate
-serving boundary. The optional `reference_agent/` is a known-good development
-fixture and is never injected unless the user selects it explicitly.
+development and never a leaderboard task. It uses the same release-bound start
+contract, Policy, trusted Evaluator implementation, both tracks, and isolated
+Candidate serving boundary as the challenge preview, while retaining a much
+smaller task-specific corpus and evaluation configuration. It intentionally
+ships no reference Agent.
 
 Future official task packages live under `challenges/`. `lm-pretrain-v1/` now
 contains a runnable-after-preparation preview task, evaluator, data builder, and
 provisional comparison profiles; no frozen, leaderboard-eligible challenge has
 been released yet.
 
-Hardware allocation is likewise not part of the task. Ad-hoc and development
-episodes may explicitly expose NVIDIA GPUs with `--training-gpus` or generic
-Docker devices with `--training-device`. Challenge episodes instead select one
-of the release's finite named runtime profiles. In both cases the requested
-resources and discovered runtime inventory are recorded with the result.
+Hardware allocation is likewise not part of the task. Ad-hoc task episodes may
+explicitly expose resources with manual flags. Profile-bound development and
+challenge episodes instead select one of the release's finite named runtime
+profiles. In both cases the requested resources and discovered runtime
+inventory are recorded with the result.
 
 ## Quick start
 
@@ -132,15 +133,16 @@ autotrain-bench prepare --task dev_tasks/smoke_lm/task.json
 The smoke task downloads about 0.98 MB of real text and uses hidden 8K-token
 VAL/TEST splits. By default the selected Agent receives an empty workspace and
 must create its own training system. See `dev_tasks/smoke_lm/README.md` for the
-development workflow, Candidate ABI, optional reference Agent, and
-reproducibility details. Smoke-task scores are not benchmark results.
+development workflow, Candidate ABI, Policy, and reproducibility details.
+Smoke-task scores are not benchmark results.
 
 A participant Agent Container can be selected without changing the task:
 
 ```bash
 autotrain-bench start \
-  --task path/to/task.json \
-  --track B \
+  --challenge dev_tasks/smoke_lm/challenge.json \
+  --track-config smoke-b-3x75s \
+  --runtime-profile cpu-local \
   --agent-runner container \
   --agent-image participant-agent:version \
   --agent-command "participant-agent run"
@@ -160,8 +162,9 @@ knows how to operate the benchmark protocol:
 
 ```bash
 autotrain-bench start \
-  --task dev_tasks/smoke_lm/task.json \
-  --track A \
+  --challenge dev_tasks/smoke_lm/challenge.json \
+  --track-config smoke-a-5m \
+  --runtime-profile cpu-local \
   --agent-runner host_cli \
   --agent-command "your-agent-cli --non-interactive ..."
 ```
@@ -183,8 +186,9 @@ confirms an existing login, run the TinyStories Track A with a fixed Codex model
 
 ```bash
 python3 -m autotrain_bench.cli start \
-  --task dev_tasks/smoke_lm/task.json \
-  --track A \
+  --challenge dev_tasks/smoke_lm/challenge.json \
+  --track-config smoke-a-5m \
+  --runtime-profile cpu-local \
   --agent-runner host_cli \
   --agent-command "python3 -m autotrain_bench.cli_adapters.codex --model YOUR_CODEX_MODEL --reasoning-effort high"
 ```
@@ -1472,9 +1476,11 @@ excluded from both Agent-visible forms and remain evaluator-only.
 
 ---
 
-# Development Task Configuration
+# Development Release Configuration
 
-The executable v0 task manifest is JSON and keeps task and track budgets in one small file:
+The executable v0 task manifest fixes task semantics. The adjacent
+`challenge.json` exposes the same finite Track/runtime selection and launch
+contract as a challenge preview:
 
 ```json
 {
@@ -1510,8 +1516,9 @@ The executable v0 task manifest is JSON and keeps task and track budgets in one 
 See `dev_tasks/smoke_lm/task.json` for the complete runnable development
 manifest with exact image digests. Agent image, command, runner, and optional
 initial workspace are participant-owned launch inputs and are intentionally
-absent from the task. Hardware/device allocation is an episode runtime input
-and is also absent.
+absent from the task. Hardware/device allocation is absent from `task.json` and
+selected through a named runtime profile in
+`dev_tasks/smoke_lm/challenge.json`.
 
 ---
 
@@ -1669,7 +1676,7 @@ The repository contains a working v0 local reference prototype with:
 * a generic host CLI runner and a logged-in Codex CLI adapter;
 * isolated hidden-split lifecycle and post-closure TEST evaluation;
 * append-only benchmark, inference, and host-Agent JSONL traces;
-* one reproducible TinyStories development smoke task with an optional
+* one reproducible TinyStories development smoke task with no bundled
   reference Agent and no implicitly injected training code.
 
 The smoke task fixes its TRAIN/VAL/TEST construction, public evaluation contract,

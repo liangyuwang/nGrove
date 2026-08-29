@@ -1,4 +1,4 @@
-# Pretrain v1 preview policy
+# AutoTrain-Bench preview policy
 
 The benchmark freezes the submitted autonomous system and its external boundary
 at task reveal. Within that boundary, autonomous task-local improvement is

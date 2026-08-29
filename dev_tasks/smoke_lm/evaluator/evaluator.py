@@ -1,4 +1,4 @@
-"""Trusted NLL evaluator for the isolated Candidate serving protocol."""
+"""Trusted NLL evaluator for the AutoTrain-Bench Candidate ABI."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Sequence
+from typing import Callable, List, Optional, Sequence
 
 
 class EvaluationError(RuntimeError):
@@ -46,7 +46,7 @@ class CandidateClient:
         *,
         vocab_size: int,
         timeout_seconds: float,
-        readiness_seconds: float = 30,
+        readiness_seconds: float = 120,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.vocab_size = vocab_size
@@ -147,10 +147,9 @@ def evaluate(
 
     sequences = _sequences(data_path, vocab_size)
     maximum_length = max(len(sequence) for sequence in sequences)
-    # Batch one position across independent sequences.  Every prefix in a
-    # request therefore has the same length, so no row can reveal the target
-    # token for a shorter row in that same request.  The response is scored
-    # before any longer prefix is sent to the Candidate.
+    # Never mix prefix lengths in one request. Score a position before sending
+    # any longer prefix, so the untrusted Candidate cannot recover a target
+    # from another row or from a later request already in flight.
     for position in range(1, maximum_length):
         for sequence in sequences:
             if position >= len(sequence):
@@ -172,7 +171,7 @@ def main() -> None:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--vocab-size", required=True, type=int)
     parser.add_argument("--batch-size", required=True, type=int)
-    parser.add_argument("--request-timeout-seconds", type=float, default=30)
+    parser.add_argument("--request-timeout-seconds", type=float, default=120)
     args = parser.parse_args()
     client = CandidateClient(
         args.candidate_url,
