@@ -1,0 +1,35 @@
+{
+  "task_id": "pretrain-v1",
+  "task_kind": "benchmark_challenge",
+  "leaderboard_eligible": false,
+  "paths": {
+    "train": "data/generated/public",
+    "val": "data/generated/private/val.json",
+    "test": "data/generated/private/test.json"
+  },
+  "images": {
+    "training": "pytorch/pytorch@sha256:c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2",
+    "candidate": "pytorch/pytorch@sha256:c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2",
+    "evaluator": "python@sha256:1042b61448fef4ba92d16a8c7eb4996d027568ce64792a7877fd88511e0af7c6",
+    "inference_gateway": "python@sha256:1042b61448fef4ba92d16a8c7eb4996d027568ce64792a7877fd88511e0af7c6"
+  },
+  "evaluation": {
+    "backend": "isolated_candidate",
+    "entrypoint": "evaluator/evaluator.py",
+    "metric": "autoregressive_nll",
+    "vocab_size": 50257,
+    "context_length": 2048,
+    "batch_size": 8,
+    "device": "cuda",
+    "max_candidate_bytes": 137438953472,
+    "max_candidate_files": 100000,
+    "timeout_seconds": 14400
+  },
+  "track_a": {
+    "total_seconds": 28800
+  },
+  "track_b": {
+    "max_leases": 6,
+    "lease_seconds": 3600
+  }
+}

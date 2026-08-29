@@ -123,7 +123,14 @@ class SupervisorTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
-    def supervisor(self, track="B", config=None, agent=None):
+    def supervisor(
+        self,
+        track="B",
+        config=None,
+        agent=None,
+        comparison_key=None,
+        challenge_release=None,
+    ):
         supervisor = Supervisor(
             config=config or self.config,
             agent=agent or self.agent,
@@ -131,11 +138,40 @@ class SupervisorTests(unittest.TestCase):
             track=track,
             episode_dir=self.episode,
             runtime=self.runtime,
+            comparison_key=comparison_key,
+            challenge_release=challenge_release,
             monotonic=self.clock,
             wall_time=lambda: 1_700_000_000.0,
         )
         supervisor.begin()
         return supervisor
+
+    def test_comparison_key_and_release_are_recorded_publicly(self):
+        comparison_key = {
+            "challenge_id": "pretrain-v1",
+            "track": "B",
+            "track_config": "preview-b-6x1h",
+            "runtime_profile": "h100-sxm-80gb-x4",
+        }
+        release = {
+            "challenge_id": "pretrain-v1",
+            "release_stage": "preview",
+            "leaderboard_eligible": False,
+        }
+        supervisor = self.supervisor(
+            comparison_key=comparison_key,
+            challenge_release=release,
+        )
+        self.assertEqual(supervisor.state["comparison_key"], comparison_key)
+        self.assertFalse(supervisor.state["leaderboard_eligible"])
+        self.assertEqual(
+            supervisor.public_status()["comparison_key"], comparison_key
+        )
+        public_task = json.loads(
+            supervisor.public_task_path.read_text(encoding="utf-8")
+        )
+        self.assertEqual(public_task["comparison_key"], comparison_key)
+        self.assertEqual(public_task["challenge_release"], release)
 
     def test_track_b_interactive_lease_commit_and_finish(self):
         supervisor = self.supervisor()

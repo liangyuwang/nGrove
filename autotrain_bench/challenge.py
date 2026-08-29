@@ -1,0 +1,378 @@
+"""Challenge release profiles and leaderboard comparison identities.
+
+A challenge fixes data and evaluation semantics without fixing one hardware
+platform.  A release instead publishes a deliberately small set of track and
+runtime profiles.  Only episodes with the same comparison key are directly
+comparable.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+from .config import ConfigError, TaskConfig, TrainingResources
+
+
+RELEASE_STAGES = {"preview", "official"}
+_IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+
+
+def _mapping(value: Any, field: str) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ConfigError(f"{field} must be an object")
+    return value
+
+
+def _string(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"{field} must be a non-empty string")
+    return value
+
+
+def _identifier(value: Any, field: str) -> str:
+    result = _string(value, field)
+    if not _IDENTIFIER.fullmatch(result):
+        raise ConfigError(
+            f"{field} must contain only lowercase letters, digits, '.', '_', or '-'"
+        )
+    return result
+
+
+def _positive_int(value: Any, field: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ConfigError(f"{field} must be a positive integer")
+    return value
+
+
+def _boolean(value: Any, field: str) -> bool:
+    if not isinstance(value, bool):
+        raise ConfigError(f"{field} must be a boolean")
+    return value
+
+
+@dataclass(frozen=True)
+class TrackConfig:
+    """One named, immutable budget configuration within a challenge release."""
+
+    config_id: str
+    label: str
+    track: str
+    total_seconds: Optional[int] = None
+    max_leases: Optional[int] = None
+    lease_seconds: Optional[int] = None
+    provisional: bool = False
+
+    @classmethod
+    def load(cls, config_id: str, value: Any) -> "TrackConfig":
+        field = f"track_configs.{config_id}"
+        _identifier(config_id, f"{field} key")
+        raw = _mapping(value, field)
+        track = _string(raw.get("track"), f"{field}.track").upper()
+        if track not in {"A", "B"}:
+            raise ConfigError(f"{field}.track must be A or B")
+        label = _string(raw.get("label", config_id), f"{field}.label")
+        provisional = _boolean(
+            raw.get("provisional", False), f"{field}.provisional"
+        )
+        if track == "A":
+            if "max_leases" in raw or "lease_seconds" in raw:
+                raise ConfigError(
+                    f"{field} may not contain Track B lease fields"
+                )
+            return cls(
+                config_id=config_id,
+                label=label,
+                track=track,
+                total_seconds=_positive_int(
+                    raw.get("total_seconds"), f"{field}.total_seconds"
+                ),
+                provisional=provisional,
+            )
+        if "total_seconds" in raw:
+            raise ConfigError(f"{field} may not contain Track A total_seconds")
+        return cls(
+            config_id=config_id,
+            label=label,
+            track=track,
+            max_leases=_positive_int(raw.get("max_leases"), f"{field}.max_leases"),
+            lease_seconds=_positive_int(
+                raw.get("lease_seconds"), f"{field}.lease_seconds"
+            ),
+            provisional=provisional,
+        )
+
+    def apply(self, task: TaskConfig) -> TaskConfig:
+        if self.track == "A":
+            return replace(task, track_a_total_seconds=self.total_seconds).validate()
+        return replace(
+            task,
+            track_b_max_leases=self.max_leases,
+            track_b_lease_seconds=self.lease_seconds,
+        ).validate()
+
+    def public_manifest(self) -> Dict[str, Any]:
+        budget: Dict[str, Any]
+        if self.track == "A":
+            budget = {"total_seconds": self.total_seconds}
+        else:
+            budget = {
+                "max_leases": self.max_leases,
+                "lease_seconds": self.lease_seconds,
+                "official_val_queries_per_lease": 1,
+            }
+        return {
+            "label": self.label,
+            "track": self.track,
+            "provisional": self.provisional,
+            **budget,
+        }
+
+
+@dataclass(frozen=True)
+class RuntimeProfile:
+    """A named episode-time hardware lane, not a property of the task."""
+
+    profile_id: str
+    label: str
+    host_count: int
+    accelerator_vendor: str
+    accelerator_model: str
+    accelerator_count: int
+    minimum_memory_mib: int
+    gpu_model_match: str
+    provisional: bool = False
+
+    @classmethod
+    def load(cls, profile_id: str, value: Any) -> "RuntimeProfile":
+        field = f"runtime_profiles.{profile_id}"
+        _identifier(profile_id, f"{field} key")
+        raw = _mapping(value, field)
+        accelerator = _mapping(raw.get("accelerator"), f"{field}.accelerator")
+        vendor = _string(
+            accelerator.get("vendor"), f"{field}.accelerator.vendor"
+        ).lower()
+        if vendor != "nvidia":
+            raise ConfigError(
+                f"{field}.accelerator.vendor must be 'nvidia' in the v0 runtime"
+            )
+        host_count = _positive_int(raw.get("host_count"), f"{field}.host_count")
+        if host_count != 1:
+            raise ConfigError(f"{field}.host_count must be 1 in the v0 runtime")
+        return cls(
+            profile_id=profile_id,
+            label=_string(raw.get("label", profile_id), f"{field}.label"),
+            host_count=host_count,
+            accelerator_vendor=vendor,
+            accelerator_model=_string(
+                accelerator.get("model"), f"{field}.accelerator.model"
+            ),
+            accelerator_count=_positive_int(
+                accelerator.get("count"), f"{field}.accelerator.count"
+            ),
+            minimum_memory_mib=_positive_int(
+                accelerator.get("minimum_memory_mib"),
+                f"{field}.accelerator.minimum_memory_mib",
+            ),
+            gpu_model_match=_string(
+                accelerator.get("model_match"),
+                f"{field}.accelerator.model_match",
+            ),
+            provisional=_boolean(
+                raw.get("provisional", False), f"{field}.provisional"
+            ),
+        )
+
+    def training_resources(self) -> TrainingResources:
+        return TrainingResources(
+            nvidia_gpu_count=self.accelerator_count,
+            required_gpu_model=self.gpu_model_match,
+            minimum_gpu_memory_mib=self.minimum_memory_mib,
+        ).validate()
+
+    def public_manifest(self) -> Dict[str, Any]:
+        return {
+            "label": self.label,
+            "host_count": self.host_count,
+            "provisional": self.provisional,
+            "accelerator": {
+                "vendor": self.accelerator_vendor,
+                "model": self.accelerator_model,
+                "count": self.accelerator_count,
+                "minimum_memory_mib": self.minimum_memory_mib,
+                "model_match": self.gpu_model_match,
+            },
+        }
+
+
+@dataclass(frozen=True)
+class ComparisonKey:
+    challenge_id: str
+    track: str
+    track_config: str
+    runtime_profile: str
+
+    def public_manifest(self) -> Dict[str, str]:
+        return {
+            "challenge_id": self.challenge_id,
+            "track": self.track,
+            "track_config": self.track_config,
+            "runtime_profile": self.runtime_profile,
+        }
+
+
+@dataclass(frozen=True)
+class ResolvedChallengeRun:
+    task: TaskConfig
+    track: str
+    resources: TrainingResources
+    comparison_key: ComparisonKey
+    release_manifest: Dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ChallengeRelease:
+    """A finite set of supported comparison lanes for one challenge release."""
+
+    source: Path
+    schema_version: int
+    challenge_id: str
+    task_id: str
+    task_file: str
+    release_stage: str
+    leaderboard_eligible: bool
+    track_configs: Dict[str, TrackConfig]
+    runtime_profiles: Dict[str, RuntimeProfile]
+
+    @classmethod
+    def load(cls, path: Path) -> "ChallengeRelease":
+        source = path.expanduser().resolve()
+        try:
+            raw = json.loads(source.read_text(encoding="utf-8"))
+        except FileNotFoundError as exc:
+            raise ConfigError(f"challenge release not found: {source}") from exc
+        except json.JSONDecodeError as exc:
+            raise ConfigError(f"invalid JSON in {source}: {exc}") from exc
+        root = _mapping(raw, "root")
+        schema_version = _positive_int(root.get("schema_version"), "schema_version")
+        if schema_version != 1:
+            raise ConfigError("challenge schema_version must be 1")
+        release_stage = _string(root.get("release_stage"), "release_stage")
+        if release_stage not in RELEASE_STAGES:
+            allowed = ", ".join(sorted(RELEASE_STAGES))
+            raise ConfigError(f"release_stage must be one of: {allowed}")
+        raw_tracks = _mapping(root.get("track_configs"), "track_configs")
+        raw_runtimes = _mapping(root.get("runtime_profiles"), "runtime_profiles")
+        if not raw_tracks:
+            raise ConfigError("track_configs must not be empty")
+        if not raw_runtimes:
+            raise ConfigError("runtime_profiles must not be empty")
+        track_configs = {
+            key: TrackConfig.load(key, value) for key, value in raw_tracks.items()
+        }
+        runtime_profiles = {
+            key: RuntimeProfile.load(key, value)
+            for key, value in raw_runtimes.items()
+        }
+        task_file = _string(root.get("task"), "task")
+        configured_task = Path(task_file)
+        if configured_task.is_absolute() or ".." in configured_task.parts:
+            raise ConfigError("task must be a relative path inside the challenge")
+        task_path = (source.parent / configured_task).resolve()
+        try:
+            task_path.relative_to(source.parent)
+        except ValueError as exc:
+            raise ConfigError("task escapes the challenge directory") from exc
+        if not task_path.is_file():
+            raise ConfigError(f"challenge task not found: {task_path}")
+        return cls(
+            source=source,
+            schema_version=schema_version,
+            challenge_id=_identifier(root.get("challenge_id"), "challenge_id"),
+            task_id=_identifier(root.get("task_id"), "task_id"),
+            task_file=task_file,
+            release_stage=release_stage,
+            leaderboard_eligible=_boolean(
+                root.get("leaderboard_eligible"), "leaderboard_eligible"
+            ),
+            track_configs=track_configs,
+            runtime_profiles=runtime_profiles,
+        )
+
+    @property
+    def task_path(self) -> Path:
+        return (self.source.parent / self.task_file).resolve()
+
+    def resolve(
+        self,
+        task: TaskConfig,
+        *,
+        track_config_id: str,
+        runtime_profile_id: str,
+    ) -> ResolvedChallengeRun:
+        if task.task_id != self.task_id:
+            raise ConfigError(
+                f"challenge expects task_id {self.task_id!r}, received {task.task_id!r}"
+            )
+        if task.task_kind != "benchmark_challenge":
+            raise ConfigError("challenge releases require task_kind='benchmark_challenge'")
+        if self.leaderboard_eligible and not task.leaderboard_eligible:
+            raise ConfigError(
+                "a leaderboard-eligible release requires a leaderboard-eligible task"
+            )
+        try:
+            track_config = self.track_configs[track_config_id]
+        except KeyError as exc:
+            raise ConfigError(f"unknown track config: {track_config_id}") from exc
+        try:
+            runtime_profile = self.runtime_profiles[runtime_profile_id]
+        except KeyError as exc:
+            raise ConfigError(f"unknown runtime profile: {runtime_profile_id}") from exc
+        resolved_task = track_config.apply(task)
+        resources = runtime_profile.training_resources().validate_for(resolved_task)
+        comparison_key = ComparisonKey(
+            challenge_id=self.challenge_id,
+            track=track_config.track,
+            track_config=track_config.config_id,
+            runtime_profile=runtime_profile.profile_id,
+        )
+        return ResolvedChallengeRun(
+            task=resolved_task,
+            track=track_config.track,
+            resources=resources,
+            comparison_key=comparison_key,
+            release_manifest={
+                "challenge_id": self.challenge_id,
+                "release_stage": self.release_stage,
+                "leaderboard_eligible": self.leaderboard_eligible,
+                "track_config": track_config.public_manifest(),
+                "runtime_profile": runtime_profile.public_manifest(),
+            },
+        )
+
+    def public_manifest(self) -> Dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "challenge_id": self.challenge_id,
+            "task_id": self.task_id,
+            "task": self.task_file,
+            "release_stage": self.release_stage,
+            "leaderboard_eligible": self.leaderboard_eligible,
+            "comparison_key_fields": [
+                "challenge_id",
+                "track",
+                "track_config",
+                "runtime_profile",
+            ],
+            "track_configs": {
+                key: value.public_manifest()
+                for key, value in self.track_configs.items()
+            },
+            "runtime_profiles": {
+                key: value.public_manifest()
+                for key, value in self.runtime_profiles.items()
+            },
+        }

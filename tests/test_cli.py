@@ -1,14 +1,21 @@
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from autotrain_bench.cli import (
     _initialize_agent_workspace,
+    _resolve_challenge_run,
     _snapshot_agent_workspace,
     _terminal_agent_action,
     build_parser,
 )
-from autotrain_bench.config import ConfigError
+from autotrain_bench.config import ConfigError, TaskConfig
+
+
+ROOT = Path(__file__).resolve().parents[1]
+TASK = ROOT / "tests/fixtures/task/task.json"
+PRETRAIN_PREVIEW = ROOT / "challenges/pretrain_v1/challenge.json"
 
 
 class WorkspaceSnapshotTests(unittest.TestCase):
@@ -101,6 +108,50 @@ class WorkspaceSnapshotTests(unittest.TestCase):
         self.assertEqual(args.training_gpus, 2)
         self.assertEqual(args.training_gpu_model, "H100")
         self.assertEqual(args.training_devices, ["/dev/accel0"])
+
+    def test_challenge_profiles_replace_ad_hoc_track_and_hardware_flags(self):
+        args = build_parser().parse_args(
+            [
+                "start",
+                "--challenge",
+                "challenge.json",
+                "--track-config",
+                "preview-b-6x1h",
+                "--runtime-profile",
+                "h100-sxm-80gb-x4",
+                "--agent-runner",
+                "host_cli",
+                "--agent-command",
+                "example-agent",
+            ]
+        )
+        self.assertIsNone(args.track)
+        self.assertIsNone(args.task)
+        self.assertEqual(args.track_config, "preview-b-6x1h")
+        self.assertEqual(args.runtime_profile, "h100-sxm-80gb-x4")
+        self.assertEqual(args.training_gpus, 0)
+
+        task = replace(
+            TaskConfig.load(TASK),
+            task_id="pretrain-v1",
+            task_kind="benchmark_challenge",
+        ).validate()
+        args.challenge = PRETRAIN_PREVIEW
+        resolved = _resolve_challenge_run(args, task)
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved.track, "B")
+        self.assertEqual(resolved.task.track_b_max_leases, 6)
+        self.assertEqual(resolved.resources.nvidia_gpu_count, 4)
+
+        args.training_gpus = 4
+        with self.assertRaisesRegex(ConfigError, "may not override"):
+            _resolve_challenge_run(args, task)
+
+    def test_challenge_info_has_a_dedicated_command(self):
+        args = build_parser().parse_args(
+            ["challenge-info", "--challenge", "challenge.json"]
+        )
+        self.assertEqual(args.challenge, Path("challenge.json"))
 
 
 if __name__ == "__main__":

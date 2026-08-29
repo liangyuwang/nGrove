@@ -90,6 +90,8 @@ class Supervisor:
         episode_dir: Path,
         runtime: Any,
         runtime_environment: Optional[Dict[str, Any]] = None,
+        comparison_key: Optional[Dict[str, str]] = None,
+        challenge_release: Optional[Dict[str, Any]] = None,
         monotonic: Callable[[], float] = time.monotonic,
         wall_time: Callable[[], float] = time.time,
     ) -> None:
@@ -144,14 +146,23 @@ class Supervisor:
         if not config.evaluator_policy_compliant:
             policy_violations.append("candidate_evaluator_isolation")
         policy_compliant = not policy_violations
+        leaderboard_eligible = config.leaderboard_eligible and policy_compliant
+        if challenge_release is not None:
+            leaderboard_eligible = leaderboard_eligible and bool(
+                challenge_release.get("leaderboard_eligible", False)
+            )
 
         self.state: Dict[str, Any] = {
             "protocol_version": 1,
             "episode_id": self.episode_dir.name,
             "task_id": config.task_id,
             "task_kind": config.task_kind,
-            "leaderboard_eligible": config.leaderboard_eligible,
+            "leaderboard_eligible": leaderboard_eligible,
             "track": self.track,
+            "comparison_key": dict(comparison_key) if comparison_key else None,
+            "challenge_release": (
+                dict(challenge_release) if challenge_release else None
+            ),
             "policy_compliant": policy_compliant,
             "policy_violations": policy_violations,
             "agent_system": {
@@ -220,6 +231,10 @@ class Supervisor:
             "compliant": policy_compliant,
             "violations": policy_violations,
         }
+        public_manifest["leaderboard_eligible"] = leaderboard_eligible
+        public_manifest["comparison_key"] = self.state["comparison_key"]
+        if challenge_release is not None:
+            public_manifest["challenge_release"] = dict(challenge_release)
         self.public_task_path.write_text(
             json.dumps(public_manifest, indent=2, sort_keys=True)
             + "\n",
@@ -352,8 +367,9 @@ class Supervisor:
                 "episode_id": self.state["episode_id"],
                 "task_id": self.config.task_id,
                 "task_kind": self.config.task_kind,
-                "leaderboard_eligible": self.config.leaderboard_eligible,
+                "leaderboard_eligible": self.state["leaderboard_eligible"],
                 "track": self.track,
+                "comparison_key": self.state["comparison_key"],
                 "agent_runner": self.agent.runner,
                 "agent_mode": self.agent.mode,
                 "agent_network": self.agent.network,

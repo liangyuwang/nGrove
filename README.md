@@ -80,13 +80,16 @@ a real fixed corpus, pinned task images, both tracks, and the isolated Candidate
 serving boundary. The optional `reference_agent/` is a known-good development
 fixture and is never injected unless the user selects it explicitly.
 
-Future official task packages will live under `challenges/`. None has been
-released yet.
+Future official task packages live under `challenges/`. `pretrain_v1/` now
+contains a runnable-after-preparation preview task, evaluator, data builder, and
+provisional comparison profiles; no frozen, leaderboard-eligible challenge has
+been released yet.
 
-Hardware allocation is likewise not part of the task. An episode defaults to
-CPU and may explicitly expose NVIDIA GPUs with `--training-gpus` or generic
-Docker devices with `--training-device`. The requested resources and discovered
-runtime inventory are recorded with the result.
+Hardware allocation is likewise not part of the task. Ad-hoc and development
+episodes may explicitly expose NVIDIA GPUs with `--training-gpus` or generic
+Docker devices with `--training-device`. Challenge episodes instead select one
+of the release's finite named runtime profiles. In both cases the requested
+resources and discovered runtime inventory are recorded with the result.
 
 ## Quick start
 
@@ -332,7 +335,14 @@ frozen researcher-inference endpoints while the Supervisor independently
 enforces episode and Training-Lease deadlines. `unrestricted-dev` and `host_cli`
 exist only as non-compliant local integration modes.
 
-The v0 threat model protects benchmark policy from the Agent, not from the user or machine administrator. Docker isolation is a development reference boundary and is not presented as protection against kernel, container-runtime, or GPU-driver exploits. Official adversarial evaluation may require stronger worker or VM isolation.
+Here, **user/operator** means the entity that prepares and launches the run; it
+may itself be a human or another Agent and is inside the trusted host boundary.
+**Tested Agent** means the submitted autonomous system being benchmarked. The v0
+threat model protects benchmark policy from the Tested Agent, not from the
+user/operator or machine administrator. Docker isolation is a development
+reference boundary and is not presented as protection against kernel,
+container-runtime, or GPU-driver exploits. Official adversarial evaluation may
+require stronger worker or VM isolation.
 
 The `isolated_candidate` backend starts a fresh internal Docker network per
 query. The trusted Evaluator mounts only the selected hidden split and output;
@@ -824,9 +834,9 @@ $$
 For example:
 
 ```text
-Maximum Training Leases:   TBD
-Maximum Time per Lease:    TBD
-Training Hardware:         TBD
+Maximum Training Leases:   defined by the selected track config
+Maximum Time per Lease:    defined by the selected track config
+Runtime Profile:           selected independently at episode launch
 VAL Queries per Lease:     1
 Agent Research Time:       Unbounded by benchmark score
 ```
@@ -1294,7 +1304,14 @@ redirect to another origin and records calls and provider-reported token usage a
 part of the episode trace. The non-compliant `host_cli` runner instead uses the
 selected tool's own host login and network path.
 
-The exact policy for synthetic training examples generated autonomously by the submitted system will be specified before the first official dataset release.
+Synthetic training examples generated autonomously during the episode by the
+frozen initial system through registered capabilities are allowed by the
+`pretrain-v1` preview direction. Human intervention after task reveal,
+unregistered external access, extra mounted corpora, and a submitted initial
+workspace or image containing an external target-model checkpoint or extra
+training corpus are outside policy. The runtime enforces the untrusted Agent
+boundary where practical; it does not claim to defend results against a
+malicious administrator of the trusted host.
 
 ---
 
@@ -1398,6 +1415,43 @@ model size
 
 Results from materially different runtime profiles or budget scales should not
 be mixed into a single leaderboard comparison.
+
+---
+
+# Challenge Releases and Comparison Lanes
+
+A task fixes the corpus and evaluation semantics, but does not require one
+hardware platform. A challenge release publishes a deliberately finite map of
+named track configurations and named runtime profiles. The first preview keeps
+this surface small: provisional Track A/Track B budgets and single-host 4×/8×
+NVIDIA A100 SXM4 80GB or H100 SXM 80GB profiles.
+
+Every profile-bound episode records the exact leaderboard comparison key:
+
+```text
+challenge_id + track + track_config + runtime_profile
+```
+
+Only results with the same four fields are directly comparable. CPU, B300,
+TPU, and future platforms may execute the same challenge without changing its
+identity, but each belongs to a separate runtime profile. The runtime profile
+is an episode-time allocation and validation input, not a field in `task.json`.
+
+Inspect a release's supported maps with:
+
+```bash
+autotrain-bench challenge-info \
+  --challenge challenges/pretrain_v1/challenge.json
+```
+
+In challenge mode, `--track-config` selects both the track and its budget, while
+`--runtime-profile` supplies the concrete resources. Manual `--track` and GPU
+overrides are rejected so the recorded key cannot disagree with the run.
+
+The `pretrain-v1` TRAIN mount contains both raw FineWeb-Edu TRAIN documents with
+source metadata and official GPT-2 token shards linked by document IDs and
+token spans. The Agent may use either representation. Preview VAL/TEST rows are
+excluded from both Agent-visible forms and remain evaluator-only.
 
 ---
 
@@ -1607,11 +1661,16 @@ developers can verify a complete episode cheaply. It is explicitly marked
 `leaderboard_eligible: false`. The selected Agent and its initial workspace
 remain participant-owned.
 
-No official benchmark challenge has been released. Future challenge definitions
-will live under `challenges/`; dataset scale, hardware profiles, official
-budgets, submission policy, and leaderboard infrastructure remain open release
-work. Additional inference-provider adapters, synthetic-data policy, and
-isolation beyond the v0 Docker threat model also remain open design work.
+No frozen benchmark challenge has been released. The `pretrain-v1` preview under
+`challenges/` now defines provisional track configurations, a deliberately
+small set of single-host A100/H100 runtime profiles, the four-field comparison
+key, the initial external-resource policy, a task/evaluator, and a builder that
+retains both raw TRAIN documents and GPT-2 token shards. Generated 10B-scale
+artifacts, organizer-owned hidden splits, final pinned task images, calibrated
+budgets, submission services, and leaderboard infrastructure remain open
+release work. Additional
+inference-provider adapters and isolation beyond the v0 Docker threat model
+also remain open design work.
 
 The v0 prototype is intentionally single-host and resource-allocation agnostic.
 Users obtain a Docker-capable environment before starting AutoTrain-Bench.

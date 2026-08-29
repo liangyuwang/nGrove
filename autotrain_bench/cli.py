@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .challenge import ChallengeRelease, ResolvedChallengeRun
 from .client import Client, ClientError
 from .config import (
     AgentConfig,
@@ -105,13 +106,72 @@ def command_prepare(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_challenge_run(
+    args: argparse.Namespace,
+    config: TaskConfig,
+    release: Optional[ChallengeRelease] = None,
+) -> Optional[ResolvedChallengeRun]:
+    """Resolve the named leaderboard lane, or validate an ad-hoc task run."""
+
+    if args.challenge is None:
+        if args.track_config or args.runtime_profile:
+            raise ConfigError(
+                "--track-config and --runtime-profile require --challenge"
+            )
+        if not args.track:
+            raise ConfigError("--track is required when --challenge is not used")
+        return None
+    if args.track:
+        raise ConfigError(
+            "--track is selected by --track-config when --challenge is used"
+        )
+    if not args.track_config or not args.runtime_profile:
+        raise ConfigError(
+            "--challenge requires --track-config and --runtime-profile"
+        )
+    if (
+        args.training_gpus
+        or args.training_gpu_model
+        or args.training_devices
+    ):
+        raise ConfigError(
+            "manual training resources may not override a challenge runtime profile"
+        )
+    release = release or ChallengeRelease.load(args.challenge)
+    return release.resolve(
+        config,
+        track_config_id=args.track_config,
+        runtime_profile_id=args.runtime_profile,
+    )
+
+
 def command_start(args: argparse.Namespace) -> int:
-    config = TaskConfig.load(args.task)
-    resources = TrainingResources(
-        nvidia_gpu_count=args.training_gpus,
-        required_gpu_model=args.training_gpu_model,
-        devices=args.training_devices,
-    ).validate_for(config)
+    release = ChallengeRelease.load(args.challenge) if args.challenge else None
+    if release is None:
+        if args.task is None:
+            raise ConfigError("--task is required when --challenge is not used")
+        task_path = args.task
+    else:
+        task_path = release.task_path
+        if args.task is not None and args.task.expanduser().resolve() != task_path:
+            raise ConfigError("--task may not override the task owned by --challenge")
+    config = TaskConfig.load(task_path)
+    resolved_challenge = _resolve_challenge_run(args, config, release)
+    comparison_key = None
+    challenge_release = None
+    if resolved_challenge is None:
+        track = args.track
+        resources = TrainingResources(
+            nvidia_gpu_count=args.training_gpus,
+            required_gpu_model=args.training_gpu_model,
+            devices=args.training_devices,
+        ).validate_for(config)
+    else:
+        config = resolved_challenge.task
+        track = resolved_challenge.track
+        resources = resolved_challenge.resources
+        comparison_key = resolved_challenge.comparison_key.public_manifest()
+        challenge_release = resolved_challenge.release_manifest
     resolved_runner = agent_runner(args.agent_runner, "--agent-runner")
     if resolved_runner == "host_cli":
         if args.agent_mode:
@@ -184,10 +244,12 @@ def command_start(args: argparse.Namespace) -> int:
         config=config,
         agent=agent,
         resources=resources,
-        track=args.track,
+        track=track,
         episode_dir=episode_dir,
         runtime=runtime,
         runtime_environment=runtime_environment,
+        comparison_key=comparison_key,
+        challenge_release=challenge_release,
     )
     runtime_id = uuid.uuid5(uuid.NAMESPACE_URL, str(episode_dir)).hex[:12]
     prefix = f"atb-{runtime_id}"
@@ -353,6 +415,12 @@ def command_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_challenge_info(args: argparse.Namespace) -> int:
+    release = ChallengeRelease.load(args.challenge)
+    _print(release.public_manifest())
+    return 0
+
+
 def command_agent(args: argparse.Namespace) -> int:
     client = Client()
     if args.agent_command == "status":
@@ -395,8 +463,25 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.set_defaults(function=command_prepare)
 
     start = subparsers.add_parser("start", help="start and supervise an episode")
-    start.add_argument("--task", required=True, type=Path)
-    start.add_argument("--track", required=True, choices=["A", "B", "a", "b"])
+    start.add_argument(
+        "--task",
+        type=Path,
+        help="task manifest; inferred from --challenge in profile-bound runs",
+    )
+    start.add_argument("--track", choices=["A", "B", "a", "b"])
+    start.add_argument(
+        "--challenge",
+        type=Path,
+        help="challenge release manifest defining supported comparison lanes",
+    )
+    start.add_argument(
+        "--track-config",
+        help="named track budget from the selected challenge release",
+    )
+    start.add_argument(
+        "--runtime-profile",
+        help="named episode-time hardware profile from the selected challenge release",
+    )
     start.add_argument("--episode-dir", type=Path)
     start.add_argument(
         "--agent-runner",
@@ -476,6 +561,12 @@ def build_parser() -> argparse.ArgumentParser:
     report = subparsers.add_parser("report", help="print a completed episode report")
     report.add_argument("--episode", required=True, type=Path)
     report.set_defaults(function=command_report)
+
+    challenge_info = subparsers.add_parser(
+        "challenge-info", help="show supported track and runtime profile maps"
+    )
+    challenge_info.add_argument("--challenge", required=True, type=Path)
+    challenge_info.set_defaults(function=command_challenge_info)
 
     agent = subparsers.add_parser(
         "agent", help="mailbox commands used by the selected Agent runner"

@@ -296,6 +296,7 @@ class TrainingResources:
 
     nvidia_gpu_count: int = 0
     required_gpu_model: Optional[str] = None
+    minimum_gpu_memory_mib: Optional[int] = None
     devices: List[str] = dataclass_field(default_factory=list)
 
     def validate(self) -> "TrainingResources":
@@ -309,6 +310,15 @@ class TrainingResources:
             if self.nvidia_gpu_count == 0:
                 raise ConfigError(
                     "--training-gpu-model requires --training-gpus greater than zero"
+                )
+        if self.minimum_gpu_memory_mib is not None:
+            _positive_int(
+                self.minimum_gpu_memory_mib,
+                "minimum GPU memory",
+            )
+            if self.nvidia_gpu_count == 0:
+                raise ConfigError(
+                    "minimum GPU memory requires an NVIDIA GPU count greater than zero"
                 )
         normalized: List[str] = []
         for device in self.devices:
@@ -336,6 +346,7 @@ class TrainingResources:
         return {
             "nvidia_gpu_count": self.nvidia_gpu_count,
             "required_gpu_model": self.required_gpu_model,
+            "minimum_gpu_memory_mib": self.minimum_gpu_memory_mib,
             "devices": list(self.devices),
             "selection": "episode_runtime",
         }

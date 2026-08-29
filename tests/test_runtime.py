@@ -35,6 +35,37 @@ class CapturingDockerRuntime(DockerRuntime):
 
 
 class RuntimeBoundaryTests(unittest.TestCase):
+    def test_runtime_profile_checks_model_count_and_memory_together(self):
+        resources = TrainingResources(
+            nvidia_gpu_count=2,
+            required_gpu_model="H100",
+            minimum_gpu_memory_mib=80000,
+        )
+        inventory = subprocess.CompletedProcess(
+            ["nvidia-smi"],
+            0,
+            "NVIDIA H100 80GB HBM3, 81559\n"
+            "NVIDIA H100 80GB HBM3, 81559\n"
+            "NVIDIA A100-SXM4-80GB, 81920\n",
+            "",
+        )
+        runtime = DockerRuntime(docker_binary="docker")
+        with patch("autotrain_bench.runtime.shutil.which", return_value="nvidia-smi"):
+            with patch("autotrain_bench.runtime.subprocess.run", return_value=inventory):
+                runtime.validate_hardware(resources)
+
+        undersized = subprocess.CompletedProcess(
+            ["nvidia-smi"],
+            0,
+            "NVIDIA H100 80GB HBM3, 81559\n"
+            "NVIDIA H100 PCIe, 65536\n",
+            "",
+        )
+        with patch("autotrain_bench.runtime.shutil.which", return_value="nvidia-smi"):
+            with patch("autotrain_bench.runtime.subprocess.run", return_value=undersized):
+                with self.assertRaisesRegex(RuntimeFailure, "at least 80000 MiB"):
+                    runtime.validate_hardware(resources)
+
     def test_task_preparation_has_no_implicit_agent_image(self):
         config = TaskConfig.load(TASK)
         runtime = CapturingDockerRuntime()

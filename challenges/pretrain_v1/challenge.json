@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "challenge_id": "pretrain-v1",
+  "task_id": "pretrain-v1",
+  "task": "task.json",
+  "release_stage": "preview",
+  "leaderboard_eligible": false,
+  "track_configs": {
+    "preview-a-8h": {
+      "label": "Preview Track A — 8 hours",
+      "track": "A",
+      "total_seconds": 28800,
+      "provisional": true
+    },
+    "preview-b-6x1h": {
+      "label": "Preview Track B — 6 leases × 1 hour",
+      "track": "B",
+      "max_leases": 6,
+      "lease_seconds": 3600,
+      "provisional": true
+    }
+  },
+  "runtime_profiles": {
+    "a100-sxm4-80gb-x4": {
+      "label": "Single host — 4× NVIDIA A100 SXM4 80GB",
+      "host_count": 1,
+      "provisional": true,
+      "accelerator": {
+        "vendor": "nvidia",
+        "model": "NVIDIA A100-SXM4-80GB",
+        "model_match": "A100-SXM4-80GB",
+        "count": 4,
+        "minimum_memory_mib": 80000
+      }
+    },
+    "a100-sxm4-80gb-x8": {
+      "label": "Single host — 8× NVIDIA A100 SXM4 80GB",
+      "host_count": 1,
+      "provisional": true,
+      "accelerator": {
+        "vendor": "nvidia",
+        "model": "NVIDIA A100-SXM4-80GB",
+        "model_match": "A100-SXM4-80GB",
+        "count": 8,
+        "minimum_memory_mib": 80000
+      }
+    },
+    "h100-sxm-80gb-x4": {
+      "label": "Single host — 4× NVIDIA H100 SXM 80GB HBM3",
+      "host_count": 1,
+      "provisional": true,
+      "accelerator": {
+        "vendor": "nvidia",
+        "model": "NVIDIA H100 80GB HBM3",
+        "model_match": "H100 80GB HBM3",
+        "count": 4,
+        "minimum_memory_mib": 80000
+      }
+    },
+    "h100-sxm-80gb-x8": {
+      "label": "Single host — 8× NVIDIA H100 SXM 80GB HBM3",
+      "host_count": 1,
+      "provisional": true,
+      "accelerator": {
+        "vendor": "nvidia",
+        "model": "NVIDIA H100 80GB HBM3",
+        "model_match": "H100 80GB HBM3",
+        "count": 8,
+        "minimum_memory_mib": 80000
+      }
+    }
+  }
+}

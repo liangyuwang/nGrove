@@ -1,0 +1,128 @@
+import json
+import tempfile
+import unittest
+from dataclasses import replace
+from pathlib import Path
+
+from autotrain_bench.challenge import ChallengeRelease
+from autotrain_bench.config import ConfigError, TaskConfig
+
+
+ROOT = Path(__file__).resolve().parents[1]
+TASK = ROOT / "tests/fixtures/task/task.json"
+PRETRAIN_PREVIEW = ROOT / "challenges/pretrain_v1/challenge.json"
+
+
+class ChallengeReleaseTests(unittest.TestCase):
+    def _write_release(self, directory: str) -> Path:
+        payload = {
+            "schema_version": 1,
+            "challenge_id": "test-byte-lm-v1",
+            "task_id": "test-byte-lm-v1",
+            "task": "task.json",
+            "release_stage": "preview",
+            "leaderboard_eligible": False,
+            "track_configs": {
+                "a-1h": {
+                    "track": "A",
+                    "total_seconds": 3600,
+                    "provisional": True,
+                },
+                "b-3x10m": {
+                    "track": "B",
+                    "max_leases": 3,
+                    "lease_seconds": 600,
+                    "provisional": True,
+                },
+            },
+            "runtime_profiles": {
+                "h100-80gb-x4": {
+                    "host_count": 1,
+                    "provisional": True,
+                    "accelerator": {
+                        "vendor": "nvidia",
+                        "model": "NVIDIA H100 80GB",
+                        "model_match": "H100",
+                        "count": 4,
+                        "minimum_memory_mib": 80000,
+                    },
+                }
+            },
+        }
+        (Path(directory) / "task.json").write_text("{}", encoding="utf-8")
+        path = Path(directory) / "challenge.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
+    def test_preview_manifest_has_a_finite_public_profile_map(self):
+        release = ChallengeRelease.load(PRETRAIN_PREVIEW)
+        public = release.public_manifest()
+        self.assertEqual(public["challenge_id"], "pretrain-v1")
+        self.assertEqual(public["task"], "task.json")
+        self.assertEqual(public["release_stage"], "preview")
+        self.assertFalse(public["leaderboard_eligible"])
+        self.assertEqual(
+            public["comparison_key_fields"],
+            ["challenge_id", "track", "track_config", "runtime_profile"],
+        )
+        self.assertEqual(len(public["track_configs"]), 2)
+        self.assertEqual(len(public["runtime_profiles"]), 4)
+
+    def test_release_resolves_budget_resources_and_comparison_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            release = ChallengeRelease.load(self._write_release(directory))
+            task = replace(
+                TaskConfig.load(TASK), task_kind="benchmark_challenge"
+            ).validate()
+            resolved = release.resolve(
+                task,
+                track_config_id="b-3x10m",
+                runtime_profile_id="h100-80gb-x4",
+            )
+            self.assertEqual(resolved.track, "B")
+            self.assertEqual(resolved.task.track_b_max_leases, 3)
+            self.assertEqual(resolved.task.track_b_lease_seconds, 600)
+            self.assertEqual(resolved.resources.nvidia_gpu_count, 4)
+            self.assertEqual(resolved.resources.required_gpu_model, "H100")
+            self.assertEqual(resolved.resources.minimum_gpu_memory_mib, 80000)
+            self.assertEqual(
+                resolved.comparison_key.public_manifest(),
+                {
+                    "challenge_id": "test-byte-lm-v1",
+                    "track": "B",
+                    "track_config": "b-3x10m",
+                    "runtime_profile": "h100-80gb-x4",
+                },
+            )
+
+    def test_release_rejects_unknown_or_non_challenge_tasks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            release = ChallengeRelease.load(self._write_release(directory))
+            task = TaskConfig.load(TASK)
+            with self.assertRaisesRegex(ConfigError, "task_kind"):
+                release.resolve(
+                    task,
+                    track_config_id="a-1h",
+                    runtime_profile_id="h100-80gb-x4",
+                )
+            challenge_task = replace(task, task_kind="benchmark_challenge").validate()
+            with self.assertRaisesRegex(ConfigError, "unknown track config"):
+                release.resolve(
+                    challenge_task,
+                    track_config_id="missing",
+                    runtime_profile_id="h100-80gb-x4",
+                )
+
+    def test_release_rejects_unsupported_runtime_shapes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._write_release(directory)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            profile = payload["runtime_profiles"]["h100-80gb-x4"]
+            profile["host_count"] = 2
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ConfigError, "host_count must be 1"):
+                ChallengeRelease.load(path)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -121,25 +121,56 @@ class DockerRuntime:
                 "episode requests NVIDIA GPUs, but nvidia-smi is unavailable"
             )
         result = subprocess.run(
-            [nvidia_smi, "--query-gpu=name", "--format=csv,noheader"],
+            [
+                nvidia_smi,
+                "--query-gpu=name,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
             check=False,
             capture_output=True,
             text=True,
         )
         if result.returncode != 0:
             raise RuntimeFailure(result.stderr.strip() or "nvidia-smi failed")
-        names = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-        if len(names) < resources.nvidia_gpu_count:
+        inventory = []
+        for line in result.stdout.splitlines():
+            if not line.strip():
+                continue
+            fields = [field.strip() for field in line.rsplit(",", 1)]
+            if len(fields) != 2:
+                raise RuntimeFailure("nvidia-smi returned malformed GPU metadata")
+            try:
+                memory_mib = int(fields[1])
+            except ValueError as exc:
+                raise RuntimeFailure(
+                    "nvidia-smi returned invalid GPU memory metadata"
+                ) from exc
+            inventory.append((fields[0], memory_mib))
+        if len(inventory) < resources.nvidia_gpu_count:
             raise RuntimeFailure(
                 "episode requests "
-                f"{resources.nvidia_gpu_count} NVIDIA GPU(s); found {len(names)}"
+                f"{resources.nvidia_gpu_count} NVIDIA GPU(s); found {len(inventory)}"
             )
-        if resources.required_gpu_model and sum(
-            resources.required_gpu_model in name for name in names
-        ) < resources.nvidia_gpu_count:
+        matching = [
+            (name, memory_mib)
+            for name, memory_mib in inventory
+            if not resources.required_gpu_model
+            or resources.required_gpu_model in name
+        ]
+        if len(matching) < resources.nvidia_gpu_count:
             raise RuntimeFailure(
                 "episode requires GPU model containing "
-                f"{resources.required_gpu_model!r}; found {names}"
+                f"{resources.required_gpu_model!r}; "
+                f"found {[name for name, _memory in inventory]}"
+            )
+        if resources.minimum_gpu_memory_mib is not None and sum(
+            memory_mib >= resources.minimum_gpu_memory_mib
+            for _name, memory_mib in matching
+        ) < resources.nvidia_gpu_count:
+            raise RuntimeFailure(
+                "episode requires at least "
+                f"{resources.minimum_gpu_memory_mib} MiB on each selected GPU; "
+                f"found {matching}"
             )
 
     def environment_manifest(

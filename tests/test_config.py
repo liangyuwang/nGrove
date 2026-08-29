@@ -203,13 +203,19 @@ class ConfigTests(unittest.TestCase):
         resources = TrainingResources(
             nvidia_gpu_count=2,
             required_gpu_model="H100",
+            minimum_gpu_memory_mib=80000,
             devices=["/dev/accel0"],
         ).validate_for(task)
         self.assertEqual(
             resources.public_manifest()["selection"], "episode_runtime"
         )
+        self.assertEqual(
+            resources.public_manifest()["minimum_gpu_memory_mib"], 80000
+        )
         with self.assertRaises(ConfigError):
             TrainingResources(required_gpu_model="H100").validate()
+        with self.assertRaises(ConfigError):
+            TrainingResources(minimum_gpu_memory_mib=80000).validate()
         with self.assertRaises(ConfigError):
             TrainingResources(devices=["relative-device"]).validate()
 
