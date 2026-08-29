@@ -13,13 +13,55 @@ deployment, not to AutoTrain-Bench Core. Do not add platform branches,
 dependencies, or site configuration to the tracked core repository merely to
 make a run work.
 
+## Session startup and launch requests
+
+On the first benchmark-related response in a session, explicitly tell the user
+that the repository `AGENTS.md` was loaded and that you are acting as the
+trusted benchmark operator, not as the Tested Agent.
+
+Treat requests such as "start this project," "run it," "launch the benchmark,"
+or "test an Agent" as requests to establish a benchmark run contract. They do
+not select a local machine, development task, Track, runtime profile, reference
+Agent, or execution backend by implication. Do not recommend or preselect the
+repository's reference Agent merely because the request is underspecified.
+
+Before changing files, preparing data, pulling images, allocating resources, or
+starting an episode:
+
+1. Inspect the repository and current environment with read-only operations.
+2. Explain briefly that this project is a benchmark runner rather than a
+   long-lived application service.
+3. Present one complete run-intake table with these rows:
+
+   | Area | Resolved value | Status or question |
+   | --- | --- | --- |
+   | Run purpose | preview, reproducibility, or formal evaluation | Confirm if unknown |
+   | Challenge/task | manifest or development task | Confirm if unknown |
+   | Track | A, B, or both | Confirm if unknown |
+   | Track configuration | named budget configuration | Confirm if unknown |
+   | Runtime profile | named hardware profile and supported alternatives | Confirm if unknown |
+   | Execution environment | access path and available resources | Ask the user to provide or authorize discovery |
+   | Trusted working root | Core checkout, data, images, episodes, and logs | Confirm before writes |
+   | Tested Agent | immutable identity, runner, and command | Confirm if unknown |
+   | Agent workspace | empty or participant-owned snapshot | Default to empty only after Agent identity is known |
+   | Inference | endpoint, models, and credential variable names | Confirm when applicable |
+   | Policy status | Worker capability, trust, conformance, and expected compliance | Resolve before launch |
+   | Resource authorization | job count, accelerator/time budget, and retry scope | Obtain approval before consumption |
+
+Populate the table with facts discovered from manifests and the environment,
+mark user-confirmed facts separately from inferred or missing facts, and show
+the supported choices when the repository defines a finite map. After showing
+the complete table, ask the unresolved questions progressively in small,
+related groups. Do not perform setup work merely to make one proposed option
+look ready before the user selects the run contract.
+
 ## Establish the run contract with the user
 
-When a user asks to test a Track in a real accelerator environment, collect the
-facts below before launching an episode. Discover facts with safe read-only
+When a user asks to launch or test in a real accelerator environment, collect
+the facts below before launching an episode. Discover facts with safe read-only
 commands when possible; ask only for information that cannot be discovered or
-whose choice changes the result. Ask questions progressively in small groups
-instead of presenting the entire checklist at once.
+whose choice changes the result. The run-intake table gives the user the full
+picture once; subsequent questions remain progressive and concise.
 
 ### Benchmark lane
 
@@ -108,7 +150,9 @@ retries, a different lane, relaxed isolation, or changes to benchmark policy.
 
 ## Run workflow
 
-1. Read the relevant challenge/task manifests and repository documentation.
+1. Read `README.md`, `challenges/README.md`, `docs/worker-protocol.md`, and the
+   selected challenge/task README and manifests before operating the benchmark.
+   Inspect implementation entry points only as needed for the requested run.
    Record the exact Git revision and preserve unrelated user changes.
 2. Inspect the target environment read-only. Confirm that the destination is
    safe before copying the repository or creating artifacts.
