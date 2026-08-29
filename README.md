@@ -136,6 +136,15 @@ must create its own training system. See `dev_tasks/smoke_lm/README.md` for the
 development workflow, Candidate ABI, Policy, and reproducibility details.
 Smoke-task scores are not benchmark results.
 
+Every episode must select an explicit `--episode-dir` or `--episodes-root` in a
+dedicated trusted working root outside the AutoTrain-Bench Core/task checkout.
+This keeps episode state and the Tested Agent workspace separate from operator
+files. It also prevents host-native tools such as Codex from inheriting the
+Core's `AGENTS.md` through ancestor-directory instruction discovery. An empty
+workspace beneath the Core is therefore not isolated. This check is scoped to
+the trusted AutoTrain-Benchmark checkout; it does not remove the Tested Agent's
+own global configuration or participant-owned instructions.
+
 A participant Agent Container can be selected without changing the task:
 
 ```bash
@@ -143,6 +152,7 @@ autotrain-bench start \
   --challenge dev_tasks/smoke_lm/challenge.json \
   --track-config smoke-b-3x75s \
   --runtime-profile cpu-local \
+  --episodes-root /path/to/autotrain-bench-runs/episodes \
   --agent-runner container \
   --agent-image participant-agent:version \
   --agent-command "participant-agent run"
@@ -165,6 +175,7 @@ autotrain-bench start \
   --challenge dev_tasks/smoke_lm/challenge.json \
   --track-config smoke-a-5m \
   --runtime-profile cpu-local \
+  --episodes-root /path/to/autotrain-bench-runs/episodes \
   --agent-runner host_cli \
   --agent-command "your-agent-cli --non-interactive ..."
 ```
@@ -189,6 +200,7 @@ python3 -m autotrain_bench.cli start \
   --challenge dev_tasks/smoke_lm/challenge.json \
   --track-config smoke-a-5m \
   --runtime-profile cpu-local \
+  --episodes-root /path/to/autotrain-bench-runs/episodes \
   --agent-runner host_cli \
   --agent-command "python3 -m autotrain_bench.cli_adapters.codex --model YOUR_CODEX_MODEL --reasoning-effort high"
 ```
@@ -258,6 +270,7 @@ A minimal launch looks like:
 autotrain-bench start \
   --task path/to/task.json \
   --track B \
+  --episodes-root /path/to/autotrain-bench-runs/episodes \
   --agent-runner container \
   --agent-image participant-agent@sha256:DIGEST \
   --agent-command "participant-agent run" \
@@ -323,7 +336,8 @@ only to make local integration easier.
 The Supervisor prints the episode directory. Its final state can be inspected later with:
 
 ```bash
-autotrain-bench report --episode .autotrain/episodes/<episode-id>
+autotrain-bench report \
+  --episode /path/to/autotrain-bench-runs/episodes/<episode-id>
 ```
 
 The example proves the complete protocol:

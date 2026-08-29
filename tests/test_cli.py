@@ -1,14 +1,20 @@
+import io
 import tempfile
 import unittest
+import uuid
+from contextlib import redirect_stderr
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from autotrain_bench.cli import (
     _initialize_agent_workspace,
     _resolve_challenge_run,
     _snapshot_agent_workspace,
     _terminal_agent_action,
+    _validate_workspace_boundary,
     build_parser,
+    command_start,
 )
 from autotrain_bench.config import ConfigError, TaskConfig
 
@@ -49,6 +55,88 @@ class WorkspaceSnapshotTests(unittest.TestCase):
             source.mkdir()
             with self.assertRaises(ConfigError):
                 _snapshot_agent_workspace(source, source / "episode")
+
+    def test_episode_workspace_must_be_outside_trusted_checkout(self):
+        workspace = ROOT / ".autotrain" / "episodes" / "episode" / "workspace"
+        with self.assertRaisesRegex(ConfigError, "outside the trusted"):
+            _validate_workspace_boundary(
+                workspace=workspace,
+                task_source=TASK,
+                agent_workspace=None,
+            )
+
+    def test_external_participant_project_instructions_are_outside_core_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory) / "participant-project"
+            (project / ".git").mkdir(parents=True)
+            (project / "AGENTS.md").write_text(
+                "participant instructions\n", encoding="utf-8"
+            )
+            workspace = project / "runs" / "episode" / "workspace"
+            _validate_workspace_boundary(
+                workspace=workspace,
+                task_source=TASK,
+                agent_workspace=None,
+            )
+
+    def test_dedicated_external_workspace_is_allowed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "runs" / "episode" / "workspace"
+            _validate_workspace_boundary(
+                workspace=workspace,
+                task_source=TASK,
+                agent_workspace=None,
+            )
+
+    def test_participant_workspace_must_not_come_from_core(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "runs" / "episode" / "workspace"
+            with self.assertRaisesRegex(ConfigError, "participant-owned"):
+                _validate_workspace_boundary(
+                    workspace=workspace,
+                    task_source=TASK,
+                    agent_workspace=ROOT / "participant-agent",
+                )
+
+    def test_participant_owned_instructions_are_allowed_in_snapshot_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "participant"
+            source.mkdir()
+            (source / "AGENTS.md").write_text(
+                "participant instructions\n", encoding="utf-8"
+            )
+            workspace = root / "runs" / "episode" / "workspace"
+
+            _validate_workspace_boundary(
+                workspace=workspace,
+                task_source=TASK,
+                agent_workspace=source,
+            )
+
+    def test_start_rejects_core_workspace_before_worker_or_directory_creation(self):
+        episode = ROOT / ".autotrain" / f"preflight-{uuid.uuid4().hex}"
+        args = build_parser().parse_args(
+            [
+                "start",
+                "--task",
+                str(TASK),
+                "--track",
+                "A",
+                "--episode-dir",
+                str(episode),
+                "--agent-runner",
+                "host_cli",
+                "--agent-command",
+                "example-agent",
+            ]
+        )
+
+        with patch("autotrain_bench.cli.DockerRuntime") as runtime:
+            with self.assertRaisesRegex(ConfigError, "outside the trusted"):
+                command_start(args)
+        runtime.assert_not_called()
+        self.assertFalse(episode.exists())
 
     def test_host_agent_can_exit_during_drain(self):
         self.assertEqual(
@@ -97,6 +185,8 @@ class WorkspaceSnapshotTests(unittest.TestCase):
                 "host_cli",
                 "--agent-command",
                 "example-agent",
+                "--episodes-root",
+                "/dedicated/episodes",
                 "--training-gpus",
                 "2",
                 "--training-gpu-model",
@@ -123,6 +213,8 @@ class WorkspaceSnapshotTests(unittest.TestCase):
                 "host_cli",
                 "--agent-command",
                 "example-agent",
+                "--episodes-root",
+                "/dedicated/episodes",
             ]
         )
         self.assertIsNone(args.track)
@@ -152,6 +244,34 @@ class WorkspaceSnapshotTests(unittest.TestCase):
             ["challenge-info", "--challenge", "challenge.json"]
         )
         self.assertEqual(args.challenge, Path("challenge.json"))
+
+    def test_start_requires_one_explicit_episode_destination(self):
+        argv = [
+            "start",
+            "--task",
+            "task.json",
+            "--track",
+            "A",
+            "--agent-runner",
+            "host_cli",
+            "--agent-command",
+            "example-agent",
+        ]
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                build_parser().parse_args(argv)
+
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                build_parser().parse_args(
+                    [
+                        *argv,
+                        "--episode-dir",
+                        "/exact/episode",
+                        "--episodes-root",
+                        "/episodes",
+                    ]
+                )
 
 
 if __name__ == "__main__":

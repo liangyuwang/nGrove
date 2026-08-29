@@ -94,6 +94,7 @@ autotrain-bench start \
   --challenge challenges/lm-pretrain-v1/challenge.json \
   --track-config preview-b-6x1h \
   --runtime-profile h100-sxm-80gb-x4 \
+  --episodes-root /path/to/autotrain-bench-runs/episodes \
   --agent-runner container \
   --agent-image participant-agent@sha256:DIGEST \
   --agent-command "participant-agent run"

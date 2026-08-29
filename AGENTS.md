@@ -116,6 +116,15 @@ the user explicitly identifies a participant-owned source workspace. Never use
 the AutoTrain-Bench Core checkout, or any directory containing the operator's
 `AGENTS.md`, as the Tested Agent workspace.
 
+An empty leaf directory beneath the trusted AutoTrain-Benchmark Core/task
+checkout is not isolated when a host-native Agent discovers this project's
+instructions from ancestor directories. Before task reveal, resolve the final
+workspace path and reject it if it is inside that trusted checkout. Require an
+explicit `--episode-dir` or `--episodes-root` in a dedicated external working
+root; the Core-relative `.autotrain/episodes` layout is not a valid default.
+This boundary does not remove the Tested Agent's own global configuration or
+participant-owned instructions.
+
 Do not copy benchmark datasets into the Agent workspace. The Worker provides
 public TRAIN data through its separate read-only training-data view and keeps
 hidden VAL/TEST data outside the Research Worker. Lease-owned Candidate output

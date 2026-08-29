@@ -81,6 +81,7 @@ autotrain-bench start \
   --challenge dev_tasks/smoke_lm/challenge.json \
   --track-config smoke-a-5m \
   --runtime-profile cpu-local \
+  --episodes-root /path/to/autotrain-bench-runs/episodes \
   --agent-runner container \
   --agent-image participant-agent@sha256:DIGEST \
   --agent-command "participant-agent run"
@@ -94,19 +95,26 @@ autotrain-bench start \
   --challenge dev_tasks/smoke_lm/challenge.json \
   --track-config smoke-a-5m \
   --runtime-profile h100-sxm-80gb-x4 \
+  --episodes-root /path/to/autotrain-bench-runs/episodes \
   --agent-runner container \
   --agent-image participant-agent@sha256:DIGEST \
   --agent-command "participant-agent run"
 ```
 
 A logged-in CLI such as Codex can be rehearsed from the same default empty
-workspace by omitting `--agent-workspace`:
+workspace by omitting `--agent-workspace`. The episode root remains explicit
+and outside the Core checkout. This matters for host-native tools that discover
+instructions from parent directories: an empty workspace nested beneath the
+Core would still inherit the operator's `AGENTS.md` and is rejected before task
+reveal. The Tested Agent's own global configuration and participant-owned
+instructions remain in scope.
 
 ```bash
 autotrain-bench start \
   --challenge dev_tasks/smoke_lm/challenge.json \
   --track-config smoke-a-5m \
   --runtime-profile cpu-local \
+  --episodes-root /path/to/autotrain-bench-runs/episodes \
   --agent-runner host_cli \
   --agent-command "python3 -m autotrain_bench.cli_adapters.codex --model MODEL --reasoning-effort high"
 ```

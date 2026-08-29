@@ -45,6 +45,63 @@ def _episode_directory(root: Path) -> Path:
     return (root / f"{timestamp}-{uuid.uuid4().hex[:8]}").resolve()
 
 
+def _find_git_root(path: Path) -> Optional[Path]:
+    """Return the enclosing Git checkout without invoking a site-specific tool."""
+
+    resolved = path.resolve()
+    for candidate in (resolved, *resolved.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return None
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _trusted_workspace_roots(task_source: Path) -> List[Path]:
+    """Return trusted Core/task checkouts that may not host Agent workspaces."""
+
+    roots = {Path(__file__).resolve().parent.parent}
+    task_checkout = _find_git_root(task_source.parent)
+    if task_checkout is not None:
+        roots.add(task_checkout)
+    return sorted(roots, key=str)
+
+
+def _validate_workspace_boundary(
+    *,
+    workspace: Path,
+    task_source: Path,
+    agent_workspace: Optional[Path],
+) -> None:
+    """Fail before task reveal when trusted files could enter Agent scope."""
+
+    resolved_workspace = workspace.resolve()
+    trusted_roots = _trusted_workspace_roots(task_source.resolve())
+    for root in trusted_roots:
+        if _is_within(resolved_workspace, root):
+            raise ConfigError(
+                "episode workspace must be outside the trusted Core/task checkout: "
+                f"{resolved_workspace} is under {root}; choose a dedicated external "
+                "--episode-dir or --episodes-root"
+            )
+
+    if agent_workspace is None:
+        return
+    resolved_source = agent_workspace.resolve()
+    for root in trusted_roots:
+        if _is_within(resolved_source, root):
+            raise ConfigError(
+                "--agent-workspace must be participant-owned and outside the trusted "
+                f"Core/task checkout: {resolved_source} is under {root}"
+            )
+
+
 def _snapshot_agent_workspace(source: Path, destination: Path) -> None:
     resolved_source = source.resolve()
     resolved_destination = destination.resolve()
@@ -206,8 +263,13 @@ def command_start(args: argparse.Namespace) -> int:
         if args.episode_dir
         else _episode_directory(args.episodes_root)
     )
-    episode_dir.mkdir(parents=True, exist_ok=False)
     workspace = episode_dir / "workspace"
+    _validate_workspace_boundary(
+        workspace=workspace,
+        task_source=config.source,
+        agent_workspace=args.agent_workspace,
+    )
+    episode_dir.mkdir(parents=True, exist_ok=False)
     try:
         _initialize_agent_workspace(args.agent_workspace, workspace)
         agent = AgentConfig(
@@ -492,7 +554,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--runtime-profile",
         help="named episode-time hardware profile from the selected challenge release",
     )
-    start.add_argument("--episode-dir", type=Path)
+    episode_destination = start.add_mutually_exclusive_group(required=True)
+    episode_destination.add_argument(
+        "--episode-dir",
+        type=Path,
+        help=(
+            "exact new episode directory in a dedicated trusted working root "
+            "outside the Core/task checkout"
+        ),
+    )
     start.add_argument(
         "--agent-runner",
         required=True,
@@ -563,8 +633,13 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="/DEV/PATH",
         help="expose an additional Docker device to Training Containers",
     )
-    start.add_argument(
-        "--episodes-root", type=Path, default=Path(".autotrain/episodes")
+    episode_destination.add_argument(
+        "--episodes-root",
+        type=Path,
+        help=(
+            "dedicated trusted root under which a new episode directory is created; "
+            "must be outside the Core/task checkout"
+        ),
     )
     start.set_defaults(function=command_start)
 
