@@ -82,6 +82,31 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeFailure, "at least 80000 MiB"):
                     runtime.validate_hardware(resources)
 
+    def test_training_timeout_decodes_partial_byte_output(self):
+        runtime = DockerRuntime(docker_binary="docker")
+        timeout = subprocess.TimeoutExpired(
+            ["docker", "exec", "training", "python", "train.py"],
+            5,
+            output=b"partial stdout: \xff",
+            stderr=b"partial stderr: \xfe",
+        )
+
+        with patch("autotrain_bench.runtime.subprocess.run", side_effect=timeout):
+            with patch.object(runtime, "stop_container") as stop_container:
+                result = runtime.exec_training(
+                    name="training",
+                    argv=["python", "train.py"],
+                    timeout_seconds=5,
+                )
+
+        stop_container.assert_called_once_with("training")
+        self.assertEqual(result.exit_code, 124)
+        self.assertEqual(result.stdout, "partial stdout: \ufffd")
+        self.assertEqual(result.stderr, "partial stderr: \ufffd")
+        self.assertIsInstance(result.stdout, str)
+        self.assertIsInstance(result.stderr, str)
+        self.assertTrue(result.timed_out)
+
     def test_task_preparation_has_no_implicit_agent_image(self):
         config = TaskConfig.load(TASK)
         runtime = CapturingDockerRuntime()

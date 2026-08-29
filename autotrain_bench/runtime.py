@@ -44,6 +44,18 @@ RuntimeFailure = WorkerFailure
 ExecResult = CommandResult
 
 
+def _decode_timeout_output(value: Any) -> str:
+    """Normalize TimeoutExpired output to the Worker protocol's text type."""
+
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, str):
+        return value
+    raise TypeError(f"unexpected subprocess output type: {type(value).__name__}")
+
+
 class DockerRuntime:
     """Minimal Docker implementation for the local reference prototype."""
 
@@ -673,10 +685,12 @@ class DockerRuntime:
             )
         except subprocess.TimeoutExpired as exc:
             self.stop_container(name)
+            stdout = _decode_timeout_output(exc.stdout)
+            stderr = _decode_timeout_output(exc.stderr)
             return ExecResult(
                 exit_code=124,
-                stdout=exc.stdout or "",
-                stderr=exc.stderr or "command exceeded the lease deadline",
+                stdout=stdout,
+                stderr=stderr or "command exceeded the lease deadline",
                 timed_out=True,
             )
         return ExecResult(result.returncode, result.stdout, result.stderr)

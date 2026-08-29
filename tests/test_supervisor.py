@@ -55,6 +55,7 @@ class FakeWorker:
         self.evaluation_failure = None
         self.val_nlls = []
         self.capability_overrides = {}
+        self.command_result = None
 
     def describe_capabilities(self):
         names = [requirement.name for requirement in BASELINE_REQUIREMENTS]
@@ -98,6 +99,8 @@ class FakeWorker:
     ):
         del timeout_seconds
         self.assert_running(episode_id, lease_id)
+        if self.command_result is not None:
+            return self.command_result
         return CommandResult(0, "executed " + " ".join(argv), "")
 
     def assert_running(self, episode_id, lease_id):
@@ -299,6 +302,55 @@ class SupervisorTests(unittest.TestCase):
         types = [event["type"] for event in events]
         self.assertLess(types.index("VAL_EVALUATED"), types.index("INCUMBENT_DECLARED"))
         self.assertLess(types.index("EPISODE_CLOSED"), types.index("TEST_EVALUATED"))
+
+    def test_timed_out_command_is_serialized_and_returned_through_mailbox(self):
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+        self.worker.command_result = CommandResult(
+            124,
+            "partial stdout: \ufffd",
+            "partial stderr: \ufffd",
+            timed_out=True,
+        )
+        request = {
+            "id": "timeout-command",
+            "op": "lease_exec",
+            "argv": ["python", "train.py"],
+        }
+        (supervisor.inbox / "timeout-command.json").write_text(
+            json.dumps(request), encoding="utf-8"
+        )
+
+        self.assertTrue(supervisor.process_one_request())
+
+        response = json.loads(
+            (supervisor.outbox / "timeout-command.json").read_text(encoding="utf-8")
+        )
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["result"]["exit_code"], 124)
+        self.assertEqual(response["result"]["stdout"], "partial stdout: \ufffd")
+        self.assertEqual(response["result"]["stderr"], "partial stderr: \ufffd")
+        self.assertTrue(response["result"]["timed_out"])
+        self.assertFalse(response["result"]["lease_active"])
+
+        command_log = json.loads(
+            (supervisor.runs_dir / "lease-0001" / "commands.jsonl").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(command_log["stdout"], "partial stdout: \ufffd")
+        self.assertEqual(command_log["stderr"], "partial stderr: \ufffd")
+        self.assertTrue(command_log["timed_out"])
+
+        events = [
+            json.loads(line)
+            for line in supervisor.events_path.read_text(encoding="utf-8").splitlines()
+        ]
+        types = [event["type"] for event in events]
+        self.assertIn("LEASE_COMMAND_FINISHED", types)
+        self.assertIn("LEASE_ENDED", types)
+        self.assertNotIn("SUPERVISOR_ERROR", types)
+        self.assertIsNone(supervisor.state["active_lease"])
 
     def test_official_elapsed_time_freezes_before_agent_drain(self):
         supervisor = self.supervisor()
