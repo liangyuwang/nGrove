@@ -16,6 +16,11 @@ from autotrain_bench.config import (
 )
 from autotrain_bench.runtime import DockerRuntime, RuntimeFailure
 from autotrain_bench.host_agent import summarize_host_agent_trace
+from autotrain_bench.worker_protocol import (
+    DEADLINE_TERMINATION,
+    EnforcementLevel,
+    TrustLevel,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +40,17 @@ class CapturingDockerRuntime(DockerRuntime):
 
 
 class RuntimeBoundaryTests(unittest.TestCase):
+    def test_local_reference_worker_is_explicitly_development_only(self):
+        descriptor = DockerRuntime(
+            docker_binary="docker"
+        ).describe_capabilities()
+        self.assertEqual(descriptor.trust_level, TrustLevel.DEVELOPMENT)
+        self.assertIsNone(descriptor.conformance)
+        self.assertEqual(
+            descriptor.capabilities[DEADLINE_TERMINATION].level,
+            EnforcementLevel.BEST_EFFORT,
+        )
+
     def test_runtime_profile_checks_model_count_and_memory_together(self):
         resources = TrainingResources(
             nvidia_gpu_count=2,

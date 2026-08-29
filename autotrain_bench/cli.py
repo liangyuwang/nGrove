@@ -88,9 +88,9 @@ def _terminal_agent_action(
 
 def command_prepare(args: argparse.Namespace) -> int:
     config = TaskConfig.load(args.task)
-    runtime = DockerRuntime()
-    runtime.prepare(config, pull_missing=not args.no_pull)
-    runtime_environment = runtime.environment_manifest(config)
+    reference_runtime = DockerRuntime()
+    reference_runtime.prepare(config, pull_missing=not args.no_pull)
+    worker_environment = reference_runtime.environment_manifest(config)
     _print(
         {
             "status": "ready",
@@ -100,7 +100,8 @@ def command_prepare(args: argparse.Namespace) -> int:
             "images": config.images,
             "evaluator_backend": config.evaluator_backend,
             "evaluator_policy_compliant": config.evaluator_policy_compliant,
-            "runtime_environment": runtime_environment,
+            "worker": reference_runtime.describe_capabilities().public_manifest(),
+            "worker_environment": worker_environment,
         }
     )
     return 0
@@ -224,14 +225,14 @@ def command_start(args: argparse.Namespace) -> int:
         if missing_environment:
             names = ", ".join(missing_environment)
             raise ConfigError(f"agent environment variable is not set: {names}")
-        runtime = DockerRuntime()
-        runtime.prepare(
+        reference_runtime = DockerRuntime()
+        reference_runtime.prepare(
             config,
             agent=agent,
             resources=resources,
             pull_missing=False,
         )
-        runtime_environment = runtime.environment_manifest(
+        worker_environment = reference_runtime.environment_manifest(
             config,
             agent=agent,
             resources=resources,
@@ -246,8 +247,10 @@ def command_start(args: argparse.Namespace) -> int:
         resources=resources,
         track=track,
         episode_dir=episode_dir,
-        runtime=runtime,
-        runtime_environment=runtime_environment,
+        research_worker=reference_runtime,
+        evaluation_worker=reference_runtime,
+        research_worker_environment=worker_environment,
+        evaluation_worker_environment=worker_environment,
         comparison_key=comparison_key,
         challenge_release=challenge_release,
     )
@@ -264,14 +267,14 @@ def command_start(args: argparse.Namespace) -> int:
     print(f"Episode: {episode_dir}", flush=True)
     try:
         if agent.inference is not None:
-            runtime.create_network(
+            reference_runtime.create_network(
                 agent_network,
                 internal=agent.mode == "sandboxed",
             )
             networks_created.append(agent_network)
-            runtime.create_network(egress_network, internal=False)
+            reference_runtime.create_network(egress_network, internal=False)
             networks_created.append(egress_network)
-            runtime.start_inference_gateway(
+            reference_runtime.start_inference_gateway(
                 name=gateway_name,
                 agent_network=agent_network,
                 egress_network=egress_network,
@@ -282,7 +285,7 @@ def command_start(args: argparse.Namespace) -> int:
             gateway_started = True
         supervisor.begin()
         if agent.runner == "container":
-            runtime.start_agent(
+            reference_runtime.start_agent(
                 name=agent_name,
                 config=config,
                 agent=agent,
@@ -291,7 +294,7 @@ def command_start(args: argparse.Namespace) -> int:
                 inference_network=agent_network if agent.inference is not None else None,
             )
         else:
-            host_agent = runtime.start_host_agent(
+            host_agent = reference_runtime.start_host_agent(
                 agent=agent,
                 control_dir=supervisor.control_dir,
                 public_task_path=supervisor.public_task_path,
@@ -302,13 +305,13 @@ def command_start(args: argparse.Namespace) -> int:
     except Exception:
         supervisor.agent_exited_without_finish()
         if agent.runner == "container":
-            runtime.stop_container(agent_name)
+            reference_runtime.stop_container(agent_name)
         elif host_agent is not None:
             host_agent.stop()
         if gateway_started:
-            runtime.stop_container(gateway_name)
+            reference_runtime.stop_container(gateway_name)
         for network in reversed(networks_created):
-            runtime.remove_network(network)
+            reference_runtime.remove_network(network)
         raise
 
     terminal_at: Optional[float] = None
@@ -319,7 +322,7 @@ def command_start(args: argparse.Namespace) -> int:
             supervisor.enforce_deadlines()
             status = supervisor.public_status()["status"]
             agent_running = (
-                runtime.container_running(agent_name)
+                reference_runtime.container_running(agent_name)
                 if agent.runner == "container"
                 else bool(host_agent and host_agent.running)
             )
@@ -327,7 +330,7 @@ def command_start(args: argparse.Namespace) -> int:
             if (
                 status == "active"
                 and agent.inference is not None
-                and not runtime.container_running(gateway_name)
+                and not reference_runtime.container_running(gateway_name)
             ):
                 supervisor.infrastructure_failed(
                     "the trusted inference gateway exited during the episode"
@@ -340,7 +343,7 @@ def command_start(args: argparse.Namespace) -> int:
 
             if status != "active":
                 if gateway_started:
-                    runtime.stop_container(gateway_name)
+                    reference_runtime.stop_container(gateway_name)
                     gateway_started = False
                     supervisor.refresh_inference_usage()
                 if terminal_at is None:
@@ -362,17 +365,24 @@ def command_start(args: argparse.Namespace) -> int:
     finally:
         active = supervisor.state.get("active_lease")
         if active:
-            runtime.stop_container(active["container_name"])
+            reference_runtime.terminate_lease(
+                episode_id=supervisor.state["episode_id"],
+                lease_id=active["lease_id"],
+            )
         try:
             if agent.runner == "container":
-                agent_log = runtime.container_logs(agent_name) if agent_started else ""
+                agent_log = (
+                    reference_runtime.container_logs(agent_name)
+                    if agent_started
+                    else ""
+                )
                 agent_log_path = episode_dir / "agent.log"
                 agent_log_path.write_text(agent_log, encoding="utf-8")
                 agent_log_path.chmod(0o600)
         except (OSError, RuntimeFailure):
             pass
         if agent.runner == "container":
-            runtime.stop_container(agent_name)
+            reference_runtime.stop_container(agent_name)
         elif host_agent is not None:
             if host_termination_reason is None:
                 host_termination_reason = (
@@ -392,10 +402,10 @@ def command_start(args: argparse.Namespace) -> int:
                 drain_seconds=drain_seconds,
             )
         if gateway_started:
-            runtime.stop_container(gateway_name)
+            reference_runtime.stop_container(gateway_name)
         supervisor.refresh_inference_usage()
         for network in reversed(networks_created):
-            runtime.remove_network(network)
+            reference_runtime.remove_network(network)
 
     _print(supervisor.public_status())
     return 0 if supervisor.state["status"] == "finalized" else 1

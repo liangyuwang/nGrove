@@ -292,7 +292,7 @@ class AgentConfig:
 
 @dataclass(frozen=True)
 class TrainingResources:
-    """Trusted episode-time device allocation for the Docker runtime."""
+    """Trusted episode-time resource envelope requested from a Worker."""
 
     nvidia_gpu_count: int = 0
     required_gpu_model: Optional[str] = None

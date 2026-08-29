@@ -69,6 +69,20 @@ under the resource constraints of the selected benchmark track.
 
 The repository now contains an executable, single-host Docker prototype of the benchmark protocol. It is intended to validate episode lifecycle, Training Lease accounting, hidden evaluation, and the agent-facing control surface before the first official benchmark instance is selected.
 
+Docker is the bundled v0 compatibility implementation, not a general platform
+abstraction. The benchmark Supervisor now depends on the semantic
+`autotrain_bench.worker_protocol` boundary: it asks a Worker to start, execute,
+inspect, and terminate a lease or evaluate a Candidate without referring to
+containers, scheduler jobs, Pods, or platform networks. Worker capabilities,
+deployment trust, and conformance are recorded independently, and there is no
+automatic capability fallback.
+
+Slurm, Kubernetes, Apptainer, cloud-job, and other integrations belong in
+separately distributed Worker packages maintained by their platform or site.
+They must not add platform branches or dependencies to this core repository.
+See [Worker Protocol boundary](docs/worker-protocol.md) for the ownership rules
+and incremental migration plan.
+
 The reference runtime requires a machine that can run Docker. AutoTrain-Bench
 consumes the environment the user has already obtained; it does **not** allocate
 machines or integrate with Slurm, Kubernetes, or a cloud scheduler.
@@ -331,9 +345,11 @@ Evaluator and untrusted Candidate containers. Agent, Training, and Candidate
 containers receive neither the Docker socket nor VAL/TEST mounts. Sandboxed
 Agent and Training networking is disabled; Candidate evaluation uses only an
 ephemeral internal network shared with its Evaluator. The Gateway handles only
-frozen researcher-inference endpoints while the Supervisor independently
-enforces episode and Training-Lease deadlines. `unrestricted-dev` and `host_cli`
-exist only as non-compliant local integration modes.
+frozen researcher-inference endpoints. In this local compatibility path the
+Supervisor process enforces episode and Training-Lease deadlines; an external
+certified Worker must enforce its deadline envelope even if the Coordinator
+disconnects. `unrestricted-dev` and `host_cli` add further non-compliant local
+integration boundaries.
 
 Here, **user/operator** means the entity that prepares and launches the run; it
 may itself be a human or another Agent and is inside the trusted host boundary.
@@ -446,10 +462,11 @@ User-owned host
         └── untrusted Candidate Container without hidden files or public network
 ```
 
-The official Supervisor records task reveal time, owns Track A deadlines and
-Track B lease counters, controls container lifecycle, exposes only the
-pre-allocated Training Environment, and invokes evaluation. The Agent cannot
-access the Supervisor's state or Docker socket.
+The Supervisor records task reveal time, owns Track A/B policy and lease
+counters, and requests controlled execution and evaluation through the Worker
+Protocol. The local v0 Worker maps those requests to the pictured containers;
+other deployments implement the same semantics outside this repository. The
+Agent cannot access Supervisor state or a privileged Worker control channel.
 
 The Agent receives interactive access to a Training Container only through the Supervisor's narrow command channel during an active **Training Lease**. It may inspect logs, edit the shared workspace, compile code, profile, and run any number of TRAIN-only experiments inside that lease.
 

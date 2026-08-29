@@ -15,8 +15,19 @@ from autotrain_bench.config import (
     TrainingResources,
 )
 from autotrain_bench.client import Client
-from autotrain_bench.runtime import ExecResult, RuntimeFailure
 from autotrain_bench.supervisor import ProtocolError, Supervisor
+from autotrain_bench.worker_protocol import (
+    BASELINE_REQUIREMENTS,
+    GPU_DEVICE_ISOLATION,
+    HIDDEN_DATASET_ISOLATION,
+    Capability,
+    CommandResult,
+    EnforcementLevel,
+    LeaseState,
+    TrustLevel,
+    WorkerDescriptor,
+    WorkerFailure,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,7 +45,7 @@ class FakeClock:
         self.value += seconds
 
 
-class FakeRuntime:
+class FakeWorker:
     def __init__(self):
         self.running = set()
         self.fail_start = False
@@ -43,37 +54,68 @@ class FakeRuntime:
         self.evaluation_hook = None
         self.evaluation_failure = None
         self.val_nlls = []
+        self.capability_overrides = {}
 
-    def start_training(self, *, name, config, workspace, resources, lease_dir):
-        del config, resources
+    def describe_capabilities(self):
+        names = [requirement.name for requirement in BASELINE_REQUIREMENTS]
+        names.append(GPU_DEVICE_ISOLATION)
+        capabilities = {
+            name: Capability(EnforcementLevel.ENFORCED) for name in names
+        }
+        capabilities.update(self.capability_overrides)
+        return WorkerDescriptor(
+            worker_id="test-worker",
+            trust_level=TrustLevel.DEVELOPMENT,
+            roles=("research", "evaluation"),
+            capabilities=capabilities,
+        )
+
+    def start_lease(
+        self,
+        *,
+        episode_id,
+        lease_id,
+        duration_seconds,
+        config,
+        workspace,
+        resources,
+        lease_dir,
+    ):
+        del duration_seconds, config, resources
         if self.fail_start:
             self.fail_start = False
-            raise RuntimeFailure("simulated infrastructure failure")
+            raise WorkerFailure("simulated infrastructure failure")
         output = lease_dir / "output" / "candidate"
         output.mkdir(parents=True)
         shutil.copy2(
             workspace / "candidate/candidate.py",
             output / "candidate.py",
         )
-        self.running.add(name)
+        self.running.add((episode_id, lease_id))
 
-    def exec_training(self, *, name, argv, timeout_seconds):
-        self.assert_running(name)
-        return ExecResult(0, "executed " + " ".join(argv), "")
+    def exec_lease(
+        self, *, episode_id, lease_id, argv, timeout_seconds
+    ):
+        del timeout_seconds
+        self.assert_running(episode_id, lease_id)
+        return CommandResult(0, "executed " + " ".join(argv), "")
 
-    def assert_running(self, name):
-        if name not in self.running:
-            raise AssertionError(f"container is not running: {name}")
+    def assert_running(self, episode_id, lease_id):
+        if (episode_id, lease_id) not in self.running:
+            raise AssertionError(f"lease is not running: {lease_id}")
 
-    def container_running(self, name):
-        return name in self.running
+    def lease_state(self, *, episode_id, lease_id):
+        if (episode_id, lease_id) in self.running:
+            return LeaseState.RUNNING
+        return LeaseState.STOPPED
 
-    def stop_container(self, name):
-        self.running.discard(name)
+    def terminate_lease(self, *, episode_id, lease_id):
+        self.running.discard((episode_id, lease_id))
 
-    def run_evaluator(
+    def evaluate_candidate(
         self,
         *,
+        episode_id,
         config,
         resources,
         candidate_dir,
@@ -81,13 +123,13 @@ class FakeRuntime:
         output_dir,
         timeout_seconds=None,
     ):
-        del config, resources, candidate_dir, output_dir
+        del episode_id, config, resources, candidate_dir, output_dir
         self.evaluations.append(split)
         self.evaluation_timeouts.append(timeout_seconds)
         if self.evaluation_hook is not None:
             self.evaluation_hook(timeout_seconds)
         if self.evaluation_failure is not None:
-            raise RuntimeFailure(self.evaluation_failure)
+            raise WorkerFailure(self.evaluation_failure)
         if split == "val" and self.val_nlls:
             return self.val_nlls.pop(0)
         return 1.25 if split == "val" else 1.5
@@ -116,7 +158,7 @@ class SupervisorTests(unittest.TestCase):
         )
         self.resources = TrainingResources()
         self.workspace = workspace
-        self.runtime = FakeRuntime()
+        self.worker = FakeWorker()
         self.clock = FakeClock()
         self.episode = root / "episode"
 
@@ -137,7 +179,8 @@ class SupervisorTests(unittest.TestCase):
             resources=self.resources,
             track=track,
             episode_dir=self.episode,
-            runtime=self.runtime,
+            research_worker=self.worker,
+            evaluation_worker=self.worker,
             comparison_key=comparison_key,
             challenge_release=challenge_release,
             monotonic=self.clock,
@@ -180,6 +223,24 @@ class SupervisorTests(unittest.TestCase):
         self.assertTrue(supervisor.state["policy_compliant"])
         self.assertEqual(supervisor.state["policy_violations"], [])
         self.assertEqual(
+            supervisor.state["workers"]["research"]["worker_id"],
+            "test-worker",
+        )
+        self.assertEqual(
+            supervisor.state["workers"]["evaluation"]["worker_id"],
+            "test-worker",
+        )
+        self.assertTrue(
+            supervisor.state["workers"]["research"]["assessment"][
+                "capabilities_satisfied"
+            ]
+        )
+        self.assertFalse(
+            supervisor.state["workers"]["research"]["assessment"][
+                "leaderboard_eligible"
+            ]
+        )
+        self.assertEqual(
             supervisor.state["evaluation_system"]["backend"],
             "isolated_candidate",
         )
@@ -205,6 +266,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(public_task["policy"]["violations"], [])
         lease = supervisor.start_lease()
         self.assertEqual(lease["lease_id"], "lease-0001")
+        self.assertNotIn("container_name", supervisor.state["active_lease"])
         command = supervisor.exec_lease(["python", "train.py"])
         self.assertEqual(command["exit_code"], 0)
         committed = supervisor.commit_lease("/output/candidate")
@@ -226,7 +288,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(final["status"], "finalized")
         self.assertEqual(final["test_nll"], 1.5)
         self.assertTrue(final["agent_finish_observed"])
-        self.assertEqual(self.runtime.evaluations, ["val", "test"])
+        self.assertEqual(self.worker.evaluations, ["val", "test"])
         with self.assertRaises(ProtocolError):
             supervisor.start_lease()
 
@@ -249,13 +311,33 @@ class SupervisorTests(unittest.TestCase):
 
     def test_infrastructure_failure_does_not_consume_lease(self):
         supervisor = self.supervisor()
-        self.runtime.fail_start = True
+        self.worker.fail_start = True
         with self.assertRaises(ProtocolError) as caught:
             supervisor.start_lease()
         self.assertEqual(caught.exception.code, "infrastructure_failure")
         self.assertEqual(supervisor.state["leases_used"], 0)
         supervisor.start_lease()
         self.assertEqual(supervisor.state["leases_used"], 1)
+
+    def test_evaluation_worker_capability_failure_is_role_scoped(self):
+        self.worker.capability_overrides[HIDDEN_DATASET_ISOLATION] = Capability(
+            EnforcementLevel.BEST_EFFORT
+        )
+        supervisor = self.supervisor()
+        self.assertTrue(
+            supervisor.state["workers"]["research"]["assessment"][
+                "capabilities_satisfied"
+            ]
+        )
+        self.assertFalse(
+            supervisor.state["workers"]["evaluation"]["assessment"][
+                "capabilities_satisfied"
+            ]
+        )
+        self.assertIn(
+            "evaluation_worker_capability_insufficient:hidden_dataset_isolation",
+            supervisor.state["policy_violations"],
+        )
 
     def test_commit_accepts_only_stopped_lease_output(self):
         supervisor = self.supervisor()
@@ -307,7 +389,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(timing["official_elapsed_seconds"], 3.0)
         self.assertEqual(timing["training_lease_seconds"], 3.0)
         self.assertEqual(timing["validation_evaluation_seconds"], 0.0)
-        self.assertEqual(timing["agent_and_runtime_seconds"], 0.0)
+        self.assertEqual(timing["agent_and_worker_seconds"], 0.0)
         self.assertEqual(timing["unused_budget_seconds"], 97.0)
 
     def test_track_a_deadline_revokes_lease_and_closes_episode(self):
@@ -319,7 +401,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(supervisor.state["status"], "finalized")
         self.assertEqual(supervisor.state["elapsed_seconds"], 5.0)
         self.assertIsNone(supervisor.state["active_lease"])
-        self.assertFalse(self.runtime.running)
+        self.assertFalse(self.worker.running)
 
     def test_track_a_val_uses_remaining_time_and_discards_late_result(self):
         config = replace(
@@ -330,11 +412,11 @@ class SupervisorTests(unittest.TestCase):
         supervisor = self.supervisor(track="A", config=config)
         supervisor.start_lease(4)
         self.clock.advance(4)
-        self.runtime.evaluation_hook = lambda timeout: self.clock.advance(2)
+        self.worker.evaluation_hook = lambda timeout: self.clock.advance(2)
 
         committed = supervisor.commit_lease("/output/candidate")
 
-        self.assertEqual(self.runtime.evaluation_timeouts[0], 1.0)
+        self.assertEqual(self.worker.evaluation_timeouts[0], 1.0)
         self.assertIsNone(committed["val_nll"])
         self.assertEqual(committed["evaluation_error"], "track_a_deadline")
         self.assertEqual(supervisor.state["status"], "finalized")
@@ -347,7 +429,7 @@ class SupervisorTests(unittest.TestCase):
 
     def test_validation_failures_expose_only_a_fixed_error_code(self):
         supervisor = self.supervisor()
-        self.runtime.evaluation_failure = "hidden input_ids: [0, 1, 2]"
+        self.worker.evaluation_failure = "hidden input_ids: [0, 1, 2]"
         supervisor.start_lease()
 
         committed = supervisor.commit_lease("/output/candidate")
@@ -361,7 +443,7 @@ class SupervisorTests(unittest.TestCase):
     def test_track_a_deadline_uses_only_agent_declared_incumbent(self):
         config = replace(self.config, track_a_total_seconds=100)
         supervisor = self.supervisor(track="A", config=config)
-        self.runtime.val_nlls = [1.0, 2.0]
+        self.worker.val_nlls = [1.0, 2.0]
 
         with self.assertRaises(ProtocolError) as unknown:
             supervisor.declare_incumbent("sha256:missing")

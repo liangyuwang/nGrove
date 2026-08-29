@@ -16,7 +16,19 @@ from typing import Any, Callable, Dict, Optional
 
 from .config import AgentConfig, TaskConfig, TrainingResources
 from .inference import summarize_inference_trace
-from .runtime import ExecResult, RuntimeFailure
+from .worker_protocol import (
+    EVALUATION_REQUIREMENTS,
+    GPU_DEVICE_ISOLATION,
+    RESEARCH_REQUIREMENTS,
+    CapabilityRequirement,
+    CommandResult,
+    EvaluationWorker,
+    EnforcementLevel,
+    LeaseState,
+    ResearchWorker,
+    WorkerFailure,
+    assess_worker,
+)
 
 
 class ProtocolError(RuntimeError):
@@ -78,7 +90,7 @@ def _write_untrusted_response(directory: Path, request_id: str, response: Dict[s
 
 
 class Supervisor:
-    """Own timers, lease counters, container lifecycle, and evaluator access."""
+    """Own benchmark state while delegating enforcement to a semantic Worker."""
 
     def __init__(
         self,
@@ -88,8 +100,10 @@ class Supervisor:
         resources: TrainingResources,
         track: str,
         episode_dir: Path,
-        runtime: Any,
-        runtime_environment: Optional[Dict[str, Any]] = None,
+        research_worker: ResearchWorker,
+        evaluation_worker: EvaluationWorker,
+        research_worker_environment: Optional[Dict[str, Any]] = None,
+        evaluation_worker_environment: Optional[Dict[str, Any]] = None,
         comparison_key: Optional[Dict[str, str]] = None,
         challenge_release: Optional[Dict[str, Any]] = None,
         monotonic: Callable[[], float] = time.monotonic,
@@ -103,7 +117,8 @@ class Supervisor:
         self.resources = resources.validate_for(config)
         self.track = normalized
         self.episode_dir = episode_dir.resolve()
-        self.runtime = runtime
+        self.research_worker = research_worker
+        self.evaluation_worker = evaluation_worker
         self.monotonic = monotonic
         self.wall_time = wall_time
         self.lock = threading.RLock()
@@ -140,13 +155,53 @@ class Supervisor:
         if self.state_path.exists() or self.events_path.exists():
             raise ValueError(f"episode directory already contains state: {self.episode_dir}")
 
+        research_descriptor = research_worker.describe_capabilities()
+        evaluation_descriptor = evaluation_worker.describe_capabilities()
+        research_requirements = list(RESEARCH_REQUIREMENTS)
+        evaluation_requirements = list(EVALUATION_REQUIREMENTS)
+        if resources.nvidia_gpu_count:
+            research_requirements.append(
+                CapabilityRequirement(
+                    GPU_DEVICE_ISOLATION, EnforcementLevel.ENFORCED
+                )
+            )
+        if config.evaluator_device == "cuda":
+            evaluation_requirements.append(
+                CapabilityRequirement(
+                    GPU_DEVICE_ISOLATION, EnforcementLevel.ENFORCED
+                )
+            )
+        research_assessment = assess_worker(
+            research_descriptor, research_requirements
+        )
+        evaluation_assessment = assess_worker(
+            evaluation_descriptor, evaluation_requirements
+        )
+
         policy_violations = []
         if not agent.policy_compliant:
             policy_violations.append("agent_execution_boundary")
         if not config.evaluator_policy_compliant:
             policy_violations.append("candidate_evaluator_isolation")
+        for role, assessment in (
+            ("research", research_assessment),
+            ("evaluation", evaluation_assessment),
+        ):
+            for capability in assessment.missing:
+                policy_violations.append(
+                    f"{role}_worker_capability_missing:{capability}"
+                )
+            for capability in assessment.insufficient:
+                policy_violations.append(
+                    f"{role}_worker_capability_insufficient:{capability}"
+                )
         policy_compliant = not policy_violations
-        leaderboard_eligible = config.leaderboard_eligible and policy_compliant
+        leaderboard_eligible = (
+            config.leaderboard_eligible
+            and policy_compliant
+            and research_assessment.leaderboard_eligible
+            and evaluation_assessment.leaderboard_eligible
+        )
         if challenge_release is not None:
             leaderboard_eligible = leaderboard_eligible and bool(
                 challenge_release.get("leaderboard_eligible", False)
@@ -165,6 +220,18 @@ class Supervisor:
             ),
             "policy_compliant": policy_compliant,
             "policy_violations": policy_violations,
+            "workers": {
+                "research": {
+                    **research_descriptor.public_manifest(),
+                    "assessment": research_assessment.public_manifest(),
+                    "environment": dict(research_worker_environment or {}),
+                },
+                "evaluation": {
+                    **evaluation_descriptor.public_manifest(),
+                    "assessment": evaluation_assessment.public_manifest(),
+                    "environment": dict(evaluation_worker_environment or {}),
+                },
+            },
             "agent_system": {
                 "runner": agent.runner,
                 "image": agent.image if agent.runner == "container" else None,
@@ -194,10 +261,12 @@ class Supervisor:
                 "backend": config.evaluator_backend,
                 "image": config.evaluator_image,
                 "candidate_image": config.candidate_image,
-                "boundary": "isolated_candidate_container",
-                "policy_compliant": config.evaluator_policy_compliant,
+                "boundary": "candidate_evaluator_channel",
+                "policy_compliant": (
+                    config.evaluator_policy_compliant
+                    and evaluation_assessment.satisfied
+                ),
             },
-            "runtime_environment": dict(runtime_environment or {}),
             "status": "created",
             "started_at": None,
             "elapsed_seconds": 0.0,
@@ -310,7 +379,7 @@ class Supervisor:
             "official_elapsed_seconds": round(elapsed, 6),
             "training_lease_seconds": round(lease_seconds, 6),
             "validation_evaluation_seconds": round(validation_seconds, 6),
-            "agent_and_runtime_seconds": round(
+            "agent_and_worker_seconds": round(
                 max(0.0, elapsed - lease_seconds - validation_seconds), 6
             ),
             "test_evaluation_seconds": round(
@@ -377,7 +446,7 @@ class Supervisor:
                 "policy_violations": list(self.state["policy_violations"]),
                 "evaluator_backend": self.config.evaluator_backend,
                 "evaluator_policy_compliant": (
-                    self.config.evaluator_policy_compliant
+                    self.state["evaluation_system"]["policy_compliant"]
                 ),
                 "inference_enabled": self.agent.inference is not None,
                 "inference_usage": dict(self.state["inference_usage"]),
@@ -472,20 +541,19 @@ class Supervisor:
 
             serial = self.state["lease_serial"] + 1
             lease_id = f"lease-{serial:04d}"
-            container_name = (
-                f"atb-{self.state['episode_id'][:12]}-{serial:04d}"
-            ).lower()
             lease_dir = self.runs_dir / lease_id
             lease_dir.mkdir(parents=True, exist_ok=False)
             try:
-                self.runtime.start_training(
-                    name=container_name,
+                self.research_worker.start_lease(
+                    episode_id=self.state["episode_id"],
+                    lease_id=lease_id,
+                    duration_seconds=duration,
                     config=self.config,
                     workspace=self.agent.workspace,
                     resources=self.resources,
                     lease_dir=lease_dir,
                 )
-            except RuntimeFailure as exc:
+            except WorkerFailure as exc:
                 shutil.rmtree(lease_dir, ignore_errors=True)
                 self._event("LEASE_INFRA_FAILURE", message=str(exc))
                 self._save_state()
@@ -496,7 +564,6 @@ class Supervisor:
             self.state["leases_used"] += 1
             self.state["active_lease"] = {
                 "lease_id": lease_id,
-                "container_name": container_name,
                 "started_monotonic": started,
                 "deadline_monotonic": started + duration,
                 "duration_seconds": duration,
@@ -540,8 +607,9 @@ class Supervisor:
                     )
                 remaining = min(remaining, float(command_timeout_seconds))
 
-            result: ExecResult = self.runtime.exec_training(
-                name=active["container_name"],
+            result: CommandResult = self.research_worker.exec_lease(
+                episode_id=self.state["episode_id"],
+                lease_id=active["lease_id"],
                 argv=argv,
                 timeout_seconds=remaining,
             )
@@ -565,11 +633,13 @@ class Supervisor:
                 timed_out=result.timed_out,
             )
             lease_active = True
-            if result.timed_out or not self.runtime.container_running(
-                active["container_name"]
-            ):
+            lease_state = self.research_worker.lease_state(
+                episode_id=self.state["episode_id"],
+                lease_id=active["lease_id"],
+            )
+            if result.timed_out or lease_state != LeaseState.RUNNING:
                 self._end_active_lease(
-                    "timeout" if result.timed_out else "container_exited"
+                    "timeout" if result.timed_out else "worker_lease_stopped"
                 )
                 lease_active = False
             self._save_state()
@@ -602,8 +672,11 @@ class Supervisor:
             active["duration_seconds"],
             max(0.0, ended - active["started_monotonic"]),
         )
-        self.runtime.stop_container(active["container_name"])
         lease_id = active["lease_id"]
+        self.research_worker.terminate_lease(
+            episode_id=self.state["episode_id"],
+            lease_id=lease_id,
+        )
         self.state["timing"]["training_lease_seconds"] += used_seconds
         self.state["active_lease"] = None
         self.state["last_lease_id"] = lease_id
@@ -762,8 +835,9 @@ class Supervisor:
                     else:
                         timeout_seconds = min(timeout_seconds, remaining)
                 if deadline_reached:
-                    raise RuntimeFailure("evaluation deadline reached")
-                val_nll = self.runtime.run_evaluator(
+                    raise WorkerFailure("evaluation deadline reached")
+                val_nll = self.evaluation_worker.evaluate_candidate(
+                    episode_id=self.state["episode_id"],
                     config=self.config,
                     resources=self.resources,
                     candidate_dir=snapshot["path"],
@@ -781,7 +855,7 @@ class Supervisor:
                         candidate_id=candidate_id,
                         nll=val_nll,
                     )
-            except RuntimeFailure:
+            except WorkerFailure:
                 deadline_reached = (
                     self.track == "A" and self._track_a_remaining() <= 0
                 )
@@ -928,7 +1002,8 @@ class Supervisor:
         evaluation_started = self.monotonic()
         test_nll: Optional[float] = None
         try:
-            test_nll = self.runtime.run_evaluator(
+            test_nll = self.evaluation_worker.evaluate_candidate(
+                episode_id=self.state["episode_id"],
                 config=self.config,
                 resources=self.resources,
                 candidate_dir=candidate_dir,
@@ -936,7 +1011,7 @@ class Supervisor:
                 output_dir=self.evaluations_dir / digest,
                 timeout_seconds=float(self.config.evaluator_timeout_seconds),
             )
-        except RuntimeFailure:
+        except WorkerFailure:
             self.state["failure"] = "test_evaluation_failed"
             self._event(
                 "TEST_EVALUATION_FAILED",

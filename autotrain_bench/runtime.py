@@ -14,24 +14,34 @@ import shutil
 import subprocess
 import time
 import uuid
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from .config import AgentConfig, TaskConfig, TrainingResources
 from .host_agent import HostAgentProcess, start_host_agent_process
+from .worker_protocol import (
+    CANDIDATE_EVALUATOR_CHANNEL_ISOLATION,
+    DEADLINE_TERMINATION,
+    GPU_DEVICE_ISOLATION,
+    HIDDEN_DATASET_ISOLATION,
+    IMMUTABLE_CANDIDATE_ARTIFACT,
+    IMMUTABLE_WORKLOAD_IDENTITY,
+    TRAINING_DATA_READ_ONLY,
+    TRAINING_NETWORK_ISOLATION,
+    Capability,
+    CommandResult,
+    EnforcementLevel,
+    LeaseState,
+    TrustLevel,
+    WorkerDescriptor,
+    WorkerFailure,
+)
 
 
-class RuntimeFailure(RuntimeError):
-    """A trusted runtime operation failed."""
-
-
-@dataclass(frozen=True)
-class ExecResult:
-    exit_code: int
-    stdout: str
-    stderr: str
-    timed_out: bool = False
+# Compatibility names for callers of the v0 local reference runtime.  New core
+# code depends on the platform-neutral names in worker_protocol instead.
+RuntimeFailure = WorkerFailure
+ExecResult = CommandResult
 
 
 class DockerRuntime:
@@ -45,6 +55,44 @@ class DockerRuntime:
     ) -> None:
         self.docker = docker_binary or shutil.which("docker") or ""
         self.monotonic = monotonic or time.monotonic
+        self._worker_leases: Dict[tuple, str] = {}
+
+    def describe_capabilities(self) -> WorkerDescriptor:
+        """Describe the bundled development Worker without certifying its host."""
+
+        enforced = EnforcementLevel.ENFORCED
+        return WorkerDescriptor(
+            worker_id="local-reference-docker",
+            trust_level=TrustLevel.DEVELOPMENT,
+            roles=("research", "evaluation", "agent"),
+            capabilities={
+                IMMUTABLE_WORKLOAD_IDENTITY: Capability(
+                    enforced, "immutable image reference"
+                ),
+                GPU_DEVICE_ISOLATION: Capability(
+                    enforced, "explicit device grant"
+                ),
+                TRAINING_DATA_READ_ONLY: Capability(
+                    enforced, "read-only task data mount"
+                ),
+                TRAINING_NETWORK_ISOLATION: Capability(
+                    enforced, "training network disabled"
+                ),
+                HIDDEN_DATASET_ISOLATION: Capability(
+                    enforced, "separate candidate and evaluator workloads"
+                ),
+                CANDIDATE_EVALUATOR_CHANNEL_ISOLATION: Capability(
+                    enforced, "episode-private evaluation channel"
+                ),
+                DEADLINE_TERMINATION: Capability(
+                    EnforcementLevel.BEST_EFFORT,
+                    "Coordinator-process deadline guard",
+                ),
+                IMMUTABLE_CANDIDATE_ARTIFACT: Capability(
+                    enforced, "content-addressed candidate snapshot"
+                ),
+            },
+        )
 
     def _require_docker(self) -> None:
         if not self.docker:
@@ -572,6 +620,40 @@ class DockerRuntime:
         args.extend([config.training_image, "sleep", "infinity"])
         self._run(args)
 
+    @staticmethod
+    def _worker_lease_key(episode_id: str, lease_id: str) -> tuple:
+        return (episode_id, lease_id)
+
+    def start_lease(
+        self,
+        *,
+        episode_id: str,
+        lease_id: str,
+        duration_seconds: float,
+        config: TaskConfig,
+        workspace: Path,
+        resources: TrainingResources,
+        lease_dir: Path,
+    ) -> None:
+        """Map the semantic lease operation to the local reference runtime."""
+
+        del duration_seconds
+        key = self._worker_lease_key(episode_id, lease_id)
+        if key in self._worker_leases:
+            raise RuntimeFailure(f"lease already exists: {lease_id}")
+        runtime_id = uuid.uuid5(
+            uuid.NAMESPACE_URL, f"{episode_id}:{lease_id}"
+        ).hex[:12]
+        name = f"atb-lease-{runtime_id}"
+        self.start_training(
+            name=name,
+            config=config,
+            workspace=workspace,
+            resources=resources,
+            lease_dir=lease_dir,
+        )
+        self._worker_leases[key] = name
+
     def exec_training(
         self,
         *,
@@ -599,11 +681,43 @@ class DockerRuntime:
             )
         return ExecResult(result.returncode, result.stdout, result.stderr)
 
+    def _worker_lease_name(self, episode_id: str, lease_id: str) -> str:
+        try:
+            return self._worker_leases[
+                self._worker_lease_key(episode_id, lease_id)
+            ]
+        except KeyError as exc:
+            raise RuntimeFailure(f"unknown lease: {lease_id}") from exc
+
+    def exec_lease(
+        self,
+        *,
+        episode_id: str,
+        lease_id: str,
+        argv: Sequence[str],
+        timeout_seconds: float,
+    ) -> CommandResult:
+        return self.exec_training(
+            name=self._worker_lease_name(episode_id, lease_id),
+            argv=argv,
+            timeout_seconds=timeout_seconds,
+        )
+
     def container_running(self, name: str) -> bool:
         result = self._run(
             ["inspect", "--format", "{{.State.Running}}", name], check=False
         )
         return result.returncode == 0 and result.stdout.strip() == "true"
+
+    def lease_state(self, *, episode_id: str, lease_id: str) -> LeaseState:
+        name = self._worker_leases.get(
+            self._worker_lease_key(episode_id, lease_id)
+        )
+        if name is None:
+            return LeaseState.STOPPED
+        if self.container_running(name):
+            return LeaseState.RUNNING
+        return LeaseState.STOPPED
 
     def container_logs(
         self, name: str, *, timeout_seconds: Optional[float] = None
@@ -618,6 +732,12 @@ class DockerRuntime:
         if not name:
             return
         self._run(["rm", "--force", name], check=False)
+
+    def terminate_lease(self, *, episode_id: str, lease_id: str) -> None:
+        key = self._worker_lease_key(episode_id, lease_id)
+        name = self._worker_leases.pop(key, None)
+        if name is not None:
+            self.stop_container(name)
 
     def run_evaluator(
         self,
@@ -810,3 +930,26 @@ class DockerRuntime:
         ) as exc:
             raise RuntimeFailure("evaluator did not produce a valid NLL result") from exc
         return loss
+
+    def evaluate_candidate(
+        self,
+        *,
+        episode_id: str,
+        config: TaskConfig,
+        resources: TrainingResources,
+        candidate_dir: Path,
+        split: str,
+        output_dir: Path,
+        timeout_seconds: Optional[float] = None,
+    ) -> float:
+        """Map the semantic evaluation operation to the reference runtime."""
+
+        del episode_id
+        return self.run_evaluator(
+            config=config,
+            resources=resources,
+            candidate_dir=candidate_dir,
+            split=split,
+            output_dir=output_dir,
+            timeout_seconds=timeout_seconds,
+        )

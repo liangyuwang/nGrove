@@ -48,8 +48,9 @@ The reference configuration requires Docker, not an NVIDIA GPU or a particular
 accelerator. Its trusted evaluation path runs on CPU. A participant may train
 with any approach supported by the allocated Training Environment and must
 export a Candidate that satisfies the public ABI. Concrete runtime provenance
-belongs to the episode result; it does not change whether the isolation policy
-is compliant.
+and Worker capability evidence belong to the episode result. A development
+deployment cannot become leaderboard eligible merely by reporting the expected
+hardware.
 
 Training resources are selected when the episode starts, never by `task.json`.
 The default exposes CPU only. For example, a user with an NVIDIA runtime can add
@@ -74,7 +75,7 @@ and writes ignored generated artifacts under `dev_tasks/smoke_lm/data/`.
 
 ## Run an Agent integration
 
-A compliant participant is supplied explicitly as a sandboxed Agent Container.
+A sandboxed participant is supplied explicitly as an Agent Container.
 The image contains the Agent executable, while the writable episode workspace
 starts empty:
 
@@ -125,8 +126,9 @@ autotrain-bench start \
 The `host_cli` run reports `policy_compliant: false` because a host process can
 access files and networking outside the enforced episode boundary. The
 Candidate/Evaluator boundary remains isolated. A sandboxed participant
-container exercises the policy-compliant v0 path, but neither mode turns this
-development task into a formal benchmark result.
+container exercises the strongest local v0 path, but the bundled Worker is a
+Development deployment and its deadline guard shares the Coordinator process.
+It therefore cannot produce a formal leaderboard result.
 
 ## Candidate artifact contract
 
