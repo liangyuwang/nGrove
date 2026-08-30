@@ -158,6 +158,9 @@ def load(candidate_dir, device): ...
 def next_token_logits(model, input_ids): ...  # [batch, vocabulary]
 ```
 
+Every logit must be a finite numeric value. Booleans and numeric strings are
+not part of the Candidate ABI and are rejected.
+
 During VAL/TEST, a fresh internal Docker network connects two short-lived
 containers:
 

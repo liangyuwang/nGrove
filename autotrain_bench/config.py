@@ -353,6 +353,58 @@ class TrainingResources:
 
 
 @dataclass(frozen=True)
+class LeaderboardMetricConfig:
+    """Primary score frozen into the immutable task definition."""
+
+    name: str
+    field: str
+    derived_from: str
+    formula: str
+    direction: str
+
+    @classmethod
+    def load(
+        cls,
+        value: Any,
+        field: str = "evaluation.leaderboard_metric",
+    ) -> "LeaderboardMetricConfig":
+        raw = _mapping(value, field)
+        return cls(
+            name=_string(raw.get("name"), f"{field}.name"),
+            field=_string(raw.get("field"), f"{field}.field"),
+            derived_from=_string(
+                raw.get("derived_from"), f"{field}.derived_from"
+            ),
+            formula=_string(raw.get("formula"), f"{field}.formula"),
+            direction=_string(raw.get("direction"), f"{field}.direction"),
+        ).validate()
+
+    def validate(self) -> "LeaderboardMetricConfig":
+        expected = {
+            "name": "perplexity",
+            "field": "test_perplexity",
+            "derived_from": "autoregressive_nll",
+            "formula": "exp(mean_token_nll)",
+            "direction": "minimize",
+        }
+        if self.public_manifest() != expected:
+            raise ConfigError(
+                "v0 requires evaluation.leaderboard_metric to declare "
+                "test_perplexity = exp(mean_token_nll), minimized"
+            )
+        return self
+
+    def public_manifest(self) -> Dict[str, str]:
+        return {
+            "name": self.name,
+            "field": self.field,
+            "derived_from": self.derived_from,
+            "formula": self.formula,
+            "direction": self.direction,
+        }
+
+
+@dataclass(frozen=True)
 class TaskConfig:
     """Fully resolved benchmark task configuration.
 
@@ -373,6 +425,7 @@ class TaskConfig:
     evaluator_image: str
     inference_gateway_image: str
     metric: str
+    leaderboard_metric: LeaderboardMetricConfig
     vocab_size: int
     context_length: int
     track_a_total_seconds: int
@@ -458,6 +511,9 @@ class TaskConfig:
                 "images.inference_gateway",
             ),
             metric=_string(evaluation.get("metric"), "evaluation.metric"),
+            leaderboard_metric=LeaderboardMetricConfig.load(
+                evaluation.get("leaderboard_metric")
+            ),
             vocab_size=_positive_int(
                 evaluation.get("vocab_size"), "evaluation.vocab_size"
             ),
@@ -508,6 +564,12 @@ class TaskConfig:
             )
         if self.metric != "autoregressive_nll":
             raise ConfigError("v0 only implements evaluation.metric='autoregressive_nll'")
+        self.leaderboard_metric.validate()
+        if self.leaderboard_metric.derived_from != self.metric:
+            raise ConfigError(
+                "evaluation.leaderboard_metric.derived_from must match "
+                "evaluation.metric"
+            )
         if self.evaluator_device not in {"cpu", "cuda"}:
             raise ConfigError("evaluation.device must be 'cpu' or 'cuda'")
         evaluator_backend(self.evaluator_backend)
@@ -566,13 +628,7 @@ class TaskConfig:
                 "backend": self.evaluator_backend,
                 "candidate_image": self.candidate_image,
                 "metric": self.metric,
-                "leaderboard_metric": {
-                    "name": "perplexity",
-                    "field": "test_perplexity",
-                    "derived_from": "autoregressive_nll",
-                    "formula": "exp(mean_token_nll)",
-                    "direction": "minimize",
-                },
+                "leaderboard_metric": self.leaderboard_metric.public_manifest(),
                 "vocab_size": self.vocab_size,
                 "context_length": self.context_length,
                 "batch_size": self.evaluator_batch_size,

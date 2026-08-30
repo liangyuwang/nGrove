@@ -6,6 +6,7 @@ import importlib.util
 import math
 import sys
 import uuid
+from numbers import Real
 from pathlib import Path
 from typing import Any, List, Sequence, Tuple
 
@@ -91,9 +92,11 @@ def normalized_logits(
             raise CandidateProtocolError(
                 "candidate returned the wrong vocabulary dimension"
             )
+        if any(isinstance(item, bool) or not isinstance(item, Real) for item in row):
+            raise CandidateProtocolError("candidate logits must be numeric")
         try:
             normalized = [float(item) for item in row]
-        except (TypeError, ValueError) as exc:
+        except (OverflowError, TypeError, ValueError) as exc:
             raise CandidateProtocolError("candidate logits must be numeric") from exc
         if not all(math.isfinite(item) for item in normalized):
             raise CandidateProtocolError("candidate logits must be finite")

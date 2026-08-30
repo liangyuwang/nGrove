@@ -17,6 +17,13 @@
     "backend": "isolated_candidate",
     "entrypoint": "evaluator/evaluator.py",
     "metric": "autoregressive_nll",
+    "leaderboard_metric": {
+      "name": "perplexity",
+      "field": "test_perplexity",
+      "derived_from": "autoregressive_nll",
+      "formula": "exp(mean_token_nll)",
+      "direction": "minimize"
+    },
     "vocab_size": 257,
     "context_length": 128,
     "batch_size": 16,

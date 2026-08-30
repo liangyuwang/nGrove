@@ -8,7 +8,16 @@ from typing import Any, Dict
 
 RESULT_SCHEMA_VERSION = 2
 LEGACY_RESULT_SCHEMA_VERSION = 1
-_TERMINAL_STATUSES = {
+_VALID_STATUSES = {
+    "created",
+    "active",
+    "closed",
+    "dnf",
+    "finalized",
+    "infrastructure_failure",
+}
+_PENDING_OUTCOME_STATUSES = {"created", "active", "closed"}
+_FAILED_OUTCOME_STATUSES = {
     "closed",
     "dnf",
     "finalized",
@@ -61,7 +70,9 @@ def normalize_result_report(payload: Any) -> Dict[str, Any]:
         return result
     if version != LEGACY_RESULT_SCHEMA_VERSION:
         raise ResultSchemaError(f"unsupported result schema version: {version}")
-    return _migrate_legacy_result(payload)
+    result = _migrate_legacy_result(payload)
+    _validate_current_result(result)
+    return result
 
 
 def _migrate_legacy_result(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -73,7 +84,11 @@ def _migrate_legacy_result(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     status = result.get("status")
     candidate_id = result.get("final_candidate_id")
-    if status == "finalized" and isinstance(candidate_id, str) and candidate_id:
+    if (
+        status == "finalized"
+        and isinstance(candidate_id, str)
+        and candidate_id.strip()
+    ):
         try:
             nll = validated_nll(result.get("test_nll"))
         except ValueError:
@@ -88,9 +103,9 @@ def _migrate_legacy_result(payload: Dict[str, Any]) -> Dict[str, Any]:
             result["test_perplexity"] = perplexity
             return result
 
-    if status in _TERMINAL_STATUSES:
+    if status in _FAILED_OUTCOME_STATUSES:
         failure = result.get("failure")
-        if not isinstance(failure, str) or not failure:
+        if not isinstance(failure, str) or not failure.strip():
             failure = "no_candidate" if not candidate_id else "legacy_unscored_result"
         return _mark_migrated_failure(result, failure)
 
@@ -108,10 +123,41 @@ def _mark_migrated_failure(result: Dict[str, Any], failure: str) -> Dict[str, An
 
 
 def _validate_current_result(result: Dict[str, Any]) -> None:
+    status = result.get("status")
+    if status not in _VALID_STATUSES:
+        raise ResultSchemaError(f"invalid result status: {status!r}")
+    candidate_id = result.get("final_candidate_id")
+    if candidate_id is not None and (
+        not isinstance(candidate_id, str) or not candidate_id.strip()
+    ):
+        raise ResultSchemaError("final_candidate_id must be null or a string")
+
     outcome = result.get("outcome")
     if outcome not in {None, "success", "failed"}:
         raise ResultSchemaError(f"invalid result outcome: {outcome!r}")
-    if outcome == "success":
+    if outcome is None:
+        if status not in _PENDING_OUTCOME_STATUSES:
+            raise ResultSchemaError(
+                f"status {status!r} requires a success or failed outcome"
+            )
+        if (
+            result.get("test_nll") is not None
+            or result.get("test_perplexity") is not None
+        ):
+            raise ResultSchemaError("a pending result may not contain TEST metrics")
+        if result.get("failure") is not None:
+            raise ResultSchemaError("a pending result may not contain a failure")
+        if status in {"created", "active"} and candidate_id is not None:
+            raise ResultSchemaError(
+                f"status {status!r} may not contain a final candidate"
+            )
+    elif outcome == "success":
+        if status != "finalized":
+            raise ResultSchemaError("a successful result must be finalized")
+        if not isinstance(candidate_id, str) or not candidate_id.strip():
+            raise ResultSchemaError(
+                "a successful result must contain a final candidate"
+            )
         try:
             nll = validated_nll(result.get("test_nll"))
             expected_perplexity = perplexity_from_nll(nll)
@@ -123,11 +169,15 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
         if result.get("failure") is not None:
             raise ResultSchemaError("a successful result may not contain a failure")
     elif outcome == "failed":
+        if status not in _FAILED_OUTCOME_STATUSES:
+            raise ResultSchemaError(
+                f"status {status!r} may not contain a failed outcome"
+            )
         if (
             result.get("test_nll") is not None
             or result.get("test_perplexity") is not None
         ):
             raise ResultSchemaError("a failed result may not contain TEST metrics")
         failure = result.get("failure")
-        if not isinstance(failure, str) or not failure:
+        if not isinstance(failure, str) or not failure.strip():
             raise ResultSchemaError("a failed result must contain a failure reason")

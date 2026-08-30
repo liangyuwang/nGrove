@@ -102,9 +102,14 @@ class CandidateClient:
         for row in value:
             if not isinstance(row, list) or len(row) != self.vocab_size:
                 raise EvaluationError("Candidate returned the wrong vocabulary dimension")
+            if any(
+                isinstance(item, bool) or not isinstance(item, (int, float))
+                for item in row
+            ):
+                raise EvaluationError("Candidate logits must be numeric")
             try:
                 normalized = [float(item) for item in row]
-            except (TypeError, ValueError) as exc:
+            except (OverflowError, TypeError, ValueError) as exc:
                 raise EvaluationError("Candidate logits must be numeric") from exc
             if not all(math.isfinite(item) for item in normalized):
                 raise EvaluationError("Candidate logits must be finite")

@@ -112,6 +112,27 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.task_kind, "benchmark_challenge")
             self.assertFalse(config.leaderboard_eligible)
 
+    def test_task_requires_the_supported_leaderboard_metric_contract(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = self._write_task(directory)
+            payload = json.loads(task.read_text(encoding="utf-8"))
+
+            payload["evaluation"].pop("leaderboard_metric")
+            task.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ConfigError, "leaderboard_metric"):
+                TaskConfig.load(task)
+
+            payload["evaluation"]["leaderboard_metric"] = {
+                "name": "nll",
+                "field": "test_nll",
+                "derived_from": "autoregressive_nll",
+                "formula": "mean_token_nll",
+                "direction": "minimize",
+            }
+            task.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ConfigError, "leaderboard_metric"):
+                TaskConfig.load(task)
+
     def test_agent_mode_environment_and_host_runner_are_separate(self):
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)

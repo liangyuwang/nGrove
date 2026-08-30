@@ -4,6 +4,7 @@ import math
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from autotrain_bench.candidate_protocol import (
     CandidateProtocolError,
@@ -102,6 +103,54 @@ class IsolatedEvaluatorTests(unittest.TestCase):
 
         with self.assertRaises(CandidateProtocolError):
             normalized_logits(Candidate, None, [[0], [1, 2]], vocab_size=3)
+
+    def test_candidate_abi_rejects_boolean_and_string_logits(self):
+        for raw_logit in (True, "1.0"):
+            with self.subTest(raw_logit=raw_logit):
+                class Candidate:
+                    @staticmethod
+                    def next_token_logits(model, input_ids):
+                        del model
+                        return [[raw_logit, 0.0, 0.0] for _ in input_ids]
+
+                with self.assertRaisesRegex(
+                    CandidateProtocolError, "logits must be numeric"
+                ):
+                    normalized_logits(Candidate, None, [[0]], vocab_size=3)
+
+    def test_evaluator_client_rejects_boolean_and_string_json_logits(self):
+        client = MODULE.CandidateClient.__new__(MODULE.CandidateClient)
+        client.base_url = "http://candidate"
+        client.vocab_size = 2
+        client.timeout_seconds = 1
+
+        class Response:
+            def __init__(self, encoded):
+                self.encoded = encoded
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                del exc_type, exc, traceback
+
+            def read(self, maximum_bytes):
+                return self.encoded[:maximum_bytes]
+
+        for raw_logit in (True, "1.0"):
+            with self.subTest(raw_logit=raw_logit):
+                encoded = json.dumps(
+                    {"logits": [[raw_logit, 0.0]]}
+                ).encode("utf-8")
+                with patch.object(
+                    MODULE.urllib.request,
+                    "urlopen",
+                    return_value=Response(encoded),
+                ):
+                    with self.assertRaisesRegex(
+                        MODULE.EvaluationError, "logits must be numeric"
+                    ):
+                        client.predict([[0]])
 
 
 if __name__ == "__main__":

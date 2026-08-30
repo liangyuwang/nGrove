@@ -1,7 +1,12 @@
 import math
 import unittest
 
-from autotrain_bench.results import perplexity_from_nll, validated_nll
+from autotrain_bench.results import (
+    ResultSchemaError,
+    normalize_result_report,
+    perplexity_from_nll,
+    validated_nll,
+)
 
 
 class ResultMetricTests(unittest.TestCase):
@@ -15,6 +20,69 @@ class ResultMetricTests(unittest.TestCase):
     def test_perplexity_is_derived_from_mean_nll(self):
         self.assertEqual(validated_nll(0), 0.0)
         self.assertAlmostEqual(perplexity_from_nll(1.5), math.exp(1.5))
+
+    def test_current_result_schema_rejects_inconsistent_states(self):
+        invalid = {
+            "terminal_without_outcome": {
+                "status": "finalized",
+                "outcome": None,
+                "test_nll": None,
+                "test_perplexity": None,
+                "failure": None,
+            },
+            "success_without_candidate": {
+                "status": "finalized",
+                "outcome": "success",
+                "final_candidate_id": None,
+                "test_nll": 0.0,
+                "test_perplexity": 1.0,
+                "failure": None,
+            },
+            "active_failure": {
+                "status": "active",
+                "outcome": "failed",
+                "test_nll": None,
+                "test_perplexity": None,
+                "failure": "unexpected",
+            },
+            "pending_with_metrics": {
+                "status": "active",
+                "outcome": None,
+                "test_nll": 0.0,
+                "test_perplexity": 1.0,
+                "failure": None,
+            },
+        }
+        for name, payload in invalid.items():
+            payload["result_schema_version"] = 2
+            with self.subTest(name=name):
+                with self.assertRaises(ResultSchemaError):
+                    normalize_result_report(payload)
+
+    def test_current_result_schema_accepts_test_in_progress(self):
+        report = normalize_result_report(
+            {
+                "result_schema_version": 2,
+                "status": "closed",
+                "outcome": None,
+                "final_candidate_id": "sha256:candidate",
+                "test_nll": None,
+                "test_perplexity": None,
+                "failure": None,
+            }
+        )
+        self.assertIsNone(report["outcome"])
+
+    def test_legacy_migration_rejects_an_unknown_status(self):
+        with self.assertRaisesRegex(ResultSchemaError, "invalid result status"):
+            normalize_result_report(
+                {
+                    "status": "unknown",
+                    "final_candidate_id": None,
+                    "test_nll": None,
+                    "failure": None,
+                }
+            )
 
 
 if __name__ == "__main__":

@@ -58,7 +58,7 @@ The AutoTrain system is responsible for building the training system itself.
 The primary objective is simple:
 
 $$
-\boxed{\text{Minimize hidden TEST loss}}
+\boxed{\text{Minimize hidden TEST perplexity}}
 $$
 
 under the resource constraints of the selected benchmark track.
@@ -347,6 +347,13 @@ while an unscored terminal result receives `outcome: "failed"` with both TEST
 metrics left `null`. The persisted historical `state.json` is never rewritten,
 and unknown future result-schema versions are rejected rather than guessed.
 
+In v2, `outcome: "success"` requires a finalized episode, a non-empty final
+Candidate ID, and both consistent TEST metrics. A failed outcome requires a
+failure reason and keeps both TEST metrics `null`. A null outcome is allowed
+only before a result exists (`created`, `active`, or the transient `closed`
+state while post-mortem TEST is running), and may not carry TEST metrics or a
+failure reason.
+
 The example proves the complete protocol:
 
 ```text
@@ -390,10 +397,11 @@ query. The trusted Evaluator mounts only the selected hidden split and output;
 the untrusted Candidate mounts only its content-addressed artifact. The
 Evaluator sends same-length, prefix-free batches over `next_token_logits_v1`
 and validates a bounded `[batch, vocabulary]` response. It scores each response
-before revealing longer prefixes. Candidate failures return only fixed error
-codes to the Agent; raw Candidate logs stay in the trusted episode directory.
-Candidate and Evaluator are destroyed after each query. This backend satisfies
-the v0 reference isolation contract.
+before revealing longer prefixes. Logits must be finite numeric values;
+booleans and numeric strings are rejected. Candidate failures return only fixed
+error codes to the Agent; raw Candidate logs stay in the trusted episode
+directory. Candidate and Evaluator are destroyed after each query. This backend
+satisfies the v0 reference isolation contract.
 
 ---
 
@@ -1469,7 +1477,7 @@ with fixed maximum duration per lease and at most one official VAL query per com
 Reported alongside:
 
 ```text
-TEST loss by lease number
+TEST perplexity by lease number
 agent tokens
 agent reasoning between leases
 training compute
@@ -1545,6 +1553,13 @@ contract as a challenge preview:
     "backend": "isolated_candidate",
     "entrypoint": "evaluator/evaluator.py",
     "metric": "autoregressive_nll",
+    "leaderboard_metric": {
+      "name": "perplexity",
+      "field": "test_perplexity",
+      "derived_from": "autoregressive_nll",
+      "formula": "exp(mean_token_nll)",
+      "direction": "minimize"
+    },
     "vocab_size": 257,
     "context_length": 128,
     "batch_size": 16,
@@ -1597,7 +1612,7 @@ The system should succeed or fail based on its own actions after task reveal.
 
 ### 7. Keep the primary objective simple
 
-The final objective is hidden TEST loss.
+The final objective is hidden TEST perplexity.
 
 ### 8. Record trajectories, not only endpoints
 
@@ -1636,7 +1651,7 @@ and:
 
 AutoTrain-Bench is not a complete measure of general intelligence or general recursive self-improvement.
 
-A high score demonstrates strong autonomous capability within a specific machine-learning research environment.
+A strong result demonstrates autonomous capability within a specific machine-learning research environment.
 
 The benchmark should therefore be understood as an **RSI-oriented empirical testbed**, not as a universal measure of recursive self-improvement.
 
