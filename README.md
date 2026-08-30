@@ -340,6 +340,13 @@ autotrain-bench report \
   --episode /path/to/autotrain-bench-runs/episodes/<episode-id>
 ```
 
+New episode states declare `result_schema_version: 2`. Reporting an older
+unversioned v1 state performs a read-only migration: a completed result with a
+valid TEST NLL receives `outcome: "success"` and a derived `test_perplexity`,
+while an unscored terminal result receives `outcome: "failed"` with both TEST
+metrics left `null`. The persisted historical `state.json` is never rewritten,
+and unknown future result-schema versions are rejected rather than guessed.
+
 The example proves the complete protocol:
 
 ```text
@@ -579,7 +586,9 @@ The AutoTrain system is free to use this result to change anything it controls, 
 
 By default, the benchmark returns an aggregate validation metric rather than arbitrary per-example queries.
 
-The core metric is autoregressive validation negative log-likelihood under the benchmark tokenizer.
+The evaluator's canonical measurement is autoregressive validation negative
+log-likelihood under the benchmark tokenizer. The leaderboard metric is token
+perplexity derived from the aggregate mean NLL.
 
 Exact auxiliary metrics, if any, are defined by the benchmark release.
 
@@ -635,7 +644,8 @@ A benchmark release specifies:
 * evaluation dataset;
 * loss implementation.
 
-The default primary metric is autoregressive token negative log-likelihood:
+The evaluator first computes aggregate autoregressive token negative
+log-likelihood:
 
 $$
 L
@@ -644,6 +654,16 @@ L
 \sum_t
 \log p(x_t \mid x_{<t}).
 $$
+
+The primary leaderboard metric is token perplexity:
+
+$$
+\operatorname{PPL}=\exp(L).
+$$
+
+NLL is retained in every successful result as the canonical additive
+measurement. Perplexity is derived once from the token-weighted mean NLL; the
+benchmark never averages per-sequence or per-batch perplexities.
 
 The internal architecture is unrestricted.
 
@@ -834,7 +854,7 @@ The primary Track A score is:
 
 $$
 \boxed{
-L_{\mathrm{TEST}}(T_{\mathrm{total}})
+\operatorname{PPL}_{\mathrm{TEST}}(T_{\mathrm{total}})
 }
 $$
 
@@ -920,7 +940,7 @@ The primary Track B score is:
 
 $$
 \boxed{
-L_{\mathrm{TEST}}(N_{\mathrm{leases}})
+\operatorname{PPL}_{\mathrm{TEST}}(N_{\mathrm{leases}})
 }
 $$
 
@@ -1065,7 +1085,7 @@ For multi-agent systems, usage is aggregated across the complete AutoTrain syste
 This makes it possible to study:
 
 $$
-L_{\mathrm{TEST}}
+\operatorname{PPL}_{\mathrm{TEST}}
 = f(
 \text{agent tokens},
 \text{research time},
@@ -1177,7 +1197,7 @@ For Track A:
 
 $$
 \boxed{
-L_{\mathrm{TEST}}(t)
+\operatorname{PPL}_{\mathrm{TEST}}(t)
 }
 $$
 
@@ -1185,7 +1205,7 @@ For Track B:
 
 $$
 \boxed{
-L_{\mathrm{TEST}}(n_{\mathrm{leases}})
+\operatorname{PPL}_{\mathrm{TEST}}(n_{\mathrm{leases}})
 }
 $$
 
@@ -1217,7 +1237,7 @@ The second system may be more interesting from an RSI perspective even when the 
 The primary leaderboard metric is:
 
 $$
-\boxed{\text{final hidden TEST NLL}}
+\boxed{\text{final hidden TEST perplexity}}
 $$
 
 under the selected track's resource constraint.
@@ -1233,6 +1253,7 @@ The benchmark should avoid combining many metrics into a complicated scoring for
 The benchmark also records:
 
 * VAL NLL;
+* final TEST NLL;
 * TEST NLL trajectory;
 * final VAL–TEST gap;
 * agent input/output tokens;
@@ -1370,6 +1391,13 @@ Benchmark infrastructure failures are excluded and may be rerun.
 
 The infrastructure-failure policy must be deterministic and auditable.
 
+An episode succeeds only when post-mortem TEST evaluation produces a finite,
+non-negative mean NLL and a finite perplexity derived as `exp(mean_token_nll)`.
+An episode with no declared incumbent, a failed TEST evaluation, an invalid TEST
+metric, or an unrepresentable perplexity is finalized with `outcome: "failed"`;
+both `test_nll` and `test_perplexity` remain `null`. Infrastructure failures are
+also failed episodes, but remain separately classified for retry policy.
+
 ---
 
 # Reproducibility and Logging
@@ -1415,7 +1443,7 @@ AutoTrain-Bench should maintain separate leaderboards for the two tracks.
 Ranked primarily by:
 
 ```text
-final TEST NLL at fixed total wall-clock
+final TEST perplexity at fixed total wall-clock
 ```
 
 Reported alongside:
@@ -1433,7 +1461,7 @@ model size
 Ranked primarily by:
 
 ```text
-final TEST NLL after at most N Training Leases
+final TEST perplexity after at most N Training Leases
 ```
 
 with fixed maximum duration per lease and at most one official VAL query per committed lease.
@@ -1703,10 +1731,11 @@ No frozen benchmark challenge has been released. The `lm-pretrain-v1` preview un
 `challenges/` now defines provisional track configurations, a deliberately
 small set of single-host A100/H100 runtime profiles, the four-field comparison
 key, the initial external-resource policy, a task/evaluator, and a builder that
-retains both raw TRAIN documents and GPT-2 token shards. Generated 10B-scale
-artifacts, organizer-owned hidden splits, final pinned task images, calibrated
-budgets, submission services, and leaderboard infrastructure remain open
-release work. Additional
+retains both raw TRAIN documents and GPT-2 token shards. Full-scale validation
+of participant-side 10B data preparation, including scale receipts and checksum
+manifests, remains open release work alongside organizer-owned hidden splits,
+final pinned task images, calibrated budgets, submission services, and
+leaderboard infrastructure. Additional
 inference-provider adapters and isolation beyond the v0 Docker threat model
 also remain open design work.
 

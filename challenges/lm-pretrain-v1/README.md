@@ -35,6 +35,12 @@ construct a curriculum. Raw public Parquet contains only TRAIN documents; rows
 selected for preview VAL/TEST are not copied into the Agent-visible directory.
 Evaluation always sends and scores GPT-2 vocabulary IDs.
 
+The Evaluator computes token-weighted mean autoregressive NLL and preserves it
+in the episode record. The primary leaderboard-style score is TEST perplexity,
+derived once as `exp(mean_token_nll)`; lower is better. A run without a
+successful finite TEST result has no NLL or perplexity score and is reported as
+a failed experiment.
+
 ## Prepare data
 
 Install the isolated preparation dependencies:

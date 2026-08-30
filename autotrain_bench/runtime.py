@@ -19,6 +19,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from .config import AgentConfig, TaskConfig, TrainingResources
 from .host_agent import HostAgentProcess, start_host_agent_process
+from .results import validated_nll
 from .worker_protocol import (
     CANDIDATE_EVALUATOR_CHANNEL_ISOLATION,
     DEADLINE_TERMINATION,
@@ -934,10 +935,11 @@ class DockerRuntime:
             self.remove_network(network_name)
         try:
             payload = json.loads(result_path.read_text(encoding="utf-8"))
-            loss = float(payload["nll"])
+            loss = validated_nll(payload["nll"])
         except (
             FileNotFoundError,
             KeyError,
+            OverflowError,
             TypeError,
             ValueError,
             json.JSONDecodeError,

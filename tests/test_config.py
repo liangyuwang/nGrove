@@ -51,6 +51,16 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(boundary["network"], "ephemeral_internal_only")
         limits = public["evaluation"]["candidate_artifact_limits"]
         self.assertEqual(limits, {"max_bytes": 1048576, "max_files": 100})
+        self.assertEqual(
+            public["evaluation"]["leaderboard_metric"],
+            {
+                "name": "perplexity",
+                "field": "test_perplexity",
+                "derived_from": "autoregressive_nll",
+                "formula": "exp(mean_token_nll)",
+                "direction": "minimize",
+            },
+        )
 
     def test_task_rejects_participant_owned_fields(self):
         with tempfile.TemporaryDirectory() as directory:

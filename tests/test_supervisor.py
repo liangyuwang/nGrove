@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import shutil
 import tempfile
@@ -54,6 +55,7 @@ class FakeWorker:
         self.evaluation_hook = None
         self.evaluation_failure = None
         self.val_nlls = []
+        self.test_nll = 1.5
         self.capability_overrides = {}
         self.command_result = None
 
@@ -135,7 +137,7 @@ class FakeWorker:
             raise WorkerFailure(self.evaluation_failure)
         if split == "val" and self.val_nlls:
             return self.val_nlls.pop(0)
-        return 1.25 if split == "val" else 1.5
+        return 1.25 if split == "val" else self.test_nll
 
 
 class SupervisorTests(unittest.TestCase):
@@ -289,7 +291,11 @@ class SupervisorTests(unittest.TestCase):
 
         final = supervisor.finish()
         self.assertEqual(final["status"], "finalized")
+        self.assertEqual(final["result_schema_version"], 2)
+        self.assertEqual(final["outcome"], "success")
         self.assertEqual(final["test_nll"], 1.5)
+        self.assertAlmostEqual(final["test_perplexity"], math.exp(1.5))
+        self.assertIsNone(final["failure"])
         self.assertTrue(final["agent_finish_observed"])
         self.assertEqual(self.worker.evaluations, ["val", "test"])
         with self.assertRaises(ProtocolError):
@@ -302,6 +308,61 @@ class SupervisorTests(unittest.TestCase):
         types = [event["type"] for event in events]
         self.assertLess(types.index("VAL_EVALUATED"), types.index("INCUMBENT_DECLARED"))
         self.assertLess(types.index("EPISODE_CLOSED"), types.index("TEST_EVALUATED"))
+
+    def test_finish_without_an_incumbent_is_a_failed_experiment(self):
+        supervisor = self.supervisor()
+
+        final = supervisor.finish()
+
+        self.assertEqual(final["status"], "finalized")
+        self.assertEqual(final["outcome"], "failed")
+        self.assertEqual(final["failure"], "no_candidate")
+        self.assertIsNone(final["test_nll"])
+        self.assertIsNone(final["test_perplexity"])
+        self.assertEqual(self.worker.evaluations, [])
+
+    def test_failed_test_evaluation_has_no_metric(self):
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+        committed = supervisor.commit_lease("/output/candidate")
+        supervisor.declare_incumbent(committed["candidate_id"])
+        self.worker.evaluation_failure = "private evaluator detail"
+
+        final = supervisor.finish()
+
+        self.assertEqual(final["status"], "finalized")
+        self.assertEqual(final["outcome"], "failed")
+        self.assertEqual(final["failure"], "test_evaluation_failed")
+        self.assertIsNone(final["test_nll"])
+        self.assertIsNone(final["test_perplexity"])
+
+    def test_nonfinite_test_nll_is_a_failed_experiment(self):
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+        committed = supervisor.commit_lease("/output/candidate")
+        supervisor.declare_incumbent(committed["candidate_id"])
+        self.worker.test_nll = float("nan")
+
+        final = supervisor.finish()
+
+        self.assertEqual(final["outcome"], "failed")
+        self.assertEqual(final["failure"], "invalid_test_metric")
+        self.assertIsNone(final["test_nll"])
+        self.assertIsNone(final["test_perplexity"])
+
+    def test_perplexity_overflow_is_a_failed_experiment(self):
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+        committed = supervisor.commit_lease("/output/candidate")
+        supervisor.declare_incumbent(committed["candidate_id"])
+        self.worker.test_nll = 710.0
+
+        final = supervisor.finish()
+
+        self.assertEqual(final["outcome"], "failed")
+        self.assertEqual(final["failure"], "perplexity_overflow")
+        self.assertIsNone(final["test_nll"])
+        self.assertIsNone(final["test_perplexity"])
 
     def test_timed_out_command_is_serialized_and_returned_through_mailbox(self):
         supervisor = self.supervisor()
@@ -451,6 +512,8 @@ class SupervisorTests(unittest.TestCase):
         self.clock.advance(6)
         self.assertTrue(supervisor.enforce_deadlines())
         self.assertEqual(supervisor.state["status"], "finalized")
+        self.assertEqual(supervisor.state["outcome"], "failed")
+        self.assertEqual(supervisor.state["failure"], "no_candidate")
         self.assertEqual(supervisor.state["elapsed_seconds"], 5.0)
         self.assertIsNone(supervisor.state["active_lease"])
         self.assertFalse(self.worker.running)
@@ -472,6 +535,8 @@ class SupervisorTests(unittest.TestCase):
         self.assertIsNone(committed["val_nll"])
         self.assertEqual(committed["evaluation_error"], "track_a_deadline")
         self.assertEqual(supervisor.state["status"], "finalized")
+        self.assertEqual(supervisor.state["outcome"], "failed")
+        self.assertEqual(supervisor.state["failure"], "no_candidate")
         self.assertEqual(supervisor.state["closure_reason"], "track_a_deadline")
         self.assertEqual(supervisor.state["elapsed_seconds"], 5.0)
         self.assertEqual(
@@ -521,6 +586,9 @@ class SupervisorTests(unittest.TestCase):
         self.assertTrue(supervisor.enforce_deadlines())
         self.assertEqual(supervisor.state["final_candidate_id"], first["candidate_id"])
         self.assertEqual(supervisor.state["test_nll"], 1.5)
+        self.assertAlmostEqual(
+            supervisor.state["test_perplexity"], math.exp(1.5)
+        )
 
     def test_agent_mailbox_exposes_only_public_status(self):
         supervisor = self.supervisor()

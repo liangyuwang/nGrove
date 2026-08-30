@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, Optional
 
 from .config import AgentConfig, TaskConfig, TrainingResources
 from .inference import summarize_inference_trace
+from .results import RESULT_SCHEMA_VERSION, perplexity_from_nll, validated_nll
 from .worker_protocol import (
     EVALUATION_REQUIREMENTS,
     GPU_DEVICE_ISOLATION,
@@ -209,6 +210,7 @@ class Supervisor:
 
         self.state: Dict[str, Any] = {
             "protocol_version": 1,
+            "result_schema_version": RESULT_SCHEMA_VERSION,
             "episode_id": self.episode_dir.name,
             "task_id": config.task_id,
             "task_kind": config.task_kind,
@@ -268,6 +270,7 @@ class Supervisor:
                 ),
             },
             "status": "created",
+            "outcome": None,
             "started_at": None,
             "elapsed_seconds": 0.0,
             "timing": {
@@ -283,6 +286,7 @@ class Supervisor:
             "incumbent_id": None,
             "final_candidate_id": None,
             "test_nll": None,
+            "test_perplexity": None,
             "closure_reason": None,
             "inference_usage": summarize_inference_trace(self.inference_trace_path),
             "agent_usage": None,
@@ -433,6 +437,7 @@ class Supervisor:
         with self.lock:
             active = self.state.get("active_lease")
             status: Dict[str, Any] = {
+                "result_schema_version": self.state["result_schema_version"],
                 "episode_id": self.state["episode_id"],
                 "task_id": self.config.task_id,
                 "task_kind": self.config.task_kind,
@@ -460,6 +465,7 @@ class Supervisor:
                 ],
                 "agent_drain_seconds": self.state["agent_system"]["drain_seconds"],
                 "status": self.state["status"],
+                "outcome": self.state["outcome"],
                 "elapsed_seconds": round(self._elapsed(), 3),
                 "timing": self._timing_summary(),
                 "leases_used": self.state["leases_used"],
@@ -487,6 +493,7 @@ class Supervisor:
             if self.state["status"] != "active":
                 status["final_candidate_id"] = self.state["final_candidate_id"]
                 status["test_nll"] = self.state["test_nll"]
+                status["test_perplexity"] = self.state["test_perplexity"]
                 status["failure"] = self.state["failure"]
             return status
 
@@ -836,14 +843,16 @@ class Supervisor:
                         timeout_seconds = min(timeout_seconds, remaining)
                 if deadline_reached:
                     raise WorkerFailure("evaluation deadline reached")
-                val_nll = self.evaluation_worker.evaluate_candidate(
-                    episode_id=self.state["episode_id"],
-                    config=self.config,
-                    resources=self.resources,
-                    candidate_dir=snapshot["path"],
-                    split="val",
-                    output_dir=self.evaluations_dir / snapshot["path"].name,
-                    timeout_seconds=timeout_seconds,
+                val_nll = validated_nll(
+                    self.evaluation_worker.evaluate_candidate(
+                        episode_id=self.state["episode_id"],
+                        config=self.config,
+                        resources=self.resources,
+                        candidate_dir=snapshot["path"],
+                        split="val",
+                        output_dir=self.evaluations_dir / snapshot["path"].name,
+                        timeout_seconds=timeout_seconds,
+                    )
                 )
                 deadline_reached = (
                     self.track == "A" and self._track_a_remaining() <= 0
@@ -855,7 +864,7 @@ class Supervisor:
                         candidate_id=candidate_id,
                         nll=val_nll,
                     )
-            except WorkerFailure:
+            except (ValueError, WorkerFailure):
                 deadline_reached = (
                     self.track == "A" and self._track_a_remaining() <= 0
                 )
@@ -992,45 +1001,92 @@ class Supervisor:
         self._save_state()
 
         if candidate_id is None:
-            self.state["status"] = "finalized"
-            self._event("EPISODE_FINALIZED", result="no_candidate")
-            self._save_state()
-            return self.public_status()
+            return self._finalize_failed_test("no_candidate", candidate_id=None)
 
         digest = candidate_id.split(":", 1)[1]
         candidate_dir = self.candidates_dir / digest
         evaluation_started = self.monotonic()
         test_nll: Optional[float] = None
+        test_failure: Optional[str] = None
         try:
-            test_nll = self.evaluation_worker.evaluate_candidate(
-                episode_id=self.state["episode_id"],
-                config=self.config,
-                resources=self.resources,
-                candidate_dir=candidate_dir,
-                split="test",
-                output_dir=self.evaluations_dir / digest,
-                timeout_seconds=float(self.config.evaluator_timeout_seconds),
+            test_nll = validated_nll(
+                self.evaluation_worker.evaluate_candidate(
+                    episode_id=self.state["episode_id"],
+                    config=self.config,
+                    resources=self.resources,
+                    candidate_dir=candidate_dir,
+                    split="test",
+                    output_dir=self.evaluations_dir / digest,
+                    timeout_seconds=float(self.config.evaluator_timeout_seconds),
+                )
             )
         except WorkerFailure:
-            self.state["failure"] = "test_evaluation_failed"
+            test_failure = "test_evaluation_failed"
             self._event(
                 "TEST_EVALUATION_FAILED",
                 candidate_id=candidate_id,
                 code="evaluation_failed",
+            )
+        except ValueError:
+            test_failure = "invalid_test_metric"
+            self._event(
+                "TEST_EVALUATION_FAILED",
+                candidate_id=candidate_id,
+                code="invalid_metric",
             )
         finally:
             self.state["timing"]["test_evaluation_seconds"] += max(
                 0.0, self.monotonic() - evaluation_started
             )
 
-        if test_nll is None:
-            self._save_state()
-            return self.public_status()
+        if test_failure is not None or test_nll is None:
+            return self._finalize_failed_test(
+                test_failure or "test_evaluation_failed", candidate_id=candidate_id
+            )
+
+        try:
+            test_perplexity = perplexity_from_nll(test_nll)
+        except ValueError:
+            self._event(
+                "TEST_EVALUATION_FAILED",
+                candidate_id=candidate_id,
+                code="perplexity_overflow",
+            )
+            return self._finalize_failed_test(
+                "perplexity_overflow", candidate_id=candidate_id
+            )
 
         self.state["test_nll"] = test_nll
+        self.state["test_perplexity"] = test_perplexity
         self.state["status"] = "finalized"
-        self._event("TEST_EVALUATED", candidate_id=candidate_id, nll=test_nll)
+        self.state["outcome"] = "success"
+        self.state["failure"] = None
+        self._event(
+            "TEST_EVALUATED",
+            candidate_id=candidate_id,
+            nll=test_nll,
+            perplexity=test_perplexity,
+        )
         self._event("EPISODE_FINALIZED", result="success")
+        self._save_state()
+        return self.public_status()
+
+    def _finalize_failed_test(
+        self, failure: str, *, candidate_id: Optional[str]
+    ) -> Dict[str, Any]:
+        """Finalize an episode without manufacturing a missing TEST metric."""
+
+        self.state["status"] = "finalized"
+        self.state["outcome"] = "failed"
+        self.state["failure"] = failure
+        self.state["test_nll"] = None
+        self.state["test_perplexity"] = None
+        self._event(
+            "EPISODE_FAILED",
+            reason=failure,
+            candidate_id=candidate_id,
+        )
+        self._event("EPISODE_FINALIZED", result="failure", reason=failure)
         self._save_state()
         return self.public_status()
 
@@ -1054,6 +1110,7 @@ class Supervisor:
             if self.state["active_lease"] is not None:
                 self._end_active_lease("agent_exited")
             self.state["status"] = "dnf"
+            self.state["outcome"] = "failed"
             self.state["closure_reason"] = "agent_exited_without_finish"
             self.state["failure"] = "agent exited without finishing the episode"
             self._event("EPISODE_DNF", reason="agent_exited_without_finish")
@@ -1067,6 +1124,7 @@ class Supervisor:
             if self.state["active_lease"] is not None:
                 self._end_active_lease("infrastructure_failure")
             self.state["status"] = "infrastructure_failure"
+            self.state["outcome"] = "failed"
             self.state["closure_reason"] = "infrastructure_failure"
             self.state["failure"] = message
             self._event("EPISODE_INFRASTRUCTURE_FAILURE", message=message)

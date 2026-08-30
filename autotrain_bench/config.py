@@ -566,6 +566,13 @@ class TaskConfig:
                 "backend": self.evaluator_backend,
                 "candidate_image": self.candidate_image,
                 "metric": self.metric,
+                "leaderboard_metric": {
+                    "name": "perplexity",
+                    "field": "test_perplexity",
+                    "derived_from": "autoregressive_nll",
+                    "formula": "exp(mean_token_nll)",
+                    "direction": "minimize",
+                },
                 "vocab_size": self.vocab_size,
                 "context_length": self.context_length,
                 "batch_size": self.evaluator_batch_size,

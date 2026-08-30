@@ -1,19 +1,24 @@
+import argparse
 import io
+import json
+import math
 import tempfile
 import unittest
 import uuid
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
 from autotrain_bench.cli import (
+    _episode_exit_code,
     _initialize_agent_workspace,
     _resolve_challenge_run,
     _snapshot_agent_workspace,
     _terminal_agent_action,
     _validate_workspace_boundary,
     build_parser,
+    command_report,
     command_start,
 )
 from autotrain_bench.config import ConfigError, TaskConfig
@@ -25,6 +30,76 @@ LM_PRETRAIN_PREVIEW = ROOT / "challenges/lm-pretrain-v1/challenge.json"
 
 
 class WorkspaceSnapshotTests(unittest.TestCase):
+    def test_episode_exit_code_requires_a_successful_test_outcome(self):
+        self.assertEqual(_episode_exit_code({"outcome": "success"}), 0)
+        self.assertEqual(_episode_exit_code({"outcome": "failed"}), 1)
+        self.assertEqual(_episode_exit_code({"outcome": None}), 1)
+        self.assertEqual(_episode_exit_code({"status": "finalized"}), 1)
+
+    def test_report_migrates_a_legacy_success_without_rewriting_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            episode = Path(directory)
+            original = {
+                "protocol_version": 1,
+                "status": "finalized",
+                "final_candidate_id": "sha256:candidate",
+                "test_nll": 1.5,
+                "failure": None,
+            }
+            state_path = episode / "state.json"
+            state_path.write_text(json.dumps(original), encoding="utf-8")
+            output = io.StringIO()
+
+            with redirect_stdout(output):
+                return_code = command_report(argparse.Namespace(episode=episode))
+
+            report = json.loads(output.getvalue())
+            self.assertEqual(return_code, 0)
+            self.assertEqual(report["result_schema_version"], 2)
+            self.assertEqual(report["migrated_from_result_schema_version"], 1)
+            self.assertEqual(report["outcome"], "success")
+            self.assertEqual(report["test_nll"], 1.5)
+            self.assertAlmostEqual(report["test_perplexity"], math.exp(1.5))
+            self.assertEqual(
+                json.loads(state_path.read_text(encoding="utf-8")), original
+            )
+
+    def test_report_migrates_a_legacy_unscored_result_to_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            episode = Path(directory)
+            (episode / "state.json").write_text(
+                json.dumps(
+                    {
+                        "protocol_version": 1,
+                        "status": "finalized",
+                        "final_candidate_id": None,
+                        "test_nll": None,
+                        "failure": None,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            output = io.StringIO()
+
+            with redirect_stdout(output):
+                command_report(argparse.Namespace(episode=episode))
+
+            report = json.loads(output.getvalue())
+            self.assertEqual(report["outcome"], "failed")
+            self.assertEqual(report["failure"], "no_candidate")
+            self.assertIsNone(report["test_nll"])
+            self.assertIsNone(report["test_perplexity"])
+
+    def test_report_rejects_an_unknown_result_schema(self):
+        with tempfile.TemporaryDirectory() as directory:
+            episode = Path(directory)
+            (episode / "state.json").write_text(
+                json.dumps({"result_schema_version": 999}), encoding="utf-8"
+            )
+
+            with self.assertRaisesRegex(ValueError, "unsupported result schema"):
+                command_report(argparse.Namespace(episode=episode))
+
     def test_default_episode_workspace_is_empty(self):
         with tempfile.TemporaryDirectory() as directory:
             destination = Path(directory) / "episode-workspace"

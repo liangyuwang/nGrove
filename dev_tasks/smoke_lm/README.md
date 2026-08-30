@@ -39,7 +39,8 @@ control mailbox; it cannot see the trusted Core checkout.
 | Evaluation prefix limit | 128 tokens |
 | Track A | 300 seconds total wall clock |
 | Track B | Three leases, at most 75 seconds each |
-| Metric | Autoregressive NLL |
+| Evaluator measurement | Autoregressive NLL |
+| Leaderboard-style score | Perplexity, `exp(mean_token_nll)`, lower is better |
 | Candidate protocol | `next_token_logits_v1` |
 
 The trusted evaluation path runs on CPU. A participant may train with any

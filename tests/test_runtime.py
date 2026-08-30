@@ -562,6 +562,34 @@ class RuntimeBoundaryTests(unittest.TestCase):
             self.assertEqual(diagnostic.stat().st_mode & 0o777, 0o600)
             self.assertIn("hidden input_ids", diagnostic.read_text(encoding="utf-8"))
 
+    def test_evaluator_rejects_boolean_and_string_nll_values(self):
+        for raw_nll in (True, "1.25"):
+            with self.subTest(raw_nll=raw_nll):
+                with tempfile.TemporaryDirectory() as directory:
+                    output = Path(directory) / "evaluation"
+
+                    class ResultRuntime(CapturingDockerRuntime):
+                        def _run(self, args, **kwargs):
+                            result = super()._run(args, **kwargs)
+                            if "/opt/evaluator.py" in args:
+                                output.mkdir(parents=True, exist_ok=True)
+                                (output / "val.json").write_text(
+                                    json.dumps({"nll": raw_nll}), encoding="utf-8"
+                                )
+                            return result
+
+                    runtime = ResultRuntime()
+                    with self.assertRaisesRegex(
+                        RuntimeFailure, "valid NLL result"
+                    ):
+                        runtime.run_evaluator(
+                            config=TaskConfig.load(TASK),
+                            resources=TrainingResources(),
+                            candidate_dir=TASK.parent / "agent",
+                            split="val",
+                            output_dir=output,
+                        )
+
     def test_missing_inference_credential_fails_before_gateway_start(self):
         with tempfile.TemporaryDirectory() as directory:
             inference = InferenceConfig(

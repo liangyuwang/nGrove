@@ -28,6 +28,7 @@ from .config import (
 )
 from .host_agent import HostAgentProcess, summarize_host_agent_trace
 from .inference import summarize_inference_trace
+from .results import normalize_result_report
 from .runtime import DockerRuntime, RuntimeFailure
 from .supervisor import Supervisor
 
@@ -141,6 +142,12 @@ def _terminal_agent_action(
         else CONTAINER_AGENT_DRAIN_SECONDS
     )
     return "drain_timeout" if drain_elapsed_seconds >= limit else "wait"
+
+
+def _episode_exit_code(state: Dict[str, Any]) -> int:
+    """Return success only for an episode with a successful TEST outcome."""
+
+    return 0 if state.get("outcome") == "success" else 1
 
 
 def command_prepare(args: argparse.Namespace) -> int:
@@ -470,7 +477,7 @@ def command_start(args: argparse.Namespace) -> int:
             reference_runtime.remove_network(network)
 
     _print(supervisor.public_status())
-    return 0 if supervisor.state["status"] == "finalized" else 1
+    return _episode_exit_code(supervisor.state)
 
 
 def command_report(args: argparse.Namespace) -> int:
@@ -480,6 +487,7 @@ def command_report(args: argparse.Namespace) -> int:
         payload = json.loads(state_path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
         raise ConfigError(f"episode state not found: {state_path}") from exc
+    payload = normalize_result_report(payload)
     payload["inference_usage"] = summarize_inference_trace(
         episode / "inference" / "inference.jsonl"
     )
