@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -47,6 +48,7 @@ from .worker_protocol import (
     ResearchTaskSpec,
     ResearchWorker,
     WorkerFailure,
+    WorkerTeardownFailure,
     assess_worker,
 )
 
@@ -590,7 +592,12 @@ class Supervisor:
             "lease_serial": 0,
             "leases_used": 0,
             "active_lease": None,
+            # Semantic Lease IDs whose Worker-side startup result was
+            # uncertain and whose compensating termination was not confirmed.
+            # Platform resource handles remain private to the Worker.
+            "pending_lease_teardowns": [],
             "last_lease_id": None,
+            "deployment_teardown_failures": [],
             "candidates": {},
             "incumbent_id": None,
             "final_candidate_id": None,
@@ -793,6 +800,9 @@ class Supervisor:
                 "timing": self._timing_summary(),
                 "leases_used": self.state["leases_used"],
                 "active_lease": None,
+                "deployment_teardown_failures": list(
+                    self.state.get("deployment_teardown_failures", [])
+                ),
                 "incumbent_id": self.state["incumbent_id"],
                 "candidates": self.state["candidates"],
             }
@@ -889,6 +899,23 @@ class Supervisor:
                     resources=self.resources,
                     lease_dir=lease_dir,
                 )
+            except WorkerTeardownFailure as exc:
+                pending = self.state["pending_lease_teardowns"]
+                if lease_id not in pending:
+                    pending.append(lease_id)
+                self._event(
+                    "LEASE_INFRA_FAILURE",
+                    lease_id=lease_id,
+                    code="worker_teardown_failure",
+                )
+                self.deployment_teardown_failed(
+                    "research_worker_teardown_failure",
+                    private_detail=str(exc),
+                )
+                raise ProtocolError(
+                    "infrastructure_failure",
+                    "research worker teardown failed",
+                ) from exc
             except WorkerFailure as exc:
                 shutil.rmtree(lease_dir, ignore_errors=True)
                 self._event("LEASE_INFRA_FAILURE", message=str(exc))
@@ -952,12 +979,27 @@ class Supervisor:
                     "the lease command log size limit has been reached",
                 )
 
-            result: CommandResult = self.research_worker.exec_lease(
-                episode_id=self.state["episode_id"],
-                lease_id=active["lease_id"],
-                argv=argv,
-                timeout_seconds=remaining,
-            )
+            try:
+                result: CommandResult = self.research_worker.exec_lease(
+                    episode_id=self.state["episode_id"],
+                    lease_id=active["lease_id"],
+                    argv=argv,
+                    timeout_seconds=remaining,
+                )
+            except WorkerTeardownFailure as exc:
+                self._event(
+                    "LEASE_INFRA_FAILURE",
+                    lease_id=active["lease_id"],
+                    code="worker_teardown_failure",
+                )
+                self.deployment_teardown_failed(
+                    "research_worker_teardown_failure",
+                    private_detail=str(exc),
+                )
+                raise ProtocolError(
+                    "infrastructure_failure",
+                    "research worker teardown failed",
+                ) from exc
             stdout, local_stdout_truncated = _bounded_text(result.stdout)
             stderr, local_stderr_truncated = _bounded_text(result.stderr)
             stdout_truncated = result.stdout_truncated or local_stdout_truncated
@@ -1023,20 +1065,39 @@ class Supervisor:
                 result["history_truncated"] = True
             return result
 
-    def _end_active_lease(self, reason: str) -> Optional[str]:
+    def _end_active_lease(
+        self,
+        reason: str,
+        *,
+        ended_monotonic: Optional[float] = None,
+        record_teardown_failure: bool = True,
+    ) -> Optional[str]:
         active = self.state.get("active_lease")
         if not active:
             return None
-        ended = self.monotonic()
+        ended = self.monotonic() if ended_monotonic is None else ended_monotonic
         used_seconds = min(
             active["duration_seconds"],
             max(0.0, ended - active["started_monotonic"]),
         )
         lease_id = active["lease_id"]
-        self.research_worker.terminate_lease(
-            episode_id=self.state["episode_id"],
-            lease_id=lease_id,
-        )
+        try:
+            self.research_worker.terminate_lease(
+                episode_id=self.state["episode_id"],
+                lease_id=lease_id,
+            )
+        except WorkerTeardownFailure as exc:
+            if record_teardown_failure:
+                self._event(
+                    "LEASE_INFRA_FAILURE",
+                    lease_id=lease_id,
+                    code="worker_teardown_failure",
+                )
+                self.deployment_teardown_failed(
+                    "research_worker_teardown_failure",
+                    private_detail=str(exc),
+                )
+            raise
         self.state["timing"]["training_lease_seconds"] += used_seconds
         self.state["active_lease"] = None
         self.state["last_lease_id"] = lease_id
@@ -1048,6 +1109,57 @@ class Supervisor:
         )
         self._save_state()
         return lease_id
+
+    def terminate_worker_leases_for_teardown(self) -> bool:
+        """Retry uncertain starts and the active semantic Worker Lease."""
+
+        with self.lock:
+            pending = self.state.setdefault("pending_lease_teardowns", [])
+            active = self.state.get("active_lease")
+            if not pending and active is None:
+                return False
+            failures = []
+            cleaned_startups = []
+            state_changed = False
+            for lease_id in list(pending):
+                try:
+                    self.research_worker.terminate_lease(
+                        episode_id=self.state["episode_id"],
+                        lease_id=lease_id,
+                    )
+                except Exception as exc:
+                    failures.append(f"{lease_id}: {type(exc).__name__}: {exc}")
+                else:
+                    pending.remove(lease_id)
+                    cleaned_startups.append(lease_id)
+                    state_changed = True
+
+            if active is not None:
+                ended = (
+                    self.closed_monotonic
+                    if self.closed_monotonic is not None
+                    else self.monotonic()
+                )
+                try:
+                    self._end_active_lease(
+                        "deployment_teardown",
+                        ended_monotonic=ended,
+                        record_teardown_failure=False,
+                    )
+                except Exception as exc:
+                    failures.append(
+                        f"{active['lease_id']}: {type(exc).__name__}: {exc}"
+                    )
+
+            for lease_id in cleaned_startups:
+                self._event("LEASE_STARTUP_CLEANED", lease_id=lease_id)
+            if state_changed:
+                self._save_state()
+            if failures:
+                raise WorkerTeardownFailure(
+                    "Worker Lease teardown failed: " + "; ".join(failures)
+                )
+            return True
 
     def stop_lease(self) -> Dict[str, Any]:
         with self.lock:
@@ -1199,6 +1311,7 @@ class Supervisor:
             )
             evaluation_started = self.monotonic()
             deadline_reached = False
+            teardown_failure: Optional[str] = None
             try:
                 timeout_seconds = float(self.config.evaluator_timeout_seconds)
                 if self.track == "A":
@@ -1228,6 +1341,14 @@ class Supervisor:
                         candidate_id=candidate_id,
                         nll=val_nll,
                     )
+            except WorkerTeardownFailure as exc:
+                metadata["evaluation_error"] = "evaluation_worker_teardown_failure"
+                teardown_failure = str(exc)
+                self._event(
+                    "VAL_INFRASTRUCTURE_FAILURE",
+                    candidate_id=candidate_id,
+                    code="worker_teardown_failure",
+                )
             except (ValueError, WorkerFailure):
                 deadline_reached = self.track == "A" and self._track_a_remaining() <= 0
                 if not deadline_reached:
@@ -1250,6 +1371,18 @@ class Supervisor:
                 self.state["timing"]["validation_evaluation_seconds"] += (
                     evaluation_seconds
                 )
+            if teardown_failure is not None:
+                # Persist the timing update and the failure transition in one
+                # authoritative state write.  Raising inside the except block
+                # would skip the save that normally follows this finally.
+                self.deployment_teardown_failed(
+                    "evaluation_worker_teardown_failure",
+                    private_detail=teardown_failure,
+                )
+                raise ProtocolError(
+                    "infrastructure_failure",
+                    "evaluation worker teardown failed",
+                ) from None
             if deadline_reached:
                 metadata["evaluation_error"] = "track_a_deadline"
                 self._event(
@@ -1337,8 +1470,8 @@ class Supervisor:
                 finish_observed=self.state["agent_system"]["finish_observed"],
                 drain_seconds=self.state["agent_system"]["drain_seconds"],
             )
-            self._publish_staged_result()
-            self._save_state()
+            if not self._publish_staged_result():
+                self._save_state()
 
     def finish(self) -> Dict[str, Any]:
         with self.lock:
@@ -1371,6 +1504,7 @@ class Supervisor:
         test_nll: Optional[float] = None
         test_failure: Optional[str] = None
         test_infrastructure_failure = False
+        test_teardown_failure: Optional[str] = None
         try:
             test_nll = validated_nll(
                 self.evaluation_worker.evaluate_candidate(
@@ -1382,6 +1516,13 @@ class Supervisor:
                     output_dir=self.evaluations_dir / digest,
                     timeout_seconds=float(self.config.evaluator_timeout_seconds),
                 )
+            )
+        except WorkerTeardownFailure as exc:
+            test_teardown_failure = str(exc)
+            self._event(
+                "TEST_INFRASTRUCTURE_FAILURE",
+                candidate_id=candidate_id,
+                code="worker_teardown_failure",
             )
         except WorkerFailure:
             test_failure = "test_evaluation_failed"
@@ -1409,6 +1550,13 @@ class Supervisor:
             self.state["timing"]["test_evaluation_seconds"] += max(
                 0.0, self.monotonic() - evaluation_started
             )
+
+        if test_teardown_failure is not None:
+            self.deployment_teardown_failed(
+                "evaluation_worker_teardown_failure",
+                private_detail=test_teardown_failure,
+            )
+            return self.public_status()
 
         if test_infrastructure_failure:
             self.infrastructure_failed("test_evaluation_infrastructure_failure")
@@ -1455,7 +1603,7 @@ class Supervisor:
         return self.public_status()
 
     def _publish_staged_result(self) -> bool:
-        """Publish one terminal result after runner metadata and cleanup exist."""
+        """Atomically persist one terminal result after required cleanup."""
 
         pending = self.state.get("pending_result")
         if self.state["status"] != "closed" or not isinstance(pending, dict):
@@ -1467,21 +1615,39 @@ class Supervisor:
 
         outcome = pending["outcome"]
         failure = pending["failure"]
+        previous_state = copy.deepcopy(self.state)
+        previous_sequence = self.sequence
         self.state["status"] = "finalized"
         self.state["outcome"] = outcome
         self.state["failure"] = failure
         self.state["test_nll"] = pending["test_nll"]
         self.state["test_perplexity"] = pending["test_perplexity"]
         self.state["pending_result"] = None
-        if outcome == "failed":
-            self._event(
-                "EPISODE_FAILED",
-                reason=failure,
-                candidate_id=self.state["final_candidate_id"],
-            )
-            self._event("EPISODE_FINALIZED", result="failure", reason=failure)
-        else:
-            self._event("EPISODE_FINALIZED", result="success")
+        try:
+            # state.json is the authoritative result.  Persist it before
+            # emitting terminal audit events, and roll back the in-memory and
+            # on-disk result if either publication step fails.  Callers must
+            # not perform a second required save after this returns True.
+            self._save_state()
+            if outcome == "failed":
+                self._event(
+                    "EPISODE_FAILED",
+                    reason=failure,
+                    candidate_id=self.state["final_candidate_id"],
+                )
+                self._event("EPISODE_FINALIZED", result="failure", reason=failure)
+            else:
+                self._event("EPISODE_FINALIZED", result="success")
+        except Exception:
+            self.state = previous_state
+            self.sequence = previous_sequence
+            try:
+                self._save_state()
+            except Exception:
+                # Preserve the original publication error.  The command still
+                # fails closed even when storage is unavailable for rollback.
+                pass
+            raise
         return True
 
     def enforce_deadlines(self) -> bool:
@@ -1520,7 +1686,23 @@ class Supervisor:
             if status == "active":
                 self._freeze_elapsed()
             if self.state["active_lease"] is not None:
-                self._end_active_lease("infrastructure_failure")
+                try:
+                    self._end_active_lease(
+                        "infrastructure_failure",
+                        record_teardown_failure=False,
+                    )
+                except Exception as exc:
+                    # A failure transition must still become authoritative when
+                    # the Worker cannot confirm lease termination.  Keep the
+                    # authoritative state reached so far and retain details only
+                    # in the trusted event stream.  Deployment teardown can retry
+                    # when the active lease record remains present.
+                    self._event(
+                        "LEASE_TERMINATION_FAILED",
+                        reason="infrastructure_failure",
+                        exception_type=type(exc).__name__,
+                        message=str(exc),
+                    )
             self.state["status"] = "infrastructure_failure"
             self.state["outcome"] = "failed"
             self.state["closure_reason"] = "infrastructure_failure"
@@ -1533,6 +1715,31 @@ class Supervisor:
                 event["message"] = private_detail
             self._event("EPISODE_INFRASTRUCTURE_FAILURE", **event)
             self._save_state()
+
+    def deployment_teardown_failed(
+        self, code: str, *, private_detail: Optional[str] = None
+    ) -> None:
+        """Record trusted teardown failure even after the outcome is terminal."""
+
+        with self.lock:
+            failures = self.state.setdefault("deployment_teardown_failures", [])
+            if code not in failures:
+                failures.append(code)
+            violation = "deployment_teardown_incomplete"
+            if violation not in self.state["policy_violations"]:
+                self.state["policy_violations"].append(violation)
+            if violation not in self.state["leaderboard_eligibility_violations"]:
+                self.state["leaderboard_eligibility_violations"].append(violation)
+            self.state["policy_compliant"] = False
+            self.state["leaderboard_eligible"] = False
+            event = {"code": code}
+            if private_detail is not None:
+                event["message"] = private_detail
+            self._event("DEPLOYMENT_TEARDOWN_FAILED", **event)
+            if self.state["status"] in {"created", "active", "closed"}:
+                self.infrastructure_failed(code)
+            else:
+                self._save_state()
 
     def _agent_control_policy_failed(self) -> None:
         """Fail an episode after a dynamic Agent-control policy violation."""
@@ -1577,8 +1784,8 @@ class Supervisor:
                 agent_caused_failures=0,
                 infrastructure_failures=0,
             )
-            self._publish_staged_result()
-            self._save_state()
+            if not self._publish_staged_result():
+                self._save_state()
             return True
         try:
             cleanup = self.agent_control_transport.cleanup()
@@ -1640,8 +1847,8 @@ class Supervisor:
             self._agent_control_policy_failed()
         elif cleanup.infrastructure_failures:
             self.infrastructure_failed("agent_control_teardown_failure")
-        else:
-            self._publish_staged_result()
+        elif self._publish_staged_result():
+            return cleanup_complete
         self._save_state()
         return cleanup_complete
 

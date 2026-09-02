@@ -65,6 +65,7 @@ def normalize_result_report(payload: Any) -> Dict[str, Any]:
         raise ResultSchemaError("result_schema_version must be an integer")
     if version == RESULT_SCHEMA_VERSION:
         result = dict(payload)
+        result.setdefault("deployment_teardown_failures", [])
         result.pop("pending_result", None)
         _validate_current_result(result)
         return result
@@ -80,6 +81,7 @@ def _migrate_legacy_result(payload: Dict[str, Any]) -> Dict[str, Any]:
     result = dict(payload)
     result["result_schema_version"] = RESULT_SCHEMA_VERSION
     result["migrated_from_result_schema_version"] = LEGACY_RESULT_SCHEMA_VERSION
+    result.setdefault("deployment_teardown_failures", [])
     result.setdefault("test_nll", None)
     result["test_perplexity"] = None
 
@@ -136,6 +138,11 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
         not isinstance(candidate_id, str) or not candidate_id.strip()
     ):
         raise ResultSchemaError("final_candidate_id must be null or a string")
+    teardown_failures = result.get("deployment_teardown_failures", [])
+    if not isinstance(teardown_failures, list) or any(
+        not isinstance(code, str) or not code.strip() for code in teardown_failures
+    ):
+        raise ResultSchemaError("deployment_teardown_failures must be a string array")
 
     outcome = result.get("outcome")
     if outcome not in {None, "success", "failed"}:

@@ -48,6 +48,7 @@ from autotrain_bench.worker_protocol import (
     TrustLevel,
     WorkerDescriptor,
     WorkerFailure,
+    WorkerTeardownFailure,
 )
 
 
@@ -74,6 +75,7 @@ class FakeWorker:
         self.evaluation_timeouts = []
         self.evaluation_hook = None
         self.evaluation_failure = None
+        self.evaluation_exception = None
         self.val_nlls = []
         self.test_nll = 1.5
         self.capability_overrides = {}
@@ -163,6 +165,8 @@ class FakeWorker:
         self.hidden_splits.append(hidden_split)
         self.evaluations.append(split)
         self.evaluation_timeouts.append(timeout_seconds)
+        if self.evaluation_exception is not None:
+            raise self.evaluation_exception
         if self.evaluation_hook is not None:
             self.evaluation_hook(timeout_seconds)
         if self.evaluation_failure is not None:
@@ -643,6 +647,28 @@ class SupervisorTests(unittest.TestCase):
         self.assertIsNone(final["test_nll"])
         self.assertIsNone(final["test_perplexity"])
 
+    def test_test_worker_teardown_failure_is_infrastructure_failure(self):
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+        committed = supervisor.commit_lease("/output/candidate")
+        supervisor.declare_incumbent(committed["candidate_id"])
+        private_detail = "/organizer/private/evaluator-stop.log"
+        self.worker.evaluation_exception = WorkerTeardownFailure(private_detail)
+
+        result = supervisor.finish()
+
+        self.assertEqual(result["status"], "infrastructure_failure")
+        self.assertEqual(result["failure"], "evaluation_worker_teardown_failure")
+        self.assertEqual(
+            result["deployment_teardown_failures"],
+            ["evaluation_worker_teardown_failure"],
+        )
+        self.assertNotIn(private_detail, json.dumps(result))
+        self.assertIn(
+            private_detail,
+            supervisor.events_path.read_text(encoding="utf-8"),
+        )
+
     def test_unexpected_test_exception_reaches_an_explicit_terminal_state(self):
         supervisor = self.supervisor()
         supervisor.start_lease()
@@ -825,6 +851,190 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(supervisor.state["leases_used"], 0)
         supervisor.start_lease()
         self.assertEqual(supervisor.state["leases_used"], 1)
+
+    def test_lease_start_teardown_failure_is_terminal(self):
+        supervisor = self.supervisor()
+        private_detail = "/organizer/private/partial-lease.log"
+
+        with patch.object(
+            self.worker,
+            "start_lease",
+            side_effect=WorkerTeardownFailure(private_detail),
+        ):
+            with self.assertRaises(ProtocolError) as caught:
+                supervisor.start_lease()
+
+        self.assertEqual(caught.exception.code, "infrastructure_failure")
+        self.assertEqual(str(caught.exception), "research worker teardown failed")
+        public = supervisor.public_status()
+        self.assertEqual(public["status"], "infrastructure_failure")
+        self.assertEqual(
+            public["deployment_teardown_failures"],
+            ["research_worker_teardown_failure"],
+        )
+        self.assertNotIn(private_detail, json.dumps(public))
+        self.assertIn(
+            private_detail,
+            supervisor.events_path.read_text(encoding="utf-8"),
+        )
+
+    def test_lease_exec_teardown_failure_is_terminal(self):
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+        private_detail = "/organizer/private/lease-timeout.log"
+
+        with patch.object(
+            self.worker,
+            "exec_lease",
+            side_effect=WorkerTeardownFailure(private_detail),
+        ):
+            with self.assertRaises(ProtocolError) as caught:
+                supervisor.exec_lease(["python", "train.py"])
+
+        self.assertEqual(caught.exception.code, "infrastructure_failure")
+        self.assertEqual(str(caught.exception), "research worker teardown failed")
+        public = supervisor.public_status()
+        self.assertEqual(public["status"], "infrastructure_failure")
+        self.assertIsNone(public["active_lease"])
+        self.assertEqual(
+            public["deployment_teardown_failures"],
+            ["research_worker_teardown_failure"],
+        )
+        self.assertNotIn(private_detail, json.dumps(public))
+        self.assertIn(
+            private_detail,
+            supervisor.events_path.read_text(encoding="utf-8"),
+        )
+
+    def test_lease_termination_teardown_failure_is_recorded(self):
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+        private_detail = "/organizer/private/lease-stop.log"
+
+        with patch.object(
+            self.worker,
+            "terminate_lease",
+            side_effect=[WorkerTeardownFailure(private_detail), None],
+        ):
+            with self.assertRaises(WorkerTeardownFailure):
+                supervisor.stop_lease()
+
+        public = supervisor.public_status()
+        self.assertEqual(public["status"], "infrastructure_failure")
+        self.assertIsNone(public["active_lease"])
+        self.assertEqual(
+            public["deployment_teardown_failures"],
+            ["research_worker_teardown_failure"],
+        )
+        self.assertNotIn(private_detail, json.dumps(public))
+        self.assertIn(
+            private_detail,
+            supervisor.events_path.read_text(encoding="utf-8"),
+        )
+
+    def test_infrastructure_failure_is_terminal_when_lease_stop_fails(self):
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+        private_detail = "/organizer/private/worker-stop.log"
+
+        with patch.object(
+            self.worker,
+            "terminate_lease",
+            side_effect=WorkerFailure(private_detail),
+        ):
+            supervisor.infrastructure_failed("benchmark_monitor_failure")
+
+        self.assertEqual(supervisor.state["status"], "infrastructure_failure")
+        self.assertEqual(supervisor.state["failure"], "benchmark_monitor_failure")
+        self.assertIsNotNone(supervisor.state["active_lease"])
+        events = supervisor.events_path.read_text(encoding="utf-8")
+        self.assertIn("LEASE_TERMINATION_FAILED", events)
+        self.assertIn(private_detail, events)
+        self.assertNotIn(private_detail, json.dumps(supervisor.public_status()))
+
+    def test_successful_teardown_retry_reconciles_lease_at_frozen_time(self):
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+        self.clock.advance(4)
+
+        with patch.object(
+            self.worker,
+            "terminate_lease",
+            side_effect=[WorkerFailure("first stop failed"), None],
+        ):
+            supervisor.infrastructure_failed("benchmark_monitor_failure")
+            self.clock.advance(30)
+            self.assertTrue(supervisor.terminate_worker_leases_for_teardown())
+
+        self.assertIsNone(supervisor.state["active_lease"])
+        self.assertEqual(supervisor.state["last_lease_id"], "lease-0001")
+        self.assertEqual(
+            supervisor.public_status()["timing"]["training_lease_seconds"], 4
+        )
+        self.assertIsNone(supervisor.public_status()["active_lease"])
+
+    def test_uncertain_lease_start_is_retained_for_teardown_retry(self):
+        supervisor = self.supervisor()
+        private_detail = "/organizer/private/partial-lease.log"
+
+        with patch.object(
+            self.worker,
+            "start_lease",
+            side_effect=WorkerTeardownFailure(private_detail),
+        ):
+            with self.assertRaises(ProtocolError) as caught:
+                supervisor.start_lease()
+
+        self.assertEqual(caught.exception.code, "infrastructure_failure")
+        self.assertEqual(supervisor.state["pending_lease_teardowns"], ["lease-0001"])
+        self.assertTrue(supervisor.terminate_worker_leases_for_teardown())
+        self.assertEqual(supervisor.state["pending_lease_teardowns"], [])
+        persisted = json.loads(supervisor.state_path.read_text(encoding="utf-8"))
+        self.assertEqual(persisted["pending_lease_teardowns"], [])
+
+    def test_terminal_teardown_failure_is_recorded_without_reclassifying_dnf(self):
+        supervisor = self.supervisor()
+        supervisor.agent_exited_without_finish()
+        private_detail = "/organizer/private/docker-agent.log"
+
+        supervisor.deployment_teardown_failed(
+            "agent_termination_failure",
+            private_detail=private_detail,
+        )
+
+        public = supervisor.public_status()
+        self.assertEqual(public["status"], "dnf")
+        self.assertEqual(
+            public["failure"], "agent exited without finishing the episode"
+        )
+        self.assertEqual(
+            public["deployment_teardown_failures"],
+            ["agent_termination_failure"],
+        )
+        self.assertFalse(public["policy_compliant"])
+        self.assertFalse(public["leaderboard_eligible"])
+        self.assertIn("deployment_teardown_incomplete", public["policy_violations"])
+        events = supervisor.events_path.read_text(encoding="utf-8")
+        self.assertIn("DEPLOYMENT_TEARDOWN_FAILED", events)
+        self.assertIn(private_detail, events)
+        self.assertNotIn(private_detail, json.dumps(public))
+
+    def test_startup_cleanup_failure_is_appended_after_infrastructure_failure(self):
+        supervisor = self.supervisor()
+        supervisor.infrastructure_failed("episode_startup_failure")
+
+        supervisor.deployment_teardown_failed(
+            "agent_termination_failure",
+            private_detail="private container cleanup detail",
+        )
+
+        public = supervisor.public_status()
+        self.assertEqual(public["status"], "infrastructure_failure")
+        self.assertEqual(public["failure"], "episode_startup_failure")
+        self.assertEqual(
+            public["deployment_teardown_failures"],
+            ["agent_termination_failure"],
+        )
 
     def test_lease_start_failure_does_not_expose_worker_detail(self):
         supervisor = self.supervisor()
@@ -1050,6 +1260,50 @@ class SupervisorTests(unittest.TestCase):
         events = supervisor.events_path.read_text(encoding="utf-8")
         self.assertNotIn("input_ids", public)
         self.assertNotIn("input_ids", events)
+
+    def test_val_worker_teardown_failure_terminates_the_episode(self):
+        supervisor = self.supervisor()
+        private_detail = "/organizer/private/evaluation-network.log"
+        self.worker.evaluation_exception = WorkerTeardownFailure(private_detail)
+        supervisor.start_lease()
+
+        with self.assertRaises(ProtocolError) as caught:
+            supervisor.commit_lease("/output/candidate")
+
+        self.assertEqual(caught.exception.code, "infrastructure_failure")
+        self.assertEqual(str(caught.exception), "evaluation worker teardown failed")
+        public = supervisor.public_status()
+        self.assertEqual(public["status"], "infrastructure_failure")
+        self.assertEqual(public["failure"], "evaluation_worker_teardown_failure")
+        self.assertEqual(
+            public["deployment_teardown_failures"],
+            ["evaluation_worker_teardown_failure"],
+        )
+        self.assertNotIn(private_detail, json.dumps(public))
+        self.assertIn(
+            private_detail,
+            supervisor.events_path.read_text(encoding="utf-8"),
+        )
+
+    def test_val_teardown_failure_persists_evaluation_time(self):
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+
+        def fail_after_evaluation_time(**kwargs):
+            del kwargs
+            self.clock.advance(3)
+            raise WorkerTeardownFailure("private evaluator teardown detail")
+
+        with patch.object(
+            self.worker,
+            "evaluate_candidate",
+            side_effect=fail_after_evaluation_time,
+        ):
+            with self.assertRaises(ProtocolError):
+                supervisor.commit_lease("/output/candidate")
+
+        persisted = json.loads(supervisor.state_path.read_text(encoding="utf-8"))
+        self.assertEqual(persisted["timing"]["validation_evaluation_seconds"], 3.0)
 
     def test_track_a_deadline_uses_only_agent_declared_incumbent(self):
         config = replace(self.config, track_a_total_seconds=100)
@@ -1385,6 +1639,48 @@ class SupervisorTests(unittest.TestCase):
             "EPISODE_FINALIZED",
             supervisor.events_path.read_text(encoding="utf-8"),
         )
+
+    def test_final_result_persistence_failure_cannot_return_success(self):
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+        candidate = supervisor.commit_lease("/output/candidate")
+        supervisor.declare_incumbent(candidate["candidate_id"])
+        supervisor.finish()
+        supervisor.record_agent_execution(exit_code=0, termination_reason="exited")
+        original_save = supervisor._save_state
+        save_attempts = 0
+
+        def fail_first_publication_save():
+            nonlocal save_attempts
+            save_attempts += 1
+            if save_attempts == 1:
+                raise OSError("simulated final state persistence failure")
+            original_save()
+
+        with patch.object(
+            supervisor,
+            "_save_state",
+            side_effect=fail_first_publication_save,
+        ):
+            with self.assertRaisesRegex(OSError, "final state persistence"):
+                supervisor.cleanup_agent_control()
+
+        self.assertEqual(supervisor.state["status"], "closed")
+        self.assertIsNone(supervisor.state["outcome"])
+        persisted = json.loads(supervisor.state_path.read_text(encoding="utf-8"))
+        self.assertEqual(persisted["status"], "closed")
+        self.assertIsNone(persisted["outcome"])
+        self.assertNotIn(
+            "EPISODE_FINALIZED",
+            supervisor.events_path.read_text(encoding="utf-8"),
+        )
+
+        supervisor.deployment_teardown_failed(
+            "agent_control_teardown_failure",
+            private_detail="simulated final state persistence failure",
+        )
+        self.assertEqual(supervisor.state["status"], "infrastructure_failure")
+        self.assertEqual(supervisor.state["outcome"], "failed")
 
     def test_non_regular_cleanup_entry_is_an_agent_policy_failure(self):
         supervisor = self.supervisor()

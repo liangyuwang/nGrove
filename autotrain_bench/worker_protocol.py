@@ -34,6 +34,10 @@ class WorkerFailure(RuntimeError):
     """A trusted Worker operation failed."""
 
 
+class WorkerTeardownFailure(WorkerFailure):
+    """A Worker could not confirm teardown of an isolated workload boundary."""
+
+
 class EnforcementLevel(str, Enum):
     """How strongly a Worker deployment enforces one semantic capability."""
 

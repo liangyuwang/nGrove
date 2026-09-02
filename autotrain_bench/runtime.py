@@ -16,7 +16,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .config import AgentConfig, TaskConfig, TrainingResources
 from .host_agent import HostAgentProcess, start_host_agent_process
@@ -40,6 +40,7 @@ from .worker_protocol import (
     TrustLevel,
     WorkerDescriptor,
     WorkerFailure,
+    WorkerTeardownFailure,
 )
 
 
@@ -61,6 +62,21 @@ def _decode_timeout_output(value: Any) -> str:
     if isinstance(value, str):
         return value
     raise TypeError(f"unexpected subprocess output type: {type(value).__name__}")
+
+
+def _run_runtime_teardown_steps(
+    steps: Sequence[Tuple[str, Callable[[], Any]]],
+) -> None:
+    """Attempt every local-runtime teardown step before reporting failures."""
+
+    failures = []
+    for resource, cleanup in steps:
+        try:
+            cleanup()
+        except Exception as exc:
+            failures.append(f"{resource}: {type(exc).__name__}: {exc}")
+    if failures:
+        raise WorkerTeardownFailure("runtime teardown failed: " + "; ".join(failures))
 
 
 class _BoundedCapture:
@@ -168,6 +184,10 @@ class DockerRuntime:
         except subprocess.TimeoutExpired as exc:
             raise RuntimeFailure(
                 f"runtime command timed out: {' '.join(command)}"
+            ) from exc
+        except OSError as exc:
+            raise RuntimeFailure(
+                f"failed to execute runtime command: {' '.join(command)}: {exc}"
             ) from exc
         if check and result.returncode != 0:
             detail = result.stderr.strip() or result.stdout.strip() or "unknown error"
@@ -508,8 +528,18 @@ class DockerRuntime:
         self._run(args, timeout=timeout_seconds)
 
     def remove_network(self, name: str) -> None:
-        if name:
-            self._run(["network", "rm", name], check=False)
+        """Remove a network and fail unless its absence is confirmed."""
+
+        if not name:
+            return
+        removal = self._run(["network", "rm", name], check=False, timeout=20)
+        inventory = self._run(["network", "ls", "--format", "{{.Name}}"], timeout=20)
+        if name not in {line.strip() for line in inventory.stdout.splitlines()}:
+            return
+        detail = removal.stderr.strip() or removal.stdout.strip()
+        if not detail:
+            detail = "network remains after removal"
+        raise RuntimeFailure(f"failed to remove network {name}: {detail}")
 
     def start_inference_gateway(
         self,
@@ -723,14 +753,28 @@ class DockerRuntime:
             raise RuntimeFailure(f"lease already exists: {lease_id}")
         runtime_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{episode_id}:{lease_id}").hex[:12]
         name = f"atb-lease-{runtime_id}"
-        self.start_training(
-            name=name,
-            task=task,
-            workspace=workspace,
-            resources=resources,
-            lease_dir=lease_dir,
-        )
         self._worker_leases[key] = name
+        try:
+            self.start_training(
+                name=name,
+                task=task,
+                workspace=workspace,
+                resources=resources,
+                lease_dir=lease_dir,
+            )
+        except Exception as start_exc:
+            # ``docker run`` may create the named container before the client
+            # observes a timeout or daemon error.  Register the deterministic
+            # handle first, then retain it unless absence is confirmed so a
+            # later deployment teardown can retry the semantic Lease stop.
+            try:
+                self.terminate_lease(episode_id=episode_id, lease_id=lease_id)
+            except WorkerTeardownFailure as teardown_exc:
+                raise WorkerTeardownFailure(
+                    "lease startup failed and cleanup was not confirmed: "
+                    f"{teardown_exc}"
+                ) from start_exc
+            raise
 
     def exec_training(
         self,
@@ -766,10 +810,15 @@ class DockerRuntime:
             process.wait(timeout=max(1, math.ceil(timeout_seconds)))
         except subprocess.TimeoutExpired:
             timed_out = True
-            self.stop_container(name)
+            timeout_teardown_steps = [
+                ("training container", lambda: self.stop_container(name)),
+            ]
             if process.poll() is None:
-                process.kill()
-            process.wait(timeout=5)
+                timeout_teardown_steps.append(("Docker exec client", process.kill))
+            timeout_teardown_steps.append(
+                ("Docker exec client wait", lambda: process.wait(timeout=5))
+            )
+            _run_runtime_teardown_steps(timeout_teardown_steps)
         finally:
             stdout_thread.join(timeout=5)
             stderr_thread.join(timeout=5)
@@ -845,15 +894,30 @@ class DockerRuntime:
         return "".join(parts)
 
     def stop_container(self, name: str) -> None:
+        """Force-remove a container and fail unless its absence is confirmed."""
+
         if not name:
             return
-        self._run(["rm", "--force", name], check=False)
+        removal = self._run(["rm", "--force", name], check=False, timeout=20)
+        inventory = self._run(
+            ["container", "ls", "--all", "--format", "{{.Names}}"], timeout=20
+        )
+        if name not in {line.strip() for line in inventory.stdout.splitlines()}:
+            return
+        detail = removal.stderr.strip() or removal.stdout.strip()
+        if not detail:
+            detail = "container remains after force removal"
+        raise RuntimeFailure(f"failed to terminate container {name}: {detail}")
 
     def terminate_lease(self, *, episode_id: str, lease_id: str) -> None:
         key = self._worker_lease_key(episode_id, lease_id)
-        name = self._worker_leases.pop(key, None)
+        name = self._worker_leases.get(key)
         if name is not None:
-            self.stop_container(name)
+            try:
+                self.stop_container(name)
+            except WorkerFailure as exc:
+                raise WorkerTeardownFailure(str(exc)) from exc
+            self._worker_leases.pop(key, None)
 
     def run_evaluator(
         self,
@@ -1067,10 +1131,17 @@ class DockerRuntime:
                 pass
             raise RuntimeFailure("isolated evaluation failed") from None
         finally:
+            teardown_steps = [
+                ("candidate", lambda: self.stop_container(candidate_name)),
+            ]
             if evaluator_started:
-                self.stop_container(evaluator_name)
-            self.stop_container(candidate_name)
-            self.remove_network(network_name)
+                teardown_steps.append(
+                    ("evaluator", lambda: self.stop_container(evaluator_name))
+                )
+            teardown_steps.append(
+                ("evaluation network", lambda: self.remove_network(network_name))
+            )
+            _run_runtime_teardown_steps(teardown_steps)
         try:
             payload = json.loads(result_path.read_text(encoding="utf-8"))
             loss = validated_nll(payload["nll"])

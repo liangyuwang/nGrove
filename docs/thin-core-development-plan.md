@@ -167,6 +167,13 @@ Failure ownership must remain explicit:
   infrastructure failure.
 - raw trusted exception details remain in private Coordinator events; Agent
   responses and public status expose only stable failure codes;
+- deployment teardown failures remain explicitly recorded even when the
+  episode already ended as DNF or infrastructure failure; a later successful
+  Worker termination is reconciled through Coordinator state rather than only
+  through a runtime-local handle;
+- a failed `start_lease()` is treated as an uncertain creation until the Worker
+  confirms termination; Core retains the semantic Lease ID for teardown retry,
+  while the Worker retains every platform-specific resource handle;
 - TEST output remains staged while the episode is `closed`, and the Coordinator
   publishes exactly one terminal result only after Agent stop metadata and
   transport cleanup are complete. Cleanup is rejected until termination has

@@ -134,6 +134,19 @@ formal deployment may place them on separate services connected only through
 an immutable artifact reference. The current version 2 Python interface does
 not yet define that remote artifact transport.
 
+Worker operation failures and teardown failures have different episode
+semantics. `WorkerFailure` reports an operation that did not produce a usable
+result. `WorkerTeardownFailure` reports that the Worker could not confirm
+termination or removal of an isolated workload boundary. The latter is always
+an infrastructure failure: evaluation must not continue and the Coordinator
+records a stable teardown code while retaining deployment-specific details only
+in its trusted event stream. In particular, `start_lease()` may fail after the
+platform has created a workload but before the caller receives an
+acknowledgement. A Worker must retain enough private state for
+`terminate_lease(episode_id, lease_id)` to be safely retried in that case. The
+Coordinator persists only that semantic Lease ID; container, scheduler, or
+other platform handles remain Worker-owned.
+
 ## Workload identity in v0
 
 The current task fields `training_image`, `candidate_image`,

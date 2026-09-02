@@ -22,6 +22,7 @@ from autotrain_bench.worker_protocol import (
     EnforcementLevel,
     ResearchTaskSpec,
     TrustLevel,
+    WorkerTeardownFailure,
 )
 
 
@@ -59,6 +60,109 @@ class RuntimeBoundaryTests(unittest.TestCase):
             descriptor.capabilities[DEADLINE_TERMINATION].level,
             EnforcementLevel.BEST_EFFORT,
         )
+
+    def test_stop_container_requires_confirmed_absence(self):
+        runtime = DockerRuntime(docker_binary="docker")
+        removal = subprocess.CompletedProcess(
+            ["docker", "rm"], 1, "", "daemon refused removal"
+        )
+        still_present = subprocess.CompletedProcess(
+            ["docker", "container", "ls"], 0, "agent\n", ""
+        )
+
+        with patch.object(runtime, "_run", side_effect=[removal, still_present]):
+            with self.assertRaisesRegex(RuntimeFailure, "daemon refused removal"):
+                runtime.stop_container("agent")
+
+    def test_runtime_execution_error_has_a_typed_failure(self):
+        runtime = DockerRuntime(docker_binary="docker")
+
+        with patch(
+            "autotrain_bench.runtime.subprocess.run",
+            side_effect=OSError("runtime executable disappeared"),
+        ):
+            with self.assertRaisesRegex(RuntimeFailure, "failed to execute"):
+                runtime.stop_container("agent")
+
+    def test_stop_container_accepts_an_already_absent_container(self):
+        runtime = DockerRuntime(docker_binary="docker")
+        removal = subprocess.CompletedProcess(
+            ["docker", "rm"], 1, "", "No such container"
+        )
+        absent = subprocess.CompletedProcess(
+            ["docker", "container", "ls"], 0, "another-container\n", ""
+        )
+
+        with patch.object(runtime, "_run", side_effect=[removal, absent]):
+            runtime.stop_container("agent")
+
+    def test_remove_network_requires_confirmed_absence(self):
+        runtime = DockerRuntime(docker_binary="docker")
+        removal = subprocess.CompletedProcess(
+            ["docker", "network", "rm"], 1, "", "network has active endpoints"
+        )
+        still_present = subprocess.CompletedProcess(
+            ["docker", "network", "ls"], 0, "evaluation-network\n", ""
+        )
+
+        with patch.object(runtime, "_run", side_effect=[removal, still_present]):
+            with self.assertRaisesRegex(RuntimeFailure, "active endpoints"):
+                runtime.remove_network("evaluation-network")
+
+    def test_failed_lease_stop_keeps_the_runtime_lease_handle(self):
+        runtime = DockerRuntime(docker_binary="docker")
+        runtime._worker_leases[("episode", "lease")] = "training"
+
+        with patch.object(
+            runtime,
+            "stop_container",
+            side_effect=RuntimeFailure("termination not confirmed"),
+        ):
+            with self.assertRaisesRegex(WorkerTeardownFailure, "not confirmed"):
+                runtime.terminate_lease(episode_id="episode", lease_id="lease")
+
+        self.assertEqual(
+            runtime._worker_leases[("episode", "lease")],
+            "training",
+        )
+
+    def test_uncertain_lease_start_keeps_a_retryable_runtime_handle(self):
+        runtime = DockerRuntime(docker_binary="docker")
+        task = ResearchTaskSpec.from_task(
+            TaskConfig.load(TASK), TASK.parent / "agent-api"
+        )
+
+        with patch.object(
+            runtime,
+            "start_training",
+            side_effect=RuntimeFailure("Docker client timed out after create"),
+        ):
+            with patch.object(
+                runtime,
+                "stop_container",
+                side_effect=[
+                    RuntimeFailure("container absence not confirmed"),
+                    None,
+                ],
+            ) as stop:
+                with self.assertRaisesRegex(
+                    WorkerTeardownFailure, "cleanup was not confirmed"
+                ):
+                    runtime.start_lease(
+                        episode_id="episode",
+                        lease_id="lease",
+                        duration_seconds=60,
+                        task=task,
+                        workspace=TASK.parent,
+                        resources=TrainingResources(),
+                        lease_dir=TASK.parent / "lease",
+                    )
+
+                self.assertIn(("episode", "lease"), runtime._worker_leases)
+                runtime.terminate_lease(episode_id="episode", lease_id="lease")
+
+        self.assertEqual(stop.call_count, 2)
+        self.assertNotIn(("episode", "lease"), runtime._worker_leases)
 
     def test_runtime_profile_checks_model_count_and_memory_together(self):
         resources = TrainingResources(
@@ -136,6 +240,48 @@ class RuntimeBoundaryTests(unittest.TestCase):
         self.assertIsInstance(result.stdout, str)
         self.assertIsInstance(result.stderr, str)
         self.assertTrue(result.timed_out)
+
+    def test_training_timeout_kills_exec_client_when_container_stop_fails(self):
+        runtime = DockerRuntime(docker_binary="docker")
+
+        class TimedOutProcess:
+            def __init__(self):
+                self.stdout = io.BytesIO(b"")
+                self.stderr = io.BytesIO(b"")
+                self.returncode = None
+                self.wait_count = 0
+                self.killed = False
+
+            def wait(self, timeout):
+                del timeout
+                self.wait_count += 1
+                if self.wait_count == 1:
+                    raise subprocess.TimeoutExpired(["docker", "exec"], 5)
+                return self.returncode
+
+            def poll(self):
+                return self.returncode
+
+            def kill(self):
+                self.killed = True
+                self.returncode = -9
+
+        process = TimedOutProcess()
+        with patch("autotrain_bench.runtime.subprocess.Popen", return_value=process):
+            with patch.object(
+                runtime,
+                "stop_container",
+                side_effect=RuntimeFailure("container remains"),
+            ):
+                with self.assertRaisesRegex(RuntimeFailure, "runtime teardown failed"):
+                    runtime.exec_training(
+                        name="training",
+                        argv=["python", "train.py"],
+                        timeout_seconds=5,
+                    )
+
+        self.assertTrue(process.killed)
+        self.assertEqual(process.wait_count, 2)
 
     def test_training_output_is_drained_with_a_bounded_capture(self):
         class CompletedProcess:
@@ -631,6 +777,37 @@ class RuntimeBoundaryTests(unittest.TestCase):
             self.assertEqual(runtime.call_kwargs[network_index]["timeout"], 7)
             self.assertEqual(runtime.call_kwargs[candidate_index]["timeout"], 5)
             self.assertEqual(runtime.call_kwargs[evaluator_index]["timeout"], 2)
+
+    def test_evaluator_teardown_attempts_every_isolated_resource(self):
+        class FailingTeardownRuntime(CapturingDockerRuntime):
+            def __init__(self):
+                super().__init__()
+                self.teardown = []
+
+            def stop_container(self, name):
+                role = "candidate" if "candidate" in name else "evaluator"
+                self.teardown.append(role)
+                if role == "evaluator":
+                    raise RuntimeFailure("evaluator termination not confirmed")
+
+            def remove_network(self, name):
+                del name
+                self.teardown.append("network")
+
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = FailingTeardownRuntime()
+            with self.assertRaisesRegex(
+                WorkerTeardownFailure, "runtime teardown failed"
+            ):
+                runtime.run_evaluator(
+                    config=TaskConfig.load(TASK),
+                    resources=TrainingResources(),
+                    candidate_dir=TASK.parent / "agent",
+                    split="val",
+                    output_dir=Path(directory) / "output",
+                )
+
+        self.assertEqual(runtime.teardown, ["candidate", "evaluator", "network"])
 
     def test_candidate_logs_are_private_and_never_enter_runtime_error(self):
         class FailingRuntime(CapturingDockerRuntime):

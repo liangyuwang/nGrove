@@ -13,7 +13,10 @@ from unittest.mock import patch
 from autotrain_bench.cli import (
     _episode_exit_code,
     _initialize_agent_workspace,
+    _report_cleanup_failures,
     _resolve_challenge_run,
+    _run_cleanup_steps,
+    _stop_and_record_container_agent,
     _snapshot_agent_workspace,
     _terminal_agent_action,
     _validate_workspace_boundary,
@@ -22,6 +25,7 @@ from autotrain_bench.cli import (
     command_start,
 )
 from autotrain_bench.config import ConfigError, TaskConfig
+from autotrain_bench.runtime import RuntimeFailure
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -89,6 +93,32 @@ class WorkspaceSnapshotTests(unittest.TestCase):
             self.assertEqual(report["failure"], "no_candidate")
             self.assertIsNone(report["test_nll"])
             self.assertIsNone(report["test_perplexity"])
+
+    def test_report_normalizes_older_v2_teardown_shape_without_rewriting_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            episode = Path(directory)
+            original = {
+                "result_schema_version": 2,
+                "status": "infrastructure_failure",
+                "outcome": "failed",
+                "final_candidate_id": None,
+                "test_nll": None,
+                "test_perplexity": None,
+                "failure": "benchmark_monitor_failure",
+            }
+            state_path = episode / "state.json"
+            state_path.write_text(json.dumps(original), encoding="utf-8")
+            output = io.StringIO()
+
+            with redirect_stdout(output):
+                return_code = command_report(argparse.Namespace(episode=episode))
+
+            report = json.loads(output.getvalue())
+            self.assertEqual(return_code, 0)
+            self.assertEqual(report["deployment_teardown_failures"], [])
+            self.assertEqual(
+                json.loads(state_path.read_text(encoding="utf-8")), original
+            )
 
     def test_report_rejects_an_unknown_result_schema(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -265,6 +295,139 @@ class WorkspaceSnapshotTests(unittest.TestCase):
             ),
             "drain_timeout",
         )
+
+    def test_container_termination_is_recorded_only_after_verified_stop(self):
+        calls = []
+
+        class Runtime:
+            def container_running(self, name):
+                calls.append(("running", name))
+                return True
+
+            def container_exit_code(self, name):
+                raise AssertionError(f"unexpected exit-code query for {name}")
+
+            def stop_container(self, name):
+                calls.append(("stop", name))
+
+        class Supervisor:
+            def record_agent_execution(self, **metadata):
+                calls.append(("record", metadata))
+
+            def infrastructure_failed(self, *args, **kwargs):
+                raise AssertionError((args, kwargs))
+
+        _stop_and_record_container_agent(
+            runtime=Runtime(),
+            supervisor=Supervisor(),
+            name="agent",
+            drain_seconds=3.0,
+        )
+        self.assertEqual([call[0] for call in calls], ["running", "stop", "record"])
+        self.assertEqual(calls[-1][1]["termination_reason"], "drain_timeout")
+
+    def test_unverified_container_stop_is_not_recorded(self):
+        calls = []
+
+        class Runtime:
+            def container_running(self, name):
+                del name
+                return True
+
+            def stop_container(self, name):
+                del name
+                raise RuntimeFailure("private Docker daemon detail")
+
+        class Supervisor:
+            def record_agent_execution(self, **metadata):
+                raise AssertionError(metadata)
+
+        with self.assertRaisesRegex(RuntimeFailure, "private Docker daemon detail"):
+            _stop_and_record_container_agent(
+                runtime=Runtime(),
+                supervisor=Supervisor(),
+                name="agent",
+                drain_seconds=3.0,
+            )
+        self.assertEqual(calls, [])
+
+    def test_cleanup_steps_continue_after_an_earlier_failure(self):
+        calls = []
+
+        def fail_lease():
+            calls.append("lease")
+            raise RuntimeFailure("lease still running")
+
+        def stop_agent():
+            calls.append("agent")
+
+        def stop_gateway():
+            calls.append("gateway")
+
+        failures = _run_cleanup_steps(
+            [
+                ("training_lease_termination_failure", fail_lease),
+                ("agent_termination_failure", stop_agent),
+                ("inference_gateway_termination_failure", stop_gateway),
+            ]
+        )
+
+        self.assertEqual(calls, ["lease", "agent", "gateway"])
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0][0], "training_lease_termination_failure")
+        self.assertIn("lease still running", failures[0][1])
+
+    def test_cleanup_steps_treat_an_explicit_false_result_as_incomplete(self):
+        calls = []
+
+        def incomplete_control_cleanup():
+            calls.append("control")
+            return False
+
+        def remove_network():
+            calls.append("network")
+
+        failures = _run_cleanup_steps(
+            [
+                ("agent_control_teardown_failure", incomplete_control_cleanup),
+                ("runtime_network_teardown_failure", remove_network),
+            ]
+        )
+
+        self.assertEqual(calls, ["control", "network"])
+        self.assertEqual(
+            failures,
+            [("agent_control_teardown_failure", "cleanup reported incomplete")],
+        )
+
+    def test_cleanup_failures_use_the_terminal_safe_supervisor_path(self):
+        calls = []
+
+        class Supervisor:
+            def deployment_teardown_failed(self, code, *, private_detail=None):
+                calls.append((code, private_detail))
+
+            def infrastructure_failed(self, *args, **kwargs):
+                raise AssertionError((args, kwargs))
+
+        _report_cleanup_failures(
+            Supervisor(),
+            [
+                (
+                    "agent_termination_failure",
+                    "RuntimeFailure: untrusted container remains",
+                ),
+                (
+                    "runtime_network_teardown_failure",
+                    "RuntimeFailure: network remains",
+                ),
+            ],
+        )
+
+        self.assertEqual(calls[0][0], "agent_termination_failure")
+        self.assertIn("untrusted container remains", calls[0][1])
+        self.assertEqual(calls[1][0], "runtime_network_teardown_failure")
+        self.assertIn("network remains", calls[1][1])
 
     def test_declare_incumbent_command_is_explicit(self):
         args = build_parser().parse_args(

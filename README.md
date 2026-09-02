@@ -391,6 +391,17 @@ is later rewritten. The Supervisor rejects control cleanup until trusted Agent
 termination metadata has been recorded; the Operator or deployment launcher
 must stop the workload before recording that metadata.
 
+Deployment cleanup can still fail after an episode has already reached DNF or
+an infrastructure-failure state. Those failures do not rewrite the original
+classification. Their stable codes are appended to
+`deployment_teardown_failures`, while runtime-specific details remain only in
+the trusted event stream. A successful retry of active-Lease termination is
+reconciled through the Supervisor so the final state no longer reports a stale
+Lease and official Lease accounting remains frozen at episode closure.
+Likewise, if a Worker cannot confirm cleanup after a failed `start_lease()`,
+the Supervisor retains the semantic Lease ID for a final retry; runtime or
+scheduler resource handles remain private to the Worker deployment.
+
 The example proves the complete protocol:
 
 ```text
