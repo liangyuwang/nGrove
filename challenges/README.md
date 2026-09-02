@@ -23,6 +23,12 @@ Every runnable challenge task must declare:
 and comparison policy is published. Track A and Track B are execution modes
 inside a challenge manifest, not directory categories.
 
+Core additionally requires an `official` release with no provisional track or
+runtime profiles, a complete comparison key, digest-pinned task and Agent
+images, policy-compliant execution, and certified conformant Research and
+Evaluation Workers. Missing evidence is recorded in
+`leaderboard_eligibility_violations`; it never silently promotes a preview.
+
 A challenge release also publishes finite `track_configs` and
 `runtime_profiles` maps. The task remains hardware-independent; the runtime
 profile selects episode resources and the leaderboard compares results only

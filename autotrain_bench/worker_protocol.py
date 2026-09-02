@@ -11,13 +11,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional, Protocol, Sequence, Tuple, runtime_checkable
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    Mapping,
+    Optional,
+    Protocol,
+    Sequence,
+    Tuple,
+    runtime_checkable,
+)
 
 if TYPE_CHECKING:
     from .config import TaskConfig, TrainingResources
 
 
-WORKER_PROTOCOL_VERSION = 1
+WORKER_PROTOCOL_VERSION = 2
 
 
 class WorkerFailure(RuntimeError):
@@ -72,6 +82,74 @@ class CommandResult:
     stdout: str
     stderr: str
     timed_out: bool = False
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
+
+
+@dataclass(frozen=True)
+class ResearchTaskSpec:
+    """Only task fields that a Research Worker is allowed to receive."""
+
+    task_id: str
+    training_image: str
+    train_dir: Path
+    public_api_dir: Path
+
+    @classmethod
+    def from_task(
+        cls, task: "TaskConfig", public_api_dir: Path
+    ) -> "ResearchTaskSpec":
+        return cls(
+            task_id=task.task_id,
+            training_image=task.training_image,
+            train_dir=task.train_dir,
+            public_api_dir=public_api_dir,
+        )
+
+
+@dataclass(frozen=True)
+class EvaluationTaskSpec:
+    """Evaluator configuration without either hidden split location."""
+
+    task_id: str
+    backend: str
+    candidate_image: str
+    evaluator_image: str
+    evaluator_entrypoint: Path
+    metric: str
+    vocab_size: int
+    context_length: int
+    batch_size: int
+    device: str
+    timeout_seconds: int
+
+    @classmethod
+    def from_task(cls, task: "TaskConfig") -> "EvaluationTaskSpec":
+        return cls(
+            task_id=task.task_id,
+            backend=task.evaluator_backend,
+            candidate_image=task.candidate_image,
+            evaluator_image=task.evaluator_image,
+            evaluator_entrypoint=task.evaluator_entrypoint,
+            metric=task.metric,
+            vocab_size=task.vocab_size,
+            context_length=task.context_length,
+            batch_size=task.evaluator_batch_size,
+            device=task.evaluator_device,
+            timeout_seconds=task.evaluator_timeout_seconds,
+        )
+
+
+@dataclass(frozen=True)
+class HiddenSplitRef:
+    """One organizer-selected hidden split visible to an Evaluation Worker."""
+
+    name: str
+    path: Path
+
+    def __post_init__(self) -> None:
+        if self.name not in {"val", "test"}:
+            raise ValueError("hidden split name must be 'val' or 'test'")
 
 
 @dataclass(frozen=True)
@@ -266,7 +344,7 @@ class ResearchWorker(Protocol):
         episode_id: str,
         lease_id: str,
         duration_seconds: float,
-        config: "TaskConfig",
+        task: ResearchTaskSpec,
         workspace: Path,
         resources: "TrainingResources",
         lease_dir: Path,
@@ -301,10 +379,10 @@ class EvaluationWorker(Protocol):
         self,
         *,
         episode_id: str,
-        config: "TaskConfig",
+        task: EvaluationTaskSpec,
         resources: "TrainingResources",
         candidate_dir: Path,
-        split: str,
+        hidden_split: HiddenSplitRef,
         output_dir: Path,
         timeout_seconds: Optional[float] = None,
     ) -> float:

@@ -117,6 +117,11 @@ class ChallengeReleaseTests(unittest.TestCase):
             path = self._write_release(directory)
             payload = json.loads(path.read_text(encoding="utf-8"))
             payload["leaderboard_eligible"] = True
+            payload["release_stage"] = "official"
+            for value in payload["track_configs"].values():
+                value["provisional"] = False
+            for value in payload["runtime_profiles"].values():
+                value["provisional"] = False
             path.write_text(json.dumps(payload), encoding="utf-8")
             release = ChallengeRelease.load(path)
             with self.assertRaisesRegex(ConfigError, "development smoke"):
@@ -155,6 +160,20 @@ class ChallengeReleaseTests(unittest.TestCase):
             profile["host_count"] = 2
             path.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaisesRegex(ConfigError, "host_count must be 1"):
+                ChallengeRelease.load(path)
+
+    def test_leaderboard_release_must_be_official_and_frozen(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._write_release(directory)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["leaderboard_eligible"] = True
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ConfigError, "release_stage='official'"):
+                ChallengeRelease.load(path)
+
+            payload["release_stage"] = "official"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ConfigError, "provisional"):
                 ChallengeRelease.load(path)
 
 

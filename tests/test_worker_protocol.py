@@ -43,7 +43,7 @@ class WorkerProtocolTests(unittest.TestCase):
         assessment = assess_worker(
             descriptor(
                 trust=TrustLevel.CERTIFIED,
-                conformance=ConformanceReceipt("worker-v1", True),
+                conformance=ConformanceReceipt("worker-v2", True),
             ),
             BASELINE_REQUIREMENTS,
         )
@@ -69,7 +69,7 @@ class WorkerProtocolTests(unittest.TestCase):
 
     def test_descriptor_manifest_contains_no_platform_schema(self):
         manifest = descriptor().public_manifest()
-        self.assertEqual(manifest["protocol_version"], 1)
+        self.assertEqual(manifest["protocol_version"], 2)
         self.assertEqual(manifest["roles"], ["research", "evaluation"])
         serialized = json.dumps(manifest).lower()
         self.assertNotIn("docker", serialized)
@@ -80,7 +80,7 @@ class WorkerProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "protocol version"):
             WorkerDescriptor(
                 worker_id="future-worker",
-                protocol_version=2,
+                protocol_version=3,
                 trust_level=TrustLevel.DEVELOPMENT,
                 roles=("research",),
                 capabilities={},

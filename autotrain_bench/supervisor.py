@@ -7,14 +7,21 @@ import json
 import os
 import shutil
 import stat
+import subprocess
 import threading
 import time
 import uuid
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from .config import AgentConfig, TaskConfig, TrainingResources
+from .config import (
+    AgentConfig,
+    TaskConfig,
+    TrainingResources,
+    immutable_image_reference,
+)
 from .inference import summarize_inference_trace
 from .results import RESULT_SCHEMA_VERSION, perplexity_from_nll, validated_nll
 from .worker_protocol import (
@@ -25,11 +32,20 @@ from .worker_protocol import (
     CommandResult,
     EvaluationWorker,
     EnforcementLevel,
+    EvaluationTaskSpec,
+    HiddenSplitRef,
     LeaseState,
+    ResearchTaskSpec,
     ResearchWorker,
     WorkerFailure,
     assess_worker,
 )
+
+
+MAX_COMMAND_STREAM_BYTES = 1024 * 1024
+MAX_MAILBOX_RESPONSE_BYTES = 3 * 1024 * 1024
+MAX_LOG_READ_BYTES = 4 * 1024 * 1024
+MAX_COMMAND_LOG_BYTES = 64 * 1024 * 1024
 
 
 class ProtocolError(RuntimeError):
@@ -68,26 +84,121 @@ def _read_untrusted_request(path: Path, maximum_bytes: int) -> Dict[str, Any]:
 def _write_untrusted_response(directory: Path, request_id: str, response: Dict[str, Any]) -> None:
     """Publish a mailbox response without following Agent-created symlinks."""
 
-    temporary = directory / f".{request_id}.{uuid.uuid4().hex}.tmp"
+    if not request_id or any(value not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" for value in request_id):
+        raise ProtocolError("invalid_request", "request id contains invalid characters")
+    temporary = f".{request_id}.{uuid.uuid4().hex}.tmp"
+    destination = f"{request_id}.json"
+    encoded = json.dumps(response, sort_keys=True).encode("utf-8")
+    if len(encoded) > MAX_MAILBOX_RESPONSE_BYTES:
+        encoded = json.dumps(
+            {
+                "ok": False,
+                "error": {
+                    "code": "response_too_large",
+                    "message": "supervisor response exceeds the mailbox limit",
+                },
+            },
+            sort_keys=True,
+        ).encode("utf-8")
     flags = (
         os.O_WRONLY
         | os.O_CREAT
         | os.O_EXCL
         | getattr(os, "O_NOFOLLOW", 0)
     )
-    descriptor = os.open(str(temporary), flags, 0o600)
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    directory_descriptor = os.open(str(directory), directory_flags)
+    descriptor = -1
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        descriptor = os.open(temporary, flags, 0o600, dir_fd=directory_descriptor)
+        with os.fdopen(descriptor, "wb") as stream:
             descriptor = -1
-            json.dump(response, stream, sort_keys=True)
+            stream.write(encoded)
+        os.replace(
+            temporary,
+            destination,
+            src_dir_fd=directory_descriptor,
+            dst_dir_fd=directory_descriptor,
+        )
+    except Exception:
+        try:
+            os.unlink(temporary, dir_fd=directory_descriptor)
+        except FileNotFoundError:
+            pass
+        raise
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+        os.close(directory_descriptor)
+
+
+def _bounded_text(value: Any, maximum_bytes: int = MAX_COMMAND_STREAM_BYTES) -> tuple[str, bool]:
+    if not isinstance(value, str):
+        value = str(value)
+    encoded = value.encode("utf-8", errors="replace")
+    if len(encoded) <= maximum_bytes:
+        return value, False
+    marker = b"\n[output truncated by AutoTrain-Bench]\n"
+    prefix = encoded[: max(0, maximum_bytes - len(marker))]
+    while prefix:
+        try:
+            result = prefix.decode("utf-8")
+            break
+        except UnicodeDecodeError:
+            prefix = prefix[:-1]
+    else:
+        result = ""
+    return result + marker.decode("ascii"), True
+
+
+def _tail_json_lines(path: Path, limit: int) -> tuple[list[Dict[str, Any]], bool]:
+    size = path.stat().st_size
+    offset = max(0, size - MAX_LOG_READ_BYTES)
+    with path.open("rb") as stream:
+        stream.seek(offset)
+        data = stream.read(MAX_LOG_READ_BYTES)
+    truncated = offset > 0
+    if truncated:
+        first_newline = data.find(b"\n")
+        data = b"" if first_newline < 0 else data[first_newline + 1 :]
+    lines = data.splitlines()[-limit:]
+    return [json.loads(line) for line in lines], truncated
+
+
+def _sha256_file(path: Path) -> Optional[str]:
+    if not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+@lru_cache(maxsize=1)
+def _core_identity() -> Dict[str, Any]:
+    root = Path(__file__).resolve().parent.parent
     try:
-        os.replace(str(temporary), str(directory / f"{request_id}.json"))
-    except Exception:
-        temporary.unlink(missing_ok=True)
-        raise
+        revision = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout.strip()
+        dirty = bool(
+            subprocess.run(
+                ["git", "-C", str(root), "status", "--porcelain"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            ).stdout.strip()
+        )
+    except (OSError, subprocess.SubprocessError):
+        revision = None
+        dirty = None
+    return {"revision": revision, "dirty": dirty}
 
 
 class Supervisor:
@@ -113,13 +224,14 @@ class Supervisor:
         normalized = track.upper()
         if normalized not in {"A", "B"}:
             raise ValueError("track must be A or B")
-        self.config = config
+        self.config = config.validate()
         self.agent = agent.validate()
         self.resources = resources.validate_for(config)
         self.track = normalized
         self.episode_dir = episode_dir.resolve()
         self.research_worker = research_worker
         self.evaluation_worker = evaluation_worker
+        self.evaluation_task = EvaluationTaskSpec.from_task(config)
         self.monotonic = monotonic
         self.wall_time = wall_time
         self.lock = threading.RLock()
@@ -135,6 +247,14 @@ class Supervisor:
         self.inference_dir = self.episode_dir / "inference"
         self.inference_trace_path = self.inference_dir / "inference.jsonl"
         self.public_dir = self.episode_dir / "public"
+        self.state_path = self.episode_dir / "state.json"
+        self.events_path = self.episode_dir / "events.jsonl"
+        self.public_task_path = self.public_dir / "task.json"
+        self.agent_api_dir = self.public_dir / "agent_api"
+        if self.state_path.exists() or self.events_path.exists():
+            raise ValueError(f"episode directory already contains state: {self.episode_dir}")
+        self.episode_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.episode_dir, 0o700)
         for directory in (
             self.inbox,
             self.outbox,
@@ -145,16 +265,21 @@ class Supervisor:
             self.public_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
-        os.chmod(self.control_dir, 0o777)
+        os.chmod(self.control_dir, 0o700)
         os.chmod(self.inbox, 0o777)
         os.chmod(self.outbox, 0o777)
         os.chmod(self.inference_dir, 0o700)
+        for directory in (
+            self.runs_dir,
+            self.candidates_dir,
+            self.evaluations_dir,
+        ):
+            os.chmod(directory, 0o700)
 
-        self.state_path = self.episode_dir / "state.json"
-        self.events_path = self.episode_dir / "events.jsonl"
-        self.public_task_path = self.public_dir / "task.json"
-        if self.state_path.exists() or self.events_path.exists():
-            raise ValueError(f"episode directory already contains state: {self.episode_dir}")
+        self._publish_agent_api()
+        self.research_task = ResearchTaskSpec.from_task(
+            config, self.agent_api_dir
+        )
 
         research_descriptor = research_worker.describe_capabilities()
         evaluation_descriptor = evaluation_worker.describe_capabilities()
@@ -184,6 +309,10 @@ class Supervisor:
             policy_violations.append("agent_execution_boundary")
         if not config.evaluator_policy_compliant:
             policy_violations.append("candidate_evaluator_isolation")
+        if "research" not in research_descriptor.roles:
+            policy_violations.append("research_worker_role_missing")
+        if "evaluation" not in evaluation_descriptor.roles:
+            policy_violations.append("evaluation_worker_role_missing")
         for role, assessment in (
             ("research", research_assessment),
             ("evaluation", evaluation_assessment),
@@ -197,16 +326,83 @@ class Supervisor:
                     f"{role}_worker_capability_insufficient:{capability}"
                 )
         policy_compliant = not policy_violations
+        eligibility_violations = []
+        if not config.leaderboard_eligible:
+            eligibility_violations.append("task_not_leaderboard_eligible")
+        if not policy_compliant:
+            eligibility_violations.append("policy_not_compliant")
+        if not research_assessment.leaderboard_eligible:
+            eligibility_violations.append("research_worker_not_certified")
+        if not evaluation_assessment.leaderboard_eligible:
+            eligibility_violations.append("evaluation_worker_not_certified")
+        required_comparison_fields = {
+            "challenge_id",
+            "track",
+            "track_config",
+            "runtime_profile",
+        }
+        if (
+            not isinstance(comparison_key, dict)
+            or not required_comparison_fields.issubset(comparison_key)
+            or any(
+                not isinstance(comparison_key.get(field), str)
+                or not comparison_key[field].strip()
+                for field in required_comparison_fields
+            )
+        ):
+            eligibility_violations.append("comparison_key_missing")
+        elif comparison_key.get("track") != self.track:
+            eligibility_violations.append("comparison_key_track_mismatch")
+        release_ready = isinstance(challenge_release, dict)
+        if not release_ready:
+            eligibility_violations.append("challenge_release_missing")
+        else:
+            if challenge_release.get("release_stage") != "official":
+                eligibility_violations.append("challenge_release_not_official")
+            if challenge_release.get("leaderboard_eligible") is not True:
+                eligibility_violations.append("challenge_release_not_eligible")
+            if (
+                isinstance(comparison_key, dict)
+                and challenge_release.get("challenge_id")
+                != comparison_key.get("challenge_id")
+            ):
+                eligibility_violations.append("challenge_release_identity_mismatch")
+            for digest_field in (
+                "challenge_manifest_sha256",
+                "task_manifest_sha256",
+            ):
+                digest = challenge_release.get(digest_field)
+                if (
+                    not isinstance(digest, str)
+                    or len(digest) != 64
+                    or any(value not in "0123456789abcdef" for value in digest)
+                ):
+                    eligibility_violations.append(f"{digest_field}_missing")
+            for field in ("track_config", "runtime_profile"):
+                selected = challenge_release.get(field)
+                if not isinstance(selected, dict) or selected.get("provisional") is not False:
+                    eligibility_violations.append(f"{field}_not_frozen")
+            if isinstance(comparison_key, dict):
+                for release_field, comparison_field in (
+                    ("track_config_id", "track_config"),
+                    ("runtime_profile_id", "runtime_profile"),
+                ):
+                    if challenge_release.get(release_field) != comparison_key.get(
+                        comparison_field
+                    ):
+                        eligibility_violations.append(
+                            f"{release_field}_mismatch"
+                        )
+        if agent.runner != "container" or not immutable_image_reference(agent.image):
+            eligibility_violations.append("agent_image_not_digest_pinned")
+
         leaderboard_eligible = (
             config.leaderboard_eligible
             and policy_compliant
             and research_assessment.leaderboard_eligible
             and evaluation_assessment.leaderboard_eligible
+            and not eligibility_violations
         )
-        if challenge_release is not None:
-            leaderboard_eligible = leaderboard_eligible and bool(
-                challenge_release.get("leaderboard_eligible", False)
-            )
 
         self.state: Dict[str, Any] = {
             "protocol_version": 1,
@@ -215,11 +411,25 @@ class Supervisor:
             "task_id": config.task_id,
             "task_kind": config.task_kind,
             "leaderboard_eligible": leaderboard_eligible,
+            "leaderboard_eligibility_violations": eligibility_violations,
             "track": self.track,
             "comparison_key": dict(comparison_key) if comparison_key else None,
             "challenge_release": (
                 dict(challenge_release) if challenge_release else None
             ),
+            "artifact_identities": {
+                "core_git": _core_identity(),
+                "task_manifest_sha256": _sha256_file(config.source),
+                "policy_sha256": _sha256_file(config.source.parent / "POLICY.md"),
+                "evaluator_sha256": _sha256_file(config.evaluator_entrypoint),
+                "train_manifest_sha256": _sha256_file(
+                    config.train_dir / "manifest.json"
+                ),
+                "hidden_splits": {
+                    "val_sha256": _sha256_file(config.val_path),
+                    "test_sha256": _sha256_file(config.test_path),
+                },
+            },
             "policy_compliant": policy_compliant,
             "policy_violations": policy_violations,
             "workers": {
@@ -315,6 +525,33 @@ class Supervisor:
         )
         self._save_state()
 
+    def _publish_agent_api(self) -> None:
+        """Publish only the untrusted Agent client, never the Core package."""
+
+        package = self.agent_api_dir / "autotrain_bench"
+        package.mkdir(parents=True, exist_ok=False)
+        core_package = Path(__file__).resolve().parent
+        published = {
+            "client.py": "client.py",
+            "agent_cli.py": "cli.py",
+            "candidate_protocol.py": "candidate_protocol.py",
+            "candidate_preflight.py": "candidate_preflight.py",
+        }
+        for source_name, destination_name in published.items():
+            shutil.copy2(
+                core_package / source_name,
+                package / destination_name,
+            )
+        (package / "__init__.py").write_text(
+            "from .client import Client, ClientError\n"
+            "__all__ = ['Client', 'ClientError']\n",
+            encoding="utf-8",
+        )
+        for path in package.iterdir():
+            path.chmod(0o444)
+        package.chmod(0o555)
+        self.agent_api_dir.chmod(0o555)
+
     def begin(self) -> None:
         with self.lock:
             if self.state["status"] != "created":
@@ -406,6 +643,7 @@ class Supervisor:
         }
         with self.events_path.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(event, sort_keys=True) + "\n")
+        self.events_path.chmod(0o600)
 
     def _save_state(self) -> None:
         self.state["elapsed_seconds"] = round(self._elapsed(), 6)
@@ -442,6 +680,9 @@ class Supervisor:
                 "task_id": self.config.task_id,
                 "task_kind": self.config.task_kind,
                 "leaderboard_eligible": self.state["leaderboard_eligible"],
+                "leaderboard_eligibility_violations": list(
+                    self.state["leaderboard_eligibility_violations"]
+                ),
                 "track": self.track,
                 "comparison_key": self.state["comparison_key"],
                 "agent_runner": self.agent.runner,
@@ -555,7 +796,7 @@ class Supervisor:
                     episode_id=self.state["episode_id"],
                     lease_id=lease_id,
                     duration_seconds=duration,
-                    config=self.config,
+                    task=self.research_task,
                     workspace=self.agent.workspace,
                     resources=self.resources,
                     lease_dir=lease_dir,
@@ -614,22 +855,38 @@ class Supervisor:
                     )
                 remaining = min(remaining, float(command_timeout_seconds))
 
+            log_path = self.runs_dir / active["lease_id"] / "commands.jsonl"
+            if log_path.exists() and log_path.stat().st_size >= MAX_COMMAND_LOG_BYTES:
+                raise ProtocolError(
+                    "command_log_limit",
+                    "the lease command log size limit has been reached",
+                )
+
             result: CommandResult = self.research_worker.exec_lease(
                 episode_id=self.state["episode_id"],
                 lease_id=active["lease_id"],
                 argv=argv,
                 timeout_seconds=remaining,
             )
+            stdout, local_stdout_truncated = _bounded_text(result.stdout)
+            stderr, local_stderr_truncated = _bounded_text(result.stderr)
+            stdout_truncated = (
+                result.stdout_truncated or local_stdout_truncated
+            )
+            stderr_truncated = (
+                result.stderr_truncated or local_stderr_truncated
+            )
             active["exec_count"] += 1
             record = {
                 "exec": active["exec_count"],
                 "argv": argv,
                 "exit_code": result.exit_code,
-                "stdout": result.stdout,
-                "stderr": result.stderr,
+                "stdout": stdout,
+                "stderr": stderr,
+                "stdout_truncated": stdout_truncated,
+                "stderr_truncated": stderr_truncated,
                 "timed_out": result.timed_out,
             }
-            log_path = self.runs_dir / active["lease_id"] / "commands.jsonl"
             with log_path.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(record, sort_keys=True) + "\n")
             self._event(
@@ -664,10 +921,11 @@ class Supervisor:
             log_path = self.runs_dir / lease_id / "commands.jsonl"
             if not log_path.exists():
                 return {"lease_id": lease_id, "commands": []}
-            lines = log_path.read_text(encoding="utf-8").splitlines()[-limit:]
+            commands, truncated = _tail_json_lines(log_path, limit)
             return {
                 "lease_id": lease_id,
-                "commands": [json.loads(line) for line in lines],
+                "commands": commands,
+                "history_truncated": truncated,
             }
 
     def _end_active_lease(self, reason: str) -> Optional[str]:
@@ -729,7 +987,7 @@ class Supervisor:
             raise ProtocolError(
                 "invalid_candidate", f"candidate directory does not exist: {candidate_path}"
             )
-        file_count = 0
+        entry_count = 0
         total_bytes = 0
         for item in resolved.rglob("*"):
             if item.is_symlink():
@@ -738,21 +996,22 @@ class Supervisor:
                 )
             metadata = item.lstat()
             if stat.S_ISDIR(metadata.st_mode):
-                continue
-            if not stat.S_ISREG(metadata.st_mode):
+                entry_count += 1
+            elif stat.S_ISREG(metadata.st_mode):
+                if metadata.st_nlink != 1:
+                    raise ProtocolError(
+                        "invalid_candidate",
+                        "candidate bundle files may not be hard-linked",
+                    )
+                entry_count += 1
+                total_bytes += metadata.st_size
+            else:
                 raise ProtocolError(
                     "invalid_candidate",
                     "candidate bundles may contain only directories and regular files",
                 )
-            if metadata.st_nlink != 1:
-                raise ProtocolError(
-                    "invalid_candidate",
-                    "candidate bundle files may not be hard-linked",
-                )
-            file_count += 1
-            total_bytes += metadata.st_size
             if (
-                file_count > self.config.candidate_max_files
+                entry_count > self.config.candidate_max_files
                 or total_bytes > self.config.candidate_max_bytes
             ):
                 raise ProtocolError(
@@ -770,6 +1029,8 @@ class Supervisor:
         digest = hashlib.sha256()
         for path in sorted(root.rglob("*")):
             relative = path.relative_to(root).as_posix().encode("utf-8")
+            metadata = path.lstat()
+            mode = stat.S_IMODE(metadata.st_mode).to_bytes(4, "big")
             if path.is_symlink():
                 target = os.readlink(path).encode("utf-8")
                 digest.update(b"symlink\0")
@@ -778,11 +1039,18 @@ class Supervisor:
                 digest.update(len(target).to_bytes(8, "big"))
                 digest.update(target)
                 continue
+            if path.is_dir():
+                digest.update(b"dir\0")
+                digest.update(len(relative).to_bytes(8, "big"))
+                digest.update(relative)
+                digest.update(mode)
+                continue
             if not path.is_file():
                 continue
             digest.update(b"file\0")
             digest.update(len(relative).to_bytes(8, "big"))
             digest.update(relative)
+            digest.update(mode)
             with path.open("rb") as stream:
                 for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                     digest.update(chunk)
@@ -846,10 +1114,10 @@ class Supervisor:
                 val_nll = validated_nll(
                     self.evaluation_worker.evaluate_candidate(
                         episode_id=self.state["episode_id"],
-                        config=self.config,
+                        task=self.evaluation_task,
                         resources=self.resources,
                         candidate_dir=snapshot["path"],
-                        split="val",
+                        hidden_split=HiddenSplitRef("val", self.config.val_path),
                         output_dir=self.evaluations_dir / snapshot["path"].name,
                         timeout_seconds=timeout_seconds,
                     )
@@ -949,7 +1217,7 @@ class Supervisor:
     def record_agent_execution(
         self,
         *,
-        exit_code: int,
+        exit_code: Optional[int],
         usage: Optional[Dict[str, Any]] = None,
         termination_reason: str = "exited",
         drain_seconds: float = 0.0,
@@ -957,7 +1225,10 @@ class Supervisor:
         """Attach trusted runner metadata after the Agent process exits."""
 
         with self.lock:
-            self.state["agent_system"]["exit_code"] = int(exit_code)
+            normalized_exit_code = (
+                int(exit_code) if exit_code is not None else None
+            )
+            self.state["agent_system"]["exit_code"] = normalized_exit_code
             self.state["agent_system"]["termination_reason"] = termination_reason
             self.state["agent_system"]["finish_observed"] = (
                 self.state["closure_reason"] == "agent_finished"
@@ -969,7 +1240,7 @@ class Supervisor:
             self._event(
                 "AGENT_PROCESS_EXITED",
                 runner=self.agent.runner,
-                exit_code=int(exit_code),
+                exit_code=normalized_exit_code,
                 termination_reason=termination_reason,
                 finish_observed=self.state["agent_system"]["finish_observed"],
                 drain_seconds=self.state["agent_system"]["drain_seconds"],
@@ -1012,10 +1283,10 @@ class Supervisor:
             test_nll = validated_nll(
                 self.evaluation_worker.evaluate_candidate(
                     episode_id=self.state["episode_id"],
-                    config=self.config,
+                    task=self.evaluation_task,
                     resources=self.resources,
                     candidate_dir=candidate_dir,
-                    split="test",
+                    hidden_split=HiddenSplitRef("test", self.config.test_path),
                     output_dir=self.evaluations_dir / digest,
                     timeout_seconds=float(self.config.evaluator_timeout_seconds),
                 )
@@ -1118,9 +1389,10 @@ class Supervisor:
 
     def infrastructure_failed(self, message: str) -> None:
         with self.lock:
-            if self.state["status"] != "active":
+            if self.state["status"] not in {"created", "active"}:
                 return
-            self._freeze_elapsed()
+            if self.state["status"] == "active":
+                self._freeze_elapsed()
             if self.state["active_lease"] is not None:
                 self._end_active_lease("infrastructure_failure")
             self.state["status"] = "infrastructure_failure"

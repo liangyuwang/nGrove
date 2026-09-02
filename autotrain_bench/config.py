@@ -40,6 +40,7 @@ RESERVED_INFERENCE_CREDENTIAL_ENVIRONMENT = {
     "PYTHONPATH",
 }
 _ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_IMMUTABLE_IMAGE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 
 
 def _mapping(value: Any, field: str) -> Dict[str, Any]:
@@ -124,6 +125,12 @@ def _boolean(value: Any, field: str) -> bool:
     if not isinstance(value, bool):
         raise ConfigError(f"{field} must be a boolean")
     return value
+
+
+def immutable_image_reference(value: Any) -> bool:
+    """Return whether a container reference is pinned to a SHA-256 digest."""
+
+    return isinstance(value, str) and bool(_IMMUTABLE_IMAGE.fullmatch(value))
 
 
 @dataclass(frozen=True)
@@ -212,6 +219,7 @@ class AgentConfig:
     mode: Optional[str] = None
     environment: List[str] = dataclass_field(default_factory=list)
     inference: Optional[InferenceConfig] = None
+    initial_workspace: str = "participant_snapshot"
 
     def validate(self) -> "AgentConfig":
         resolved_runner = agent_runner(self.runner, "agent runner")
@@ -235,6 +243,10 @@ class AgentConfig:
             isinstance(item, str) and item for item in self.command
         ):
             raise ConfigError("--agent-command must be a non-empty command")
+        if self.initial_workspace not in {"empty", "participant_snapshot"}:
+            raise ConfigError(
+                "agent initial_workspace must be 'empty' or 'participant_snapshot'"
+            )
         normalized_environment = agent_environment_names(
             self.environment or [], "agent environment"
         )
@@ -282,7 +294,7 @@ class AgentConfig:
             "workspace": "." if self.runner == "host_cli" else "/workspace",
             "training_workspace": "/workspace",
             "workspace_scope": "episode_snapshot",
-            "initial_workspace": "participant_supplied",
+            "initial_workspace": self.initial_workspace,
             "control": "file_mailbox",
             "forwarded_environment": list(self.environment or []),
             "inference": inference_manifest,
@@ -573,6 +585,37 @@ class TaskConfig:
         if self.evaluator_device not in {"cpu", "cuda"}:
             raise ConfigError("evaluation.device must be 'cpu' or 'cuda'")
         evaluator_backend(self.evaluator_backend)
+        for name, hidden_path in (
+            ("paths.val", self.val_path),
+            ("paths.test", self.test_path),
+        ):
+            try:
+                hidden_path.relative_to(self.train_dir)
+            except ValueError:
+                pass
+            else:
+                raise ConfigError(
+                    f"{name} must be outside the Research Worker TRAIN directory"
+                )
+        if self.val_path.samefile(self.test_path):
+            raise ConfigError("paths.val and paths.test must be distinct files")
+        if self.leaderboard_eligible:
+            images = {
+                "images.training": self.training_image,
+                "images.candidate": self.candidate_image,
+                "images.evaluator": self.evaluator_image,
+                "images.inference_gateway": self.inference_gateway_image,
+            }
+            mutable = [
+                field
+                for field, reference in images.items()
+                if not immutable_image_reference(reference)
+            ]
+            if mutable:
+                raise ConfigError(
+                    "leaderboard-eligible tasks require digest-pinned images: "
+                    + ", ".join(mutable)
+                )
         if not self.evaluator_entrypoint.is_file():
             raise ConfigError(
                 "evaluation.entrypoint is not a file: "

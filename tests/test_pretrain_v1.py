@@ -21,6 +21,63 @@ SPEC.loader.exec_module(MODULE)
 
 
 class PretrainV1Tests(unittest.TestCase):
+    def test_force_refuses_unrecognized_or_overlapping_targets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            source.mkdir()
+            victim = root / "victim"
+            victim.mkdir()
+            (victim / "important.txt").write_text("keep", encoding="utf-8")
+            arguments = {
+                "source_dir": source,
+                "target_train_tokens": 1,
+                "shard_tokens": 1,
+                "eval_target_tokens": 1,
+                "eval_sequence_targets": 1,
+                "accept_large_download": False,
+                "force": True,
+            }
+            with self.assertRaisesRegex(MODULE.PreparationError, "recognizable"):
+                MODULE.prepare(output_dir=victim, **arguments)
+            self.assertEqual(
+                (victim / "important.txt").read_text(encoding="utf-8"), "keep"
+            )
+
+            with self.assertRaisesRegex(MODULE.PreparationError, "overlap"):
+                MODULE.prepare(output_dir=source, **arguments)
+
+            download_arguments = dict(arguments)
+            download_arguments.pop("source_dir")
+            with patch.object(MODULE, "DEFAULT_RAW_DIR", source):
+                with self.assertRaisesRegex(MODULE.PreparationError, "overlap"):
+                    MODULE.prepare(
+                        source_dir=None,
+                        output_dir=source,
+                        **download_arguments,
+                    )
+
+    def test_output_target_may_not_be_a_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            source.mkdir()
+            target = root / "target"
+            target.mkdir()
+            link = root / "generated"
+            link.symlink_to(target, target_is_directory=True)
+            with self.assertRaisesRegex(MODULE.PreparationError, "symbolic link"):
+                MODULE.prepare(
+                    source_dir=source,
+                    output_dir=link,
+                    target_train_tokens=1,
+                    shard_tokens=1,
+                    eval_target_tokens=1,
+                    eval_sequence_targets=1,
+                    accept_large_download=False,
+                    force=True,
+                )
+
     def test_task_uses_fixed_gpt2_ids_and_public_train_root(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

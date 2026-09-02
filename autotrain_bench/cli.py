@@ -287,6 +287,9 @@ def command_start(args: argparse.Namespace) -> int:
             mode=resolved_mode,
             environment=environment,
             inference=inference,
+            initial_workspace=(
+                "empty" if args.agent_workspace is None else "participant_snapshot"
+            ),
         ).validate()
         missing_environment = [
             name for name in agent.environment if name not in os.environ
@@ -371,8 +374,8 @@ def command_start(args: argparse.Namespace) -> int:
                 stderr_path=episode_dir / "agent.stderr.log",
             )
         agent_started = True
-    except Exception:
-        supervisor.agent_exited_without_finish()
+    except Exception as exc:
+        supervisor.infrastructure_failed(f"episode startup failed: {exc}")
         if agent.runner == "container":
             reference_runtime.stop_container(agent_name)
         elif host_agent is not None:
@@ -429,8 +432,11 @@ def command_start(args: argparse.Namespace) -> int:
             if not processed:
                 time.sleep(0.05)
     except KeyboardInterrupt:
-        supervisor.agent_exited_without_finish()
+        supervisor.infrastructure_failed("benchmark supervisor was interrupted")
         host_termination_reason = "supervisor_interrupted"
+    except Exception as exc:
+        supervisor.infrastructure_failed(f"benchmark monitor failed: {exc}")
+        raise
     finally:
         active = supervisor.state.get("active_lease")
         if active:
@@ -451,6 +457,29 @@ def command_start(args: argparse.Namespace) -> int:
         except (OSError, RuntimeFailure):
             pass
         if agent.runner == "container":
+            if agent_started:
+                try:
+                    running = reference_runtime.container_running(agent_name)
+                    supervisor.record_agent_execution(
+                        exit_code=(
+                            None
+                            if running
+                            else reference_runtime.container_exit_code(agent_name)
+                        ),
+                        termination_reason=(
+                            "drain_timeout" if running else "exited"
+                        ),
+                        drain_seconds=(
+                            max(0.0, time.monotonic() - terminal_at)
+                            if terminal_at is not None
+                            else 0.0
+                        ),
+                    )
+                except RuntimeFailure:
+                    supervisor.record_agent_execution(
+                        exit_code=None,
+                        termination_reason="metadata_unavailable",
+                    )
             reference_runtime.stop_container(agent_name)
         elif host_agent is not None:
             if host_termination_reason is None:

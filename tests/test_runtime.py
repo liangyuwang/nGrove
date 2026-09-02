@@ -1,4 +1,5 @@
 import os
+import io
 import json
 import subprocess
 import sys
@@ -19,12 +20,22 @@ from autotrain_bench.host_agent import summarize_host_agent_trace
 from autotrain_bench.worker_protocol import (
     DEADLINE_TERMINATION,
     EnforcementLevel,
+    ResearchTaskSpec,
     TrustLevel,
 )
 
 
 ROOT = Path(__file__).resolve().parents[1]
 TASK = ROOT / "tests/fixtures/task/task.json"
+
+
+def publish_agent_api(public_task: Path) -> None:
+    package = public_task.parent / "agent_api/autotrain_bench"
+    package.mkdir(parents=True)
+    (package / "client.py").write_text("class Client: pass\n", encoding="utf-8")
+    (package / "candidate_preflight.py").write_text(
+        "def main(): pass\n", encoding="utf-8"
+    )
 
 
 class CapturingDockerRuntime(DockerRuntime):
@@ -84,14 +95,31 @@ class RuntimeBoundaryTests(unittest.TestCase):
 
     def test_training_timeout_decodes_partial_byte_output(self):
         runtime = DockerRuntime(docker_binary="docker")
-        timeout = subprocess.TimeoutExpired(
-            ["docker", "exec", "training", "python", "train.py"],
-            5,
-            output=b"partial stdout: \xff",
-            stderr=b"partial stderr: \xfe",
-        )
+        class TimedOutProcess:
+            def __init__(self):
+                self.stdout = io.BytesIO(b"partial stdout: \xff")
+                self.stderr = io.BytesIO(b"partial stderr: \xfe")
+                self.returncode = None
+                self.wait_count = 0
 
-        with patch("autotrain_bench.runtime.subprocess.run", side_effect=timeout):
+            def wait(self, timeout):
+                del timeout
+                self.wait_count += 1
+                if self.wait_count == 1:
+                    raise subprocess.TimeoutExpired(["docker", "exec"], 5)
+                self.returncode = -9
+                return self.returncode
+
+            def poll(self):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        with patch(
+            "autotrain_bench.runtime.subprocess.Popen",
+            return_value=TimedOutProcess(),
+        ):
             with patch.object(runtime, "stop_container") as stop_container:
                 result = runtime.exec_training(
                     name="training",
@@ -106,6 +134,38 @@ class RuntimeBoundaryTests(unittest.TestCase):
         self.assertIsInstance(result.stdout, str)
         self.assertIsInstance(result.stderr, str)
         self.assertTrue(result.timed_out)
+
+    def test_training_output_is_drained_with_a_bounded_capture(self):
+        class CompletedProcess:
+            def __init__(self):
+                self.stdout = io.BytesIO(b"x" * (2 * 1024 * 1024))
+                self.stderr = io.BytesIO(b"")
+                self.returncode = None
+
+            def wait(self, timeout):
+                del timeout
+                self.returncode = 0
+                return 0
+
+            def poll(self):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        runtime = DockerRuntime(docker_binary="docker")
+        with patch(
+            "autotrain_bench.runtime.subprocess.Popen",
+            return_value=CompletedProcess(),
+        ):
+            result = runtime.exec_training(
+                name="training",
+                argv=["python", "train.py"],
+                timeout_seconds=5,
+            )
+        self.assertEqual(result.exit_code, 0)
+        self.assertTrue(result.stdout_truncated)
+        self.assertLessEqual(len(result.stdout.encode("utf-8")), 1024 * 1024)
 
     def test_task_preparation_has_no_implicit_agent_image(self):
         config = TaskConfig.load(TASK)
@@ -247,6 +307,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             control.mkdir()
             public_task = root / "task.json"
             public_task.write_text("{}", encoding="utf-8")
+            publish_agent_api(public_task)
             config = TaskConfig.load(TASK)
             agent = AgentConfig(
                 workspace=workspace,
@@ -264,7 +325,11 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 public_task_path=public_task,
             )
             command = "\n".join(runtime.calls[0])
-            self.assertIn("dst=/opt/autotrain_bench,readonly", command)
+            self.assertIn("dst=/opt/agent-api,readonly", command)
+            self.assertNotIn("dst=/opt/autotrain_bench", command)
+            self.assertIn("dst=/control/inbox", command)
+            self.assertIn("dst=/control/outbox", command)
+            self.assertNotIn("dst=/control\n", command)
             self.assertIn("/agent-home:rw,nosuid,size=1g,mode=1777", command)
             self.assertIn("HOME=/agent-home", command)
             self.assertNotIn("reference_agent", command)
@@ -283,6 +348,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             control.mkdir()
             public_task = root / "task.json"
             public_task.write_text("{}", encoding="utf-8")
+            publish_agent_api(public_task)
             inference = InferenceConfig(
                 protocol="openai_compatible",
                 base_url="https://api.openai.com",
@@ -322,7 +388,9 @@ class RuntimeBoundaryTests(unittest.TestCase):
             )
             runtime.start_training(
                 name="training",
-                config=config,
+                task=ResearchTaskSpec.from_task(
+                    config, public_task.parent / "agent_api"
+                ),
                 workspace=workspace,
                 resources=TrainingResources(),
                 lease_dir=lease,
@@ -384,6 +452,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             control.mkdir()
             public_task = root / "task.json"
             public_task.write_text("{}", encoding="utf-8")
+            publish_agent_api(public_task)
             config = TaskConfig.load(TASK)
             agent = AgentConfig(
                 workspace=workspace,
@@ -402,7 +471,9 @@ class RuntimeBoundaryTests(unittest.TestCase):
             )
             runtime.start_training(
                 name="training",
-                config=config,
+                task=ResearchTaskSpec.from_task(
+                    config, public_task.parent / "agent_api"
+                ),
                 workspace=workspace,
                 resources=TrainingResources(),
                 lease_dir=lease,
@@ -420,10 +491,15 @@ class RuntimeBoundaryTests(unittest.TestCase):
             root = Path(directory)
             workspace = root / "workspace"
             workspace.mkdir()
+            public_task = root / "task.json"
+            public_task.write_text("{}", encoding="utf-8")
+            publish_agent_api(public_task)
             runtime = CapturingDockerRuntime()
             runtime.start_training(
                 name="training",
-                config=TaskConfig.load(TASK),
+                task=ResearchTaskSpec.from_task(
+                    TaskConfig.load(TASK), public_task.parent / "agent_api"
+                ),
                 workspace=workspace,
                 resources=TrainingResources(
                     nvidia_gpu_count=2,
@@ -459,6 +535,10 @@ class RuntimeBoundaryTests(unittest.TestCase):
             evaluator = next(call for call in run_calls if "/opt/evaluator.py" in call)
             self.assertIn("--internal", create)
             self.assertIn("dst=/candidate,readonly", "\n".join(candidate))
+            self.assertIn("dst=/opt/candidate-api,readonly", "\n".join(candidate))
+            self.assertNotIn(
+                str(ROOT / "autotrain_bench"), "\n".join(candidate)
+            )
             self.assertNotIn(str(config.val_path), "\n".join(candidate))
             self.assertNotIn("dst=/candidate", "\n".join(evaluator))
             self.assertIn(str(config.val_path), "\n".join(evaluator))

@@ -182,6 +182,44 @@ class InferenceGatewayTests(unittest.TestCase):
         self.assertEqual(summary["model_calls"], 0)
         self.assertEqual(summary["rejected_requests"], 3)
 
+    def test_rejects_provider_state_and_remote_attachments(self):
+        payloads = [
+            {"model": "researcher-a", "previous_response_id": "resp_123"},
+            {"model": "researcher-a", "conversation": "conv_123"},
+            {"model": "researcher-a", "prompt": {"id": "pmpt_123"}},
+            {
+                "model": "researcher-a",
+                "input": [{"type": "input_file", "file_id": "file_123"}],
+            },
+            {
+                "model": "researcher-a",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": "https://example.test/x.png"},
+                            }
+                        ],
+                    }
+                ],
+            },
+            {
+                "model": "researcher-a",
+                "attachments": [{"file_id": "file_456"}],
+            },
+        ]
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                status, _, body = self.request(payload)
+                self.assertEqual(status, 403)
+                self.assertEqual(
+                    json.loads(body)["error"]["code"],
+                    "external_context_not_allowed",
+                )
+        self.assertIsNone(_UpstreamHandler.seen_body)
+
     def test_forbids_redirect_without_leaking_credential(self):
         sink = ThreadingHTTPServer(("127.0.0.1", 0), _RedirectSink)
         sink_thread = threading.Thread(target=sink.serve_forever, daemon=True)

@@ -73,6 +73,32 @@ class ResultMetricTests(unittest.TestCase):
         )
         self.assertIsNone(report["outcome"])
 
+    def test_closed_result_cannot_claim_failure(self):
+        with self.assertRaisesRegex(ResultSchemaError, "closed"):
+            normalize_result_report(
+                {
+                    "result_schema_version": 2,
+                    "status": "closed",
+                    "outcome": "failed",
+                    "final_candidate_id": "sha256:candidate",
+                    "test_nll": None,
+                    "test_perplexity": None,
+                    "failure": "legacy_unscored_result",
+                }
+            )
+
+    def test_legacy_closed_result_remains_pending(self):
+        report = normalize_result_report(
+            {
+                "status": "closed",
+                "final_candidate_id": "sha256:candidate",
+                "test_nll": None,
+                "failure": None,
+            }
+        )
+        self.assertIsNone(report["outcome"])
+        self.assertIsNone(report["failure"])
+
     def test_legacy_migration_rejects_an_unknown_status(self):
         with self.assertRaisesRegex(ResultSchemaError, "invalid result status"):
             normalize_result_report(

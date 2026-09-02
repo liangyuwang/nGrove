@@ -2,6 +2,8 @@ import json
 import math
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -16,13 +18,18 @@ from autotrain_bench.config import (
     TrainingResources,
 )
 from autotrain_bench.client import Client
-from autotrain_bench.supervisor import ProtocolError, Supervisor
+from autotrain_bench.supervisor import (
+    MAX_COMMAND_STREAM_BYTES,
+    ProtocolError,
+    Supervisor,
+)
 from autotrain_bench.worker_protocol import (
     BASELINE_REQUIREMENTS,
     GPU_DEVICE_ISOLATION,
     HIDDEN_DATASET_ISOLATION,
     Capability,
     CommandResult,
+    ConformanceReceipt,
     EnforcementLevel,
     LeaseState,
     TrustLevel,
@@ -58,6 +65,11 @@ class FakeWorker:
         self.test_nll = 1.5
         self.capability_overrides = {}
         self.command_result = None
+        self.trust_level = TrustLevel.DEVELOPMENT
+        self.conformance = None
+        self.roles = ("research", "evaluation")
+        self.research_tasks = []
+        self.hidden_splits = []
 
     def describe_capabilities(self):
         names = [requirement.name for requirement in BASELINE_REQUIREMENTS]
@@ -68,9 +80,10 @@ class FakeWorker:
         capabilities.update(self.capability_overrides)
         return WorkerDescriptor(
             worker_id="test-worker",
-            trust_level=TrustLevel.DEVELOPMENT,
-            roles=("research", "evaluation"),
+            trust_level=self.trust_level,
+            roles=self.roles,
             capabilities=capabilities,
+            conformance=self.conformance,
         )
 
     def start_lease(
@@ -79,12 +92,15 @@ class FakeWorker:
         episode_id,
         lease_id,
         duration_seconds,
-        config,
+        task,
         workspace,
         resources,
         lease_dir,
     ):
-        del duration_seconds, config, resources
+        del duration_seconds, resources
+        if hasattr(task, "val_path") or hasattr(task, "test_path"):
+            raise AssertionError("Research Worker received a hidden split path")
+        self.research_tasks.append(task)
         if self.fail_start:
             self.fail_start = False
             raise WorkerFailure("simulated infrastructure failure")
@@ -121,14 +137,16 @@ class FakeWorker:
         self,
         *,
         episode_id,
-        config,
+        task,
         resources,
         candidate_dir,
-        split,
+        hidden_split,
         output_dir,
         timeout_seconds=None,
     ):
-        del episode_id, config, resources, candidate_dir, output_dir
+        del episode_id, task, resources, candidate_dir, output_dir
+        split = hidden_split.name
+        self.hidden_splits.append(hidden_split)
         self.evaluations.append(split)
         self.evaluation_timeouts.append(timeout_seconds)
         if self.evaluation_hook is not None:
@@ -194,6 +212,21 @@ class SupervisorTests(unittest.TestCase):
         supervisor.begin()
         return supervisor
 
+    def test_existing_episode_state_is_rejected_before_mutation(self):
+        self.episode.mkdir()
+        (self.episode / "state.json").write_text("{}", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "already contains state"):
+            Supervisor(
+                config=self.config,
+                agent=self.agent,
+                resources=self.resources,
+                track="B",
+                episode_dir=self.episode,
+                research_worker=self.worker,
+                evaluation_worker=self.worker,
+            )
+        self.assertFalse((self.episode / "control").exists())
+
     def test_comparison_key_and_release_are_recorded_publicly(self):
         comparison_key = {
             "challenge_id": "lm-pretrain-v1",
@@ -220,6 +253,91 @@ class SupervisorTests(unittest.TestCase):
         )
         self.assertEqual(public_task["comparison_key"], comparison_key)
         self.assertEqual(public_task["challenge_release"], release)
+
+    def test_leaderboard_eligibility_requires_the_complete_formal_contract(self):
+        digest = "@sha256:" + "a" * 64
+        config = replace(
+            self.config,
+            task_kind="benchmark_challenge",
+            leaderboard_eligible=True,
+            training_image="example/training" + digest,
+            candidate_image="example/candidate" + digest,
+            evaluator_image="example/evaluator" + digest,
+            inference_gateway_image="example/gateway" + digest,
+        )
+        agent = replace(self.agent, image="example/agent" + digest)
+        self.worker.trust_level = TrustLevel.CERTIFIED
+        self.worker.conformance = ConformanceReceipt("worker-v2", True)
+        comparison_key = {
+            "challenge_id": "test-byte-lm-v1",
+            "track": "B",
+            "track_config": "b-final",
+            "runtime_profile": "h100-final",
+        }
+        release = {
+            "challenge_id": "test-byte-lm-v1",
+            "challenge_manifest_sha256": "b" * 64,
+            "task_manifest_sha256": "c" * 64,
+            "release_stage": "official",
+            "leaderboard_eligible": True,
+            "track_config_id": "b-final",
+            "runtime_profile_id": "h100-final",
+            "track_config": {"provisional": False},
+            "runtime_profile": {"provisional": False},
+        }
+        supervisor = self.supervisor(
+            config=config,
+            agent=agent,
+            comparison_key=comparison_key,
+            challenge_release=release,
+        )
+        self.assertTrue(supervisor.state["leaderboard_eligible"])
+        self.assertEqual(
+            supervisor.state["leaderboard_eligibility_violations"], []
+        )
+
+    def test_worker_role_specs_do_not_cross_hidden_split_boundaries(self):
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+        candidate = supervisor.commit_lease("/output/candidate")
+        supervisor.declare_incumbent(candidate["candidate_id"])
+        supervisor.finish()
+
+        self.assertEqual(self.worker.research_tasks[0].train_dir, self.config.train_dir)
+        self.assertFalse(hasattr(self.worker.research_tasks[0], "val_path"))
+        self.assertEqual(
+            {
+                path.name
+                for path in (
+                    self.worker.research_tasks[0].public_api_dir / "autotrain_bench"
+                ).iterdir()
+            },
+            {
+                "__init__.py",
+                "cli.py",
+                "client.py",
+                "candidate_protocol.py",
+                "candidate_preflight.py",
+            },
+        )
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(
+            self.worker.research_tasks[0].public_api_dir
+        )
+        smoke = subprocess.run(
+            [sys.executable, "-m", "autotrain_bench.cli", "agent", "--help"],
+            cwd=self.workspace,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(smoke.returncode, 0, smoke.stderr)
+        self.assertIn("lease-start", smoke.stdout)
+        self.assertEqual(
+            [(item.name, item.path) for item in self.worker.hidden_splits],
+            [("val", self.config.val_path), ("test", self.config.test_path)],
+        )
 
     def test_track_b_interactive_lease_commit_and_finish(self):
         supervisor = self.supervisor()
@@ -260,7 +378,7 @@ class SupervisorTests(unittest.TestCase):
         )
         self.assertEqual(
             public_task["agent_environment"]["initial_workspace"],
-            "participant_supplied",
+            "participant_snapshot",
         )
         self.assertEqual(
             public_task["training_environment"]["resources"][
@@ -413,6 +531,22 @@ class SupervisorTests(unittest.TestCase):
         self.assertNotIn("SUPERVISOR_ERROR", types)
         self.assertIsNone(supervisor.state["active_lease"])
 
+    def test_command_output_is_bounded_before_logging_or_mailbox_response(self):
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+        self.worker.command_result = CommandResult(
+            0,
+            "x" * (MAX_COMMAND_STREAM_BYTES + 100),
+            "",
+        )
+
+        result = supervisor.exec_lease(["python", "train.py"])
+
+        self.assertTrue(result["stdout_truncated"])
+        self.assertLessEqual(
+            len(result["stdout"].encode("utf-8")), MAX_COMMAND_STREAM_BYTES
+        )
+
     def test_official_elapsed_time_freezes_before_agent_drain(self):
         supervisor = self.supervisor()
         self.clock.advance(4)
@@ -452,6 +586,15 @@ class SupervisorTests(unittest.TestCase):
             supervisor.state["policy_violations"],
         )
 
+    def test_worker_descriptor_must_declare_its_assigned_roles(self):
+        self.worker.roles = ("research",)
+        supervisor = self.supervisor()
+        self.assertFalse(supervisor.state["policy_compliant"])
+        self.assertIn(
+            "evaluation_worker_role_missing",
+            supervisor.state["policy_violations"],
+        )
+
     def test_commit_accepts_only_stopped_lease_output(self):
         supervisor = self.supervisor()
         supervisor.start_lease()
@@ -488,6 +631,31 @@ class SupervisorTests(unittest.TestCase):
             supervisor.commit_lease("/output/candidate")
         self.assertEqual(caught.exception.code, "invalid_candidate")
         self.assertIsNone(supervisor.state["active_lease"])
+
+    def test_candidate_identity_includes_empty_directories_and_modes(self):
+        first = self.workspace / "hash-first"
+        second = self.workspace / "hash-second"
+        first.mkdir()
+        second.mkdir()
+        (first / "candidate.py").write_text("pass\n", encoding="utf-8")
+        (second / "candidate.py").write_text("pass\n", encoding="utf-8")
+        (first / "behavior-flag").mkdir()
+        self.assertNotEqual(
+            Supervisor._tree_hash(first), Supervisor._tree_hash(second)
+        )
+
+        original = Supervisor._tree_hash(second)
+        (second / "candidate.py").chmod(0o755)
+        self.assertNotEqual(original, Supervisor._tree_hash(second))
+
+    def test_candidate_entry_limit_counts_directories(self):
+        config = replace(self.config, candidate_max_files=1)
+        supervisor = self.supervisor(config=config)
+        lease = supervisor.start_lease()
+        candidate = supervisor.runs_dir / lease["lease_id"] / "output/candidate"
+        (candidate / "empty-directory").mkdir()
+        with self.assertRaisesRegex(ProtocolError, "artifact limit"):
+            supervisor.commit_lease("/output/candidate")
 
     def test_timing_report_separates_lease_use_and_unused_track_a_budget(self):
         supervisor = self.supervisor(
@@ -592,6 +760,8 @@ class SupervisorTests(unittest.TestCase):
 
     def test_agent_mailbox_exposes_only_public_status(self):
         supervisor = self.supervisor()
+        self.assertEqual(supervisor.episode_dir.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(supervisor.control_dir.stat().st_mode & 0o777, 0o700)
         result = {}
 
         def request_status():

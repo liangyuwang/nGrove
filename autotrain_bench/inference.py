@@ -12,6 +12,17 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 MAX_JSON_USAGE_BYTES = 4 * 1024 * 1024
 MAX_SSE_LINE_BYTES = 1024 * 1024
 
+_HOSTED_CONTEXT_FIELDS = {
+    "conversation",
+    "previous_response_id",
+    "prompt",
+}
+_HOSTED_INPUT_TYPES = {
+    "file",
+    "image_file",
+    "input_file",
+}
+
 
 class InferenceFailure(RuntimeError):
     """A request violates the registered inference policy."""
@@ -20,6 +31,52 @@ class InferenceFailure(RuntimeError):
         super().__init__(message)
         self.code = code
         self.http_status = http_status
+
+
+def _reject_hosted_context(payload: Dict[str, Any]) -> None:
+    """Reject provider-owned state and remote attachments.
+
+    Registered inference is a model-compute channel, not an alternate data or
+    conversation store.  Function-tool schemas remain allowed and are not
+    traversed here because those tools execute locally inside the Agent.
+    """
+
+    for field in _HOSTED_CONTEXT_FIELDS:
+        if payload.get(field) is not None:
+            raise InferenceFailure(
+                "external_context_not_allowed",
+                f"provider-hosted inference field is not allowed: {field}",
+                403,
+            )
+
+    def inspect(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                inspect(item)
+            return
+        if not isinstance(value, dict):
+            return
+        item_type = value.get("type")
+        if isinstance(item_type, str) and item_type in _HOSTED_INPUT_TYPES:
+            raise InferenceFailure(
+                "external_context_not_allowed",
+                f"provider-hosted input type is not allowed: {item_type}",
+                403,
+            )
+        for field in ("file_id", "image_url"):
+            if value.get(field) is not None:
+                raise InferenceFailure(
+                    "external_context_not_allowed",
+                    f"remote inference attachment is not allowed: {field}",
+                    403,
+                )
+        for key, item in value.items():
+            if key not in {"tools", "functions"}:
+                inspect(item)
+
+    for field in ("input", "messages", "attachments", "files"):
+        if field in payload:
+            inspect(payload[field])
 
 
 def validate_inference_request(
@@ -69,6 +126,8 @@ def validate_inference_request(
             "inference request must use a model registered before task reveal",
             403,
         )
+
+    _reject_hosted_context(payload)
 
     # Local function calling is part of the Agent. Provider-hosted tools would
     # create an unregistered external-information channel.

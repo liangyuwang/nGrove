@@ -24,6 +24,9 @@ from .inference import (
 )
 
 
+MAX_INFERENCE_AUDIT_BYTES = 64 * 1024 * 1024
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         del req, fp, code, msg, headers, newurl
@@ -50,9 +53,16 @@ class GatewayServer(ThreadingHTTPServer):
             "timestamp": datetime.now(tz=timezone.utc).isoformat(),
             **record,
         }
+        encoded = (json.dumps(record, sort_keys=True) + "\n").encode("utf-8")
         with self.audit_lock:
-            with self.audit_path.open("a", encoding="utf-8") as stream:
-                stream.write(json.dumps(record, sort_keys=True) + "\n")
+            current_size = (
+                self.audit_path.stat().st_size if self.audit_path.exists() else 0
+            )
+            if current_size + len(encoded) > MAX_INFERENCE_AUDIT_BYTES:
+                raise OSError("inference audit size limit reached")
+            with self.audit_path.open("ab") as stream:
+                stream.write(encoded)
+            self.audit_path.chmod(0o600)
 
 
 class GatewayHandler(BaseHTTPRequestHandler):

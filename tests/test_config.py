@@ -133,6 +133,41 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ConfigError, "leaderboard_metric"):
                 TaskConfig.load(task)
 
+    def test_leaderboard_task_requires_digest_pinned_images(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = self._write_task(directory)
+            payload = json.loads(task.read_text(encoding="utf-8"))
+            payload["task_kind"] = "benchmark_challenge"
+            payload["leaderboard_eligible"] = True
+            task.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ConfigError, "digest-pinned"):
+                TaskConfig.load(task)
+
+            digest = "@sha256:" + "a" * 64
+            for name in payload["images"]:
+                payload["images"][name] = f"example/{name}{digest}"
+            task.write_text(json.dumps(payload), encoding="utf-8")
+            self.assertTrue(TaskConfig.load(task).leaderboard_eligible)
+
+            payload["images"]["training"] = f"example/training image{digest}"
+            task.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ConfigError, "digest-pinned"):
+                TaskConfig.load(task)
+
+    def test_hidden_splits_must_be_distinct_and_outside_train(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = self._write_task(directory)
+            payload = json.loads(task.read_text(encoding="utf-8"))
+            payload["paths"]["val"] = str(TASK.parent / "train/train.json")
+            task.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ConfigError, "outside.*TRAIN"):
+                TaskConfig.load(task)
+
+            payload["paths"]["val"] = payload["paths"]["test"]
+            task.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ConfigError, "distinct files"):
+                TaskConfig.load(task)
+
     def test_agent_mode_environment_and_host_runner_are_separate(self):
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)

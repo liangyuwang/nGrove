@@ -12,6 +12,7 @@ import math
 import os
 import shutil
 import subprocess
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -32,7 +33,10 @@ from .worker_protocol import (
     Capability,
     CommandResult,
     EnforcementLevel,
+    EvaluationTaskSpec,
+    HiddenSplitRef,
     LeaseState,
+    ResearchTaskSpec,
     TrustLevel,
     WorkerDescriptor,
     WorkerFailure,
@@ -43,6 +47,8 @@ from .worker_protocol import (
 # code depends on the platform-neutral names in worker_protocol instead.
 RuntimeFailure = WorkerFailure
 ExecResult = CommandResult
+MAX_RUNTIME_STREAM_BYTES = 1024 * 1024
+_TRUNCATION_MARKER = b"\n[output truncated by AutoTrain-Bench]\n"
 
 
 def _decode_timeout_output(value: Any) -> str:
@@ -55,6 +61,36 @@ def _decode_timeout_output(value: Any) -> str:
     if isinstance(value, str):
         return value
     raise TypeError(f"unexpected subprocess output type: {type(value).__name__}")
+
+
+class _BoundedCapture:
+    """Drain one subprocess pipe while retaining only a bounded prefix."""
+
+    def __init__(self, maximum_bytes: int = MAX_RUNTIME_STREAM_BYTES) -> None:
+        self.maximum_bytes = maximum_bytes
+        self.buffer = bytearray()
+        self.truncated = False
+
+    def drain(self, stream: Any) -> None:
+        try:
+            while True:
+                chunk = stream.read(64 * 1024)
+                if not chunk:
+                    return
+                remaining = self.maximum_bytes - len(self.buffer)
+                if remaining > 0:
+                    self.buffer.extend(chunk[:remaining])
+                if len(chunk) > remaining:
+                    self.truncated = True
+        finally:
+            stream.close()
+
+    def text(self) -> str:
+        payload = bytes(self.buffer)
+        if self.truncated:
+            payload = payload[: max(0, self.maximum_bytes - len(_TRUNCATION_MARKER))]
+            payload += _TRUNCATION_MARKER
+        return payload.decode("utf-8", errors="replace")
 
 
 class DockerRuntime:
@@ -344,7 +380,9 @@ class DockerRuntime:
             raise RuntimeFailure("start_agent requires the container runner")
         if not agent.image:  # guarded by AgentConfig.validate
             raise RuntimeFailure("container runner has no Agent image")
-        package_dir = Path(__file__).resolve().parent
+        agent_api_dir = public_task_path.parent / "agent_api"
+        if not (agent_api_dir / "autotrain_bench/client.py").is_file():
+            raise RuntimeFailure("published Agent API is missing")
         missing_environment = [
             name for name in agent.environment if name not in os.environ
         ]
@@ -377,6 +415,10 @@ class DockerRuntime:
             "/tmp:rw,nosuid,size=256m",
             "--tmpfs",
             "/agent-home:rw,nosuid,size=1g,mode=1777",
+            "--log-opt",
+            "max-size=10m",
+            "--log-opt",
+            "max-file=1",
             "--mount",
             self._mount(agent.workspace, "/workspace", read_only=False),
             "--mount",
@@ -384,11 +426,13 @@ class DockerRuntime:
             "--mount",
             self._mount(public_task_path, "/benchmark/task.json", read_only=True),
             "--mount",
-            self._mount(control_dir, "/control", read_only=False),
+            self._mount(control_dir / "inbox", "/control/inbox", read_only=False),
             "--mount",
-            self._mount(package_dir, "/opt/autotrain_bench", read_only=True),
+            self._mount(control_dir / "outbox", "/control/outbox", read_only=False),
+            "--mount",
+            self._mount(agent_api_dir, "/opt/agent-api", read_only=True),
             "--env",
-            "PYTHONPATH=/opt",
+            "PYTHONPATH=/opt/agent-api",
             "--env",
             "AUTOTRAIN_BENCH_CONTROL_DIR=/control",
             "--env",
@@ -514,6 +558,10 @@ class DockerRuntime:
             "--read-only",
             "--tmpfs",
             "/tmp:rw,nosuid,size=64m",
+            "--log-opt",
+            "max-size=10m",
+            "--log-opt",
+            "max-file=1",
             "--mount",
             self._mount(package_dir, "/opt/autotrain_bench", read_only=True),
             "--mount",
@@ -578,16 +626,22 @@ class DockerRuntime:
         self,
         *,
         name: str,
-        config: TaskConfig,
+        task: ResearchTaskSpec,
         workspace: Path,
         resources: TrainingResources,
         lease_dir: Path,
     ) -> None:
+        public_helper = (
+            task.public_api_dir / "autotrain_bench" / "candidate_preflight.py"
+        )
+        if not public_helper.is_file():
+            raise RuntimeFailure(
+                f"published training API is unavailable: {public_helper}"
+            )
         scratch = lease_dir / "scratch"
         output = lease_dir / "output"
         scratch.mkdir(parents=True, exist_ok=True)
         output.mkdir(parents=True, exist_ok=True)
-        package_dir = Path(__file__).resolve().parent
         args: List[str] = [
             "run",
             "--detach",
@@ -604,20 +658,28 @@ class DockerRuntime:
             "--read-only",
             "--tmpfs",
             "/tmp:rw,exec,nosuid,size=2g",
+            "--log-opt",
+            "max-size=10m",
+            "--log-opt",
+            "max-file=1",
             "--mount",
             self._mount(workspace, "/workspace", read_only=False),
             "--mount",
-            self._mount(config.train_dir, "/benchmark/train", read_only=True),
+            self._mount(task.train_dir, "/benchmark/train", read_only=True),
             "--mount",
             self._mount(scratch, "/scratch", read_only=False),
             "--mount",
             self._mount(output, "/output", read_only=False),
             "--mount",
-            self._mount(package_dir, "/opt/autotrain_bench", read_only=True),
+            self._mount(
+                task.public_api_dir,
+                "/opt/training-api",
+                read_only=True,
+            ),
             "--env",
             "HOME=/scratch",
             "--env",
-            "PYTHONPATH=/opt",
+            "PYTHONPATH=/opt/training-api",
             "--env",
             "AUTOTRAIN_TRAIN_DIR=/benchmark/train",
             "--env",
@@ -625,12 +687,12 @@ class DockerRuntime:
             "--workdir",
             "/workspace",
         ]
-        resources.validate_for(config)
+        resources.validate()
         if resources.nvidia_gpu_count:
             args.extend(["--gpus", str(resources.nvidia_gpu_count)])
         for device in resources.devices:
             args.extend(["--device", device])
-        args.extend([config.training_image, "sleep", "infinity"])
+        args.extend([task.training_image, "sleep", "infinity"])
         self._run(args)
 
     @staticmethod
@@ -643,7 +705,7 @@ class DockerRuntime:
         episode_id: str,
         lease_id: str,
         duration_seconds: float,
-        config: TaskConfig,
+        task: ResearchTaskSpec,
         workspace: Path,
         resources: TrainingResources,
         lease_dir: Path,
@@ -660,7 +722,7 @@ class DockerRuntime:
         name = f"atb-lease-{runtime_id}"
         self.start_training(
             name=name,
-            config=config,
+            task=task,
             workspace=workspace,
             resources=resources,
             lease_dir=lease_dir,
@@ -677,24 +739,49 @@ class DockerRuntime:
         self._require_docker()
         command = [self.docker, "exec", name, *argv]
         try:
-            result = subprocess.run(
+            process = subprocess.Popen(
                 command,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=max(1, math.ceil(timeout_seconds)),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
             )
-        except subprocess.TimeoutExpired as exc:
+        except OSError as exc:
+            raise RuntimeFailure(f"failed to execute training command: {exc}") from exc
+        stdout_capture = _BoundedCapture()
+        stderr_capture = _BoundedCapture()
+        assert process.stdout is not None
+        assert process.stderr is not None
+        stdout_thread = threading.Thread(
+            target=stdout_capture.drain, args=(process.stdout,), daemon=True
+        )
+        stderr_thread = threading.Thread(
+            target=stderr_capture.drain, args=(process.stderr,), daemon=True
+        )
+        stdout_thread.start()
+        stderr_thread.start()
+        timed_out = False
+        try:
+            process.wait(timeout=max(1, math.ceil(timeout_seconds)))
+        except subprocess.TimeoutExpired:
+            timed_out = True
             self.stop_container(name)
-            stdout = _decode_timeout_output(exc.stdout)
-            stderr = _decode_timeout_output(exc.stderr)
-            return ExecResult(
-                exit_code=124,
-                stdout=stdout,
-                stderr=stderr or "command exceeded the lease deadline",
-                timed_out=True,
-            )
-        return ExecResult(result.returncode, result.stdout, result.stderr)
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)
+        finally:
+            stdout_thread.join(timeout=5)
+            stderr_thread.join(timeout=5)
+        stdout = stdout_capture.text()
+        stderr = stderr_capture.text()
+        if timed_out and not stderr:
+            stderr = "command exceeded the lease deadline"
+        return ExecResult(
+            exit_code=124 if timed_out else int(process.returncode),
+            stdout=stdout,
+            stderr=stderr,
+            timed_out=timed_out,
+            stdout_truncated=stdout_capture.truncated,
+            stderr_truncated=stderr_capture.truncated,
+        )
 
     def _worker_lease_name(self, episode_id: str, lease_id: str) -> str:
         try:
@@ -724,6 +811,21 @@ class DockerRuntime:
         )
         return result.returncode == 0 and result.stdout.strip() == "true"
 
+    def container_exit_code(self, name: str) -> Optional[int]:
+        result = self._run(
+            ["inspect", "--format", "{{.State.Running}} {{.State.ExitCode}}", name],
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
+        fields = result.stdout.split()
+        if len(fields) != 2 or fields[0] == "true":
+            return None
+        try:
+            return int(fields[1])
+        except ValueError:
+            return None
+
     def lease_state(self, *, episode_id: str, lease_id: str) -> LeaseState:
         name = self._worker_leases.get(
             self._worker_lease_key(episode_id, lease_id)
@@ -738,7 +840,7 @@ class DockerRuntime:
         self, name: str, *, timeout_seconds: Optional[float] = None
     ) -> str:
         result = self._run(
-            ["logs", name], check=False, timeout=timeout_seconds
+            ["logs", "--tail", "10000", name], check=False, timeout=timeout_seconds
         )
         parts = [value for value in (result.stdout, result.stderr) if value]
         return "".join(parts)
@@ -767,18 +869,53 @@ class DockerRuntime:
         resources.validate_for(config)
         if split not in {"val", "test"}:
             raise RuntimeFailure(f"invalid evaluator split: {split}")
-        if config.evaluator_backend != "isolated_candidate":
-            raise RuntimeFailure(
-                f"unsupported evaluator backend: {config.evaluator_backend}"
-            )
         data_path = config.val_path if split == "val" else config.test_path
+        return self._run_isolated_evaluator(
+            task=EvaluationTaskSpec.from_task(config),
+            resources=resources,
+            candidate_dir=candidate_dir,
+            hidden_split=HiddenSplitRef(split, data_path),
+            output_dir=output_dir,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def _run_isolated_evaluator(
+        self,
+        *,
+        task: EvaluationTaskSpec,
+        resources: TrainingResources,
+        candidate_dir: Path,
+        hidden_split: HiddenSplitRef,
+        output_dir: Path,
+        timeout_seconds: Optional[float] = None,
+    ) -> float:
+        resources.validate()
+        split = hidden_split.name
+        if task.backend != "isolated_candidate":
+            raise RuntimeFailure(
+                f"unsupported evaluator backend: {task.backend}"
+            )
+        data_path = hidden_split.path
+        if not data_path.is_file():
+            raise RuntimeFailure(f"hidden evaluator split is not a file: {data_path}")
         output_dir.mkdir(parents=True, exist_ok=True)
         result_path = output_dir / f"{split}.json"
         runtime_id = uuid.uuid4().hex[:12]
         candidate_name = f"atb-candidate-{runtime_id}"
         evaluator_name = f"atb-evaluator-{runtime_id}"
         network_name = f"atb-evaluation-{runtime_id}"
-        package_dir = Path(__file__).resolve().parent
+        candidate_api_dir = output_dir / ".candidate_api"
+        package = candidate_api_dir / "autotrain_bench"
+        if not candidate_api_dir.exists():
+            package.mkdir(parents=True)
+            core_package = Path(__file__).resolve().parent
+            for filename in ("candidate_protocol.py", "candidate_server.py"):
+                shutil.copy2(core_package / filename, package / filename)
+                (package / filename).chmod(0o444)
+            (package / "__init__.py").write_text("", encoding="utf-8")
+            (package / "__init__.py").chmod(0o444)
+            package.chmod(0o555)
+            candidate_api_dir.chmod(0o555)
         candidate_args: List[str] = [
             "run",
             "--detach",
@@ -807,34 +944,34 @@ class DockerRuntime:
             "--mount",
             self._mount(candidate_dir, "/candidate", read_only=True),
             "--mount",
-            self._mount(package_dir, "/opt/autotrain_bench", read_only=True),
+            self._mount(candidate_api_dir, "/opt/candidate-api", read_only=True),
             "--env",
             "HOME=/candidate-home",
             "--env",
-            "PYTHONPATH=/opt",
+            "PYTHONPATH=/opt/candidate-api",
             "--env",
             "PYTHONDONTWRITEBYTECODE=1",
             "--workdir",
             "/candidate",
         ]
-        if config.evaluator_device == "cuda":
+        if task.device == "cuda":
             candidate_args.extend(["--gpus", str(resources.nvidia_gpu_count)])
         candidate_args.extend(
             [
-                config.candidate_image,
+                task.candidate_image,
                 "python",
                 "-m",
                 "autotrain_bench.candidate_server",
                 "--candidate",
                 "/candidate",
                 "--device",
-                config.evaluator_device,
+                task.device,
                 "--vocab-size",
-                str(config.vocab_size),
+                str(task.vocab_size),
                 "--context-length",
-                str(config.context_length),
+                str(task.context_length),
                 "--maximum-batch-size",
-                str(config.evaluator_batch_size),
+                str(task.batch_size),
             ]
         )
         evaluator_args: List[str] = [
@@ -853,11 +990,15 @@ class DockerRuntime:
             "--read-only",
             "--tmpfs",
             "/tmp:rw,nosuid,size=128m",
+            "--log-opt",
+            "max-size=10m",
+            "--log-opt",
+            "max-file=1",
             "--mount",
             self._mount(data_path, "/eval-data/split.json", read_only=True),
             "--mount",
             self._mount(
-                config.evaluator_entrypoint,
+                task.evaluator_entrypoint,
                 "/opt/evaluator.py",
                 read_only=True,
             ),
@@ -865,7 +1006,7 @@ class DockerRuntime:
             self._mount(output_dir, "/output", read_only=False),
             "--env",
             "PYTHONDONTWRITEBYTECODE=1",
-            config.evaluator_image,
+            task.evaluator_image,
             "python",
             "/opt/evaluator.py",
             "--candidate-url",
@@ -875,11 +1016,11 @@ class DockerRuntime:
             "--output",
             f"/output/{split}.json",
             "--vocab-size",
-            str(config.vocab_size),
+            str(task.vocab_size),
             "--batch-size",
-            str(config.evaluator_batch_size),
+            str(task.batch_size),
         ]
-        effective_timeout = float(config.evaluator_timeout_seconds)
+        effective_timeout = float(task.timeout_seconds)
         if timeout_seconds is not None:
             if timeout_seconds <= 0:
                 raise RuntimeFailure("evaluation deadline reached")
@@ -951,21 +1092,21 @@ class DockerRuntime:
         self,
         *,
         episode_id: str,
-        config: TaskConfig,
+        task: EvaluationTaskSpec,
         resources: TrainingResources,
         candidate_dir: Path,
-        split: str,
+        hidden_split: HiddenSplitRef,
         output_dir: Path,
         timeout_seconds: Optional[float] = None,
     ) -> float:
         """Map the semantic evaluation operation to the reference runtime."""
 
         del episode_id
-        return self.run_evaluator(
-            config=config,
+        return self._run_isolated_evaluator(
+            task=task,
             resources=resources,
             candidate_dir=candidate_dir,
-            split=split,
+            hidden_split=hidden_split,
             output_dir=output_dir,
             timeout_seconds=timeout_seconds,
         )

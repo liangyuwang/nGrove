@@ -6,9 +6,10 @@ import json
 import os
 import signal
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, IO, Optional, Sequence
+from typing import Any, BinaryIO, Dict, Optional, Sequence
 
 
 _USAGE_FIELDS = (
@@ -18,6 +19,37 @@ _USAGE_FIELDS = (
     "output_tokens",
     "reasoning_output_tokens",
 )
+MAX_HOST_AGENT_LOG_BYTES = 10 * 1024 * 1024
+_LOG_TRUNCATION_MARKER = b"\n[log truncated by AutoTrain-Bench]\n"
+
+
+class _BoundedLogSink:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.stream = path.open("wb")
+        self.limit = MAX_HOST_AGENT_LOG_BYTES - len(_LOG_TRUNCATION_MARKER)
+        self.written = 0
+        self.truncated = False
+
+    def drain(self, source: BinaryIO) -> None:
+        try:
+            while True:
+                chunk = source.read(64 * 1024)
+                if not chunk:
+                    break
+                remaining = self.limit - self.written
+                if remaining > 0:
+                    retained = chunk[:remaining]
+                    self.stream.write(retained)
+                    self.written += len(retained)
+                if len(chunk) > remaining:
+                    self.truncated = True
+            if self.truncated:
+                self.stream.write(_LOG_TRUNCATION_MARKER)
+            self.stream.flush()
+        finally:
+            source.close()
+            self.stream.close()
 
 
 def summarize_host_agent_trace(path: Path) -> Dict[str, Any]:
@@ -119,8 +151,8 @@ class HostAgentProcess:
     process: subprocess.Popen
     stdout_path: Path
     stderr_path: Path
-    _stdout: IO[str]
-    _stderr: IO[str]
+    _stdout_thread: threading.Thread
+    _stderr_thread: threading.Thread
     _closed: bool = False
 
     @property
@@ -152,8 +184,8 @@ class HostAgentProcess:
     def close_logs(self) -> None:
         if self._closed:
             return
-        self._stdout.close()
-        self._stderr.close()
+        self._stdout_thread.join(timeout=5)
+        self._stderr_thread.join(timeout=5)
         self._closed = True
 
 
@@ -209,8 +241,8 @@ def start_host_agent_process(
     )
 
     stdout_path.parent.mkdir(parents=True, exist_ok=True)
-    stdout = stdout_path.open("w", encoding="utf-8")
-    stderr = stderr_path.open("w", encoding="utf-8")
+    stdout_sink = _BoundedLogSink(stdout_path)
+    stderr_sink = _BoundedLogSink(stderr_path)
     stdout_path.chmod(0o600)
     stderr_path.chmod(0o600)
     try:
@@ -219,19 +251,28 @@ def start_host_agent_process(
             cwd=str(workspace.resolve()),
             env=environment,
             stdin=subprocess.DEVNULL,
-            stdout=stdout,
-            stderr=stderr,
-            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             start_new_session=True,
         )
     except OSError:
-        stdout.close()
-        stderr.close()
+        stdout_sink.stream.close()
+        stderr_sink.stream.close()
         raise
+    assert process.stdout is not None
+    assert process.stderr is not None
+    stdout_thread = threading.Thread(
+        target=stdout_sink.drain, args=(process.stdout,), daemon=True
+    )
+    stderr_thread = threading.Thread(
+        target=stderr_sink.drain, args=(process.stderr,), daemon=True
+    )
+    stdout_thread.start()
+    stderr_thread.start()
     return HostAgentProcess(
         process=process,
         stdout_path=stdout_path,
         stderr_path=stderr_path,
-        _stdout=stdout,
-        _stderr=stderr,
+        _stdout_thread=stdout_thread,
+        _stderr_thread=stderr_thread,
     )

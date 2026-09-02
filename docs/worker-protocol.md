@@ -94,13 +94,21 @@ explicitly and never trigger a fallback.
 
 ## Research and evaluation roles
 
-The protocol models ResearchWorker and EvaluationWorker separately from the
-first version because their trust domains differ:
+Worker Protocol v2 models ResearchWorker and EvaluationWorker as separate
+interfaces because their trust domains differ:
 
 - ResearchWorker sees TRAIN, the Agent workspace, and training outputs, but
   never hidden VAL/TEST;
 - EvaluationWorker sees an immutable Candidate and the selected hidden split,
   but does not need the research workspace.
+
+The Python protocol enforces that separation in its argument types.
+`ResearchWorker.start_lease` receives a `ResearchTaskSpec` containing only the
+task identity, training image, TRAIN path, and generated public helper API.
+`EvaluationWorker` receives an
+`EvaluationTaskSpec` with no dataset paths plus exactly one `HiddenSplitRef`
+selected by the Supervisor. A complete `TaskConfig` never crosses either role
+boundary.
 
 A local development Worker may implement both roles in one process.  A formal
 deployment may place them on separate services connected only through an
@@ -113,7 +121,12 @@ semantic lease operations (`start_lease`, `exec_lease`, `lease_state`, and
 `terminate_lease`) and semantic evaluation (`evaluate_candidate`).  It neither
 stores container identifiers nor asks how those effects are implemented.
 
-The pre-existing Docker runtime remains temporarily as the bundled v0 local
+`CommandResult` streams are capped at 1 MiB each by the local Worker and again
+by the Supervisor before they enter the mailbox or `commands.jsonl`. Concrete
+Workers must drain excess output while retaining only the bounded prefix and
+must report the truncation flags.
+
+The pre-existing Docker runtime remains temporarily as the bundled local
 reference implementation so the runnable preview does not regress.  It is a
 compatibility implementation, not the extension point for more platforms.  A
 later extraction moves it to a separately distributed Worker package without

@@ -403,6 +403,15 @@ error codes to the Agent; raw Candidate logs stay in the trusted episode
 directory. Candidate and Evaluator are destroyed after each query. This backend
 satisfies the v0 reference isolation contract.
 
+The sandboxed Agent receives a generated, minimal `autotrain_bench.client`
+package rather than the Core source tree. Its mailbox inbox and outbox are
+mounted as separate directory roots, so it cannot replace the shared control
+parent. Training Containers receive TRAIN, the participant workspace, scratch,
+and lease output only. Command stdout and stderr are each bounded to 1 MiB and
+container logs use a fixed rotation limit. The task field
+`candidate_artifact_limits.max_files` bounds all regular-file and directory
+entries in a Candidate bundle, including empty directories.
+
 ---
 
 # Motivation
@@ -1197,29 +1206,14 @@ Each incumbent declaration records:
 
 TEST remains unavailable.
 
-After the episode is permanently closed, the evaluator may evaluate historical incumbents on TEST.
+After the episode is permanently closed, the evaluator evaluates only the
+single final declared incumbent on TEST. Historical incumbents are not exposed
+to TEST, so one episode does not produce a TEST trajectory. Candidate and
+incumbent progress is represented by the VAL trajectory. Scaling studies may
+compare final TEST results from separate episodes only when their complete
+comparison keys match.
 
-This produces a hidden generalization trajectory.
-
-For Track A:
-
-$$
-\boxed{
-\operatorname{PPL}_{\mathrm{TEST}}(t)
-}
-$$
-
-For Track B:
-
-$$
-\boxed{
-\operatorname{PPL}_{\mathrm{TEST}}(n_{\mathrm{leases}})
-}
-$$
-
-These curves are first-class benchmark outputs.
-
-They can reveal behavior that a final scalar cannot.
+The VAL trajectory can reveal behavior that a final scalar cannot.
 
 For example:
 
@@ -1262,7 +1256,7 @@ The benchmark also records:
 
 * VAL NLL;
 * final TEST NLL;
-* TEST NLL trajectory;
+* VAL NLL trajectory;
 * final VAL–TEST gap;
 * agent input/output tokens;
 * number of agent calls;
@@ -1477,7 +1471,8 @@ with fixed maximum duration per lease and at most one official VAL query per com
 Reported alongside:
 
 ```text
-TEST perplexity by lease number
+VAL NLL by lease number
+final TEST perplexity
 agent tokens
 agent reasoning between leases
 training compute

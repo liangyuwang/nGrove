@@ -18,7 +18,6 @@ _VALID_STATUSES = {
 }
 _PENDING_OUTCOME_STATUSES = {"created", "active", "closed"}
 _FAILED_OUTCOME_STATUSES = {
-    "closed",
     "dnf",
     "finalized",
     "infrastructure_failure",
@@ -108,6 +107,14 @@ def _migrate_legacy_result(payload: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(failure, str) or not failure.strip():
             failure = "no_candidate" if not candidate_id else "legacy_unscored_result"
         return _mark_migrated_failure(result, failure)
+
+    if status == "closed":
+        # ``closed`` is persisted before post-mortem TEST begins.  Reporting a
+        # legacy episode during that window must not manufacture a failure.
+        result["outcome"] = None
+        result["failure"] = None
+        result["test_nll"] = None
+        return result
 
     result["outcome"] = None
     result["test_nll"] = None

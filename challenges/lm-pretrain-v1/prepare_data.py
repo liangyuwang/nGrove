@@ -39,9 +39,53 @@ ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 DEFAULT_RAW_DIR = DATA_DIR / "raw" / DATASET_REVISION
 DEFAULT_OUTPUT_DIR = DATA_DIR / "generated"
+BUILDER_ID = "autotrain-bench/lm-pretrain-v1"
 
 class PreparationError(RuntimeError):
     pass
+
+
+def _paths_overlap(first: Path, second: Path) -> bool:
+    try:
+        first.relative_to(second)
+        return True
+    except ValueError:
+        pass
+    try:
+        second.relative_to(first)
+        return True
+    except ValueError:
+        return False
+
+
+def _validate_existing_output(path: Path) -> None:
+    """Allow --force only for a recognizable prior build of this task."""
+
+    if not path.is_dir():
+        raise PreparationError("--force target must be a generated data directory")
+    manifest_path = path / "manifest.json"
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError) as exc:
+        raise PreparationError(
+            "refusing --force because the target is not a recognizable "
+            "lm-pretrain-v1 generated build"
+        ) from exc
+    builder = payload.get("builder")
+    source = payload.get("source")
+    tokenizer = payload.get("tokenizer")
+    recognized = (
+        isinstance(builder, dict)
+        and builder.get("id", BUILDER_ID) == BUILDER_ID
+        and isinstance(source, dict)
+        and source.get("dataset") == DATASET
+        and isinstance(tokenizer, dict)
+        and tokenizer.get("name") == TOKENIZER
+    )
+    if not recognized:
+        raise PreparationError(
+            "refusing --force because the target belongs to another dataset build"
+        )
 
 
 def _sha256_file(path: Path) -> str:
@@ -413,11 +457,23 @@ def prepare(
         raise PreparationError("all token limits must be positive")
     if eval_sequence_targets > 2_048:
         raise PreparationError("evaluation sequences exceed task context_length=2048")
-    output_dir = output_dir.expanduser().resolve()
+    configured_output = output_dir.expanduser()
+    if configured_output.is_symlink():
+        raise PreparationError("output directory may not be a symbolic link")
+    output_dir = configured_output.resolve()
+    source_root_argument = (
+        source_dir.expanduser().resolve()
+        if source_dir is not None
+        else DEFAULT_RAW_DIR.resolve()
+    )
+    if _paths_overlap(output_dir, source_root_argument):
+        raise PreparationError("output directory may not overlap the source directory")
     if output_dir.exists() and not force:
         raise PreparationError(
             f"output already exists: {output_dir}; pass --force to rebuild it"
         )
+    if output_dir.exists():
+        _validate_existing_output(output_dir)
 
     if source_dir is None:
         if not accept_large_download:
@@ -445,7 +501,7 @@ def prepare(
         if source_dir is None:
             source_root = _download_source(snapshot_download, DEFAULT_RAW_DIR)
         else:
-            source_root = source_dir.expanduser().resolve()
+            source_root = source_root_argument
         files = _parquet_files(source_root)
 
         writer = TokenShardWriter(tokenized_dir, maximum_tokens=shard_tokens)
@@ -586,6 +642,7 @@ def prepare(
                 "test_sha256": _sha256_file(private_dir / "test.json"),
             },
             "builder": {
+                "id": BUILDER_ID,
                 "huggingface_hub_version": _package_version("huggingface-hub"),
                 "pyarrow_version": _package_version("pyarrow"),
             },

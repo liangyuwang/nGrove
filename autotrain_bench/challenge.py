@@ -8,6 +8,7 @@ comparable.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass, replace
@@ -19,6 +20,14 @@ from .config import ConfigError, TaskConfig, TrainingResources
 
 RELEASE_STAGES = {"preview", "official"}
 _IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _mapping(value: Any, field: str) -> Dict[str, Any]:
@@ -264,6 +273,8 @@ class ChallengeRelease:
     """A finite set of supported comparison lanes for one challenge release."""
 
     source: Path
+    manifest_sha256: str
+    task_manifest_sha256: str
     schema_version: int
     challenge_id: str
     task_id: str
@@ -314,8 +325,10 @@ class ChallengeRelease:
             raise ConfigError("task escapes the challenge directory") from exc
         if not task_path.is_file():
             raise ConfigError(f"challenge task not found: {task_path}")
-        return cls(
+        release = cls(
             source=source,
+            manifest_sha256=_sha256_file(source),
+            task_manifest_sha256=_sha256_file(task_path),
             schema_version=schema_version,
             challenge_id=_identifier(root.get("challenge_id"), "challenge_id"),
             task_id=_identifier(root.get("task_id"), "task_id"),
@@ -327,6 +340,28 @@ class ChallengeRelease:
             track_configs=track_configs,
             runtime_profiles=runtime_profiles,
         )
+        release.validate()
+        return release
+
+    def validate(self) -> "ChallengeRelease":
+        if self.leaderboard_eligible:
+            if self.release_stage != "official":
+                raise ConfigError(
+                    "a leaderboard-eligible release must have release_stage='official'"
+                )
+            provisional_tracks = sorted(
+                key for key, value in self.track_configs.items() if value.provisional
+            )
+            provisional_runtimes = sorted(
+                key for key, value in self.runtime_profiles.items() if value.provisional
+            )
+            if provisional_tracks or provisional_runtimes:
+                details = provisional_tracks + provisional_runtimes
+                raise ConfigError(
+                    "a leaderboard-eligible release may not contain provisional "
+                    "configurations: " + ", ".join(details)
+                )
+        return self
 
     @property
     def task_path(self) -> Path:
@@ -351,6 +386,16 @@ class ChallengeRelease:
             raise ConfigError(
                 "a leaderboard-eligible release requires a leaderboard-eligible task"
             )
+        if self.leaderboard_eligible:
+            if _sha256_file(self.source) != self.manifest_sha256:
+                raise ConfigError("challenge manifest changed after it was loaded")
+            if (
+                task.source != self.task_path
+                or _sha256_file(task.source) != self.task_manifest_sha256
+            ):
+                raise ConfigError(
+                    "leaderboard release must use its unchanged task manifest"
+                )
         try:
             track_config = self.track_configs[track_config_id]
         except KeyError as exc:
@@ -374,8 +419,12 @@ class ChallengeRelease:
             comparison_key=comparison_key,
             release_manifest={
                 "challenge_id": self.challenge_id,
+                "challenge_manifest_sha256": self.manifest_sha256,
+                "task_manifest_sha256": self.task_manifest_sha256,
                 "release_stage": self.release_stage,
                 "leaderboard_eligible": self.leaderboard_eligible,
+                "track_config_id": track_config.config_id,
+                "runtime_profile_id": runtime_profile.profile_id,
                 "track_config": track_config.public_manifest(),
                 "runtime_profile": runtime_profile.public_manifest(),
             },
@@ -385,6 +434,8 @@ class ChallengeRelease:
         return {
             "schema_version": self.schema_version,
             "challenge_id": self.challenge_id,
+            "challenge_manifest_sha256": self.manifest_sha256,
+            "task_manifest_sha256": self.task_manifest_sha256,
             "task_id": self.task_id,
             "task": self.task_file,
             "release_stage": self.release_stage,
