@@ -288,6 +288,7 @@ class AgentConfig:
         gateway_image: str,
         *,
         policy_compliant: bool,
+        control_transport: Optional[str],
     ) -> Dict[str, Any]:
         inference_manifest: Dict[str, Any] = {"enabled": False}
         if self.inference is not None:
@@ -308,7 +309,7 @@ class AgentConfig:
             "training_workspace": "/workspace",
             "workspace_scope": "episode_snapshot",
             "initial_workspace": self.initial_workspace,
-            "control": "file_mailbox",
+            "control": control_transport,
             "forwarded_environment": list(self.environment or []),
             "inference": inference_manifest,
             "policy_compliant": policy_compliant,

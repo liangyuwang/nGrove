@@ -165,6 +165,13 @@ locations. They must not be treated as a stable serializable remote protocol.
 A shared-filesystem Worker can implement version 2 directly; a topology without
 shared paths needs future artifact-reference and materialization semantics.
 
+Version 2 also passes the requested `TrainingResources` to Worker operations
+but does not define a normalized effective-allocation receipt;
+`start_lease()` returns `None`. Environment inventory is useful diagnostic
+metadata, not proof that every release-normative resource property was granted
+and enforced. A future receipt is described in Phase C4 of the development
+plan.
+
 `CommandResult` streams are capped at 1 MiB each by the local Worker and again
 by the Supervisor before they enter the mailbox or `commands.jsonl`. Concrete
 Workers must drain excess output while retaining only the bounded prefix and
@@ -184,7 +191,8 @@ Deliberately deferred work includes:
 2. an atomic `activate_episode` operation with Worker-local monotonic timing;
 3. asynchronous operations, idempotent request IDs, and event streams;
 4. Unix-socket and remote mTLS transports;
-5. deployment certification.
+5. deployment certification;
+6. normalized resource-allocation evidence.
 
 Those features should be added to the Worker protocol and external Worker SDK,
 not by adding platform code to AutoTrain-Bench Core.

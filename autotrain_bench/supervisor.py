@@ -29,6 +29,7 @@ from .config import (
     AgentConfig,
     TaskConfig,
     TrainingResources,
+    immutable_image_reference,
 )
 from .inference import summarize_inference_trace
 from .results import RESULT_SCHEMA_VERSION, perplexity_from_nll, validated_nll
@@ -229,6 +230,26 @@ class Supervisor:
         self.agent = agent.validate()
         if agent_execution.mechanism != self.agent.runner:
             raise ValueError("Agent execution mechanism does not match Agent config")
+        if self.agent.runner == "container":
+            if agent_execution.workload_identity != self.agent.image:
+                raise ValueError(
+                    "Agent execution workload identity does not match the selected "
+                    "Agent image"
+                )
+            if (
+                agent_execution.immutable_workload_identity
+                and not immutable_image_reference(self.agent.image)
+            ):
+                raise ValueError(
+                    "Agent execution evidence claims a mutable image is immutable"
+                )
+        elif (
+            agent_execution.workload_identity is not None
+            or agent_execution.immutable_workload_identity
+        ):
+            raise ValueError(
+                "host_cli Agent execution evidence may not claim a workload image"
+            )
         self.agent_execution = agent_execution
         self.resources = resources.validate_for(config)
         self.track = normalized
@@ -236,6 +257,15 @@ class Supervisor:
         self.research_worker = research_worker
         self.evaluation_worker = evaluation_worker
         self.agent_control_transport = agent_control_transport
+        agent_control_name = (
+            agent_control_transport.transport_name
+            if agent_control_transport is not None
+            else None
+        )
+        if agent_control_name is not None and (
+            not isinstance(agent_control_name, str) or not agent_control_name.strip()
+        ):
+            raise ValueError("Agent control transport name must be a non-empty string")
         self.evaluation_task = EvaluationTaskSpec.from_task(config)
         if release_verification is None:
             self.release_verification = None
@@ -530,14 +560,13 @@ class Supervisor:
                 "initial_workspace_sha256": self._tree_hash(agent.workspace),
             },
             "agent_control": {
-                "transport": (
-                    agent_control_transport.transport_name
-                    if agent_control_transport is not None
-                    else None
-                ),
+                "transport": agent_control_name,
                 "cleanup_complete": None,
                 "cleanup_removed": 0,
                 "cleanup_failures": 0,
+                "cleanup_policy_violations": 0,
+                "cleanup_agent_caused_failures": 0,
+                "cleanup_infrastructure_failures": 0,
             },
             "evaluation_system": {
                 "backend": config.evaluator_backend,
@@ -567,6 +596,7 @@ class Supervisor:
             "final_candidate_id": None,
             "test_nll": None,
             "test_perplexity": None,
+            "pending_result": None,
             "closure_reason": None,
             "inference_usage": summarize_inference_trace(self.inference_trace_path),
             "agent_usage": None,
@@ -577,6 +607,7 @@ class Supervisor:
         public_manifest["agent_environment"] = agent.public_manifest(
             config.inference_gateway_image,
             policy_compliant=agent_execution.policy_compliant,
+            control_transport=agent_control_name,
         )
         public_manifest["training_environment"]["resources"] = (
             resources.public_manifest()
@@ -862,7 +893,9 @@ class Supervisor:
                 shutil.rmtree(lease_dir, ignore_errors=True)
                 self._event("LEASE_INFRA_FAILURE", message=str(exc))
                 self._save_state()
-                raise ProtocolError("infrastructure_failure", str(exc)) from exc
+                raise ProtocolError(
+                    "infrastructure_failure", "training lease startup failed"
+                ) from exc
 
             started = self.monotonic()
             self.state["lease_serial"] = serial
@@ -1281,6 +1314,11 @@ class Supervisor:
         """Attach trusted runner metadata after the Agent process exits."""
 
         with self.lock:
+            if (
+                not isinstance(termination_reason, str)
+                or not termination_reason.strip()
+            ):
+                raise ValueError("Agent termination reason must be a non-empty string")
             normalized_exit_code = int(exit_code) if exit_code is not None else None
             self.state["agent_system"]["exit_code"] = normalized_exit_code
             self.state["agent_system"]["termination_reason"] = termination_reason
@@ -1299,6 +1337,7 @@ class Supervisor:
                 finish_observed=self.state["agent_system"]["finish_observed"],
                 drain_seconds=self.state["agent_system"]["drain_seconds"],
             )
+            self._publish_staged_result()
             self._save_state()
 
     def finish(self) -> Dict[str, Any]:
@@ -1324,7 +1363,7 @@ class Supervisor:
         self._save_state()
 
         if candidate_id is None:
-            return self._finalize_failed_test("no_candidate", candidate_id=None)
+            return self._stage_failed_test("no_candidate")
 
         digest = candidate_id.split(":", 1)[1]
         candidate_dir = self.candidates_dir / digest
@@ -1376,9 +1415,7 @@ class Supervisor:
             return self.public_status()
 
         if test_failure is not None or test_nll is None:
-            return self._finalize_failed_test(
-                test_failure or "test_evaluation_failed", candidate_id=candidate_id
-            )
+            return self._stage_failed_test(test_failure or "test_evaluation_failed")
 
         try:
             test_perplexity = perplexity_from_nll(test_nll)
@@ -1388,43 +1425,64 @@ class Supervisor:
                 candidate_id=candidate_id,
                 code="perplexity_overflow",
             )
-            return self._finalize_failed_test(
-                "perplexity_overflow", candidate_id=candidate_id
-            )
+            return self._stage_failed_test("perplexity_overflow")
 
-        self.state["test_nll"] = test_nll
-        self.state["test_perplexity"] = test_perplexity
-        self.state["status"] = "finalized"
-        self.state["outcome"] = "success"
-        self.state["failure"] = None
+        self.state["pending_result"] = {
+            "outcome": "success",
+            "failure": None,
+            "test_nll": test_nll,
+            "test_perplexity": test_perplexity,
+        }
         self._event(
             "TEST_EVALUATED",
             candidate_id=candidate_id,
             nll=test_nll,
             perplexity=test_perplexity,
         )
-        self._event("EPISODE_FINALIZED", result="success")
         self._save_state()
         return self.public_status()
 
-    def _finalize_failed_test(
-        self, failure: str, *, candidate_id: Optional[str]
-    ) -> Dict[str, Any]:
-        """Finalize an episode without manufacturing a missing TEST metric."""
+    def _stage_failed_test(self, failure: str) -> Dict[str, Any]:
+        """Stage a failed result without manufacturing a missing TEST metric."""
 
+        self.state["pending_result"] = {
+            "outcome": "failed",
+            "failure": failure,
+            "test_nll": None,
+            "test_perplexity": None,
+        }
+        self._save_state()
+        return self.public_status()
+
+    def _publish_staged_result(self) -> bool:
+        """Publish one terminal result after runner metadata and cleanup exist."""
+
+        pending = self.state.get("pending_result")
+        if self.state["status"] != "closed" or not isinstance(pending, dict):
+            return False
+        if self.state["agent_system"]["termination_reason"] is None:
+            return False
+        if self.state["agent_control"]["cleanup_complete"] is not True:
+            return False
+
+        outcome = pending["outcome"]
+        failure = pending["failure"]
         self.state["status"] = "finalized"
-        self.state["outcome"] = "failed"
+        self.state["outcome"] = outcome
         self.state["failure"] = failure
-        self.state["test_nll"] = None
-        self.state["test_perplexity"] = None
-        self._event(
-            "EPISODE_FAILED",
-            reason=failure,
-            candidate_id=candidate_id,
-        )
-        self._event("EPISODE_FINALIZED", result="failure", reason=failure)
-        self._save_state()
-        return self.public_status()
+        self.state["test_nll"] = pending["test_nll"]
+        self.state["test_perplexity"] = pending["test_perplexity"]
+        self.state["pending_result"] = None
+        if outcome == "failed":
+            self._event(
+                "EPISODE_FAILED",
+                reason=failure,
+                candidate_id=self.state["final_candidate_id"],
+            )
+            self._event("EPISODE_FINALIZED", result="failure", reason=failure)
+        else:
+            self._event("EPISODE_FINALIZED", result="success")
+        return True
 
     def enforce_deadlines(self) -> bool:
         with self.lock:
@@ -1452,47 +1510,107 @@ class Supervisor:
             self._event("EPISODE_DNF", reason="agent_exited_without_finish")
             self._save_state()
 
-    def infrastructure_failed(self, message: str) -> None:
+    def infrastructure_failed(
+        self, code: str, *, private_detail: Optional[str] = None
+    ) -> None:
         with self.lock:
-            if self.state["status"] not in {"created", "active", "closed"}:
+            status = self.state["status"]
+            if status not in {"created", "active", "closed"}:
                 return
-            if self.state["status"] == "active":
+            if status == "active":
                 self._freeze_elapsed()
             if self.state["active_lease"] is not None:
                 self._end_active_lease("infrastructure_failure")
             self.state["status"] = "infrastructure_failure"
             self.state["outcome"] = "failed"
             self.state["closure_reason"] = "infrastructure_failure"
-            self.state["failure"] = message
-            self._event("EPISODE_INFRASTRUCTURE_FAILURE", message=message)
+            self.state["failure"] = code
+            self.state["test_nll"] = None
+            self.state["test_perplexity"] = None
+            self.state["pending_result"] = None
+            event = {"code": code}
+            if private_detail is not None:
+                event["message"] = private_detail
+            self._event("EPISODE_INFRASTRUCTURE_FAILURE", **event)
             self._save_state()
 
-    def _mailbox_policy_failed(self) -> None:
-        """End an active episode when an untrusted queue entry cannot be isolated."""
+    def _agent_control_policy_failed(self) -> None:
+        """Fail an episode after a dynamic Agent-control policy violation."""
 
-        if self.state["status"] != "active":
+        if self.state["status"] not in {"created", "active", "closed"}:
             return
-        self._freeze_elapsed()
+        if self.state["status"] == "active":
+            self._freeze_elapsed()
         if self.state["active_lease"] is not None:
             self._end_active_lease("agent_policy_violation")
         self.state["status"] = "dnf"
         self.state["outcome"] = "failed"
         self.state["closure_reason"] = "agent_policy_violation"
-        self.state["failure"] = "agent_mailbox_policy_violation"
-        self._event("EPISODE_DNF", reason="agent_mailbox_policy_violation")
+        self.state["failure"] = "agent_control_policy_violation"
+        self.state["test_nll"] = None
+        self.state["test_perplexity"] = None
+        self.state["pending_result"] = None
+        self._event("EPISODE_DNF", reason="agent_control_policy_violation")
         self._save_state()
 
     def cleanup_agent_control(self) -> bool:
         """Clean deployment-owned Agent-control artifacts after Agent stop."""
 
+        if self.state["agent_system"]["termination_reason"] is None:
+            raise RuntimeError(
+                "Agent termination must be recorded before control cleanup"
+            )
         if self.agent_control_transport is None:
+            self.state["agent_control"].update(
+                cleanup_complete=True,
+                cleanup_removed=0,
+                cleanup_failures=0,
+                cleanup_policy_violations=0,
+                cleanup_agent_caused_failures=0,
+                cleanup_infrastructure_failures=0,
+            )
+            self._event(
+                "AGENT_CONTROL_CLEANED",
+                removed=0,
+                failures=0,
+                policy_violations=0,
+                agent_caused_failures=0,
+                infrastructure_failures=0,
+            )
+            self._publish_staged_result()
+            self._save_state()
             return True
-        cleanup = self.agent_control_transport.cleanup()
+        try:
+            cleanup = self.agent_control_transport.cleanup()
+        except Exception as exc:
+            self.state["agent_control"].update(
+                cleanup_complete=False,
+                cleanup_failures=1,
+                cleanup_infrastructure_failures=1,
+            )
+            violation = "agent_control_cleanup_incomplete"
+            if violation not in self.state["policy_violations"]:
+                self.state["policy_violations"].append(violation)
+            if violation not in self.state["leaderboard_eligibility_violations"]:
+                self.state["leaderboard_eligibility_violations"].append(violation)
+            self.state["policy_compliant"] = False
+            self.state["leaderboard_eligible"] = False
+            self.infrastructure_failed(
+                "agent_control_teardown_failure", private_detail=str(exc)
+            )
+            self._save_state()
+            return False
         cleanup_complete = cleanup.complete
         self.state["agent_control"].update(
             cleanup_complete=cleanup_complete,
             cleanup_removed=cleanup.removed,
             cleanup_failures=cleanup.failures,
+            cleanup_policy_violations=cleanup.agent_policy_violations,
+            cleanup_agent_caused_failures=cleanup.agent_caused_failures,
+            cleanup_infrastructure_failures=cleanup.infrastructure_failures,
+        )
+        cleanup_policy_failure = bool(
+            cleanup.agent_policy_violations or cleanup.agent_caused_failures
         )
         if not cleanup_complete:
             violation = "agent_control_cleanup_incomplete"
@@ -1502,22 +1620,50 @@ class Supervisor:
                 self.state["leaderboard_eligibility_violations"].append(violation)
             self.state["policy_compliant"] = False
             self.state["leaderboard_eligible"] = False
+        if cleanup_policy_failure:
+            violation = "agent_control_cleanup_policy_violation"
+            if violation not in self.state["policy_violations"]:
+                self.state["policy_violations"].append(violation)
+            if violation not in self.state["leaderboard_eligibility_violations"]:
+                self.state["leaderboard_eligibility_violations"].append(violation)
+            self.state["policy_compliant"] = False
+            self.state["leaderboard_eligible"] = False
         self._event(
-            "MAILBOX_CLEANED",
+            "AGENT_CONTROL_CLEANED",
             removed=cleanup.removed,
             failures=cleanup.failures,
+            policy_violations=cleanup.agent_policy_violations,
+            agent_caused_failures=cleanup.agent_caused_failures,
+            infrastructure_failures=cleanup.infrastructure_failures,
         )
+        if cleanup_policy_failure:
+            self._agent_control_policy_failed()
+        elif cleanup.infrastructure_failures:
+            self.infrastructure_failed("agent_control_teardown_failure")
+        else:
+            self._publish_staged_result()
         self._save_state()
         return cleanup_complete
 
     def process_one_request(self) -> bool:
         if self.agent_control_transport is None:
             return False
-        result = self.agent_control_transport.process_one(self.handle)
+        try:
+            result = self.agent_control_transport.process_one(self.handle)
+        except Exception as exc:
+            self.infrastructure_failed(
+                "agent_control_transport_failure", private_detail=str(exc)
+            )
+            return True
         for event in result.events:
             self._event(event.name, **event.fields)
         if result.policy_failure:
-            self._mailbox_policy_failed()
+            self._agent_control_policy_failed()
+        elif result.infrastructure_failure_code is not None:
+            self.infrastructure_failed(
+                result.infrastructure_failure_code,
+                private_detail=result.infrastructure_failure,
+            )
         if result.handled or result.events:
             self._save_state()
         return result.handled

@@ -65,11 +65,13 @@ def normalize_result_report(payload: Any) -> Dict[str, Any]:
         raise ResultSchemaError("result_schema_version must be an integer")
     if version == RESULT_SCHEMA_VERSION:
         result = dict(payload)
+        result.pop("pending_result", None)
         _validate_current_result(result)
         return result
     if version != LEGACY_RESULT_SCHEMA_VERSION:
         raise ResultSchemaError(f"unsupported result schema version: {version}")
     result = _migrate_legacy_result(payload)
+    result.pop("pending_result", None)
     _validate_current_result(result)
     return result
 

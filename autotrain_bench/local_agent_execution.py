@@ -11,7 +11,14 @@ def describe_local_agent_execution(agent: AgentConfig) -> AgentExecutionEvidence
     """Describe the v0 launcher honestly without making the mechanism proof."""
 
     agent.validate()
-    compliant_boundary = agent.runner == "container" and agent.mode == "sandboxed"
+    sandboxed_container = agent.runner == "container" and agent.mode == "sandboxed"
+    limitations = []
+    if not sandboxed_container:
+        limitations.append("agent_execution_boundary")
+    # Both bundled launch paths expose writable host bind mounts without a
+    # deployment-enforced filesystem quota. Application-level mailbox limits
+    # cannot contain bytes written before inspection.
+    limitations.append("agent_writable_storage_unbounded")
     return AgentExecutionEvidence(
         source=(
             "bundled_local_docker"
@@ -20,8 +27,8 @@ def describe_local_agent_execution(agent: AgentConfig) -> AgentExecutionEvidence
         ),
         mechanism=agent.runner,
         enforcement=(
-            EnforcementLevel.ENFORCED
-            if compliant_boundary
+            EnforcementLevel.BEST_EFFORT
+            if sandboxed_container
             else EnforcementLevel.UNVERIFIED
         ),
         trust_level=TrustLevel.DEVELOPMENT,
@@ -29,5 +36,5 @@ def describe_local_agent_execution(agent: AgentConfig) -> AgentExecutionEvidence
         immutable_workload_identity=(
             agent.runner == "container" and immutable_image_reference(agent.image)
         ),
-        limitations=() if compliant_boundary else ("agent_execution_boundary",),
+        limitations=tuple(limitations),
     )

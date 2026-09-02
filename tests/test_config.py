@@ -181,9 +181,11 @@ class ConfigTests(unittest.TestCase):
             ).validate()
             self.assertEqual(container.network, "disabled")
             self.assertEqual(
-                container.public_manifest("python:gateway", policy_compliant=True)[
-                    "workspace_scope"
-                ],
+                container.public_manifest(
+                    "python:gateway",
+                    policy_compliant=True,
+                    control_transport="test_transport",
+                )["workspace_scope"],
                 "episode_snapshot",
             )
 
@@ -220,9 +222,11 @@ class ConfigTests(unittest.TestCase):
                 mode="sandboxed",
                 inference=inference,
             ).validate()
-            public = agent.public_manifest("gateway:image", policy_compliant=True)[
-                "inference"
-            ]
+            public = agent.public_manifest(
+                "gateway:image",
+                policy_compliant=True,
+                control_transport="test_transport",
+            )["inference"]
             self.assertTrue(public["enabled"])
             self.assertEqual(
                 public["local_base_url"], "http://inference-gateway:8765/v1"

@@ -14,6 +14,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+from autotrain_bench.agent_control import AgentControlStepResult
 from autotrain_bench.agent_api_bundle import publish_agent_api_bundle
 from autotrain_bench.challenge import ReleaseVerificationReceipt
 from autotrain_bench.config import (
@@ -112,8 +113,13 @@ class FakeWorker:
             raise AssertionError("Research Worker received a hidden split path")
         self.research_tasks.append(task)
         if self.fail_start:
+            detail = (
+                self.fail_start
+                if isinstance(self.fail_start, str)
+                else "simulated infrastructure failure"
+            )
             self.fail_start = False
-            raise WorkerFailure("simulated infrastructure failure")
+            raise WorkerFailure(detail)
         output = lease_dir / "output" / "candidate"
         output.mkdir(parents=True)
         shutil.copy2(
@@ -232,6 +238,11 @@ class SupervisorTests(unittest.TestCase):
         )
         supervisor.begin()
         return supervisor
+
+    def finalize_after_agent_stop(self, supervisor):
+        supervisor.record_agent_execution(exit_code=0, termination_reason="exited")
+        self.assertTrue(supervisor.cleanup_agent_control())
+        return supervisor.public_status()
 
     def test_existing_episode_state_is_rejected_before_mutation(self):
         self.episode.mkdir()
@@ -353,7 +364,9 @@ class SupervisorTests(unittest.TestCase):
                 agent=agent,
                 agent_execution=replace(
                     describe_local_agent_execution(agent),
+                    enforcement=EnforcementLevel.ENFORCED,
                     trust_level=TrustLevel.CERTIFIED,
+                    limitations=(),
                 ),
                 comparison_key=comparison_key,
                 challenge_release=release,
@@ -361,6 +374,24 @@ class SupervisorTests(unittest.TestCase):
             )
         self.assertTrue(supervisor.state["leaderboard_eligible"])
         self.assertEqual(supervisor.state["leaderboard_eligibility_violations"], [])
+
+    def test_agent_execution_identity_must_match_the_selected_image(self):
+        evidence = replace(
+            describe_local_agent_execution(self.agent),
+            workload_identity="different-agent@sha256:" + "a" * 64,
+        )
+
+        with self.assertRaisesRegex(ValueError, "workload identity"):
+            self.supervisor(agent_execution=evidence)
+
+    def test_mutable_agent_image_cannot_be_declared_immutable(self):
+        evidence = replace(
+            describe_local_agent_execution(self.agent),
+            immutable_workload_identity=True,
+        )
+
+        with self.assertRaisesRegex(ValueError, "mutable image"):
+            self.supervisor(agent_execution=evidence)
 
     def test_dirty_core_and_mismatched_release_cannot_be_formal(self):
         digest = "@sha256:" + "a" * 64
@@ -477,9 +508,12 @@ class SupervisorTests(unittest.TestCase):
     def test_track_b_interactive_lease_commit_and_finish(self):
         supervisor = self.supervisor()
         self.assertEqual(supervisor.state["agent_system"]["network"], "disabled")
-        self.assertTrue(supervisor.state["agent_system"]["policy_compliant"])
-        self.assertTrue(supervisor.state["policy_compliant"])
-        self.assertEqual(supervisor.state["policy_violations"], [])
+        self.assertFalse(supervisor.state["agent_system"]["policy_compliant"])
+        self.assertFalse(supervisor.state["policy_compliant"])
+        self.assertEqual(
+            supervisor.state["policy_violations"],
+            ["agent_writable_storage_unbounded"],
+        )
         self.assertEqual(
             supervisor.state["workers"]["research"]["worker_id"],
             "test-worker",
@@ -513,11 +547,15 @@ class SupervisorTests(unittest.TestCase):
             public_task["agent_environment"]["initial_workspace"],
             "participant_snapshot",
         )
+        self.assertEqual(public_task["agent_environment"]["control"], "file_mailbox")
         self.assertEqual(
             public_task["training_environment"]["resources"]["nvidia_gpu_count"],
             0,
         )
-        self.assertEqual(public_task["policy"]["violations"], [])
+        self.assertEqual(
+            public_task["policy"]["violations"],
+            ["agent_writable_storage_unbounded"],
+        )
         lease = supervisor.start_lease()
         self.assertEqual(lease["lease_id"], "lease-0001")
         self.assertNotIn("container_name", supervisor.state["active_lease"])
@@ -538,7 +576,17 @@ class SupervisorTests(unittest.TestCase):
         with self.assertRaises(ProtocolError):
             supervisor.start_lease()
 
-        final = supervisor.finish()
+        staged = supervisor.finish()
+        self.assertEqual(staged["status"], "closed")
+        self.assertIsNone(staged["outcome"])
+        self.assertIsNone(staged["test_nll"])
+        self.assertIsNone(supervisor.state["agent_control"]["cleanup_complete"])
+        self.assertNotIn(
+            "EPISODE_FINALIZED",
+            supervisor.events_path.read_text(encoding="utf-8"),
+        )
+
+        final = self.finalize_after_agent_stop(supervisor)
         self.assertEqual(final["status"], "finalized")
         self.assertEqual(final["result_schema_version"], 2)
         self.assertEqual(final["outcome"], "success")
@@ -557,11 +605,20 @@ class SupervisorTests(unittest.TestCase):
         types = [event["type"] for event in events]
         self.assertLess(types.index("VAL_EVALUATED"), types.index("INCUMBENT_DECLARED"))
         self.assertLess(types.index("EPISODE_CLOSED"), types.index("TEST_EVALUATED"))
+        self.assertLess(
+            types.index("AGENT_PROCESS_EXITED"),
+            types.index("AGENT_CONTROL_CLEANED"),
+        )
+        self.assertLess(
+            types.index("AGENT_CONTROL_CLEANED"), types.index("EPISODE_FINALIZED")
+        )
+        self.assertEqual(types.count("EPISODE_FINALIZED"), 1)
 
     def test_finish_without_an_incumbent_is_a_failed_experiment(self):
         supervisor = self.supervisor()
 
-        final = supervisor.finish()
+        supervisor.finish()
+        final = self.finalize_after_agent_stop(supervisor)
 
         self.assertEqual(final["status"], "finalized")
         self.assertEqual(final["outcome"], "failed")
@@ -577,7 +634,8 @@ class SupervisorTests(unittest.TestCase):
         supervisor.declare_incumbent(committed["candidate_id"])
         self.worker.evaluation_failure = "private evaluator detail"
 
-        final = supervisor.finish()
+        supervisor.finish()
+        final = self.finalize_after_agent_stop(supervisor)
 
         self.assertEqual(final["status"], "finalized")
         self.assertEqual(final["outcome"], "failed")
@@ -595,7 +653,8 @@ class SupervisorTests(unittest.TestCase):
             raise RuntimeError("simulated coordinator failure")
 
         self.worker.evaluation_hook = fail_test
-        final = supervisor.finish()
+        supervisor.finish()
+        final = self.finalize_after_agent_stop(supervisor)
 
         self.assertEqual(final["status"], "infrastructure_failure")
         self.assertEqual(final["outcome"], "failed")
@@ -610,7 +669,8 @@ class SupervisorTests(unittest.TestCase):
         supervisor.declare_incumbent(committed["candidate_id"])
         self.worker.test_nll = float("nan")
 
-        final = supervisor.finish()
+        supervisor.finish()
+        final = self.finalize_after_agent_stop(supervisor)
 
         self.assertEqual(final["outcome"], "failed")
         self.assertEqual(final["failure"], "invalid_test_metric")
@@ -624,7 +684,8 @@ class SupervisorTests(unittest.TestCase):
         supervisor.declare_incumbent(committed["candidate_id"])
         self.worker.test_nll = 710.0
 
-        final = supervisor.finish()
+        supervisor.finish()
+        final = self.finalize_after_agent_stop(supervisor)
 
         self.assertEqual(final["outcome"], "failed")
         self.assertEqual(final["failure"], "perplexity_overflow")
@@ -764,6 +825,29 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(supervisor.state["leases_used"], 0)
         supervisor.start_lease()
         self.assertEqual(supervisor.state["leases_used"], 1)
+
+    def test_lease_start_failure_does_not_expose_worker_detail(self):
+        supervisor = self.supervisor()
+        private_detail = "/organizer/private/slurm/job-42.log"
+        self.worker.fail_start = private_detail
+        (self.mailbox.inbox / "lease-start.json").write_text(
+            json.dumps({"op": "lease_start"}), encoding="utf-8"
+        )
+
+        self.assertTrue(supervisor.process_one_request())
+
+        response_text = (self.mailbox.outbox / "lease-start.json").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn(private_detail, response_text)
+        response = json.loads(response_text)
+        self.assertEqual(response["error"]["code"], "infrastructure_failure")
+        self.assertEqual(response["error"]["message"], "training lease startup failed")
+        self.assertEqual(supervisor.state["status"], "active")
+        self.assertIn(
+            private_detail,
+            supervisor.events_path.read_text(encoding="utf-8"),
+        )
 
     def test_evaluation_worker_capability_failure_is_role_scoped(self):
         self.worker.capability_overrides[HIDDEN_DATASET_ISOLATION] = Capability(
@@ -915,6 +999,9 @@ class SupervisorTests(unittest.TestCase):
         supervisor.start_lease()
         self.clock.advance(6)
         self.assertTrue(supervisor.enforce_deadlines())
+        self.assertEqual(supervisor.state["status"], "closed")
+        self.assertIsNone(supervisor.state["outcome"])
+        self.finalize_after_agent_stop(supervisor)
         self.assertEqual(supervisor.state["status"], "finalized")
         self.assertEqual(supervisor.state["outcome"], "failed")
         self.assertEqual(supervisor.state["failure"], "no_candidate")
@@ -938,6 +1025,9 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(self.worker.evaluation_timeouts[0], 1.0)
         self.assertIsNone(committed["val_nll"])
         self.assertEqual(committed["evaluation_error"], "track_a_deadline")
+        self.assertEqual(supervisor.state["status"], "closed")
+        self.assertIsNone(supervisor.state["outcome"])
+        self.finalize_after_agent_stop(supervisor)
         self.assertEqual(supervisor.state["status"], "finalized")
         self.assertEqual(supervisor.state["outcome"], "failed")
         self.assertEqual(supervisor.state["failure"], "no_candidate")
@@ -989,6 +1079,9 @@ class SupervisorTests(unittest.TestCase):
         self.clock.advance(101)
         self.assertTrue(supervisor.enforce_deadlines())
         self.assertEqual(supervisor.state["final_candidate_id"], first["candidate_id"])
+        self.assertEqual(supervisor.state["status"], "closed")
+        self.assertIsNone(supervisor.state["test_nll"])
+        self.finalize_after_agent_stop(supervisor)
         self.assertEqual(supervisor.state["test_nll"], 1.5)
         self.assertAlmostEqual(supervisor.state["test_perplexity"], math.exp(1.5))
 
@@ -1039,6 +1132,38 @@ class SupervisorTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "active")
         self.assertFalse((self.episode / "control").exists())
+        public_task = json.loads(
+            supervisor.public_task_path.read_text(encoding="utf-8")
+        )
+        self.assertIsNone(public_task["agent_environment"]["control"])
+
+        staged = supervisor.handle({"op": "finish"})
+        self.assertEqual(staged["status"], "closed")
+        with self.assertRaisesRegex(RuntimeError, "termination must be recorded"):
+            supervisor.cleanup_agent_control()
+        supervisor.record_agent_execution(exit_code=0, termination_reason="exited")
+        self.assertEqual(supervisor.state["status"], "closed")
+        self.assertTrue(supervisor.cleanup_agent_control())
+        self.assertEqual(supervisor.state["status"], "finalized")
+        self.assertEqual(supervisor.state["failure"], "no_candidate")
+
+    def test_control_cleanup_is_rejected_until_agent_termination_is_recorded(self):
+        supervisor = self.supervisor()
+        supervisor.finish()
+
+        with self.assertRaisesRegex(RuntimeError, "termination must be recorded"):
+            supervisor.cleanup_agent_control()
+        with self.assertRaisesRegex(ValueError, "termination reason"):
+            supervisor.record_agent_execution(exit_code=0, termination_reason="")
+
+        late_entry = self.mailbox.inbox / "late.tmp"
+        late_entry.write_text("late Agent output", encoding="utf-8")
+        supervisor.record_agent_execution(exit_code=0, termination_reason="exited")
+        self.assertTrue(supervisor.cleanup_agent_control())
+
+        self.assertFalse(late_entry.exists())
+        self.assertEqual(supervisor.state["status"], "finalized")
+        self.assertTrue(supervisor.state["agent_control"]["cleanup_complete"])
 
     def test_mailbox_rejects_agent_created_request_symlinks(self):
         supervisor = self.supervisor()
@@ -1052,7 +1177,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(response["error"]["code"], "invalid_request")
         self.assertTrue(supervisor.state_path.is_file())
         self.assertEqual(supervisor.state["status"], "dnf")
-        self.assertEqual(supervisor.state["failure"], "agent_mailbox_policy_violation")
+        self.assertEqual(supervisor.state["failure"], "agent_control_policy_violation")
         self.assertEqual(list(self.mailbox.rejected.iterdir()), [])
 
     def test_mailbox_directory_causes_policy_failure_and_is_cleaned_after_stop(self):
@@ -1072,8 +1197,9 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(len(list(self.mailbox.rejected.iterdir())), 1)
         self.assertEqual(supervisor.state["status"], "dnf")
         self.assertEqual(supervisor.state["outcome"], "failed")
-        self.assertEqual(supervisor.state["failure"], "agent_mailbox_policy_violation")
+        self.assertEqual(supervisor.state["failure"], "agent_control_policy_violation")
 
+        supervisor.record_agent_execution(exit_code=0, termination_reason="exited")
         self.assertTrue(supervisor.cleanup_agent_control())
 
         self.assertEqual(list(self.mailbox.inbox.iterdir()), [])
@@ -1081,12 +1207,13 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(list(self.mailbox.rejected.iterdir()), [])
         events = supervisor.events_path.read_text(encoding="utf-8")
         self.assertIn("MAILBOX_REQUEST_REJECTED", events)
-        self.assertIn("MAILBOX_CLEANED", events)
+        self.assertIn("AGENT_CONTROL_CLEANED", events)
         self.assertNotIn("EPISODE_INFRASTRUCTURE_FAILURE", events)
 
     def test_mailbox_cleanup_covers_outbox_and_records_incomplete_teardown(self):
         supervisor = self.supervisor()
         supervisor.agent_exited_without_finish()
+        supervisor.record_agent_execution(exit_code=1, termination_reason="exited")
         (self.mailbox.inbox / "stale.json").write_text("{}", encoding="utf-8")
         (self.mailbox.outbox / "stale.json").write_text("{}", encoding="utf-8")
         rejected = self.mailbox.rejected / "tree.rejected"
@@ -1126,10 +1253,168 @@ class SupervisorTests(unittest.TestCase):
 
         self.assertEqual(supervisor.state["status"], "dnf")
         self.assertEqual(supervisor.state["outcome"], "failed")
-        self.assertEqual(supervisor.state["failure"], "agent_mailbox_policy_violation")
+        self.assertEqual(supervisor.state["failure"], "agent_control_policy_violation")
         events = supervisor.events_path.read_text(encoding="utf-8")
         self.assertIn("mailbox_entry_limit", events)
         self.assertNotIn("EPISODE_INFRASTRUCTURE_FAILURE", events)
+
+    def test_trusted_handler_os_error_becomes_infrastructure_failure(self):
+        supervisor = self.supervisor()
+        private_detail = "/organizer/private/test.bin"
+        (self.mailbox.inbox / "lease-start.json").write_text(
+            json.dumps({"op": "lease_start"}),
+            encoding="utf-8",
+        )
+        original_save = supervisor._save_state
+        failed_once = False
+
+        def fail_once():
+            nonlocal failed_once
+            if not failed_once:
+                failed_once = True
+                raise OSError(private_detail)
+            return original_save()
+
+        with patch.object(supervisor, "_save_state", side_effect=fail_once):
+            self.assertTrue(supervisor.process_one_request())
+
+        response = json.loads(
+            (self.mailbox.outbox / "lease-start.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(response["error"]["code"], "infrastructure_failure")
+        self.assertNotIn(private_detail, json.dumps(response))
+        self.assertEqual(supervisor.state["status"], "infrastructure_failure")
+        self.assertEqual(supervisor.state["outcome"], "failed")
+        self.assertEqual(supervisor.state["failure"], "agent_control_handler_failure")
+
+        (self.mailbox.inbox / "status-after-failure.json").write_text(
+            json.dumps({"op": "status"}),
+            encoding="utf-8",
+        )
+        self.assertTrue(supervisor.process_one_request())
+        later_response = (self.mailbox.outbox / "status-after-failure.json").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn(private_detail, later_response)
+        self.assertEqual(
+            json.loads(later_response)["result"]["failure"],
+            "agent_control_handler_failure",
+        )
+        self.assertIn(
+            "EPISODE_INFRASTRUCTURE_FAILURE",
+            supervisor.events_path.read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            private_detail,
+            supervisor.events_path.read_text(encoding="utf-8"),
+        )
+
+    def test_mailbox_read_io_error_becomes_transport_infrastructure_failure(self):
+        supervisor = self.supervisor()
+        private_detail = "/organizer/private/mailbox.db"
+        (self.mailbox.inbox / "status.json").write_text(
+            json.dumps({"op": "status"}), encoding="utf-8"
+        )
+
+        with patch.object(
+            self.mailbox,
+            "read_request",
+            side_effect=OSError(private_detail),
+        ):
+            self.assertTrue(supervisor.process_one_request())
+
+        response_text = (self.mailbox.outbox / "status.json").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn(private_detail, response_text)
+        self.assertEqual(
+            json.loads(response_text)["error"]["code"], "infrastructure_failure"
+        )
+        self.assertEqual(supervisor.state["status"], "infrastructure_failure")
+        self.assertEqual(supervisor.state["failure"], "agent_control_transport_failure")
+
+    def test_control_failure_code_without_detail_is_not_ignored(self):
+        supervisor = self.supervisor()
+        result = AgentControlStepResult(
+            handled=True,
+            infrastructure_failure_code="synthetic_transport_failure",
+        )
+
+        with patch.object(self.mailbox, "process_one", return_value=result):
+            self.assertTrue(supervisor.process_one_request())
+
+        self.assertEqual(supervisor.state["status"], "infrastructure_failure")
+        self.assertEqual(supervisor.state["failure"], "synthetic_transport_failure")
+
+    def test_control_failure_detail_requires_a_code(self):
+        with self.assertRaisesRegex(ValueError, "detail requires a failure code"):
+            AgentControlStepResult(
+                handled=True,
+                infrastructure_failure="private detail",
+            )
+
+    def test_regular_artifact_cleanup_failure_invalidates_a_successful_run(self):
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+        candidate = supervisor.commit_lease("/output/candidate")
+        supervisor.declare_incumbent(candidate["candidate_id"])
+        supervisor.finish()
+        supervisor.record_agent_execution(exit_code=0, termination_reason="exited")
+        stale = self.mailbox.outbox / "stale.json"
+        stale.write_text("{}", encoding="utf-8")
+
+        original_unlink = Path.unlink
+
+        def fail_stale(path, *args, **kwargs):
+            if path == stale:
+                raise OSError("simulated trusted teardown failure")
+            return original_unlink(path, *args, **kwargs)
+
+        with patch("pathlib.Path.unlink", new=fail_stale):
+            self.assertFalse(supervisor.cleanup_agent_control())
+
+        self.assertEqual(supervisor.state["status"], "infrastructure_failure")
+        self.assertEqual(supervisor.state["outcome"], "failed")
+        self.assertIsNone(supervisor.state["test_nll"])
+        self.assertIsNone(supervisor.state["test_perplexity"])
+        self.assertEqual(
+            supervisor.state["agent_control"]["cleanup_infrastructure_failures"],
+            1,
+        )
+        self.assertNotIn(
+            "EPISODE_FINALIZED",
+            supervisor.events_path.read_text(encoding="utf-8"),
+        )
+
+    def test_non_regular_cleanup_entry_is_an_agent_policy_failure(self):
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+        candidate = supervisor.commit_lease("/output/candidate")
+        supervisor.declare_incumbent(candidate["candidate_id"])
+        supervisor.finish()
+        supervisor.record_agent_execution(exit_code=0, termination_reason="exited")
+        unseen = self.mailbox.inbox / "unseen.tmp"
+        unseen.mkdir()
+        (unseen / "nested").write_text("untrusted", encoding="utf-8")
+
+        self.assertTrue(supervisor.cleanup_agent_control())
+
+        self.assertEqual(supervisor.state["status"], "dnf")
+        self.assertEqual(supervisor.state["outcome"], "failed")
+        self.assertIsNone(supervisor.state["test_nll"])
+        self.assertIsNone(supervisor.state["test_perplexity"])
+        self.assertEqual(
+            supervisor.state["agent_control"]["cleanup_policy_violations"],
+            1,
+        )
+        self.assertNotIn(
+            "EPISODE_INFRASTRUCTURE_FAILURE",
+            supervisor.events_path.read_text(encoding="utf-8"),
+        )
+        self.assertNotIn(
+            "EPISODE_FINALIZED",
+            supervisor.events_path.read_text(encoding="utf-8"),
+        )
 
     @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFO requires os.mkfifo")
     def test_mailbox_fifo_is_removed_and_causes_policy_failure(self):
@@ -1144,7 +1429,7 @@ class SupervisorTests(unittest.TestCase):
         )
         self.assertEqual(response["error"]["code"], "invalid_request")
         self.assertEqual(supervisor.state["status"], "dnf")
-        self.assertEqual(supervisor.state["failure"], "agent_mailbox_policy_violation")
+        self.assertEqual(supervisor.state["failure"], "agent_control_policy_violation")
         self.assertFalse(request.exists())
         self.assertEqual(list(self.mailbox.rejected.iterdir()), [])
 
@@ -1157,7 +1442,7 @@ class SupervisorTests(unittest.TestCase):
 
         self.assertEqual(supervisor.state["status"], "dnf")
         self.assertEqual(supervisor.state["outcome"], "failed")
-        self.assertEqual(supervisor.state["failure"], "agent_mailbox_policy_violation")
+        self.assertEqual(supervisor.state["failure"], "agent_control_policy_violation")
         events = supervisor.events_path.read_text(encoding="utf-8")
         self.assertNotIn("EPISODE_INFRASTRUCTURE_FAILURE", events)
 
@@ -1242,7 +1527,10 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(status["agent_drain_seconds"], 2.5)
         self.assertFalse(status["policy_compliant"])
         self.assertIn("agent_execution_boundary", status["policy_violations"])
-        self.assertEqual(status["policy_violations"], ["agent_execution_boundary"])
+        self.assertEqual(
+            status["policy_violations"],
+            ["agent_execution_boundary", "agent_writable_storage_unbounded"],
+        )
 
     def test_registered_inference_usage_is_summarized_from_trusted_trace(self):
         inference = InferenceConfig(

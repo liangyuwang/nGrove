@@ -67,6 +67,12 @@ budget, isolation, comparison, or eligibility. Device selection, scheduler
 requests, cgroups, filesystem quotas, and other enforcement mechanisms remain
 Worker-owned.
 
+This paragraph states the target contract, not a claim that version 2 already
+has an allocation receipt. Version 2 passes requested `TrainingResources` into
+Worker operations and records deployment inventory, but `start_lease()` returns
+no normalized effective-allocation evidence. That gap is deferred to C4 and
+must remain explicit for formal evaluation.
+
 ## Phase A: state the v0 boundary accurately
 
 Status: complete.
@@ -97,7 +103,8 @@ The v0 support statement is:
   process, but the bundled bind-mounted storage does not yet provide a hard
   filesystem quota. Pre-inspection disk containment is a known local Worker
   deployment limitation, not a reason for Core to traverse hostile trees or
-  define site storage policy.
+  define site storage policy. The bundled launcher records this limitation and
+  therefore does not claim policy compliance.
 - After the v0 Worker stops a Lease, the Coordinator validates, copies, hashes,
   and atomically stores the Candidate from a shared path. Version 2 has no
   Worker-side capture operation or remote `ArtifactRef`.
@@ -158,6 +165,12 @@ Failure ownership must remain explicit:
 - valid requests that violate benchmark state return a protocol error;
 - failure of trusted transport or Coordinator persistence becomes an
   infrastructure failure.
+- raw trusted exception details remain in private Coordinator events; Agent
+  responses and public status expose only stable failure codes;
+- TEST output remains staged while the episode is `closed`, and the Coordinator
+  publishes exactly one terminal result only after Agent stop metadata and
+  transport cleanup are complete. Cleanup is rejected until termination has
+  been recorded; a launcher must first stop the workload and then record it.
 
 The initial extraction should move proven code rather than redesign the wire
 format.
@@ -195,7 +208,8 @@ participant selection and launch parameters. A trusted launcher separately
 supplies `AgentExecutionEvidence`, including its evidence source, mechanism,
 overall semantic enforcement level, deployment trust, immutable workload
 identity, and explicit limitations. The Supervisor assesses those fields and
-does not infer compliance merely from `container` or `host_cli`.
+does not infer compliance merely from `container` or `host_cli`. In v0, a
+container evidence identity must exactly match the selected Agent image.
 
 The strings `container` and `host_cli` describe bundled v0 launch mechanisms;
 they are not proof of isolation. The Coordinator must eventually base Agent
@@ -280,6 +294,22 @@ from the release-owned OCI reference.
 
 Possible result: a receipt binding the requested canonical workload, effective
 artifact identity, transformation provenance, and organizer acceptance.
+
+### C4. Resource allocation evidence
+
+Trigger: a release makes one or more resource properties normative, but the
+Worker cannot return authenticated evidence that the effective allocation and
+enforcement matched those requested properties.
+
+Possible result: a versioned allocation receipt containing the requested
+normative requirements, effective values, enforcement level, and Worker
+identity needed by Core's comparison and eligibility checks. The schema must
+remain property-extensible; it must not turn one platform's CPU, accelerator,
+topology, cgroup, or storage vocabulary into a universal Core checklist.
+
+Worker Protocol v2 has no such receipt: `start_lease()` returns `None`. This
+phase is intentionally deferred until an external Worker demonstrates the
+required evidence and lifecycle semantics.
 
 ### Other independently triggered work
 

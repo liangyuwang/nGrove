@@ -73,6 +73,28 @@ class ResultMetricTests(unittest.TestCase):
         )
         self.assertIsNone(report["outcome"])
 
+    def test_private_staged_result_is_not_part_of_a_report(self):
+        report = normalize_result_report(
+            {
+                "result_schema_version": 2,
+                "status": "closed",
+                "outcome": None,
+                "final_candidate_id": "sha256:candidate",
+                "test_nll": None,
+                "test_perplexity": None,
+                "failure": None,
+                "pending_result": {
+                    "outcome": "success",
+                    "test_nll": 1.0,
+                    "test_perplexity": math.e,
+                    "failure": None,
+                },
+            }
+        )
+
+        self.assertNotIn("pending_result", report)
+        self.assertIsNone(report["outcome"])
+
     def test_closed_result_cannot_claim_failure(self):
         with self.assertRaisesRegex(ResultSchemaError, "closed"):
             normalize_result_report(

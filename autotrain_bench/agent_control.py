@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Mapping, Protocol, Tuple
+from typing import Any, Callable, Dict, Mapping, Optional, Protocol, Tuple
 
 
 MAX_AGENT_CONTROL_RESPONSE_BYTES = 3 * 1024 * 1024
@@ -27,13 +27,45 @@ class AgentControlEvent:
 class AgentControlStepResult:
     handled: bool
     policy_failure: bool = False
+    infrastructure_failure_code: Optional[str] = None
+    infrastructure_failure: Optional[str] = None
     events: Tuple[AgentControlEvent, ...] = ()
+
+    def __post_init__(self) -> None:
+        code = self.infrastructure_failure_code
+        if code is not None and (
+            not isinstance(code, str)
+            or not code
+            or any(
+                character not in "abcdefghijklmnopqrstuvwxyz0123456789_"
+                for character in code
+            )
+        ):
+            raise ValueError(
+                "infrastructure failure code must be a lowercase ASCII identifier"
+            )
+        if self.infrastructure_failure is not None and not isinstance(
+            self.infrastructure_failure, str
+        ):
+            raise ValueError("infrastructure failure detail must be a string")
+        if self.infrastructure_failure is not None and code is None:
+            raise ValueError("infrastructure failure detail requires a failure code")
+        if self.policy_failure and code is not None:
+            raise ValueError(
+                "a control step cannot be both policy and infrastructure failure"
+            )
 
 
 @dataclass(frozen=True)
 class AgentControlCleanupResult:
     removed: int
-    failures: int
+    agent_policy_violations: int = 0
+    agent_caused_failures: int = 0
+    infrastructure_failures: int = 0
+
+    @property
+    def failures(self) -> int:
+        return self.agent_caused_failures + self.infrastructure_failures
 
     @property
     def complete(self) -> bool:

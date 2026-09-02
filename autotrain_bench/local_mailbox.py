@@ -7,6 +7,7 @@ belongs to a deployment launcher.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
@@ -28,6 +29,15 @@ MAX_MAILBOX_REQUEST_BYTES = 1024 * 1024
 MAX_MAILBOX_RESPONSE_BYTES = MAX_AGENT_CONTROL_RESPONSE_BYTES
 MAX_MAILBOX_PENDING_ENTRIES = 128
 MAX_MAILBOX_PENDING_BYTES = 64 * 1024 * 1024
+
+_AGENT_CONTROLLED_OPEN_ERRNOS = {
+    errno.EACCES,
+    errno.EISDIR,
+    errno.ELOOP,
+    errno.ENOENT,
+    errno.ENOTDIR,
+    errno.EPERM,
+}
 
 
 class MailboxMessageError(RuntimeError):
@@ -77,7 +87,7 @@ def read_untrusted_request(path: Path, maximum_bytes: int) -> Dict[str, Any]:
 
     try:
         initial_metadata = path.lstat()
-    except OSError as exc:
+    except FileNotFoundError as exc:
         raise MailboxMessageError("invalid_request", "request is unavailable") from exc
     if not stat.S_ISREG(initial_metadata.st_mode):
         raise MailboxMessageError("invalid_request", "request must be a regular file")
@@ -85,9 +95,11 @@ def read_untrusted_request(path: Path, maximum_bytes: int) -> Dict[str, Any]:
     try:
         descriptor = os.open(str(path), flags)
     except OSError as exc:
-        raise MailboxMessageError(
-            "invalid_request", "request must be a regular file"
-        ) from exc
+        if exc.errno in _AGENT_CONTROLLED_OPEN_ERRNOS:
+            raise MailboxMessageError(
+                "invalid_request", "request must be a regular file"
+            ) from exc
+        raise
     try:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
@@ -103,9 +115,14 @@ def read_untrusted_request(path: Path, maximum_bytes: int) -> Dict[str, Any]:
             )
         if metadata.st_size > maximum_bytes:
             raise MailboxMessageError("request_too_large", "request exceeds 1 MiB")
-        with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
-            descriptor = -1
-            payload = json.load(stream)
+        try:
+            with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+                descriptor = -1
+                payload = json.load(stream)
+        except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+            raise MailboxMessageError(
+                "invalid_request", "request is not valid UTF-8 JSON"
+            ) from exc
     finally:
         if descriptor >= 0:
             os.close(descriptor)
@@ -298,15 +315,13 @@ class LocalFileMailbox:
             os.replace(str(request_path), str(quarantined))
         except FileNotFoundError:
             return True, False
-        except OSError:
-            return False, True
         policy_violation = True
         try:
             metadata = quarantined.lstat()
             policy_violation = not stat.S_ISREG(metadata.st_mode)
             if not stat.S_ISDIR(metadata.st_mode):
                 quarantined.unlink()
-        except OSError:
+        except FileNotFoundError:
             policy_violation = True
         return True, policy_violation
 
@@ -346,35 +361,56 @@ class LocalFileMailbox:
                 events=tuple(events),
             )
 
-        request_loaded = False
         try:
             request = self.read_request(request_path)
-            request_loaded = True
-            result = handler(request)
-            response = {"ok": True, "result": result}
-        except (ProtocolError, MailboxMessageError) as exc:
+        except MailboxMessageError as exc:
+            code = exc.code
             response = {
                 "ok": False,
-                "error": {"code": exc.code, "message": str(exc)},
+                "error": {"code": code, "message": str(exc)},
             }
-            if not request_loaded:
-                events.append(
-                    AgentControlEvent(
-                        "MAILBOX_REQUEST_REJECTED",
-                        {"code": exc.code},
-                    )
+            events.append(
+                AgentControlEvent(
+                    "MAILBOX_REQUEST_REJECTED",
+                    {"code": code},
                 )
-        except (json.JSONDecodeError, OSError, ValueError) as exc:
+            )
+            infrastructure_failure_code = None
+            infrastructure_failure = None
+        except Exception as exc:
             response = {
                 "ok": False,
-                "error": {"code": "invalid_request", "message": str(exc)},
+                "error": {
+                    "code": "infrastructure_failure",
+                    "message": "trusted mailbox request read failed",
+                },
             }
-        except Exception as exc:  # return a bounded failure to the Agent
-            response = {
-                "ok": False,
-                "error": {"code": "internal_error", "message": str(exc)},
-            }
-            events.append(AgentControlEvent("SUPERVISOR_ERROR", {"message": str(exc)}))
+            infrastructure_failure_code = "agent_control_transport_failure"
+            infrastructure_failure = str(exc)
+        else:
+            try:
+                result = handler(request)
+            except ProtocolError as exc:
+                response = {
+                    "ok": False,
+                    "error": {"code": exc.code, "message": str(exc)},
+                }
+                infrastructure_failure_code = None
+                infrastructure_failure = None
+            except Exception as exc:
+                response = {
+                    "ok": False,
+                    "error": {
+                        "code": "infrastructure_failure",
+                        "message": "trusted request handler failed",
+                    },
+                }
+                infrastructure_failure_code = "agent_control_handler_failure"
+                infrastructure_failure = str(exc)
+            else:
+                response = {"ok": True, "result": result}
+                infrastructure_failure_code = None
+                infrastructure_failure = None
         finally:
             isolated, policy_violation = self.quarantine(request_path)
 
@@ -405,27 +441,50 @@ class LocalFileMailbox:
         return AgentControlStepResult(
             handled=True,
             policy_failure=policy_failure,
+            infrastructure_failure_code=infrastructure_failure_code,
+            infrastructure_failure=infrastructure_failure,
             events=tuple(events),
         )
 
     def cleanup(self) -> AgentControlCleanupResult:
         """Remove all transport artifacts after the Agent has stopped."""
 
-        failures = 0
         removed = 0
+        agent_policy_violations = 0
+        agent_caused_failures = 0
+        infrastructure_failures = 0
         for directory in (self.inbox, self.outbox, self.rejected):
             try:
                 children = directory.iterdir()
                 for entry in children:
                     try:
                         metadata = entry.lstat()
+                    except FileNotFoundError:
+                        continue
+                    except OSError:
+                        infrastructure_failures += 1
+                        continue
+                    regular = stat.S_ISREG(metadata.st_mode)
+                    if not regular:
+                        agent_policy_violations += 1
+                    try:
                         if stat.S_ISDIR(metadata.st_mode):
                             shutil.rmtree(entry)
                         else:
                             entry.unlink()
                         removed += 1
+                    except FileNotFoundError:
+                        continue
                     except OSError:
-                        failures += 1
+                        if regular:
+                            infrastructure_failures += 1
+                        else:
+                            agent_caused_failures += 1
             except OSError:
-                failures += 1
-        return AgentControlCleanupResult(removed=removed, failures=failures)
+                infrastructure_failures += 1
+        return AgentControlCleanupResult(
+            removed=removed,
+            agent_policy_violations=agent_policy_violations,
+            agent_caused_failures=agent_caused_failures,
+            infrastructure_failures=infrastructure_failures,
+        )

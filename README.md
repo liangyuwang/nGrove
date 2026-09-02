@@ -85,7 +85,9 @@ automatic capability fallback.
 Agent launch mechanism is also separate from policy evidence. `container` and
 `host_cli` describe bundled launch paths; a trusted launcher supplies the
 semantic enforcement, trust, workload identity, and limitations recorded for
-the episode. The bundled launcher is development-trust only.
+the episode. The bundled launcher is development-trust only, and its unbounded
+writable bind-mount storage is recorded as a policy limitation rather than
+being hidden behind application-level mailbox limits.
 
 The bundled `autotrain-bench prepare` and `autotrain-bench start` commands are
 the composition root for that local Docker implementation; they are not a
@@ -380,8 +382,14 @@ In v2, `outcome: "success"` requires a finalized episode, a non-empty final
 Candidate ID, and both consistent TEST metrics. A failed outcome requires a
 failure reason and keeps both TEST metrics `null`. A null outcome is allowed
 only before a result exists (`created`, `active`, or the transient `closed`
-state while post-mortem TEST is running), and may not carry TEST metrics or a
-failure reason.
+state while post-mortem TEST and trusted finalization are running), and may not
+carry TEST metrics or a failure reason. TEST first stages a private result;
+`finalized` is published only after the Agent has stopped, its execution
+metadata has been recorded, and Agent-control cleanup has completed. A cleanup
+failure therefore produces a failure terminal directly, never a success that
+is later rewritten. The Supervisor rejects control cleanup until trusted Agent
+termination metadata has been recorded; the Operator or deployment launcher
+must stop the workload before recording that metadata.
 
 The example proves the complete protocol:
 
@@ -395,19 +403,24 @@ task reveal
 → finish
 → episode closed
 → hidden TEST
+→ Agent stop and execution metadata
+→ Agent-control cleanup
+→ one final result
 ```
 
 ## v0 scope and security
 
-The reference implementation uses an official host-side Supervisor, either an
-Agent Container or a non-compliant host CLI process, a thin trusted Inference
+The reference implementation uses an official host-side Supervisor, a
+development Agent Container or host CLI process, a thin trusted Inference
 Gateway when registered, disposable Training Containers, and separate trusted
 Evaluator and untrusted Candidate containers. Agent, Training, and Candidate
 containers receive neither the Docker socket nor VAL/TEST mounts. Sandboxed
 Agent and Training networking is disabled; Candidate evaluation uses only an
 ephemeral internal network shared with its Evaluator. The Gateway handles only
-frozen researcher-inference endpoints. In this local compatibility path the
-Supervisor process enforces episode and Training-Lease deadlines; an external
+frozen researcher-inference endpoints. The bundled launcher nevertheless
+reports `policy_compliant: false` because its writable host bind mounts lack a
+deployment-enforced quota. In this local compatibility path the Supervisor
+process also enforces episode and Training-Lease deadlines; an external
 certified Worker must enforce its deadline envelope even if the Coordinator
 disconnects. `unrestricted-dev` and `host_cli` add further non-compliant local
 integration boundaries.

@@ -23,7 +23,7 @@ class AgentExecutionEvidenceTests(unittest.TestCase):
         self.assertFalse(evidence.policy_compliant)
         self.assertFalse(evidence.leaderboard_eligible)
 
-    def test_mechanism_name_does_not_imply_certified_execution(self):
+    def test_local_container_mechanism_does_not_imply_compliance_or_trust(self):
         with tempfile.TemporaryDirectory() as temporary:
             agent = AgentConfig(
                 workspace=Path(temporary),
@@ -36,12 +36,20 @@ class AgentExecutionEvidenceTests(unittest.TestCase):
 
             evidence = describe_local_agent_execution(agent)
 
-            self.assertTrue(evidence.policy_compliant)
+            self.assertFalse(evidence.policy_compliant)
             self.assertFalse(evidence.leaderboard_eligible)
             self.assertEqual(evidence.trust_level, TrustLevel.DEVELOPMENT)
-            self.assertTrue(
-                replace(evidence, trust_level=TrustLevel.CERTIFIED).leaderboard_eligible
+            self.assertEqual(
+                evidence.limitations,
+                ("agent_writable_storage_unbounded",),
             )
+            certified = replace(
+                evidence,
+                enforcement=EnforcementLevel.ENFORCED,
+                trust_level=TrustLevel.CERTIFIED,
+                limitations=(),
+            )
+            self.assertTrue(certified.leaderboard_eligible)
 
     def test_host_process_reports_the_boundary_limitation(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -55,7 +63,13 @@ class AgentExecutionEvidenceTests(unittest.TestCase):
             evidence = describe_local_agent_execution(agent)
 
             self.assertFalse(evidence.policy_compliant)
-            self.assertEqual(evidence.limitations, ("agent_execution_boundary",))
+            self.assertEqual(
+                evidence.limitations,
+                (
+                    "agent_execution_boundary",
+                    "agent_writable_storage_unbounded",
+                ),
+            )
 
 
 if __name__ == "__main__":
