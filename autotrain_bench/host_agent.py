@@ -26,7 +26,18 @@ _LOG_TRUNCATION_MARKER = b"\n[log truncated by AutoTrain-Bench]\n"
 class _BoundedLogSink:
     def __init__(self, path: Path) -> None:
         self.path = path
-        self.stream = path.open("wb")
+        descriptor = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+            0o600,
+        )
+        try:
+            os.chmod(path, 0o600)
+            self.stream = os.fdopen(descriptor, "wb")
+            descriptor = -1
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
         self.limit = MAX_HOST_AGENT_LOG_BYTES - len(_LOG_TRUNCATION_MARKER)
         self.written = 0
         self.truncated = False
@@ -161,8 +172,12 @@ class HostAgentProcess:
     process: subprocess.Popen
     stdout_path: Path
     stderr_path: Path
-    _stdout_thread: threading.Thread
-    _stderr_thread: threading.Thread
+    _stdout_sink: _BoundedLogSink
+    _stderr_sink: _BoundedLogSink
+    _stdout_thread: Optional[threading.Thread] = None
+    _stderr_thread: Optional[threading.Thread] = None
+    _stdout_thread_started: bool = False
+    _stderr_thread_started: bool = False
     _closed: bool = False
 
     @property
@@ -174,29 +189,95 @@ class HostAgentProcess:
         return self.process.poll()
 
     def stop(self, timeout_seconds: float = 3) -> int:
-        if self.process.poll() is None:
-            try:
-                if os.name == "posix":
-                    os.killpg(self.process.pid, signal.SIGTERM)
-                else:  # pragma: no cover - exercised on Windows only
-                    self.process.terminate()
-                self.process.wait(timeout=timeout_seconds)
-            except (ProcessLookupError, subprocess.TimeoutExpired):
-                if self.process.poll() is None:
+        termination_error: Optional[BaseException] = None
+        try:
+            if self.process.poll() is None:
+                try:
+                    try:
+                        if os.name == "posix":
+                            os.killpg(self.process.pid, signal.SIGTERM)
+                        else:  # pragma: no cover - exercised on Windows only
+                            self.process.terminate()
+                    except ProcessLookupError:
+                        pass
+                    self.process.wait(timeout=timeout_seconds)
+                except subprocess.TimeoutExpired:
+                    pass
+            if self.process.poll() is None:
+                try:
                     if os.name == "posix":
                         os.killpg(self.process.pid, signal.SIGKILL)
                     else:  # pragma: no cover - exercised on Windows only
                         self.process.kill()
-                    self.process.wait(timeout=timeout_seconds)
-        self.close_logs()
+                except ProcessLookupError:
+                    pass
+                self.process.wait(timeout=timeout_seconds)
+            if self.process.poll() is None:
+                raise RuntimeError("host Agent termination was not confirmed")
+        except BaseException as exc:
+            termination_error = exc
+        finally:
+            # Closing unowned pipes and joining live drainers is independent of
+            # whether process termination was confirmed.  On failure the handle
+            # remains retryable and keeps any still-running drainer reachable.
+            try:
+                self.close_logs()
+            except BaseException as exc:
+                if termination_error is None:
+                    termination_error = exc
+        if self.process.poll() is None and termination_error is None:
+            termination_error = RuntimeError("host Agent termination was not confirmed")
+        if termination_error is not None:
+            raise termination_error
         return int(self.process.returncode or 0)
 
     def close_logs(self) -> None:
         if self._closed:
             return
-        self._stdout_thread.join(timeout=5)
-        self._stderr_thread.join(timeout=5)
-        self._closed = True
+        complete = True
+        for source, sink, thread, started in (
+            (
+                self.process.stdout,
+                self._stdout_sink,
+                self._stdout_thread,
+                self._stdout_thread_started,
+            ),
+            (
+                self.process.stderr,
+                self._stderr_sink,
+                self._stderr_thread,
+                self._stderr_thread_started,
+            ),
+        ):
+            thread_started = started or (
+                thread is not None and thread.ident is not None
+            )
+            if thread_started and thread is not None:
+                thread.join(timeout=5)
+                complete = complete and not thread.is_alive()
+            else:
+                if source is not None and not source.closed:
+                    source.close()
+                if not sink.stream.closed:
+                    sink.stream.close()
+        self._closed = complete
+
+
+class HostAgentStartupFailure(RuntimeError):
+    """Post-Popen launch failure that preserves the cleanup-capable handle."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        handle: HostAgentProcess,
+        startup_error: BaseException,
+        cleanup_error: Optional[BaseException] = None,
+    ) -> None:
+        super().__init__(message)
+        self.handle = handle
+        self.startup_error = startup_error
+        self.cleanup_error = cleanup_error
 
 
 def start_host_agent_process(
@@ -249,11 +330,11 @@ def start_host_agent_process(
     )
 
     stdout_path.parent.mkdir(parents=True, exist_ok=True)
-    stdout_sink = _BoundedLogSink(stdout_path)
-    stderr_sink = _BoundedLogSink(stderr_path)
-    stdout_path.chmod(0o600)
-    stderr_path.chmod(0o600)
+    stdout_sink: Optional[_BoundedLogSink] = None
+    stderr_sink: Optional[_BoundedLogSink] = None
     try:
+        stdout_sink = _BoundedLogSink(stdout_path)
+        stderr_sink = _BoundedLogSink(stderr_path)
         process = subprocess.Popen(
             list(command),
             cwd=str(workspace.resolve()),
@@ -263,50 +344,46 @@ def start_host_agent_process(
             stderr=subprocess.PIPE,
             start_new_session=True,
         )
-    except OSError:
-        stdout_sink.stream.close()
-        stderr_sink.stream.close()
-        raise
-    assert process.stdout is not None
-    assert process.stderr is not None
-    stdout_thread = threading.Thread(
-        target=stdout_sink.drain, args=(process.stdout,), daemon=True
-    )
-    stderr_thread = threading.Thread(
-        target=stderr_sink.drain, args=(process.stderr,), daemon=True
-    )
-    started_threads = []
-    try:
-        stdout_thread.start()
-        started_threads.append(stdout_thread)
-        stderr_thread.start()
-        started_threads.append(stderr_thread)
-    except Exception:
-        # Popen has already crossed the external side-effect boundary.  Do not
-        # lose the only process handle merely because local log plumbing failed.
-        if process.poll() is None:
-            try:
-                if os.name == "posix":
-                    os.killpg(process.pid, signal.SIGKILL)
-                else:  # pragma: no cover - exercised on Windows only
-                    process.kill()
-            except ProcessLookupError:
-                pass
-            process.wait(timeout=3)
-        for source, sink, thread in (
-            (process.stdout, stdout_sink, stdout_thread),
-            (process.stderr, stderr_sink, stderr_thread),
-        ):
-            if thread not in started_threads:
-                source.close()
+    except BaseException:
+        for sink in (stdout_sink, stderr_sink):
+            if sink is not None and not sink.stream.closed:
                 sink.stream.close()
-        for thread in started_threads:
-            thread.join(timeout=5)
         raise
-    return HostAgentProcess(
+    assert stdout_sink is not None
+    assert stderr_sink is not None
+    handle = HostAgentProcess(
         process=process,
         stdout_path=stdout_path,
         stderr_path=stderr_path,
-        _stdout_thread=stdout_thread,
-        _stderr_thread=stderr_thread,
+        _stdout_sink=stdout_sink,
+        _stderr_sink=stderr_sink,
     )
+    try:
+        if process.stdout is None or process.stderr is None:
+            raise RuntimeError("host Agent pipes were not created")
+        handle._stdout_thread = threading.Thread(
+            target=stdout_sink.drain, args=(process.stdout,), daemon=True
+        )
+        handle._stderr_thread = threading.Thread(
+            target=stderr_sink.drain, args=(process.stderr,), daemon=True
+        )
+        handle._stdout_thread.start()
+        handle._stdout_thread_started = True
+        handle._stderr_thread.start()
+        handle._stderr_thread_started = True
+        return handle
+    except BaseException as startup_error:
+        cleanup_error: Optional[BaseException] = None
+        try:
+            handle.stop()
+        except BaseException as exc:
+            cleanup_error = exc
+        message = "host Agent startup failed after process creation"
+        if cleanup_error is not None:
+            message += " and termination was not confirmed"
+        raise HostAgentStartupFailure(
+            message,
+            handle=handle,
+            startup_error=startup_error,
+            cleanup_error=cleanup_error,
+        ) from startup_error

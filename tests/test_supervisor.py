@@ -587,7 +587,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertIsNone(staged["test_nll"])
         self.assertIsNone(supervisor.state["agent_control"]["cleanup_complete"])
         self.assertNotIn(
-            "EPISODE_FINALIZED",
+            "RESULT_PUBLICATION_PREPARED",
             supervisor.events_path.read_text(encoding="utf-8"),
         )
 
@@ -615,9 +615,20 @@ class SupervisorTests(unittest.TestCase):
             types.index("AGENT_CONTROL_CLEANED"),
         )
         self.assertLess(
-            types.index("AGENT_CONTROL_CLEANED"), types.index("EPISODE_FINALIZED")
+            types.index("AGENT_CONTROL_CLEANED"),
+            types.index("RESULT_PUBLICATION_PREPARED"),
         )
-        self.assertEqual(types.count("EPISODE_FINALIZED"), 1)
+        self.assertEqual(types.count("RESULT_PUBLICATION_PREPARED"), 1)
+        prepared = next(
+            event for event in events if event["type"] == "RESULT_PUBLICATION_PREPARED"
+        )
+        self.assertEqual(
+            supervisor.state["result_publication"],
+            {
+                "publication_id": prepared["publication_id"],
+                "prepared_event_seq": prepared["seq"],
+            },
+        )
 
     def test_finish_without_an_incumbent_is_a_failed_experiment(self):
         supervisor = self.supervisor()
@@ -1938,7 +1949,7 @@ class SupervisorTests(unittest.TestCase):
             1,
         )
         self.assertNotIn(
-            "EPISODE_FINALIZED",
+            "RESULT_PUBLICATION_PREPARED",
             supervisor.events_path.read_text(encoding="utf-8"),
         )
 
@@ -1976,6 +1987,7 @@ class SupervisorTests(unittest.TestCase):
             "EPISODE_FINALIZED",
             supervisor.events_path.read_text(encoding="utf-8"),
         )
+        self.assertIsNone(supervisor.state["result_publication"])
 
         supervisor.deployment_teardown_failed(
             "agent_control_teardown_failure",
@@ -1983,6 +1995,53 @@ class SupervisorTests(unittest.TestCase):
         )
         self.assertEqual(supervisor.state["status"], "infrastructure_failure")
         self.assertEqual(supervisor.state["outcome"], "failed")
+        events = [
+            json.loads(line)
+            for line in supervisor.events_path.read_text(encoding="utf-8").splitlines()
+        ]
+        sequences = [event["seq"] for event in events]
+        self.assertEqual(sequences, sorted(sequences))
+        self.assertEqual(len(sequences), len(set(sequences)))
+        self.assertEqual(
+            [
+                event["type"]
+                for event in events
+                if event["type"] == "RESULT_PUBLICATION_PREPARED"
+            ],
+            ["RESULT_PUBLICATION_PREPARED"],
+        )
+        self.assertNotIn("EPISODE_FAILED", [event["type"] for event in events])
+        self.assertNotIn("EPISODE_FINALIZED", [event["type"] for event in events])
+
+    def test_final_result_persistence_retry_reuses_prepared_event(self):
+        supervisor = self.supervisor()
+        supervisor.finish()
+        supervisor.record_agent_execution(exit_code=0, termination_reason="exited")
+
+        with patch.object(
+            supervisor,
+            "_save_state",
+            side_effect=OSError("simulated final state persistence failure"),
+        ):
+            with self.assertRaisesRegex(OSError, "final state persistence"):
+                supervisor.cleanup_agent_control()
+
+        self.assertEqual(supervisor.state["status"], "closed")
+        self.assertTrue(supervisor.cleanup_agent_control())
+        self.assertEqual(supervisor.state["status"], "finalized")
+        self.assertEqual(supervisor.state["outcome"], "failed")
+        events = [
+            json.loads(line)
+            for line in supervisor.events_path.read_text(encoding="utf-8").splitlines()
+        ]
+        prepared = [
+            event for event in events if event["type"] == "RESULT_PUBLICATION_PREPARED"
+        ]
+        self.assertEqual(len(prepared), 1)
+        self.assertEqual(
+            supervisor.state["result_publication"]["prepared_event_seq"],
+            prepared[0]["seq"],
+        )
 
     def test_non_regular_cleanup_entry_is_an_agent_policy_failure(self):
         supervisor = self.supervisor()
@@ -2010,7 +2069,7 @@ class SupervisorTests(unittest.TestCase):
             supervisor.events_path.read_text(encoding="utf-8"),
         )
         self.assertNotIn(
-            "EPISODE_FINALIZED",
+            "RESULT_PUBLICATION_PREPARED",
             supervisor.events_path.read_text(encoding="utf-8"),
         )
 

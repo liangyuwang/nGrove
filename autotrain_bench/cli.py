@@ -27,7 +27,11 @@ from .config import (
     agent_mode,
     agent_runner,
 )
-from .host_agent import HostAgentProcess, summarize_host_agent_trace
+from .host_agent import (
+    HostAgentProcess,
+    HostAgentStartupFailure,
+    summarize_host_agent_trace,
+)
 from .inference import summarize_inference_trace
 from .local_mailbox import LocalFileMailbox
 from .local_agent_execution import describe_local_agent_execution
@@ -177,7 +181,7 @@ def _run_cleanup_steps(steps: Sequence[CleanupStep]) -> List[CleanupFailure]:
     for code, cleanup in steps:
         try:
             result = cleanup()
-        except Exception as exc:
+        except (Exception, KeyboardInterrupt) as exc:
             failures.append((code, f"{type(exc).__name__}: {exc}"))
         else:
             if result is False:
@@ -196,7 +200,7 @@ def _report_cleanup_failures(
     for code, private_detail in failures:
         try:
             supervisor.deployment_teardown_failed(code, private_detail=private_detail)
-        except Exception as exc:
+        except (Exception, KeyboardInterrupt) as exc:
             reporting_errors.append(exc)
     if reporting_errors:
         # Every failure was offered to the authoritative state machine before
@@ -249,14 +253,18 @@ def _stop_and_record_host_agent(
 
 
 def _stop_and_record_startup_container_agent(
-    *, runtime: DockerRuntime, supervisor: Supervisor, name: str
+    *,
+    runtime: DockerRuntime,
+    supervisor: Supervisor,
+    name: str,
+    termination_reason: str = "episode_startup_failure",
 ) -> None:
     """Confirm an uncertain startup workload is absent before recording it."""
 
     runtime.stop_container(name)
     supervisor.record_agent_execution(
         exit_code=None,
-        termination_reason="episode_startup_failure",
+        termination_reason=termination_reason,
     )
 
 
@@ -490,14 +498,36 @@ def command_start(args: argparse.Namespace) -> int:
                 stderr_path=episode_dir / "agent.stderr.log",
             )
         agent_started = True
-    except Exception as exc:
-        transition_error: Optional[Exception] = None
+    except BaseException as exc:
+        # Once startup crosses a deployment side-effect boundary, every exit
+        # path owns compensation.  In particular, Ctrl-C must not bypass the
+        # cleanup that exists before the steady-state ``finally`` is installed.
+        startup_error = exc
+        if isinstance(exc, HostAgentStartupFailure):
+            # Popen succeeded, so ``None`` would be an unsafe statement about
+            # process ownership.  Preserve the retryable handle even when the
+            # launch helper's first termination attempt also failed.
+            host_agent = exc.handle
+            startup_error = exc.startup_error
+        termination_reason = (
+            "supervisor_interrupted"
+            if isinstance(startup_error, KeyboardInterrupt)
+            else "episode_startup_failure"
+        )
+        private_detail = f"{type(startup_error).__name__}: {startup_error}"
+        if isinstance(exc, HostAgentStartupFailure) and exc.cleanup_error is not None:
+            private_detail += (
+                "; initial host Agent cleanup failed: "
+                f"{type(exc.cleanup_error).__name__}: {exc.cleanup_error}"
+            )
+
+        transition_error: Optional[BaseException] = None
         try:
             supervisor.infrastructure_failed(
-                "episode_startup_failure",
-                private_detail=f"{type(exc).__name__}: {exc}",
+                termination_reason,
+                private_detail=private_detail,
             )
-        except Exception as transition_exc:
+        except BaseException as transition_exc:
             transition_error = transition_exc
 
         startup_cleanup_steps: List[CleanupStep] = []
@@ -509,6 +539,7 @@ def command_start(args: argparse.Namespace) -> int:
                         runtime=reference_runtime,
                         supervisor=supervisor,
                         name=agent_name,
+                        termination_reason=termination_reason,
                     ),
                 )
             )
@@ -519,7 +550,7 @@ def command_start(args: argparse.Namespace) -> int:
                     _stop_and_record_host_agent(
                         supervisor=supervisor,
                         host_agent=host_agent,
-                        termination_reason="episode_startup_failure",
+                        termination_reason=termination_reason,
                         drain_seconds=0.0,
                     )
 
@@ -528,7 +559,7 @@ def command_start(args: argparse.Namespace) -> int:
                 def record_host_startup() -> None:
                     supervisor.record_agent_execution(
                         exit_code=None,
-                        termination_reason="episode_startup_failure",
+                        termination_reason=termination_reason,
                     )
 
             startup_cleanup_steps.append(
@@ -559,16 +590,24 @@ def command_start(args: argparse.Namespace) -> int:
                     )
                 ]
             )
-        _report_cleanup_failures(
-            supervisor,
-            [
-                *startup_cleanup_failures,
-                *control_cleanup_failures,
-            ],
-        )
+        reporting_error: Optional[BaseException] = None
+        try:
+            _report_cleanup_failures(
+                supervisor,
+                [
+                    *startup_cleanup_failures,
+                    *control_cleanup_failures,
+                ],
+            )
+        except BaseException as report_exc:
+            reporting_error = report_exc
         if transition_error is not None:
-            raise transition_error from exc
-        raise
+            raise transition_error from startup_error
+        if reporting_error is not None:
+            raise reporting_error from startup_error
+        if startup_error is exc:
+            raise
+        raise startup_error from exc
 
     terminal_at: Optional[float] = None
     host_termination_reason: Optional[str] = None
@@ -656,7 +695,7 @@ def command_start(args: argparse.Namespace) -> int:
                 agent_log_path = episode_dir / "agent.log"
                 agent_log_path.write_text(agent_log, encoding="utf-8")
                 agent_log_path.chmod(0o600)
-        except (OSError, RuntimeFailure):
+        except (OSError, RuntimeFailure, KeyboardInterrupt):
             pass
         if agent.runner == "container":
             if agent_started:
@@ -743,10 +782,10 @@ def command_start(args: argparse.Namespace) -> int:
                 ]
             )
         )
-        cleanup_reporting_error: Optional[Exception] = None
+        cleanup_reporting_error: Optional[BaseException] = None
         try:
             _report_cleanup_failures(supervisor, cleanup_failures)
-        except Exception as exc:
+        except BaseException as exc:
             # A persistence failure while recording teardown evidence must not
             # skip the remaining independent cleanup steps.  The Supervisor
             # mutates the fail-closed evidence before attempting persistence,
@@ -766,7 +805,7 @@ def command_start(args: argparse.Namespace) -> int:
             )
             try:
                 _report_cleanup_failures(supervisor, control_cleanup_failures)
-            except Exception as exc:
+            except BaseException as exc:
                 if cleanup_reporting_error is None:
                     cleanup_reporting_error = exc
         if cleanup_reporting_error is not None:

@@ -151,6 +151,29 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
         raise ResultSchemaError("pending_lease_teardowns must be a string array")
     if len(set(pending_lease_teardowns)) != len(pending_lease_teardowns):
         raise ResultSchemaError("pending_lease_teardowns must be unique")
+    publication_present = "result_publication" in result
+    result_publication = result.get("result_publication")
+    if result_publication is not None:
+        if status != "finalized" or not isinstance(result_publication, dict):
+            raise ResultSchemaError(
+                "result_publication must be an object on a finalized result"
+            )
+        publication_id = result_publication.get("publication_id")
+        prepared_event_seq = result_publication.get("prepared_event_seq")
+        if not isinstance(publication_id, str) or not publication_id.strip():
+            raise ResultSchemaError("result publication ID must be a string")
+        if (
+            isinstance(prepared_event_seq, bool)
+            or not isinstance(prepared_event_seq, int)
+            or prepared_event_seq < 1
+        ):
+            raise ResultSchemaError(
+                "result publication must reference a prepared event sequence"
+            )
+    elif publication_present and status == "finalized":
+        raise ResultSchemaError(
+            "a finalized result cannot contain an empty result_publication"
+        )
 
     outcome = result.get("outcome")
     if outcome not in {None, "success", "failed"}:

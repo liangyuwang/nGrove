@@ -623,6 +623,7 @@ class Supervisor:
             "test_nll": None,
             "test_perplexity": None,
             "pending_result": None,
+            "result_publication": None,
             "closure_reason": None,
             "inference_usage": summarize_inference_trace(self.inference_trace_path),
             "agent_usage": None,
@@ -743,7 +744,7 @@ class Supervisor:
             )
         return result
 
-    def _event(self, event_type: str, **data: Any) -> None:
+    def _event(self, event_type: str, **data: Any) -> int:
         self.sequence += 1
         event = {
             "seq": self.sequence,
@@ -751,21 +752,48 @@ class Supervisor:
             "elapsed_seconds": round(self._elapsed(), 6),
             **data,
         }
-        with self.events_path.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(event, sort_keys=True) + "\n")
-        self.events_path.chmod(0o600)
+        descriptor = os.open(
+            self.events_path,
+            os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+            0o600,
+        )
+        try:
+            # Tighten a pre-existing file before appending private event data.
+            os.chmod(self.events_path, 0o600)
+            with os.fdopen(descriptor, "a", encoding="utf-8") as stream:
+                descriptor = -1
+                stream.write(json.dumps(event, sort_keys=True) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        return self.sequence
 
     def _save_state(self) -> None:
         self._validate_state_invariants()
         self.state["elapsed_seconds"] = round(self._elapsed(), 6)
         self.state["timing_summary"] = self._timing_summary()
         temporary = self.state_path.with_suffix(".json.tmp")
-        temporary.write_text(
-            json.dumps(self.state, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+            0o600,
         )
+        try:
+            # Tighten a leftover temporary before writing private state.  Do
+            # every fallible file operation before replace; after replace
+            # returns, callers can treat the authoritative commit as complete.
+            os.chmod(temporary, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                descriptor = -1
+                stream.write(json.dumps(self.state, indent=2, sort_keys=True) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
         os.replace(str(temporary), str(self.state_path))
-        os.chmod(self.state_path, 0o600)
 
     def _validate_state_invariants(self) -> None:
         """Reject internally contradictory lifecycle state before publication."""
@@ -782,12 +810,15 @@ class Supervisor:
         termination = self.state["agent_system"]["termination_reason"]
         cleanup_complete = self.state["agent_control"]["cleanup_complete"]
         outcome = self.state["outcome"]
+        result_publication = self.state.get("result_publication")
         if status in {"created", "active", "closed"} and outcome is not None:
             raise RuntimeError("a non-terminal episode cannot publish an outcome")
         if status in {"dnf", "infrastructure_failure"} and outcome != "failed":
             raise RuntimeError("a failure terminal must publish a failed outcome")
         if status == "finalized" and outcome not in {"success", "failed"}:
             raise RuntimeError("a finalized episode requires an outcome")
+        if status != "finalized" and result_publication is not None:
+            raise RuntimeError("only a finalized episode may publish a result")
         if self.state.get("pending_result") is not None and status != "closed":
             raise RuntimeError("a staged TEST result requires the closed state")
         if outcome == "failed" and (
@@ -800,6 +831,23 @@ class Supervisor:
         if status == "active" and termination is not None:
             raise RuntimeError("an active episode cannot have a terminated Agent")
         if status == "finalized":
+            if not isinstance(result_publication, dict):
+                raise RuntimeError(
+                    "a finalized result requires an audit publication reference"
+                )
+            publication_id = result_publication.get("publication_id")
+            prepared_event_seq = result_publication.get("prepared_event_seq")
+            if not _safe_protocol_text(publication_id):
+                raise RuntimeError("result publication ID must be a safe string")
+            if (
+                isinstance(prepared_event_seq, bool)
+                or not isinstance(prepared_event_seq, int)
+                or prepared_event_seq < 1
+                or prepared_event_seq > self.sequence
+            ):
+                raise RuntimeError(
+                    "result publication must reference a prepared audit event"
+                )
             if termination is None or cleanup_complete is not True:
                 raise RuntimeError("a finalized result requires completed teardown")
             if self.state.get("active_lease") is not None or pending_teardowns:
@@ -1861,6 +1909,7 @@ class Supervisor:
             "failure": None,
             "test_nll": test_nll,
             "test_perplexity": test_perplexity,
+            "publication_id": uuid.uuid4().hex,
         }
         self._event(
             "TEST_EVALUATED",
@@ -1879,6 +1928,7 @@ class Supervisor:
             "failure": failure,
             "test_nll": None,
             "test_perplexity": None,
+            "publication_id": uuid.uuid4().hex,
         }
         self._save_state()
         return self.public_status()
@@ -1898,38 +1948,53 @@ class Supervisor:
 
         outcome = pending["outcome"]
         failure = pending["failure"]
+        publication_id = pending.get("publication_id")
+        if not _safe_protocol_text(publication_id):
+            # Compatibility for an in-memory staged result created before the
+            # publication protocol was introduced.  New staged results persist
+            # their stable ID before teardown begins.
+            publication_id = uuid.uuid4().hex
+            pending["publication_id"] = publication_id
+
+        prepared_event_seq = pending.get("prepared_event_seq")
+        if (
+            isinstance(prepared_event_seq, bool)
+            or not isinstance(prepared_event_seq, int)
+            or prepared_event_seq < 1
+            or prepared_event_seq > self.sequence
+        ):
+            prepared_event_seq = self._event(
+                "RESULT_PUBLICATION_PREPARED",
+                publication_id=publication_id,
+                result=outcome,
+                reason=failure,
+                candidate_id=self.state["final_candidate_id"],
+            )
+            pending["prepared_event_seq"] = prepared_event_seq
+
+        # Preserve the preparation reference in memory if the authoritative
+        # replace fails.  A retry in the same Coordinator process reuses the
+        # existing append-only record instead of duplicating it.
         previous_state = copy.deepcopy(self.state)
-        previous_sequence = self.sequence
         self.state["status"] = "finalized"
         self.state["outcome"] = outcome
         self.state["failure"] = failure
         self.state["test_nll"] = pending["test_nll"]
         self.state["test_perplexity"] = pending["test_perplexity"]
         self.state["pending_result"] = None
+        self.state["result_publication"] = {
+            "publication_id": publication_id,
+            "prepared_event_seq": prepared_event_seq,
+        }
         try:
-            # state.json is the authoritative result.  Persist it before
-            # emitting terminal audit events, and roll back the in-memory and
-            # on-disk result if either publication step fails.  Callers must
-            # not perform a second required save after this returns True.
+            # The append-only record above is explicitly a non-terminal
+            # preparation.  state.json becomes the sole commit point by
+            # referencing that record.  A failed replace leaves an orphaned
+            # preparation, never a ghost terminal event, and sequence numbers
+            # remain monotonic.
             self._save_state()
-            if outcome == "failed":
-                self._event(
-                    "EPISODE_FAILED",
-                    reason=failure,
-                    candidate_id=self.state["final_candidate_id"],
-                )
-                self._event("EPISODE_FINALIZED", result="failure", reason=failure)
-            else:
-                self._event("EPISODE_FINALIZED", result="success")
-        except Exception:
+        except BaseException:
             self.state = previous_state
-            self.sequence = previous_sequence
-            try:
-                self._save_state()
-            except Exception:
-                # Preserve the original publication error.  The command still
-                # fails closed even when storage is unavailable for rollback.
-                pass
             raise
         return True
 

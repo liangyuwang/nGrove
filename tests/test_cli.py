@@ -26,7 +26,7 @@ from autotrain_bench.cli import (
     command_start,
 )
 from autotrain_bench.config import ConfigError, TaskConfig
-from autotrain_bench.runtime import RuntimeFailure
+from autotrain_bench.runtime import DockerRuntime, RuntimeFailure
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -282,6 +282,54 @@ class WorkspaceSnapshotTests(unittest.TestCase):
         runtime.assert_not_called()
         self.assertFalse(episode.exists())
 
+    def test_keyboard_interrupt_during_agent_start_runs_compensating_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            episode = Path(directory) / "episode"
+            args = build_parser().parse_args(
+                [
+                    "start",
+                    "--task",
+                    str(TASK),
+                    "--track",
+                    "B",
+                    "--episode-dir",
+                    str(episode),
+                    "--agent-runner",
+                    "container",
+                    "--agent-image",
+                    f"example/agent@sha256:{'a' * 64}",
+                    "--agent-command",
+                    "example-agent",
+                ]
+            )
+            runtime = DockerRuntime()
+
+            with patch("autotrain_bench.cli.DockerRuntime", return_value=runtime):
+                with patch.object(runtime, "prepare"):
+                    with patch.object(
+                        runtime,
+                        "environment_manifest",
+                        return_value={},
+                    ):
+                        with patch.object(
+                            runtime,
+                            "start_agent",
+                            side_effect=KeyboardInterrupt(),
+                        ):
+                            with patch.object(runtime, "stop_container") as stop:
+                                with self.assertRaises(KeyboardInterrupt):
+                                    command_start(args)
+
+            stop.assert_called_once()
+            state = json.loads((episode / "state.json").read_text(encoding="utf-8"))
+            self.assertEqual(state["status"], "infrastructure_failure")
+            self.assertEqual(state["failure"], "supervisor_interrupted")
+            self.assertEqual(
+                state["agent_system"]["termination_reason"],
+                "supervisor_interrupted",
+            )
+            self.assertTrue(state["agent_control"]["cleanup_complete"])
+
     def test_host_agent_can_exit_during_drain(self):
         self.assertEqual(
             _terminal_agent_action(
@@ -385,6 +433,27 @@ class WorkspaceSnapshotTests(unittest.TestCase):
         self.assertEqual([call[0] for call in calls], ["stop", "record"])
         self.assertEqual(calls[-1][1]["termination_reason"], "episode_startup_failure")
 
+    def test_startup_agent_records_operator_interrupt_after_confirmed_absence(self):
+        calls = []
+
+        class Runtime:
+            def stop_container(self, name):
+                calls.append(("stop", name))
+
+        class Supervisor:
+            def record_agent_execution(self, **metadata):
+                calls.append(("record", metadata))
+
+        _stop_and_record_startup_container_agent(
+            runtime=Runtime(),
+            supervisor=Supervisor(),
+            name="uncertain-agent",
+            termination_reason="supervisor_interrupted",
+        )
+
+        self.assertEqual([call[0] for call in calls], ["stop", "record"])
+        self.assertEqual(calls[-1][1]["termination_reason"], "supervisor_interrupted")
+
     def test_cleanup_steps_continue_after_an_earlier_failure(self):
         calls = []
 
@@ -410,6 +479,26 @@ class WorkspaceSnapshotTests(unittest.TestCase):
         self.assertEqual(len(failures), 1)
         self.assertEqual(failures[0][0], "training_lease_termination_failure")
         self.assertIn("lease still running", failures[0][1])
+
+    def test_cleanup_steps_continue_after_keyboard_interrupt(self):
+        calls = []
+
+        def interrupted_cleanup():
+            calls.append("interrupted")
+            raise KeyboardInterrupt()
+
+        def later_cleanup():
+            calls.append("later")
+
+        failures = _run_cleanup_steps(
+            [
+                ("interrupted_cleanup", interrupted_cleanup),
+                ("later_cleanup", later_cleanup),
+            ]
+        )
+
+        self.assertEqual(calls, ["interrupted", "later"])
+        self.assertEqual(failures, [("interrupted_cleanup", "KeyboardInterrupt: ")])
 
     def test_cleanup_steps_treat_an_explicit_false_result_as_incomplete(self):
         calls = []

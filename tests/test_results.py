@@ -70,6 +70,27 @@ class ResultMetricTests(unittest.TestCase):
                 "test_perplexity": 1.0,
                 "failure": None,
             },
+            "finalized_with_empty_publication": {
+                "status": "finalized",
+                "outcome": "success",
+                "final_candidate_id": "sha256:candidate",
+                "test_nll": 0.0,
+                "test_perplexity": 1.0,
+                "failure": None,
+                "result_publication": None,
+            },
+            "active_with_publication": {
+                "status": "active",
+                "outcome": None,
+                "final_candidate_id": None,
+                "test_nll": None,
+                "test_perplexity": None,
+                "failure": None,
+                "result_publication": {
+                    "publication_id": "publication",
+                    "prepared_event_seq": 1,
+                },
+            },
         }
         for name, payload in invalid.items():
             payload["result_schema_version"] = 2
@@ -90,6 +111,40 @@ class ResultMetricTests(unittest.TestCase):
             }
         )
         self.assertIsNone(report["outcome"])
+
+    def test_current_result_accepts_a_prepared_publication_reference(self):
+        report = normalize_result_report(
+            {
+                "result_schema_version": 2,
+                "status": "finalized",
+                "outcome": "success",
+                "final_candidate_id": "sha256:candidate",
+                "test_nll": 0.0,
+                "test_perplexity": 1.0,
+                "failure": None,
+                "result_publication": {
+                    "publication_id": "publication",
+                    "prepared_event_seq": 7,
+                },
+            }
+        )
+
+        self.assertEqual(report["result_publication"]["prepared_event_seq"], 7)
+
+    def test_older_v2_finalized_result_without_publication_remains_readable(self):
+        report = normalize_result_report(
+            {
+                "result_schema_version": 2,
+                "status": "finalized",
+                "outcome": "success",
+                "final_candidate_id": "sha256:candidate",
+                "test_nll": 0.0,
+                "test_perplexity": 1.0,
+                "failure": None,
+            }
+        )
+
+        self.assertNotIn("result_publication", report)
 
     def test_private_staged_result_is_not_part_of_a_report(self):
         report = normalize_result_report(

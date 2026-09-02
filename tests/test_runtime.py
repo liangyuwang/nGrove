@@ -16,6 +16,8 @@ from autotrain_bench.config import (
     TrainingResources,
 )
 from autotrain_bench.host_agent import (
+    HostAgentProcess,
+    HostAgentStartupFailure,
     _BoundedLogSink,
     start_host_agent_process,
     summarize_host_agent_trace,
@@ -212,7 +214,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                     "autotrain_bench.host_agent.threading.Thread.start",
                     side_effect=RuntimeError("thread startup failed"),
                 ):
-                    with self.assertRaisesRegex(RuntimeError, "thread startup failed"):
+                    with self.assertRaises(HostAgentStartupFailure) as raised:
                         start_host_agent_process(
                             command=[
                                 sys.executable,
@@ -230,6 +232,132 @@ class RuntimeBoundaryTests(unittest.TestCase):
 
             self.assertEqual(len(created), 1)
             self.assertIsNotNone(created[0].poll())
+            self.assertIs(raised.exception.handle.process, created[0])
+            self.assertEqual(
+                str(raised.exception.startup_error), "thread startup failed"
+            )
+            self.assertIsNone(raised.exception.cleanup_error)
+
+    def test_host_agent_closes_first_log_if_second_log_setup_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            control = root / "control"
+            workspace.mkdir()
+            control.mkdir()
+            public_task = root / "task.json"
+            public_task.write_text("{}", encoding="utf-8")
+            stdout_sink = _BoundedLogSink(root / "stdout.log")
+
+            with patch(
+                "autotrain_bench.host_agent._BoundedLogSink",
+                side_effect=[stdout_sink, OSError("stderr log unavailable")],
+            ):
+                with self.assertRaisesRegex(OSError, "stderr log unavailable"):
+                    start_host_agent_process(
+                        command=["agent"],
+                        workspace=workspace,
+                        control_dir=control,
+                        public_task_path=public_task,
+                        package_root=ROOT,
+                        forwarded_environment=(),
+                        stdout_path=root / "stdout.log",
+                        stderr_path=root / "stderr.log",
+                    )
+
+            self.assertTrue(stdout_sink.stream.closed)
+
+    def test_host_agent_start_failure_preserves_handle_if_termination_fails(self):
+        class UncertainProcess:
+            def __init__(self):
+                self.pid = 12345
+                self.stdout = io.BytesIO()
+                self.stderr = io.BytesIO()
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            control = root / "control"
+            workspace.mkdir()
+            control.mkdir()
+            public_task = root / "task.json"
+            public_task.write_text("{}", encoding="utf-8")
+            process = UncertainProcess()
+            termination_error = subprocess.TimeoutExpired("host Agent", 3)
+
+            with patch(
+                "autotrain_bench.host_agent.subprocess.Popen",
+                return_value=process,
+            ):
+                with patch(
+                    "autotrain_bench.host_agent.threading.Thread.start",
+                    side_effect=RuntimeError("thread startup failed"),
+                ):
+                    with patch.object(
+                        HostAgentProcess,
+                        "stop",
+                        side_effect=termination_error,
+                    ):
+                        with self.assertRaises(HostAgentStartupFailure) as raised:
+                            start_host_agent_process(
+                                command=["agent"],
+                                workspace=workspace,
+                                control_dir=control,
+                                public_task_path=public_task,
+                                package_root=ROOT,
+                                forwarded_environment=(),
+                                stdout_path=root / "stdout.log",
+                                stderr_path=root / "stderr.log",
+                            )
+
+            failure = raised.exception
+            self.assertIs(failure.handle.process, process)
+            self.assertEqual(str(failure.startup_error), "thread startup failed")
+            self.assertIs(failure.cleanup_error, termination_error)
+            self.assertTrue(failure.handle.running)
+            failure.handle.close_logs()
+
+    def test_host_agent_stop_closes_unstarted_log_resources_on_timeout(self):
+        class UncertainProcess:
+            def __init__(self):
+                self.pid = 12345
+                self.stdout = io.BytesIO()
+                self.stderr = io.BytesIO()
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+            def wait(self, timeout):
+                raise subprocess.TimeoutExpired("host Agent", timeout)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            process = UncertainProcess()
+            stdout_sink = _BoundedLogSink(root / "stdout.log")
+            stderr_sink = _BoundedLogSink(root / "stderr.log")
+            handle = HostAgentProcess(
+                process=process,
+                stdout_path=root / "stdout.log",
+                stderr_path=root / "stderr.log",
+                _stdout_sink=stdout_sink,
+                _stderr_sink=stderr_sink,
+            )
+
+            with patch("autotrain_bench.host_agent.os.killpg") as killpg:
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    handle.stop(timeout_seconds=0.01)
+
+            self.assertEqual(killpg.call_count, 2)
+            self.assertTrue(process.stdout.closed)
+            self.assertTrue(process.stderr.closed)
+            self.assertTrue(stdout_sink.stream.closed)
+            self.assertTrue(stderr_sink.stream.closed)
+            self.assertTrue(handle.running)
 
     def test_runtime_profile_checks_model_count_and_memory_together(self):
         resources = TrainingResources(

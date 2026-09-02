@@ -243,7 +243,7 @@ Every effectful boundary follows one failure model:
 | Local Agent, Gateway, or network start | Register the deterministic local name for cleanup | Keep it registered until confirmed removal | Attempt every independent cleanup and record a stable teardown code |
 | Local isolated evaluation | Register Candidate, Evaluator, and network handles inside the Worker | Remove all three before returning the metric | Retain Worker-private handles and retry them from the local deployment composition |
 | Candidate snapshot | Use an episode-private staging directory | Atomically install the content-addressed snapshot | Remove staging before propagating the infrastructure failure |
-| Terminal result publication | Keep TEST staged and `outcome: null` | Atomically replace authoritative `state.json`, then emit the terminal audit event | Roll back to the staged state and fail the command closed |
+| Terminal result publication | Keep TEST staged and `outcome: null`; append a non-terminal publication-prepared record | Atomically replace authoritative `state.json` with a reference to that prepared record | Leave the prepared record orphaned, keep audit sequence numbers monotonic, and fail the command closed |
 
 Additional invariants enforced before every state write are:
 
@@ -251,9 +251,18 @@ Additional invariants enforced before every state write are:
 - an active episode cannot record a terminated Agent;
 - only `closed` may contain a staged TEST result;
 - a finalized result has no active or pending Worker Lease and has completed
-  Agent termination and control cleanup;
+  Agent termination and control cleanup, and references its audit preparation
+  record;
 - failed outcomes never retain TEST metrics;
 - platform resource handles never enter Core state.
+
+`state.json`, not the append-only event stream, is the result commit point. A
+publication-prepared event is evidence of an attempted commit, not evidence of
+a terminal result by itself. Consumers accept a terminal result only when the
+authoritative finalized state references that event. Event sequence numbers are
+never decremented or reused, because an append cannot be rolled back after it
+becomes visible. If the atomic state replacement fails, an in-process retry
+reuses the same prepared record instead of appending a second terminal attempt.
 
 These are lifecycle semantics, not Docker semantics. A different Worker may
 use a scheduler allocation, VM, process sandbox, or another mechanism, but it

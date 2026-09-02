@@ -391,6 +391,14 @@ is later rewritten. The Supervisor rejects control cleanup until trusted Agent
 termination metadata has been recorded; the Operator or deployment launcher
 must stop the workload before recording that metadata.
 
+`state.json` is the authoritative result commit point. Immediately before that
+atomic commit, the Supervisor appends a non-terminal
+`RESULT_PUBLICATION_PREPARED` audit record. A finalized v2 state created by the
+current implementation includes `result_publication`, which binds the result
+to that record's publication ID and sequence number. An unreferenced prepared
+record documents an interrupted attempt and is not a terminal result. Older v2
+states without this optional reference remain readable.
+
 Deployment cleanup can still fail after an episode has already reached DNF or
 an infrastructure-failure state. Those failures do not rewrite the original
 classification. Their stable codes are appended to
