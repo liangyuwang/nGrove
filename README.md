@@ -82,11 +82,35 @@ containers, scheduler jobs, Pods, or platform networks. Worker capabilities,
 deployment trust, and conformance are recorded independently, and there is no
 automatic capability fallback.
 
+Agent launch mechanism is also separate from policy evidence. `container` and
+`host_cli` describe bundled launch paths; a trusted launcher supplies the
+semantic enforcement, trust, workload identity, and limitations recorded for
+the episode. The bundled launcher is development-trust only.
+
+The bundled `autotrain-bench prepare` and `autotrain-bench start` commands are
+the composition root for that local Docker implementation; they are not a
+generic backend loader. Worker Protocol v2 is currently a synchronous,
+in-process Python contract whose `Path` values are local deployment handles,
+not a remote wire format. An external Worker package uses its own trusted
+launcher to compose Core with its deployment rather than adding a platform
+branch to this CLI.
+
+The Agent-facing file mailbox is separate from the Worker Protocol. It is the
+local reference transport for Agent requests to the Coordinator; its
+filesystem hardening and operating-system support are transport properties,
+not benchmark semantics. The task's `*_image` fields are release-selected
+OCI-style workload references consumed by the Docker implementation, not
+Docker container IDs; leaderboard-eligible releases require digest-pinned
+values. A different runtime may consume the OCI artifact or an
+organizer-approved derived artifact, but may not silently substitute an
+environment.
+
 Slurm, Kubernetes, Apptainer, cloud-job, and other integrations belong in
 separately distributed Worker packages maintained by their platform or site.
 They must not add platform branches or dependencies to this core repository.
 See [Worker Protocol boundary](docs/worker-protocol.md) for the ownership rules
-and incremental migration plan.
+and [Thin Core development plan](docs/thin-core-development-plan.md) for the
+incremental migration and its acceptance criteria.
 
 The reference runtime requires a machine that can run Docker. AutoTrain-Bench
 consumes the environment the user has already obtained; it does **not** allocate

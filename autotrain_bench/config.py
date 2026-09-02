@@ -278,16 +278,17 @@ class AgentConfig:
         return self
 
     @property
-    def policy_compliant(self) -> bool:
-        return self.runner == "container" and self.mode == "sandboxed"
-
-    @property
     def network(self) -> str:
         if self.runner == "host_cli":
             return "host_managed"
         return "disabled" if self.mode == "sandboxed" else "unrestricted_dev"
 
-    def public_manifest(self, gateway_image: str) -> Dict[str, Any]:
+    def public_manifest(
+        self,
+        gateway_image: str,
+        *,
+        policy_compliant: bool,
+    ) -> Dict[str, Any]:
         inference_manifest: Dict[str, Any] = {"enabled": False}
         if self.inference is not None:
             inference_manifest = {
@@ -310,7 +311,7 @@ class AgentConfig:
             "control": "file_mailbox",
             "forwarded_environment": list(self.environment or []),
             "inference": inference_manifest,
-            "policy_compliant": self.policy_compliant,
+            "policy_compliant": policy_compliant,
         }
 
 

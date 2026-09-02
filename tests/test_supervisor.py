@@ -14,6 +14,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+from autotrain_bench.agent_api_bundle import publish_agent_api_bundle
 from autotrain_bench.challenge import ReleaseVerificationReceipt
 from autotrain_bench.config import (
     AgentConfig,
@@ -22,13 +23,17 @@ from autotrain_bench.config import (
     TrainingResources,
 )
 from autotrain_bench.client import Client
+from autotrain_bench.local_mailbox import (
+    MAX_MAILBOX_RESPONSE_BYTES,
+    LocalFileMailbox,
+    write_untrusted_response,
+)
+from autotrain_bench.local_agent_execution import describe_local_agent_execution
 from autotrain_bench.supervisor import (
     MAX_COMMAND_STREAM_BYTES,
-    MAX_MAILBOX_RESPONSE_BYTES,
     ProtocolError,
     Supervisor,
     _core_identity,
-    _write_untrusted_response,
 )
 from autotrain_bench.worker_protocol import (
     BASELINE_REQUIREMENTS,
@@ -200,15 +205,25 @@ class SupervisorTests(unittest.TestCase):
         comparison_key=None,
         challenge_release=None,
         release_verification=None,
+        agent_execution=None,
     ):
+        resolved_agent = agent or self.agent
+        agent_api_dir = publish_agent_api_bundle(self.episode / "public" / "agent_api")
+        self.mailbox = LocalFileMailbox(self.episode / "control")
+        self.mailbox.initialize()
         supervisor = Supervisor(
             config=config or self.config,
-            agent=agent or self.agent,
+            agent=resolved_agent,
             resources=self.resources,
             track=track,
             episode_dir=self.episode,
+            agent_api_dir=agent_api_dir,
+            agent_execution=(
+                agent_execution or describe_local_agent_execution(resolved_agent)
+            ),
             research_worker=self.worker,
             evaluation_worker=self.worker,
+            agent_control_transport=self.mailbox,
             comparison_key=comparison_key,
             challenge_release=challenge_release,
             release_verification=release_verification,
@@ -228,6 +243,8 @@ class SupervisorTests(unittest.TestCase):
                 resources=self.resources,
                 track="B",
                 episode_dir=self.episode,
+                agent_api_dir=self.episode / "public" / "agent_api",
+                agent_execution=describe_local_agent_execution(self.agent),
                 research_worker=self.worker,
                 evaluation_worker=self.worker,
             )
@@ -334,6 +351,10 @@ class SupervisorTests(unittest.TestCase):
             supervisor = self.supervisor(
                 config=config,
                 agent=agent,
+                agent_execution=replace(
+                    describe_local_agent_execution(agent),
+                    trust_level=TrustLevel.CERTIFIED,
+                ),
                 comparison_key=comparison_key,
                 challenge_release=release,
                 release_verification=receipt,
@@ -624,14 +645,14 @@ class SupervisorTests(unittest.TestCase):
             "op": "lease_exec",
             "argv": ["python", "train.py"],
         }
-        (supervisor.inbox / "timeout-command.json").write_text(
+        (self.mailbox.inbox / "timeout-command.json").write_text(
             json.dumps(request), encoding="utf-8"
         )
 
         self.assertTrue(supervisor.process_one_request())
 
         response = json.loads(
-            (supervisor.outbox / "timeout-command.json").read_text(encoding="utf-8")
+            (self.mailbox.outbox / "timeout-command.json").read_text(encoding="utf-8")
         )
         self.assertTrue(response["ok"])
         self.assertEqual(response["result"]["exit_code"], 124)
@@ -688,13 +709,13 @@ class SupervisorTests(unittest.TestCase):
             "op": "lease_exec",
             "argv": ["python", "non-idempotent.py"],
         }
-        (supervisor.inbox / "large-command.json").write_text(
+        (self.mailbox.inbox / "large-command.json").write_text(
             json.dumps(request), encoding="utf-8"
         )
 
         self.assertTrue(supervisor.process_one_request())
 
-        response_path = supervisor.outbox / "large-command.json"
+        response_path = self.mailbox.outbox / "large-command.json"
         response = json.loads(response_path.read_text(encoding="utf-8"))
         self.assertTrue(response["ok"])
         self.assertEqual(response["result"]["exit_code"], 0)
@@ -710,14 +731,14 @@ class SupervisorTests(unittest.TestCase):
             "op": "lease_exec",
             "argv": ["python", "non-idempotent.py"],
         }
-        (supervisor.inbox / "surrogate-command.json").write_text(
+        (self.mailbox.inbox / "surrogate-command.json").write_text(
             json.dumps(request), encoding="utf-8"
         )
 
         self.assertTrue(supervisor.process_one_request())
 
         response = json.loads(
-            (supervisor.outbox / "surrogate-command.json").read_text(encoding="utf-8")
+            (self.mailbox.outbox / "surrogate-command.json").read_text(encoding="utf-8")
         )
         self.assertTrue(response["ok"])
         self.assertEqual(response["result"]["exit_code"], 0)
@@ -781,6 +802,36 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "invalid_candidate")
         self.assertIsNone(supervisor.state["active_lease"])
         self.assertEqual(supervisor.state["candidates"], {})
+
+    def test_candidate_snapshot_happens_after_the_worker_stops_the_lease(self):
+        supervisor = self.supervisor()
+        lease = supervisor.start_lease()
+        original_snapshot = supervisor._snapshot_candidate
+
+        def assert_stopped(source):
+            self.assertEqual(
+                self.worker.lease_state(
+                    episode_id=supervisor.state["episode_id"],
+                    lease_id=lease["lease_id"],
+                ),
+                LeaseState.STOPPED,
+            )
+            return original_snapshot(source)
+
+        with patch.object(
+            supervisor, "_snapshot_candidate", side_effect=assert_stopped
+        ):
+            committed = supervisor.commit_lease("/output/candidate")
+
+        snapshot = (
+            supervisor.candidates_dir / committed["candidate_id"].split(":", 1)[1]
+        )
+        source = supervisor.runs_dir / lease["lease_id"] / "output/candidate"
+        (source / "candidate.py").write_text("changed after commit\n", encoding="utf-8")
+        self.assertNotEqual(
+            (snapshot / "candidate.py").read_text(encoding="utf-8"),
+            (source / "candidate.py").read_text(encoding="utf-8"),
+        )
 
     def test_candidate_output_symlink_is_rejected_after_lease_stop(self):
         supervisor = self.supervisor()
@@ -944,11 +995,11 @@ class SupervisorTests(unittest.TestCase):
     def test_agent_mailbox_exposes_only_public_status(self):
         supervisor = self.supervisor()
         self.assertEqual(supervisor.episode_dir.stat().st_mode & 0o777, 0o700)
-        self.assertEqual(supervisor.control_dir.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(self.mailbox.control_dir.stat().st_mode & 0o777, 0o700)
         result = {}
 
         def request_status():
-            result.update(Client(supervisor.control_dir, poll_seconds=0.001).status())
+            result.update(Client(self.mailbox.control_dir, poll_seconds=0.001).status())
 
         thread = threading.Thread(target=request_status)
         thread.start()
@@ -967,73 +1018,141 @@ class SupervisorTests(unittest.TestCase):
         self.assertNotIn(str(self.config.val_path), serialized)
         self.assertNotIn(str(self.config.test_path), serialized)
 
+    def test_semantic_handler_does_not_require_mailbox_traffic(self):
+        agent_api_dir = publish_agent_api_bundle(self.episode / "public" / "agent_api")
+        supervisor = Supervisor(
+            config=self.config,
+            agent=self.agent,
+            resources=self.resources,
+            track="B",
+            episode_dir=self.episode,
+            agent_api_dir=agent_api_dir,
+            agent_execution=describe_local_agent_execution(self.agent),
+            research_worker=self.worker,
+            evaluation_worker=self.worker,
+            monotonic=self.clock,
+            wall_time=lambda: 1_700_000_000.0,
+        )
+        supervisor.begin()
+
+        result = supervisor.handle({"op": "status"})
+
+        self.assertEqual(result["status"], "active")
+        self.assertFalse((self.episode / "control").exists())
+
     def test_mailbox_rejects_agent_created_request_symlinks(self):
         supervisor = self.supervisor()
-        request = supervisor.inbox / "attack.json"
+        request = self.mailbox.inbox / "attack.json"
         request.symlink_to(supervisor.state_path)
         self.assertTrue(supervisor.process_one_request())
         response = json.loads(
-            (supervisor.outbox / "attack.json").read_text(encoding="utf-8")
+            (self.mailbox.outbox / "attack.json").read_text(encoding="utf-8")
         )
         self.assertFalse(response["ok"])
         self.assertEqual(response["error"]["code"], "invalid_request")
         self.assertTrue(supervisor.state_path.is_file())
         self.assertEqual(supervisor.state["status"], "dnf")
         self.assertEqual(supervisor.state["failure"], "agent_mailbox_policy_violation")
-        self.assertEqual(list(supervisor.rejected_mailbox.iterdir()), [])
+        self.assertEqual(list(self.mailbox.rejected.iterdir()), [])
 
     def test_mailbox_directory_causes_policy_failure_and_is_cleaned_after_stop(self):
         supervisor = self.supervisor()
-        request = supervisor.inbox / "directory.json"
+        request = self.mailbox.inbox / "directory.json"
         request.mkdir()
         (request / "nested").write_text("untrusted", encoding="utf-8")
 
         self.assertTrue(supervisor.process_one_request())
 
         response = json.loads(
-            (supervisor.outbox / "directory.json").read_text(encoding="utf-8")
+            (self.mailbox.outbox / "directory.json").read_text(encoding="utf-8")
         )
         self.assertFalse(response["ok"])
         self.assertEqual(response["error"]["code"], "invalid_request")
         self.assertFalse(request.exists())
-        self.assertEqual(len(list(supervisor.rejected_mailbox.iterdir())), 1)
+        self.assertEqual(len(list(self.mailbox.rejected.iterdir())), 1)
         self.assertEqual(supervisor.state["status"], "dnf")
         self.assertEqual(supervisor.state["outcome"], "failed")
         self.assertEqual(supervisor.state["failure"], "agent_mailbox_policy_violation")
 
-        self.assertTrue(supervisor.cleanup_untrusted_mailbox())
+        self.assertTrue(supervisor.cleanup_agent_control())
 
-        self.assertEqual(list(supervisor.inbox.iterdir()), [])
-        self.assertEqual(list(supervisor.rejected_mailbox.iterdir()), [])
+        self.assertEqual(list(self.mailbox.inbox.iterdir()), [])
+        self.assertEqual(list(self.mailbox.outbox.iterdir()), [])
+        self.assertEqual(list(self.mailbox.rejected.iterdir()), [])
         events = supervisor.events_path.read_text(encoding="utf-8")
         self.assertIn("MAILBOX_REQUEST_REJECTED", events)
         self.assertIn("MAILBOX_CLEANED", events)
         self.assertNotIn("EPISODE_INFRASTRUCTURE_FAILURE", events)
 
+    def test_mailbox_cleanup_covers_outbox_and_records_incomplete_teardown(self):
+        supervisor = self.supervisor()
+        supervisor.agent_exited_without_finish()
+        (self.mailbox.inbox / "stale.json").write_text("{}", encoding="utf-8")
+        (self.mailbox.outbox / "stale.json").write_text("{}", encoding="utf-8")
+        rejected = self.mailbox.rejected / "tree.rejected"
+        rejected.mkdir()
+        (rejected / "nested").write_text("untrusted", encoding="utf-8")
+
+        with patch(
+            "autotrain_bench.local_mailbox.shutil.rmtree",
+            side_effect=OSError("simulated cross-uid cleanup failure"),
+        ):
+            self.assertFalse(supervisor.cleanup_agent_control())
+
+        self.assertEqual(list(self.mailbox.inbox.iterdir()), [])
+        self.assertEqual(list(self.mailbox.outbox.iterdir()), [])
+        self.assertTrue(rejected.exists())
+        self.assertFalse(supervisor.state["agent_control"]["cleanup_complete"])
+        self.assertEqual(supervisor.state["agent_control"]["cleanup_removed"], 2)
+        self.assertEqual(supervisor.state["agent_control"]["cleanup_failures"], 1)
+        self.assertFalse(supervisor.state["policy_compliant"])
+        self.assertFalse(supervisor.state["leaderboard_eligible"])
+        self.assertIn(
+            "agent_control_cleanup_incomplete",
+            supervisor.state["policy_violations"],
+        )
+        self.assertNotIn(
+            "EPISODE_INFRASTRUCTURE_FAILURE",
+            supervisor.events_path.read_text(encoding="utf-8"),
+        )
+
+    def test_mailbox_pending_limit_is_an_agent_policy_failure(self):
+        supervisor = self.supervisor()
+        self.mailbox.maximum_pending_entries = 1
+        (self.mailbox.inbox / "one.tmp").write_text("", encoding="utf-8")
+        (self.mailbox.outbox / "two.tmp").write_text("", encoding="utf-8")
+
+        self.assertTrue(supervisor.process_one_request())
+
+        self.assertEqual(supervisor.state["status"], "dnf")
+        self.assertEqual(supervisor.state["outcome"], "failed")
+        self.assertEqual(supervisor.state["failure"], "agent_mailbox_policy_violation")
+        events = supervisor.events_path.read_text(encoding="utf-8")
+        self.assertIn("mailbox_entry_limit", events)
+        self.assertNotIn("EPISODE_INFRASTRUCTURE_FAILURE", events)
+
     @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFO requires os.mkfifo")
     def test_mailbox_fifo_is_removed_and_causes_policy_failure(self):
         supervisor = self.supervisor()
-        request = supervisor.inbox / "fifo.json"
+        request = self.mailbox.inbox / "fifo.json"
         os.mkfifo(request)
 
         self.assertTrue(supervisor.process_one_request())
 
         response = json.loads(
-            (supervisor.outbox / "fifo.json").read_text(encoding="utf-8")
+            (self.mailbox.outbox / "fifo.json").read_text(encoding="utf-8")
         )
         self.assertEqual(response["error"]["code"], "invalid_request")
         self.assertEqual(supervisor.state["status"], "dnf")
         self.assertEqual(supervisor.state["failure"], "agent_mailbox_policy_violation")
         self.assertFalse(request.exists())
-        self.assertEqual(list(supervisor.rejected_mailbox.iterdir()), [])
+        self.assertEqual(list(self.mailbox.rejected.iterdir()), [])
 
     def test_unquarantinable_mailbox_entry_is_an_agent_failure(self):
         supervisor = self.supervisor()
-        (supervisor.inbox / "directory.json").mkdir()
+        (self.mailbox.inbox / "directory.json").mkdir()
 
-        with patch.object(
-            supervisor, "_quarantine_mailbox_entry", return_value=(False, True)
-        ):
+        with patch.object(self.mailbox, "quarantine", return_value=(False, True)):
             self.assertTrue(supervisor.process_one_request())
 
         self.assertEqual(supervisor.state["status"], "dnf")
@@ -1043,25 +1162,25 @@ class SupervisorTests(unittest.TestCase):
         self.assertNotIn("EPISODE_INFRASTRUCTURE_FAILURE", events)
 
     def test_mailbox_response_has_a_portable_non_dir_fd_path(self):
-        supervisor = self.supervisor()
+        self.supervisor()
         with patch(
-            "autotrain_bench.supervisor._directory_fd_operations_available",
+            "autotrain_bench.local_mailbox.directory_fd_operations_available",
             return_value=False,
         ):
-            _write_untrusted_response(
-                supervisor.outbox,
+            write_untrusted_response(
+                self.mailbox.outbox,
                 "portable",
                 {"ok": True, "result": {"status": "active"}},
             )
 
         response = json.loads(
-            (supervisor.outbox / "portable.json").read_text(encoding="utf-8")
+            (self.mailbox.outbox / "portable.json").read_text(encoding="utf-8")
         )
         self.assertTrue(response["ok"])
 
     def test_invalid_mailbox_filename_is_untrusted_input_not_infrastructure(self):
         supervisor = self.supervisor()
-        (supervisor.inbox / "é.json").write_text(
+        (self.mailbox.inbox / "é.json").write_text(
             json.dumps({"op": "status"}), encoding="utf-8"
         )
 
@@ -1074,10 +1193,10 @@ class SupervisorTests(unittest.TestCase):
 
     def test_agent_created_outbox_conflict_does_not_end_the_episode(self):
         supervisor = self.supervisor()
-        (supervisor.inbox / "conflict.json").write_text(
+        (self.mailbox.inbox / "conflict.json").write_text(
             json.dumps({"op": "status"}), encoding="utf-8"
         )
-        (supervisor.outbox / "conflict.json").mkdir()
+        (self.mailbox.outbox / "conflict.json").mkdir()
 
         self.assertTrue(supervisor.process_one_request())
 

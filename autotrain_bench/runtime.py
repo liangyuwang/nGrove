@@ -136,7 +136,7 @@ class DockerRuntime:
                     "Coordinator-process deadline guard",
                 ),
                 IMMUTABLE_CANDIDATE_ARTIFACT: Capability(
-                    enforced, "content-addressed candidate snapshot"
+                    enforced, "producer stopped before Coordinator capture"
                 ),
             },
         )

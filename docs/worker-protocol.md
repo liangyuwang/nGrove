@@ -17,6 +17,12 @@ Research Worker      Evaluation Worker
        └──── immutable artifact┘
 ```
 
+This is distinct from the Agent-facing control API. In the bundled reference
+deployment, the Tested Agent sends semantic requests such as `lease_start` and
+`lease_commit` through a local file mailbox. The mailbox is one Agent-control
+transport; it is not the Coordinator-to-Worker Protocol and is not a required
+Worker implementation mechanism.
+
 ## Repository boundary
 
 The core repository owns:
@@ -60,11 +66,17 @@ The Worker enforces:
 - TRAIN/workspace/output visibility;
 - hidden-dataset isolation;
 - network restrictions;
-- termination and immutable artifact capture.
+- termination and the guarantee that a stopped producer can no longer mutate
+  selected output.
 
 A Worker may retain a small local enforcement envelope so a Coordinator outage
 cannot extend a deadline.  It must not duplicate incumbent selection, scoring,
 or other benchmark policy.
+
+In v0, the Coordinator materializes and hashes the immutable Candidate snapshot
+from a shared path after the Worker has stopped the Lease. Worker-side capture
+and transfer are future protocol capabilities for deployments without shared
+paths; Core still owns Candidate acceptance and canonical identity.
 
 ## Capabilities, conformance, and trust
 
@@ -117,9 +129,27 @@ must update `start_lease` to accept `ResearchTaskSpec`, update
 `evaluate_candidate` to accept `EvaluationTaskSpec` plus `HiddenSplitRef`, and
 return the new stdout/stderr truncation flags in `CommandResult` when needed.
 
-A local development Worker may implement both roles in one process.  A formal
-deployment may place them on separate services connected only through an
-immutable artifact reference.
+A local development Worker may implement both roles in one process. A future
+formal deployment may place them on separate services connected only through
+an immutable artifact reference. The current version 2 Python interface does
+not yet define that remote artifact transport.
+
+## Workload identity in v0
+
+The current task fields `training_image`, `candidate_image`,
+`evaluator_image`, and `inference_gateway_image` are release-selected OCI-style
+workload references. They are not Docker container IDs. Leaderboard-eligible
+releases require digest-pinned values, so their semantic requirement is an
+immutable, release-owned workload identity rather than use of the Docker
+Engine. Development tasks may still use mutable references and remain
+ineligible.
+
+A non-Docker Worker may consume the OCI artifact directly. If it executes a
+derived SIF, VM image, or platform artifact, the mapping must be reproducible,
+identified, recorded, and accepted by the organizer. A Worker may not silently
+replace the workload environment. Version 2 does not yet define the normalized
+resolution receipt needed to make such a translated workload formally
+eligible.
 
 ## Current migration stage
 
@@ -127,6 +157,13 @@ The phase-one interface is an in-process Python protocol.  The Supervisor uses
 semantic lease operations (`start_lease`, `exec_lease`, `lease_state`, and
 `terminate_lease`) and semantic evaluation (`evaluate_candidate`).  It neither
 stores container identifiers nor asks how those effects are implemented.
+
+Its `Path` arguments are local deployment handles. They assume that the Worker
+implementation can access or materialize the Coordinator-named TRAIN,
+workspace, Lease output, Candidate, hidden split, public API, and evaluation
+locations. They must not be treated as a stable serializable remote protocol.
+A shared-filesystem Worker can implement version 2 directly; a topology without
+shared paths needs future artifact-reference and materialization semantics.
 
 `CommandResult` streams are capped at 1 MiB each by the local Worker and again
 by the Supervisor before they enter the mailbox or `commands.jsonl`. Concrete
@@ -151,3 +188,6 @@ Deliberately deferred work includes:
 
 Those features should be added to the Worker protocol and external Worker SDK,
 not by adding platform code to AutoTrain-Bench Core.
+
+The staged plan and the trigger for each deferred abstraction are recorded in
+[Thin Core development plan](thin-core-development-plan.md).

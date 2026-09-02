@@ -179,10 +179,11 @@ class ConfigTests(unittest.TestCase):
                 image="python:test",
                 mode="sandboxed",
             ).validate()
-            self.assertTrue(container.policy_compliant)
             self.assertEqual(container.network, "disabled")
             self.assertEqual(
-                container.public_manifest("python:gateway")["workspace_scope"],
+                container.public_manifest("python:gateway", policy_compliant=True)[
+                    "workspace_scope"
+                ],
                 "episode_snapshot",
             )
 
@@ -192,7 +193,6 @@ class ConfigTests(unittest.TestCase):
                 command=["example-agent"],
                 initial_workspace="participant_snapshot",
             ).validate()
-            self.assertFalse(host.policy_compliant)
             self.assertEqual(host.network, "host_managed")
 
             with self.assertRaises(ConfigError):
@@ -220,7 +220,9 @@ class ConfigTests(unittest.TestCase):
                 mode="sandboxed",
                 inference=inference,
             ).validate()
-            public = agent.public_manifest("gateway:image")["inference"]
+            public = agent.public_manifest("gateway:image", policy_compliant=True)[
+                "inference"
+            ]
             self.assertTrue(public["enabled"])
             self.assertEqual(
                 public["local_base_url"], "http://inference-gateway:8765/v1"

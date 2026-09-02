@@ -15,6 +15,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
+from .agent_control import (
+    MAX_AGENT_CONTROL_RESPONSE_BYTES,
+    AgentControlTransport,
+    ProtocolError,
+)
+from .agent_execution import AgentExecutionEvidence
 from .challenge import (
     FORMAL_ARTIFACT_DIGEST_FIELDS,
     ReleaseVerificationReceipt,
@@ -23,7 +29,6 @@ from .config import (
     AgentConfig,
     TaskConfig,
     TrainingResources,
-    immutable_image_reference,
 )
 from .inference import summarize_inference_trace
 from .results import RESULT_SCHEMA_VERSION, perplexity_from_nll, validated_nll
@@ -46,57 +51,10 @@ from .worker_protocol import (
 
 
 MAX_COMMAND_STREAM_BYTES = 1024 * 1024
-MAX_MAILBOX_RESPONSE_BYTES = 3 * 1024 * 1024
 MAX_LOG_READ_BYTES = 4 * 1024 * 1024
 MAX_COMMAND_LOG_BYTES = 64 * 1024 * 1024
 _OUTPUT_TRUNCATION_MARKER = "\n[output truncated by AutoTrain-Bench]\n"
 _TREE_HASH_DOMAIN = b"autotrain-bench-tree-v2\0"
-
-
-class ProtocolError(RuntimeError):
-    """A request violates the benchmark protocol."""
-
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(message)
-        self.code = code
-
-
-def _read_untrusted_request(path: Path, maximum_bytes: int) -> Dict[str, Any]:
-    """Read one mailbox request without following Agent-created filesystem links."""
-
-    try:
-        initial_metadata = path.lstat()
-    except OSError as exc:
-        raise ProtocolError("invalid_request", "request is unavailable") from exc
-    if not stat.S_ISREG(initial_metadata.st_mode):
-        raise ProtocolError("invalid_request", "request must be a regular file")
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-    try:
-        descriptor = os.open(str(path), flags)
-    except OSError as exc:
-        raise ProtocolError(
-            "invalid_request", "request must be a regular file"
-        ) from exc
-    try:
-        metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode):
-            raise ProtocolError("invalid_request", "request must be a regular file")
-        if (metadata.st_dev, metadata.st_ino) != (
-            initial_metadata.st_dev,
-            initial_metadata.st_ino,
-        ):
-            raise ProtocolError("invalid_request", "request changed while opening")
-        if metadata.st_size > maximum_bytes:
-            raise ProtocolError("request_too_large", "request exceeds 1 MiB")
-        with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
-            descriptor = -1
-            payload = json.load(stream)
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-    if not isinstance(payload, dict):
-        raise ProtocolError("invalid_request", "request must be an object")
-    return payload
 
 
 def _json_bytes(payload: Any) -> bytes:
@@ -106,109 +64,6 @@ def _json_bytes(payload: Any) -> bytes:
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8", errors="replace")
-
-
-def _valid_request_id(request_id: str) -> bool:
-    return bool(request_id) and all(
-        value in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
-        for value in request_id
-    )
-
-
-def _directory_fd_operations_available() -> bool:
-    """Return whether Python exposes the required race-resistant dir-fd APIs."""
-
-    return all(
-        function in os.supports_dir_fd for function in (os.open, os.rename, os.unlink)
-    )
-
-
-def _write_untrusted_response(
-    directory: Path, request_id: str, response: Dict[str, Any]
-) -> None:
-    """Publish a mailbox response without following Agent-created symlinks."""
-
-    if not _valid_request_id(request_id):
-        raise ProtocolError("invalid_request", "request id contains invalid characters")
-    temporary = f".{request_id}.{uuid.uuid4().hex}.tmp"
-    destination = f"{request_id}.json"
-    destination_path = directory / destination
-    if destination_path.is_dir():
-        raise ProtocolError(
-            "mailbox_conflict", "mailbox response destination is a directory"
-        )
-    encoded = _json_bytes(response)
-    if len(encoded) > MAX_MAILBOX_RESPONSE_BYTES:
-        encoded = _json_bytes(
-            {
-                "ok": False,
-                "error": {
-                    "code": "response_too_large",
-                    "message": "supervisor response exceeds the mailbox limit",
-                },
-            }
-        )
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-    if not _directory_fd_operations_available():
-        # A sandboxed container sees inbox and outbox as separate bind-mount
-        # roots, so it cannot replace this directory itself.  This fallback is
-        # also required on hosts where Python does not expose POSIX dir-fd
-        # operations.  Host-native Agents remain explicitly non-compliant.
-        if directory.is_symlink() or not directory.is_dir():
-            raise ProtocolError(
-                "invalid_request", "mailbox response directory is invalid"
-            )
-        temporary_path = directory / temporary
-        descriptor = os.open(str(temporary_path), flags, 0o600)
-        try:
-            with os.fdopen(descriptor, "wb") as stream:
-                descriptor = -1
-                stream.write(encoded)
-            os.replace(str(temporary_path), str(destination_path))
-        except Exception as exc:
-            temporary_path.unlink(missing_ok=True)
-            if destination_path.is_dir():
-                raise ProtocolError(
-                    "mailbox_conflict",
-                    "mailbox response destination is a directory",
-                ) from exc
-            raise
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
-        return
-
-    directory_flags = (
-        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    )
-    directory_descriptor = os.open(str(directory), directory_flags)
-    descriptor = -1
-    try:
-        descriptor = os.open(temporary, flags, 0o600, dir_fd=directory_descriptor)
-        with os.fdopen(descriptor, "wb") as stream:
-            descriptor = -1
-            stream.write(encoded)
-        os.replace(
-            temporary,
-            destination,
-            src_dir_fd=directory_descriptor,
-            dst_dir_fd=directory_descriptor,
-        )
-    except Exception as exc:
-        try:
-            os.unlink(temporary, dir_fd=directory_descriptor)
-        except FileNotFoundError:
-            pass
-        if destination_path.is_dir():
-            raise ProtocolError(
-                "mailbox_conflict",
-                "mailbox response destination is a directory",
-            ) from exc
-        raise
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-        os.close(directory_descriptor)
 
 
 def _bounded_text(
@@ -271,11 +126,11 @@ def _fit_command_record(
             )
         )
 
-    if encoded_size(record) <= MAX_MAILBOX_RESPONSE_BYTES:
+    if encoded_size(record) <= MAX_AGENT_CONTROL_RESPONSE_BYTES:
         return record
 
     smallest = candidate(0.0)
-    if encoded_size(smallest) > MAX_MAILBOX_RESPONSE_BYTES:
+    if encoded_size(smallest) > MAX_AGENT_CONTROL_RESPONSE_BYTES:
         raise ProtocolError(
             "internal_error", "command metadata exceeds the mailbox limit"
         )
@@ -286,7 +141,7 @@ def _fit_command_record(
     for _ in range(32):
         midpoint = (low + high) / 2
         current = candidate(midpoint)
-        if encoded_size(current) <= MAX_MAILBOX_RESPONSE_BYTES:
+        if encoded_size(current) <= MAX_AGENT_CONTROL_RESPONSE_BYTES:
             best = current
             low = midpoint
         else:
@@ -354,8 +209,11 @@ class Supervisor:
         resources: TrainingResources,
         track: str,
         episode_dir: Path,
+        agent_api_dir: Path,
+        agent_execution: AgentExecutionEvidence,
         research_worker: ResearchWorker,
         evaluation_worker: EvaluationWorker,
+        agent_control_transport: Optional[AgentControlTransport] = None,
         research_worker_environment: Optional[Dict[str, Any]] = None,
         evaluation_worker_environment: Optional[Dict[str, Any]] = None,
         comparison_key: Optional[Dict[str, str]] = None,
@@ -369,11 +227,15 @@ class Supervisor:
             raise ValueError("track must be A or B")
         self.config = config.validate()
         self.agent = agent.validate()
+        if agent_execution.mechanism != self.agent.runner:
+            raise ValueError("Agent execution mechanism does not match Agent config")
+        self.agent_execution = agent_execution
         self.resources = resources.validate_for(config)
         self.track = normalized
         self.episode_dir = episode_dir.resolve()
         self.research_worker = research_worker
         self.evaluation_worker = evaluation_worker
+        self.agent_control_transport = agent_control_transport
         self.evaluation_task = EvaluationTaskSpec.from_task(config)
         if release_verification is None:
             self.release_verification = None
@@ -391,10 +253,6 @@ class Supervisor:
         self.started_monotonic: Optional[float] = None
         self.closed_monotonic: Optional[float] = None
 
-        self.control_dir = self.episode_dir / "control"
-        self.inbox = self.control_dir / "inbox"
-        self.outbox = self.control_dir / "outbox"
-        self.rejected_mailbox = self.control_dir / "rejected"
         self.runs_dir = self.episode_dir / "leases"
         self.candidates_dir = self.episode_dir / "candidates"
         self.evaluations_dir = self.episode_dir / "evaluations"
@@ -404,17 +262,16 @@ class Supervisor:
         self.state_path = self.episode_dir / "state.json"
         self.events_path = self.episode_dir / "events.jsonl"
         self.public_task_path = self.public_dir / "task.json"
-        self.agent_api_dir = self.public_dir / "agent_api"
         if self.state_path.exists() or self.events_path.exists():
             raise ValueError(
                 f"episode directory already contains state: {self.episode_dir}"
             )
+        self.agent_api_dir = agent_api_dir.resolve()
+        if not (self.agent_api_dir / "autotrain_bench" / "client.py").is_file():
+            raise ValueError(f"Agent API bundle is missing: {self.agent_api_dir}")
         self.episode_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(self.episode_dir, 0o700)
         for directory in (
-            self.inbox,
-            self.outbox,
-            self.rejected_mailbox,
             self.runs_dir,
             self.candidates_dir,
             self.evaluations_dir,
@@ -422,10 +279,6 @@ class Supervisor:
             self.public_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
-        os.chmod(self.control_dir, 0o700)
-        os.chmod(self.inbox, 0o777)
-        os.chmod(self.outbox, 0o777)
-        os.chmod(self.rejected_mailbox, 0o700)
         os.chmod(self.inference_dir, 0o700)
         for directory in (
             self.runs_dir,
@@ -434,7 +287,6 @@ class Supervisor:
         ):
             os.chmod(directory, 0o700)
 
-        self._publish_agent_api()
         self.research_task = ResearchTaskSpec.from_task(config, self.agent_api_dir)
 
         research_descriptor = research_worker.describe_capabilities()
@@ -469,7 +321,8 @@ class Supervisor:
         }
 
         policy_violations = []
-        if not agent.policy_compliant:
+        policy_violations.extend(agent_execution.limitations)
+        if not agent_execution.policy_compliant and not agent_execution.limitations:
             policy_violations.append("agent_execution_boundary")
         if not config.evaluator_policy_compliant:
             policy_violations.append("candidate_evaluator_isolation")
@@ -561,8 +414,10 @@ class Supervisor:
                         comparison_field
                     ):
                         eligibility_violations.append(f"{release_field}_mismatch")
-        if agent.runner != "container" or not immutable_image_reference(agent.image):
-            eligibility_violations.append("agent_image_not_digest_pinned")
+        if not agent_execution.immutable_workload_identity:
+            eligibility_violations.append("agent_workload_identity_not_immutable")
+        if not agent_execution.leaderboard_eligible:
+            eligibility_violations.append("agent_execution_not_certified")
         core_revision = core_identity.get("revision")
         if not isinstance(core_revision, str) or not core_revision:
             eligibility_violations.append("core_identity_unknown")
@@ -652,7 +507,8 @@ class Supervisor:
                 "command": list(agent.command),
                 "mode": agent.mode,
                 "network": agent.network,
-                "policy_compliant": agent.policy_compliant,
+                "policy_compliant": agent_execution.policy_compliant,
+                "execution_evidence": agent_execution.public_manifest(),
                 "exit_code": None,
                 "termination_reason": None,
                 "finish_observed": False,
@@ -672,6 +528,16 @@ class Supervisor:
                 },
                 "forwarded_environment": list(agent.environment),
                 "initial_workspace_sha256": self._tree_hash(agent.workspace),
+            },
+            "agent_control": {
+                "transport": (
+                    agent_control_transport.transport_name
+                    if agent_control_transport is not None
+                    else None
+                ),
+                "cleanup_complete": None,
+                "cleanup_removed": 0,
+                "cleanup_failures": 0,
             },
             "evaluation_system": {
                 "backend": config.evaluator_backend,
@@ -709,7 +575,8 @@ class Supervisor:
         self.sequence = 0
         public_manifest = config.public_manifest(self.track)
         public_manifest["agent_environment"] = agent.public_manifest(
-            config.inference_gateway_image
+            config.inference_gateway_image,
+            policy_compliant=agent_execution.policy_compliant,
         )
         public_manifest["training_environment"]["resources"] = (
             resources.public_manifest()
@@ -737,33 +604,6 @@ class Supervisor:
             encoding="utf-8",
         )
         self._save_state()
-
-    def _publish_agent_api(self) -> None:
-        """Publish only the untrusted Agent client, never the Core package."""
-
-        package = self.agent_api_dir / "autotrain_bench"
-        package.mkdir(parents=True, exist_ok=False)
-        core_package = Path(__file__).resolve().parent
-        published = {
-            "client.py": "client.py",
-            "agent_cli.py": "cli.py",
-            "candidate_protocol.py": "candidate_protocol.py",
-            "candidate_preflight.py": "candidate_preflight.py",
-        }
-        for source_name, destination_name in published.items():
-            shutil.copy2(
-                core_package / source_name,
-                package / destination_name,
-            )
-        (package / "__init__.py").write_text(
-            "from .client import Client, ClientError\n"
-            "__all__ = ['Client', 'ClientError']\n",
-            encoding="utf-8",
-        )
-        for path in package.iterdir():
-            path.chmod(0o444)
-        package.chmod(0o555)
-        self.agent_api_dir.chmod(0o555)
 
     def begin(self) -> None:
         with self.lock:
@@ -1144,7 +984,7 @@ class Supervisor:
             while (
                 commands
                 and len(_json_bytes({"ok": True, "result": result}))
-                > MAX_MAILBOX_RESPONSE_BYTES
+                > MAX_AGENT_CONTROL_RESPONSE_BYTES
             ):
                 commands.pop(0)
                 result["history_truncated"] = True
@@ -1627,26 +1467,6 @@ class Supervisor:
             self._event("EPISODE_INFRASTRUCTURE_FAILURE", message=message)
             self._save_state()
 
-    def _quarantine_mailbox_entry(self, request_path: Path) -> tuple[bool, bool]:
-        """Remove one untrusted entry from the live queue without following it."""
-
-        quarantined = self.rejected_mailbox / f"{uuid.uuid4().hex}.rejected"
-        try:
-            os.replace(str(request_path), str(quarantined))
-        except FileNotFoundError:
-            return True, False
-        except OSError:
-            return False, True
-        policy_violation = True
-        try:
-            metadata = quarantined.lstat()
-            policy_violation = not stat.S_ISREG(metadata.st_mode)
-            if not stat.S_ISDIR(metadata.st_mode):
-                quarantined.unlink()
-        except OSError:
-            policy_violation = True
-        return True, policy_violation
-
     def _mailbox_policy_failed(self) -> None:
         """End an active episode when an untrusted queue entry cannot be isolated."""
 
@@ -1662,93 +1482,42 @@ class Supervisor:
         self._event("EPISODE_DNF", reason="agent_mailbox_policy_violation")
         self._save_state()
 
-    def cleanup_untrusted_mailbox(self) -> bool:
-        """Remove untrusted queue artifacts after the Agent has stopped."""
+    def cleanup_agent_control(self) -> bool:
+        """Clean deployment-owned Agent-control artifacts after Agent stop."""
 
-        failures = 0
-        removed = 0
-        for directory in (self.inbox, self.rejected_mailbox):
-            for entry in directory.iterdir():
-                try:
-                    metadata = entry.lstat()
-                    if stat.S_ISDIR(metadata.st_mode):
-                        shutil.rmtree(entry)
-                    else:
-                        entry.unlink()
-                    removed += 1
-                except OSError:
-                    failures += 1
+        if self.agent_control_transport is None:
+            return True
+        cleanup = self.agent_control_transport.cleanup()
+        cleanup_complete = cleanup.complete
+        self.state["agent_control"].update(
+            cleanup_complete=cleanup_complete,
+            cleanup_removed=cleanup.removed,
+            cleanup_failures=cleanup.failures,
+        )
+        if not cleanup_complete:
+            violation = "agent_control_cleanup_incomplete"
+            if violation not in self.state["policy_violations"]:
+                self.state["policy_violations"].append(violation)
+            if violation not in self.state["leaderboard_eligibility_violations"]:
+                self.state["leaderboard_eligibility_violations"].append(violation)
+            self.state["policy_compliant"] = False
+            self.state["leaderboard_eligible"] = False
         self._event(
             "MAILBOX_CLEANED",
-            removed=removed,
-            failures=failures,
+            removed=cleanup.removed,
+            failures=cleanup.failures,
         )
         self._save_state()
-        return failures == 0
+        return cleanup_complete
 
     def process_one_request(self) -> bool:
-        paths = sorted(self.inbox.glob("*.json"))
-        if not paths:
+        if self.agent_control_transport is None:
             return False
-        request_path = paths[0]
-        request_id = request_path.stem
-        if not _valid_request_id(request_id):
-            isolated, policy_violation = self._quarantine_mailbox_entry(request_path)
-            self._event(
-                "MAILBOX_REQUEST_REJECTED",
-                code="invalid_request_id",
-            )
-            if not isolated or policy_violation:
-                self._mailbox_policy_failed()
-            self._save_state()
-            return True
-        isolated = True
-        policy_violation = False
-        request_loaded = False
-        try:
-            request = _read_untrusted_request(request_path, 1024 * 1024)
-            request_loaded = True
-            result = self.handle(request)
-            response = {"ok": True, "result": result}
-        except ProtocolError as exc:
-            response = {
-                "ok": False,
-                "error": {"code": exc.code, "message": str(exc)},
-            }
-            if not request_loaded:
-                self._event("MAILBOX_REQUEST_REJECTED", code=exc.code)
-                self._save_state()
-        except (json.JSONDecodeError, OSError, ValueError) as exc:
-            response = {
-                "ok": False,
-                "error": {"code": "invalid_request", "message": str(exc)},
-            }
-        except Exception as exc:  # supervisor must return a bounded failure
-            response = {
-                "ok": False,
-                "error": {"code": "internal_error", "message": str(exc)},
-            }
-            self._event("SUPERVISOR_ERROR", message=str(exc))
-            self._save_state()
-        finally:
-            isolated, policy_violation = self._quarantine_mailbox_entry(request_path)
-
-        if not isolated or policy_violation:
-            self._event(
-                "MAILBOX_REQUEST_REJECTED",
-                code=("quarantine_failed" if not isolated else "non_regular_request"),
-            )
+        result = self.agent_control_transport.process_one(self.handle)
+        for event in result.events:
+            self._event(event.name, **event.fields)
+        if result.policy_failure:
             self._mailbox_policy_failed()
+        if result.handled or result.events:
             self._save_state()
-            if not isolated:
-                return True
-
-        try:
-            _write_untrusted_response(self.outbox, request_id, response)
-        except ProtocolError as exc:
-            self._event(
-                "MAILBOX_RESPONSE_REJECTED",
-                code=exc.code,
-            )
-            self._save_state()
-        return True
+        return result.handled

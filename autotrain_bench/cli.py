@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .agent_api_bundle import publish_agent_api_bundle
 from .challenge import ChallengeRelease, ResolvedChallengeRun
 from .client import Client, ClientError
 from .config import (
@@ -28,6 +29,8 @@ from .config import (
 )
 from .host_agent import HostAgentProcess, summarize_host_agent_trace
 from .inference import summarize_inference_trace
+from .local_mailbox import LocalFileMailbox
+from .local_agent_execution import describe_local_agent_execution
 from .results import normalize_result_report
 from .runtime import DockerRuntime, RuntimeFailure
 from .supervisor import Supervisor
@@ -272,6 +275,9 @@ def command_start(args: argparse.Namespace) -> int:
     episode_dir.mkdir(parents=True, exist_ok=False)
     try:
         _initialize_agent_workspace(args.agent_workspace, workspace)
+        agent_api_dir = publish_agent_api_bundle(episode_dir / "public" / "agent_api")
+        agent_control = LocalFileMailbox(episode_dir / "control")
+        agent_control.initialize()
         agent = AgentConfig(
             workspace=workspace,
             runner=resolved_runner,
@@ -284,6 +290,7 @@ def command_start(args: argparse.Namespace) -> int:
                 "empty" if args.agent_workspace is None else "participant_snapshot"
             ),
         ).validate()
+        agent_execution = describe_local_agent_execution(agent)
         missing_environment = [
             name for name in agent.environment if name not in os.environ
         ]
@@ -312,8 +319,11 @@ def command_start(args: argparse.Namespace) -> int:
         resources=resources,
         track=track,
         episode_dir=episode_dir,
+        agent_api_dir=agent_api_dir,
+        agent_execution=agent_execution,
         research_worker=reference_runtime,
         evaluation_worker=reference_runtime,
+        agent_control_transport=agent_control,
         research_worker_environment=worker_environment,
         evaluation_worker_environment=worker_environment,
         comparison_key=comparison_key,
@@ -354,7 +364,7 @@ def command_start(args: argparse.Namespace) -> int:
                 name=agent_name,
                 config=config,
                 agent=agent,
-                control_dir=supervisor.control_dir,
+                control_dir=agent_control.control_dir,
                 public_task_path=supervisor.public_task_path,
                 inference_network=agent_network
                 if agent.inference is not None
@@ -363,7 +373,7 @@ def command_start(args: argparse.Namespace) -> int:
         else:
             host_agent = reference_runtime.start_host_agent(
                 agent=agent,
-                control_dir=supervisor.control_dir,
+                control_dir=agent_control.control_dir,
                 public_task_path=supervisor.public_task_path,
                 stdout_path=episode_dir / "agent.stdout.log",
                 stderr_path=episode_dir / "agent.stderr.log",
@@ -492,7 +502,7 @@ def command_start(args: argparse.Namespace) -> int:
                 termination_reason=host_termination_reason,
                 drain_seconds=drain_seconds,
             )
-        supervisor.cleanup_untrusted_mailbox()
+        supervisor.cleanup_agent_control()
         if gateway_started:
             reference_runtime.stop_container(gateway_name)
         supervisor.refresh_inference_usage()
