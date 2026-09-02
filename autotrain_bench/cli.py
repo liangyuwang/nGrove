@@ -149,7 +149,21 @@ def _terminal_agent_action(
 def _episode_exit_code(state: Dict[str, Any]) -> int:
     """Return success only for an episode with a successful TEST outcome."""
 
-    return 0 if state.get("outcome") == "success" else 1
+    if state.get("status") != "finalized" or state.get("outcome") != "success":
+        return 1
+    if state.get("active_lease") is not None:
+        return 1
+    if state.get("pending_lease_teardowns"):
+        return 1
+    if state.get("deployment_teardown_failures"):
+        return 1
+    agent_control = state.get("agent_control")
+    if (
+        isinstance(agent_control, dict)
+        and agent_control.get("cleanup_complete") is not True
+    ):
+        return 1
+    return 0
 
 
 CleanupFailure = Tuple[str, str]
@@ -178,8 +192,16 @@ def _report_cleanup_failures(
 
     if not failures:
         return
+    reporting_errors = []
     for code, private_detail in failures:
-        supervisor.deployment_teardown_failed(code, private_detail=private_detail)
+        try:
+            supervisor.deployment_teardown_failed(code, private_detail=private_detail)
+        except Exception as exc:
+            reporting_errors.append(exc)
+    if reporting_errors:
+        # Every failure was offered to the authoritative state machine before
+        # returning the first persistence/reporting error to the operator.
+        raise reporting_errors[0]
 
 
 def _stop_and_record_container_agent(
@@ -223,6 +245,18 @@ def _stop_and_record_host_agent(
         usage=usage,
         termination_reason=termination_reason,
         drain_seconds=drain_seconds,
+    )
+
+
+def _stop_and_record_startup_container_agent(
+    *, runtime: DockerRuntime, supervisor: Supervisor, name: str
+) -> None:
+    """Confirm an uncertain startup workload is absent before recording it."""
+
+    runtime.stop_container(name)
+    supervisor.record_agent_execution(
+        exit_code=None,
+        termination_reason="episode_startup_failure",
     )
 
 
@@ -457,16 +491,49 @@ def command_start(args: argparse.Namespace) -> int:
             )
         agent_started = True
     except Exception as exc:
+        transition_error: Optional[Exception] = None
+        try:
+            supervisor.infrastructure_failed(
+                "episode_startup_failure",
+                private_detail=f"{type(exc).__name__}: {exc}",
+            )
+        except Exception as transition_exc:
+            transition_error = transition_exc
+
         startup_cleanup_steps: List[CleanupStep] = []
         if agent.runner == "container":
             startup_cleanup_steps.append(
                 (
                     "agent_termination_failure",
-                    lambda: reference_runtime.stop_container(agent_name),
+                    lambda: _stop_and_record_startup_container_agent(
+                        runtime=reference_runtime,
+                        supervisor=supervisor,
+                        name=agent_name,
+                    ),
                 )
             )
-        elif host_agent is not None:
-            startup_cleanup_steps.append(("agent_termination_failure", host_agent.stop))
+        else:
+            if host_agent is not None:
+
+                def record_host_startup() -> None:
+                    _stop_and_record_host_agent(
+                        supervisor=supervisor,
+                        host_agent=host_agent,
+                        termination_reason="episode_startup_failure",
+                        drain_seconds=0.0,
+                    )
+
+            else:
+
+                def record_host_startup() -> None:
+                    supervisor.record_agent_execution(
+                        exit_code=None,
+                        termination_reason="episode_startup_failure",
+                    )
+
+            startup_cleanup_steps.append(
+                ("agent_termination_failure", record_host_startup)
+            )
         if agent.inference is not None:
             startup_cleanup_steps.append(
                 (
@@ -482,11 +549,25 @@ def command_start(args: argparse.Namespace) -> int:
             for network in reversed(networks_to_cleanup)
         )
         startup_cleanup_failures = _run_cleanup_steps(startup_cleanup_steps)
-        supervisor.infrastructure_failed(
-            "episode_startup_failure",
-            private_detail=f"{type(exc).__name__}: {exc}",
+        control_cleanup_failures: List[CleanupFailure] = []
+        if supervisor.state["agent_system"]["termination_reason"] is not None:
+            control_cleanup_failures = _run_cleanup_steps(
+                [
+                    (
+                        "agent_control_teardown_failure",
+                        supervisor.cleanup_agent_control,
+                    )
+                ]
+            )
+        _report_cleanup_failures(
+            supervisor,
+            [
+                *startup_cleanup_failures,
+                *control_cleanup_failures,
+            ],
         )
-        _report_cleanup_failures(supervisor, startup_cleanup_failures)
+        if transition_error is not None:
+            raise transition_error from exc
         raise
 
     terminal_at: Optional[float] = None
@@ -542,7 +623,16 @@ def command_start(args: argparse.Namespace) -> int:
         raise
     finally:
         cleanup_failures: List[CleanupFailure] = []
-        agent_termination_recorded = False
+        cleanup_failures.extend(
+            _run_cleanup_steps(
+                [
+                    (
+                        "evaluation_worker_teardown_failure",
+                        reference_runtime.teardown_pending_evaluations,
+                    )
+                ]
+            )
+        )
         active = supervisor.state.get("active_lease")
         pending_lease_teardowns = supervisor.state.get("pending_lease_teardowns", [])
         if active or pending_lease_teardowns:
@@ -550,7 +640,7 @@ def command_start(args: argparse.Namespace) -> int:
                 _run_cleanup_steps(
                     [
                         (
-                            "training_lease_termination_failure",
+                            "research_lease_cleanup_failure",
                             supervisor.terminate_worker_leases_for_teardown,
                         )
                     ]
@@ -588,7 +678,6 @@ def command_start(args: argparse.Namespace) -> int:
                     ]
                 )
                 cleanup_failures.extend(agent_cleanup_failures)
-                agent_termination_recorded = not agent_cleanup_failures
             else:
                 cleanup_failures.extend(
                     _run_cleanup_steps(
@@ -624,7 +713,6 @@ def command_start(args: argparse.Namespace) -> int:
                 ]
             )
             cleanup_failures.extend(host_cleanup_failures)
-            agent_termination_recorded = not host_cleanup_failures
         if gateway_started:
             cleanup_failures.extend(
                 _run_cleanup_steps(
@@ -655,7 +743,18 @@ def command_start(args: argparse.Namespace) -> int:
                 ]
             )
         )
-        _report_cleanup_failures(supervisor, cleanup_failures)
+        cleanup_reporting_error: Optional[Exception] = None
+        try:
+            _report_cleanup_failures(supervisor, cleanup_failures)
+        except Exception as exc:
+            # A persistence failure while recording teardown evidence must not
+            # skip the remaining independent cleanup steps.  The Supervisor
+            # mutates the fail-closed evidence before attempting persistence,
+            # so staged success cannot be published below.
+            cleanup_reporting_error = exc
+        agent_termination_recorded = (
+            supervisor.state["agent_system"]["termination_reason"] is not None
+        )
         if agent_termination_recorded:
             control_cleanup_failures = _run_cleanup_steps(
                 [
@@ -665,7 +764,13 @@ def command_start(args: argparse.Namespace) -> int:
                     )
                 ]
             )
-            _report_cleanup_failures(supervisor, control_cleanup_failures)
+            try:
+                _report_cleanup_failures(supervisor, control_cleanup_failures)
+            except Exception as exc:
+                if cleanup_reporting_error is None:
+                    cleanup_reporting_error = exc
+        if cleanup_reporting_error is not None:
+            raise cleanup_reporting_error
 
     _print(supervisor.public_status())
     return _episode_exit_code(supervisor.state)

@@ -31,7 +31,7 @@ WORKER_PROTOCOL_VERSION = 2
 
 
 class WorkerFailure(RuntimeError):
-    """A trusted Worker operation failed."""
+    """A Worker operation failed with no unconfirmed workload boundary left."""
 
 
 class WorkerTeardownFailure(WorkerFailure):
@@ -88,6 +88,15 @@ class CommandResult:
     timed_out: bool = False
     stdout_truncated: bool = False
     stderr_truncated: bool = False
+
+    def __post_init__(self) -> None:
+        if isinstance(self.exit_code, bool) or not isinstance(self.exit_code, int):
+            raise TypeError("command exit_code must be an integer")
+        if not isinstance(self.stdout, str) or not isinstance(self.stderr, str):
+            raise TypeError("command stdout and stderr must be strings")
+        for field_name in ("timed_out", "stdout_truncated", "stderr_truncated"):
+            if not isinstance(getattr(self, field_name), bool):
+                raise TypeError(f"command {field_name} must be a boolean")
 
 
 @dataclass(frozen=True)

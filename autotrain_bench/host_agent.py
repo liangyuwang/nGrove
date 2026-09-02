@@ -275,8 +275,34 @@ def start_host_agent_process(
     stderr_thread = threading.Thread(
         target=stderr_sink.drain, args=(process.stderr,), daemon=True
     )
-    stdout_thread.start()
-    stderr_thread.start()
+    started_threads = []
+    try:
+        stdout_thread.start()
+        started_threads.append(stdout_thread)
+        stderr_thread.start()
+        started_threads.append(stderr_thread)
+    except Exception:
+        # Popen has already crossed the external side-effect boundary.  Do not
+        # lose the only process handle merely because local log plumbing failed.
+        if process.poll() is None:
+            try:
+                if os.name == "posix":
+                    os.killpg(process.pid, signal.SIGKILL)
+                else:  # pragma: no cover - exercised on Windows only
+                    process.kill()
+            except ProcessLookupError:
+                pass
+            process.wait(timeout=3)
+        for source, sink, thread in (
+            (process.stdout, stdout_sink, stdout_thread),
+            (process.stderr, stderr_sink, stderr_thread),
+        ):
+            if thread not in started_threads:
+                source.close()
+                sink.stream.close()
+        for thread in started_threads:
+            thread.join(timeout=5)
+        raise
     return HostAgentProcess(
         process=process,
         stdout_path=stdout_path,

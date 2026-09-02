@@ -17,6 +17,7 @@ from autotrain_bench.cli import (
     _resolve_challenge_run,
     _run_cleanup_steps,
     _stop_and_record_container_agent,
+    _stop_and_record_startup_container_agent,
     _snapshot_agent_workspace,
     _terminal_agent_action,
     _validate_workspace_boundary,
@@ -35,10 +36,23 @@ LM_PRETRAIN_PREVIEW = ROOT / "challenges/lm-pretrain-v1/challenge.json"
 
 class WorkspaceSnapshotTests(unittest.TestCase):
     def test_episode_exit_code_requires_a_successful_test_outcome(self):
-        self.assertEqual(_episode_exit_code({"outcome": "success"}), 0)
+        self.assertEqual(
+            _episode_exit_code({"status": "finalized", "outcome": "success"}), 0
+        )
+        self.assertEqual(_episode_exit_code({"outcome": "success"}), 1)
         self.assertEqual(_episode_exit_code({"outcome": "failed"}), 1)
         self.assertEqual(_episode_exit_code({"outcome": None}), 1)
         self.assertEqual(_episode_exit_code({"status": "finalized"}), 1)
+        self.assertEqual(
+            _episode_exit_code(
+                {
+                    "status": "finalized",
+                    "outcome": "success",
+                    "deployment_teardown_failures": ["network_teardown_failure"],
+                }
+            ),
+            1,
+        )
 
     def test_report_migrates_a_legacy_success_without_rewriting_state(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -351,6 +365,26 @@ class WorkspaceSnapshotTests(unittest.TestCase):
             )
         self.assertEqual(calls, [])
 
+    def test_startup_agent_is_recorded_only_after_confirmed_absence(self):
+        calls = []
+
+        class Runtime:
+            def stop_container(self, name):
+                calls.append(("stop", name))
+
+        class Supervisor:
+            def record_agent_execution(self, **metadata):
+                calls.append(("record", metadata))
+
+        _stop_and_record_startup_container_agent(
+            runtime=Runtime(),
+            supervisor=Supervisor(),
+            name="uncertain-agent",
+        )
+
+        self.assertEqual([call[0] for call in calls], ["stop", "record"])
+        self.assertEqual(calls[-1][1]["termination_reason"], "episode_startup_failure")
+
     def test_cleanup_steps_continue_after_an_earlier_failure(self):
         calls = []
 
@@ -428,6 +462,32 @@ class WorkspaceSnapshotTests(unittest.TestCase):
         self.assertIn("untrusted container remains", calls[0][1])
         self.assertEqual(calls[1][0], "runtime_network_teardown_failure")
         self.assertIn("network remains", calls[1][1])
+
+    def test_cleanup_failure_reporting_attempts_every_record_after_an_error(self):
+        calls = []
+
+        class Supervisor:
+            def deployment_teardown_failed(self, code, *, private_detail=None):
+                calls.append((code, private_detail))
+                if code == "first_failure":
+                    raise OSError("state persistence failed")
+
+        with self.assertRaisesRegex(OSError, "state persistence failed"):
+            _report_cleanup_failures(
+                Supervisor(),
+                [
+                    ("first_failure", "first detail"),
+                    ("second_failure", "second detail"),
+                ],
+            )
+
+        self.assertEqual(
+            calls,
+            [
+                ("first_failure", "first detail"),
+                ("second_failure", "second detail"),
+            ],
+        )
 
     def test_declare_incumbent_command_is_explicit(self):
         args = build_parser().parse_args(

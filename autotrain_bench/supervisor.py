@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import copy
+import errno
 import hashlib
 import json
+import math
 import os
 import shutil
 import stat
@@ -14,7 +16,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Iterator, Optional, Tuple
 
 from .agent_control import (
     MAX_AGENT_CONTROL_RESPONSE_BYTES,
@@ -58,6 +60,23 @@ MAX_LOG_READ_BYTES = 4 * 1024 * 1024
 MAX_COMMAND_LOG_BYTES = 64 * 1024 * 1024
 _OUTPUT_TRUNCATION_MARKER = "\n[output truncated by AutoTrain-Bench]\n"
 _TREE_HASH_DOMAIN = b"autotrain-bench-tree-v2\0"
+_PARTICIPANT_ARTIFACT_ERRNOS = {
+    errno.EACCES,
+    errno.ELOOP,
+    errno.ENOENT,
+    errno.ENOTDIR,
+    errno.EPERM,
+}
+
+
+def _safe_protocol_text(value: Any) -> bool:
+    if not isinstance(value, str) or not value or "\0" in value:
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 def _json_bytes(payload: Any) -> bytes:
@@ -737,6 +756,7 @@ class Supervisor:
         self.events_path.chmod(0o600)
 
     def _save_state(self) -> None:
+        self._validate_state_invariants()
         self.state["elapsed_seconds"] = round(self._elapsed(), 6)
         self.state["timing_summary"] = self._timing_summary()
         temporary = self.state_path.with_suffix(".json.tmp")
@@ -746,6 +766,46 @@ class Supervisor:
         )
         os.replace(str(temporary), str(self.state_path))
         os.chmod(self.state_path, 0o600)
+
+    def _validate_state_invariants(self) -> None:
+        """Reject internally contradictory lifecycle state before publication."""
+
+        status = self.state["status"]
+        pending_teardowns = self.state.get("pending_lease_teardowns", [])
+        if not isinstance(pending_teardowns, list) or any(
+            not isinstance(lease_id, str) or not lease_id
+            for lease_id in pending_teardowns
+        ):
+            raise RuntimeError("pending Lease teardowns must be semantic Lease IDs")
+        if len(set(pending_teardowns)) != len(pending_teardowns):
+            raise RuntimeError("pending Lease teardown IDs must be unique")
+        termination = self.state["agent_system"]["termination_reason"]
+        cleanup_complete = self.state["agent_control"]["cleanup_complete"]
+        outcome = self.state["outcome"]
+        if status in {"created", "active", "closed"} and outcome is not None:
+            raise RuntimeError("a non-terminal episode cannot publish an outcome")
+        if status in {"dnf", "infrastructure_failure"} and outcome != "failed":
+            raise RuntimeError("a failure terminal must publish a failed outcome")
+        if status == "finalized" and outcome not in {"success", "failed"}:
+            raise RuntimeError("a finalized episode requires an outcome")
+        if self.state.get("pending_result") is not None and status != "closed":
+            raise RuntimeError("a staged TEST result requires the closed state")
+        if outcome == "failed" and (
+            self.state.get("test_nll") is not None
+            or self.state.get("test_perplexity") is not None
+        ):
+            raise RuntimeError("a failed outcome cannot retain TEST metrics")
+        if cleanup_complete is True and termination is None:
+            raise RuntimeError("Agent control cannot be clean before Agent termination")
+        if status == "active" and termination is not None:
+            raise RuntimeError("an active episode cannot have a terminated Agent")
+        if status == "finalized":
+            if termination is None or cleanup_complete is not True:
+                raise RuntimeError("a finalized result requires completed teardown")
+            if self.state.get("active_lease") is not None or pending_teardowns:
+                raise RuntimeError("a finalized result cannot retain Worker Leases")
+            if self.state.get("pending_result") is not None:
+                raise RuntimeError("a finalized result cannot remain staged")
 
     def _require_active(self) -> None:
         if self.state["status"] != "active":
@@ -889,6 +949,13 @@ class Supervisor:
             lease_id = f"lease-{serial:04d}"
             lease_dir = self.runs_dir / lease_id
             lease_dir.mkdir(parents=True, exist_ok=False)
+            # Persist a semantic cleanup intent before asking the Worker to
+            # create anything.  If the process dies after an acknowledgement is
+            # lost, state.json still identifies what terminate_lease must revoke.
+            self.state["lease_serial"] = serial
+            pending = self.state["pending_lease_teardowns"]
+            pending.append(lease_id)
+            self._save_state()
             try:
                 self.research_worker.start_lease(
                     episode_id=self.state["episode_id"],
@@ -900,9 +967,6 @@ class Supervisor:
                     lease_dir=lease_dir,
                 )
             except WorkerTeardownFailure as exc:
-                pending = self.state["pending_lease_teardowns"]
-                if lease_id not in pending:
-                    pending.append(lease_id)
                 self._event(
                     "LEASE_INFRA_FAILURE",
                     lease_id=lease_id,
@@ -917,7 +981,25 @@ class Supervisor:
                     "research worker teardown failed",
                 ) from exc
             except WorkerFailure as exc:
-                shutil.rmtree(lease_dir, ignore_errors=True)
+                pending.remove(lease_id)
+                try:
+                    shutil.rmtree(lease_dir)
+                except FileNotFoundError:
+                    pass
+                except OSError as cleanup_exc:
+                    self._event(
+                        "LEASE_INFRA_FAILURE",
+                        lease_id=lease_id,
+                        code="lease_directory_cleanup_failure",
+                    )
+                    self.deployment_teardown_failed(
+                        "research_lease_directory_cleanup_failure",
+                        private_detail=str(cleanup_exc),
+                    )
+                    raise ProtocolError(
+                        "infrastructure_failure",
+                        "training lease startup cleanup failed",
+                    ) from cleanup_exc
                 self._event("LEASE_INFRA_FAILURE", message=str(exc))
                 self._save_state()
                 raise ProtocolError(
@@ -925,7 +1007,6 @@ class Supervisor:
                 ) from exc
 
             started = self.monotonic()
-            self.state["lease_serial"] = serial
             self.state["leases_used"] += 1
             self.state["active_lease"] = {
                 "lease_id": lease_id,
@@ -934,6 +1015,7 @@ class Supervisor:
                 "duration_seconds": duration,
                 "exec_count": 0,
             }
+            pending.remove(lease_id)
             self.state["last_lease_id"] = lease_id
             self._event("LEASE_STARTED", lease_id=lease_id, duration_seconds=duration)
             self._save_state()
@@ -952,7 +1034,7 @@ class Supervisor:
             if (
                 not isinstance(argv, list)
                 or not argv
-                or not all(isinstance(value, str) and value for value in argv)
+                or not all(_safe_protocol_text(value) for value in argv)
             ):
                 raise ProtocolError("invalid_command", "argv must be a string array")
             remaining = active["deadline_monotonic"] - self.monotonic()
@@ -969,6 +1051,10 @@ class Supervisor:
                 if command_timeout_seconds <= 0:
                     raise ProtocolError(
                         "invalid_timeout", "command timeout must be positive"
+                    )
+                if not math.isfinite(float(command_timeout_seconds)):
+                    raise ProtocolError(
+                        "invalid_timeout", "command timeout must be finite"
                     )
                 remaining = min(remaining, float(command_timeout_seconds))
 
@@ -1000,6 +1086,24 @@ class Supervisor:
                     "infrastructure_failure",
                     "research worker teardown failed",
                 ) from exc
+            except Exception as exc:
+                self.infrastructure_failed(
+                    "research_worker_execution_failure",
+                    private_detail=str(exc),
+                )
+                raise ProtocolError(
+                    "infrastructure_failure",
+                    "research worker execution failed",
+                ) from None
+            if not isinstance(result, CommandResult):
+                self.infrastructure_failed(
+                    "research_worker_protocol_failure",
+                    private_detail=("exec_lease returned " f"{type(result).__name__}"),
+                )
+                raise ProtocolError(
+                    "infrastructure_failure",
+                    "research worker returned an invalid command result",
+                )
             stdout, local_stdout_truncated = _bounded_text(result.stdout)
             stderr, local_stderr_truncated = _bounded_text(result.stderr)
             stdout_truncated = result.stdout_truncated or local_stdout_truncated
@@ -1023,10 +1127,40 @@ class Supervisor:
                 timed_out=result.timed_out,
             )
             lease_active = True
-            lease_state = self.research_worker.lease_state(
-                episode_id=self.state["episode_id"],
-                lease_id=active["lease_id"],
-            )
+            try:
+                lease_state = self.research_worker.lease_state(
+                    episode_id=self.state["episode_id"],
+                    lease_id=active["lease_id"],
+                )
+            except WorkerTeardownFailure as exc:
+                self.deployment_teardown_failed(
+                    "research_worker_teardown_failure",
+                    private_detail=str(exc),
+                )
+                raise ProtocolError(
+                    "infrastructure_failure",
+                    "research worker teardown failed",
+                ) from None
+            except Exception as exc:
+                self.infrastructure_failed(
+                    "research_worker_state_failure",
+                    private_detail=str(exc),
+                )
+                raise ProtocolError(
+                    "infrastructure_failure",
+                    "research worker state query failed",
+                ) from None
+            if not isinstance(lease_state, LeaseState):
+                self.infrastructure_failed(
+                    "research_worker_protocol_failure",
+                    private_detail=(
+                        "lease_state returned " f"{type(lease_state).__name__}"
+                    ),
+                )
+                raise ProtocolError(
+                    "infrastructure_failure",
+                    "research worker returned an invalid Lease state",
+                )
             if result.timed_out or lease_state != LeaseState.RUNNING:
                 self._end_active_lease(
                     "timeout" if result.timed_out else "worker_lease_stopped"
@@ -1086,7 +1220,12 @@ class Supervisor:
                 episode_id=self.state["episode_id"],
                 lease_id=lease_id,
             )
-        except WorkerTeardownFailure as exc:
+        except Exception as exc:
+            teardown_exc = (
+                exc
+                if isinstance(exc, WorkerTeardownFailure)
+                else WorkerTeardownFailure(str(exc))
+            )
             if record_teardown_failure:
                 self._event(
                     "LEASE_INFRA_FAILURE",
@@ -1095,9 +1234,11 @@ class Supervisor:
                 )
                 self.deployment_teardown_failed(
                     "research_worker_teardown_failure",
-                    private_detail=str(exc),
+                    private_detail=str(teardown_exc),
                 )
-            raise
+            if teardown_exc is exc:
+                raise
+            raise teardown_exc from exc
         self.state["timing"]["training_lease_seconds"] += used_seconds
         self.state["active_lease"] = None
         self.state["last_lease_id"] = lease_id
@@ -1118,7 +1259,8 @@ class Supervisor:
             active = self.state.get("active_lease")
             if not pending and active is None:
                 return False
-            failures = []
+            teardown_failures = []
+            reconciliation_failures = []
             cleaned_startups = []
             state_changed = False
             for lease_id in list(pending):
@@ -1128,7 +1270,7 @@ class Supervisor:
                         lease_id=lease_id,
                     )
                 except Exception as exc:
-                    failures.append(f"{lease_id}: {type(exc).__name__}: {exc}")
+                    teardown_failures.append(f"{lease_id}: {type(exc).__name__}: {exc}")
                 else:
                     pending.remove(lease_id)
                     cleaned_startups.append(lease_id)
@@ -1146,8 +1288,12 @@ class Supervisor:
                         ended_monotonic=ended,
                         record_teardown_failure=False,
                     )
+                except WorkerTeardownFailure as exc:
+                    teardown_failures.append(
+                        f"{active['lease_id']}: {type(exc).__name__}: {exc}"
+                    )
                 except Exception as exc:
-                    failures.append(
+                    reconciliation_failures.append(
                         f"{active['lease_id']}: {type(exc).__name__}: {exc}"
                     )
 
@@ -1155,9 +1301,14 @@ class Supervisor:
                 self._event("LEASE_STARTUP_CLEANED", lease_id=lease_id)
             if state_changed:
                 self._save_state()
-            if failures:
+            if teardown_failures:
                 raise WorkerTeardownFailure(
-                    "Worker Lease teardown failed: " + "; ".join(failures)
+                    "Worker Lease teardown failed: " + "; ".join(teardown_failures)
+                )
+            if reconciliation_failures:
+                raise RuntimeError(
+                    "Worker Lease state reconciliation failed: "
+                    + "; ".join(reconciliation_failures)
                 )
             return True
 
@@ -1171,6 +1322,10 @@ class Supervisor:
     def _candidate_source(self, candidate_path: Any, lease_id: str) -> Path:
         if not isinstance(candidate_path, str) or not candidate_path:
             raise ProtocolError("invalid_candidate", "candidate path is required")
+        if not _safe_protocol_text(candidate_path):
+            raise ProtocolError(
+                "invalid_candidate", "candidate path contains invalid characters"
+            )
         output_root = (self.runs_dir / lease_id / "output").resolve()
         if candidate_path == "/output":
             source = output_root
@@ -1197,12 +1352,17 @@ class Supervisor:
             )
         entry_count = 0
         total_bytes = 0
-        for item in resolved.rglob("*"):
-            if item.is_symlink():
+        for item, metadata in self._tree_entries(resolved):
+            relative = item.relative_to(resolved).as_posix()
+            if not _safe_protocol_text(relative):
+                raise ProtocolError(
+                    "invalid_candidate",
+                    "candidate bundle contains an invalid path encoding",
+                )
+            if stat.S_ISLNK(metadata.st_mode):
                 raise ProtocolError(
                     "invalid_candidate", "candidate bundles may not contain symlinks"
                 )
-            metadata = item.lstat()
             if stat.S_ISDIR(metadata.st_mode):
                 entry_count += 1
             elif stat.S_ISREG(metadata.st_mode):
@@ -1213,6 +1373,16 @@ class Supervisor:
                     )
                 entry_count += 1
                 total_bytes += metadata.st_size
+                try:
+                    with item.open("rb") as stream:
+                        stream.read(1)
+                except OSError as exc:
+                    if exc.errno in _PARTICIPANT_ARTIFACT_ERRNOS:
+                        raise ProtocolError(
+                            "invalid_candidate",
+                            "candidate bundle contains an unreadable file",
+                        ) from exc
+                    raise
             else:
                 raise ProtocolError(
                     "invalid_candidate",
@@ -1233,14 +1403,34 @@ class Supervisor:
         return resolved
 
     @staticmethod
+    def _tree_entries(root: Path) -> Iterator[Tuple[Path, os.stat_result]]:
+        """Walk a tree without links or suppressed directory-read failures."""
+
+        pending = [root]
+        while pending:
+            directory = pending.pop()
+            child_directories = []
+            with os.scandir(directory) as children:
+                for child in children:
+                    metadata = child.stat(follow_symlinks=False)
+                    path = Path(child.path)
+                    yield path, metadata
+                    if stat.S_ISDIR(metadata.st_mode):
+                        child_directories.append(path)
+            pending.extend(reversed(child_directories))
+
+    @staticmethod
     def _tree_hash(root: Path) -> str:
         digest = hashlib.sha256()
         digest.update(_TREE_HASH_DOMAIN)
-        for path in sorted(root.rglob("*")):
+        entries = sorted(
+            Supervisor._tree_entries(root),
+            key=lambda entry: entry[0].relative_to(root).as_posix(),
+        )
+        for path, metadata in entries:
             relative = path.relative_to(root).as_posix().encode("utf-8")
-            metadata = path.lstat()
             mode = stat.S_IMODE(metadata.st_mode).to_bytes(4, "big")
-            if path.is_symlink():
+            if stat.S_ISLNK(metadata.st_mode):
                 target = os.readlink(path).encode("utf-8")
                 digest.update(b"symlink\0")
                 digest.update(len(relative).to_bytes(8, "big"))
@@ -1266,17 +1456,32 @@ class Supervisor:
                     digest.update(chunk)
         return digest.hexdigest()
 
+    @staticmethod
+    def _remove_staging_tree(stage: Path) -> None:
+        """Remove a trusted copy even when source directory modes were read-only."""
+
+        os.chmod(stage, 0o700)
+        for directory, child_directories, _ in os.walk(stage, followlinks=False):
+            os.chmod(directory, 0o700)
+            for name in child_directories:
+                child = Path(directory) / name
+                if not child.is_symlink():
+                    os.chmod(child, 0o700)
+        shutil.rmtree(stage)
+
     def _snapshot_candidate(self, source: Path) -> Dict[str, Any]:
         stage = self.candidates_dir / f".stage-{uuid.uuid4().hex}"
-        shutil.copytree(source, stage)
-        digest = self._tree_hash(stage)
-        candidate_id = f"sha256:{digest}"
-        destination = self.candidates_dir / digest
-        if destination.exists():
-            shutil.rmtree(stage)
-        else:
-            os.replace(str(stage), str(destination))
-        return {"candidate_id": candidate_id, "path": destination}
+        try:
+            shutil.copytree(source, stage)
+            digest = self._tree_hash(stage)
+            candidate_id = f"sha256:{digest}"
+            destination = self.candidates_dir / digest
+            if not destination.exists():
+                os.replace(str(stage), str(destination))
+            return {"candidate_id": candidate_id, "path": destination}
+        finally:
+            if stage.exists():
+                self._remove_staging_tree(stage)
 
     def commit_lease(self, candidate_path: Any) -> Dict[str, Any]:
         with self.lock:
@@ -1285,8 +1490,29 @@ class Supervisor:
             lease_id = active["lease_id"]
             self._end_active_lease("candidate_commit_requested")
             try:
-                source = self._candidate_source(candidate_path, lease_id)
-                snapshot = self._snapshot_candidate(source)
+                try:
+                    source = self._candidate_source(candidate_path, lease_id)
+                except OSError as exc:
+                    if exc.errno in _PARTICIPANT_ARTIFACT_ERRNOS:
+                        raise ProtocolError(
+                            "invalid_candidate",
+                            "candidate bundle cannot be inspected safely",
+                        ) from exc
+                    self._event(
+                        "CANDIDATE_INSPECTION_FAILURE",
+                        lease_id=lease_id,
+                        code="coordinator_storage_failure",
+                        exception_type=type(exc).__name__,
+                        message=str(exc),
+                    )
+                    self.infrastructure_failed(
+                        "candidate_inspection_infrastructure_failure",
+                        private_detail=str(exc),
+                    )
+                    raise ProtocolError(
+                        "infrastructure_failure",
+                        "candidate inspection infrastructure failed",
+                    ) from None
             except ProtocolError as exc:
                 self._event(
                     "CANDIDATE_REJECTED",
@@ -1296,6 +1522,24 @@ class Supervisor:
                 )
                 self._save_state()
                 raise
+            try:
+                snapshot = self._snapshot_candidate(source)
+            except OSError as exc:
+                self._event(
+                    "CANDIDATE_SNAPSHOT_FAILURE",
+                    lease_id=lease_id,
+                    code="coordinator_storage_failure",
+                    exception_type=type(exc).__name__,
+                    message=str(exc),
+                )
+                self.infrastructure_failed(
+                    "candidate_snapshot_infrastructure_failure",
+                    private_detail=str(exc),
+                )
+                raise ProtocolError(
+                    "infrastructure_failure",
+                    "candidate snapshot infrastructure failed",
+                ) from None
             candidate_id = snapshot["candidate_id"]
             metadata = {
                 "candidate_id": candidate_id,
@@ -1312,6 +1556,7 @@ class Supervisor:
             evaluation_started = self.monotonic()
             deadline_reached = False
             teardown_failure: Optional[str] = None
+            infrastructure_failure: Optional[str] = None
             try:
                 timeout_seconds = float(self.config.evaluator_timeout_seconds)
                 if self.track == "A":
@@ -1358,6 +1603,16 @@ class Supervisor:
                         candidate_id=candidate_id,
                         code="evaluation_failed",
                     )
+            except Exception as exc:
+                metadata["evaluation_error"] = "evaluation_infrastructure_failure"
+                infrastructure_failure = str(exc)
+                self._event(
+                    "VAL_INFRASTRUCTURE_FAILURE",
+                    candidate_id=candidate_id,
+                    code="unexpected_worker_failure",
+                    exception_type=type(exc).__name__,
+                    message=str(exc),
+                )
             finally:
                 evaluation_seconds = max(0.0, self.monotonic() - evaluation_started)
                 if self.track == "A":
@@ -1382,6 +1637,15 @@ class Supervisor:
                 raise ProtocolError(
                     "infrastructure_failure",
                     "evaluation worker teardown failed",
+                ) from None
+            if infrastructure_failure is not None:
+                self.infrastructure_failed(
+                    "val_evaluation_infrastructure_failure",
+                    private_detail=infrastructure_failure,
+                )
+                raise ProtocolError(
+                    "infrastructure_failure",
+                    "validation evaluation infrastructure failed",
                 ) from None
             if deadline_reached:
                 metadata["evaluation_error"] = "track_a_deadline"
@@ -1447,21 +1711,38 @@ class Supervisor:
         """Attach trusted runner metadata after the Agent process exits."""
 
         with self.lock:
+            if self.state["status"] in {"created", "active"}:
+                raise RuntimeError(
+                    "episode closure must be recorded before Agent termination"
+                )
             if (
                 not isinstance(termination_reason, str)
                 or not termination_reason.strip()
             ):
                 raise ValueError("Agent termination reason must be a non-empty string")
             normalized_exit_code = int(exit_code) if exit_code is not None else None
+            normalized_drain_seconds = round(max(0.0, float(drain_seconds)), 6)
+            normalized_usage = dict(usage) if usage is not None else None
+            previous_reason = self.state["agent_system"]["termination_reason"]
+            if previous_reason is not None:
+                if (
+                    self.state["agent_system"]["exit_code"] != normalized_exit_code
+                    or previous_reason != termination_reason
+                    or self.state["agent_system"]["drain_seconds"]
+                    != normalized_drain_seconds
+                    or self.state["agent_usage"] != normalized_usage
+                ):
+                    raise RuntimeError("Agent termination metadata is immutable")
+                if not self._publish_staged_result():
+                    self._save_state()
+                return
             self.state["agent_system"]["exit_code"] = normalized_exit_code
             self.state["agent_system"]["termination_reason"] = termination_reason
             self.state["agent_system"]["finish_observed"] = (
                 self.state["closure_reason"] == "agent_finished"
             )
-            self.state["agent_system"]["drain_seconds"] = round(
-                max(0.0, float(drain_seconds)), 6
-            )
-            self.state["agent_usage"] = dict(usage) if usage is not None else None
+            self.state["agent_system"]["drain_seconds"] = normalized_drain_seconds
+            self.state["agent_usage"] = normalized_usage
             self._event(
                 "AGENT_PROCESS_EXITED",
                 runner=self.agent.runner,
@@ -1612,6 +1893,8 @@ class Supervisor:
             return False
         if self.state["agent_control"]["cleanup_complete"] is not True:
             return False
+        if self.state.get("deployment_teardown_failures"):
+            return False
 
         outcome = pending["outcome"]
         failure = pending["failure"]
@@ -1683,6 +1966,8 @@ class Supervisor:
             status = self.state["status"]
             if status not in {"created", "active", "closed"}:
                 return
+            lease_teardown_detail: Optional[str] = None
+            lease_reconciliation_detail: Optional[str] = None
             if status == "active":
                 self._freeze_elapsed()
             if self.state["active_lease"] is not None:
@@ -1691,7 +1976,8 @@ class Supervisor:
                         "infrastructure_failure",
                         record_teardown_failure=False,
                     )
-                except Exception as exc:
+                except WorkerTeardownFailure as exc:
+                    lease_teardown_detail = str(exc)
                     # A failure transition must still become authoritative when
                     # the Worker cannot confirm lease termination.  Keep the
                     # authoritative state reached so far and retain details only
@@ -1703,6 +1989,11 @@ class Supervisor:
                         exception_type=type(exc).__name__,
                         message=str(exc),
                     )
+                except Exception as exc:
+                    # terminate_lease was confirmed and the failure came from
+                    # Coordinator reconciliation (event/state persistence).
+                    # Do not mislabel it as a Worker resource still running.
+                    lease_reconciliation_detail = f"{type(exc).__name__}: {exc}"
             self.state["status"] = "infrastructure_failure"
             self.state["outcome"] = "failed"
             self.state["closure_reason"] = "infrastructure_failure"
@@ -1713,8 +2004,35 @@ class Supervisor:
             event = {"code": code}
             if private_detail is not None:
                 event["message"] = private_detail
+            if lease_reconciliation_detail is not None:
+                event["lease_reconciliation_error"] = lease_reconciliation_detail
             self._event("EPISODE_INFRASTRUCTURE_FAILURE", **event)
+            if lease_teardown_detail is not None:
+                self._record_deployment_teardown_failure(
+                    "research_worker_teardown_failure",
+                    private_detail=lease_teardown_detail,
+                )
             self._save_state()
+
+    def _record_deployment_teardown_failure(
+        self, code: str, *, private_detail: Optional[str] = None
+    ) -> None:
+        """Mutate teardown evidence without recursively changing lifecycle state."""
+
+        failures = self.state.setdefault("deployment_teardown_failures", [])
+        if code not in failures:
+            failures.append(code)
+        violation = "deployment_teardown_incomplete"
+        if violation not in self.state["policy_violations"]:
+            self.state["policy_violations"].append(violation)
+        if violation not in self.state["leaderboard_eligibility_violations"]:
+            self.state["leaderboard_eligibility_violations"].append(violation)
+        self.state["policy_compliant"] = False
+        self.state["leaderboard_eligible"] = False
+        event = {"code": code}
+        if private_detail is not None:
+            event["message"] = private_detail
+        self._event("DEPLOYMENT_TEARDOWN_FAILED", **event)
 
     def deployment_teardown_failed(
         self, code: str, *, private_detail: Optional[str] = None
@@ -1722,20 +2040,9 @@ class Supervisor:
         """Record trusted teardown failure even after the outcome is terminal."""
 
         with self.lock:
-            failures = self.state.setdefault("deployment_teardown_failures", [])
-            if code not in failures:
-                failures.append(code)
-            violation = "deployment_teardown_incomplete"
-            if violation not in self.state["policy_violations"]:
-                self.state["policy_violations"].append(violation)
-            if violation not in self.state["leaderboard_eligibility_violations"]:
-                self.state["leaderboard_eligibility_violations"].append(violation)
-            self.state["policy_compliant"] = False
-            self.state["leaderboard_eligible"] = False
-            event = {"code": code}
-            if private_detail is not None:
-                event["message"] = private_detail
-            self._event("DEPLOYMENT_TEARDOWN_FAILED", **event)
+            self._record_deployment_teardown_failure(
+                code, private_detail=private_detail
+            )
             if self.state["status"] in {"created", "active", "closed"}:
                 self.infrastructure_failed(code)
             else:
@@ -1767,6 +2074,9 @@ class Supervisor:
             raise RuntimeError(
                 "Agent termination must be recorded before control cleanup"
             )
+        if self.state["agent_control"]["cleanup_complete"] is True:
+            self._publish_staged_result()
+            return True
         if self.agent_control_transport is None:
             self.state["agent_control"].update(
                 cleanup_complete=True,
@@ -1802,10 +2112,9 @@ class Supervisor:
                 self.state["leaderboard_eligibility_violations"].append(violation)
             self.state["policy_compliant"] = False
             self.state["leaderboard_eligible"] = False
-            self.infrastructure_failed(
+            self.deployment_teardown_failed(
                 "agent_control_teardown_failure", private_detail=str(exc)
             )
-            self._save_state()
             return False
         cleanup_complete = cleanup.complete
         self.state["agent_control"].update(
@@ -1845,8 +2154,10 @@ class Supervisor:
         )
         if cleanup_policy_failure:
             self._agent_control_policy_failed()
+            if not cleanup_complete:
+                self.deployment_teardown_failed("agent_control_teardown_failure")
         elif cleanup.infrastructure_failures:
-            self.infrastructure_failed("agent_control_teardown_failure")
+            self.deployment_teardown_failed("agent_control_teardown_failure")
         elif self._publish_staged_result():
             return cleanup_complete
         self._save_state()

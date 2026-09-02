@@ -143,6 +143,14 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
         not isinstance(code, str) or not code.strip() for code in teardown_failures
     ):
         raise ResultSchemaError("deployment_teardown_failures must be a string array")
+    pending_lease_teardowns = result.get("pending_lease_teardowns", [])
+    if not isinstance(pending_lease_teardowns, list) or any(
+        not isinstance(lease_id, str) or not lease_id
+        for lease_id in pending_lease_teardowns
+    ):
+        raise ResultSchemaError("pending_lease_teardowns must be a string array")
+    if len(set(pending_lease_teardowns)) != len(pending_lease_teardowns):
+        raise ResultSchemaError("pending_lease_teardowns must be unique")
 
     outcome = result.get("outcome")
     if outcome not in {None, "success", "failed"}:
@@ -180,6 +188,16 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
             raise ResultSchemaError("test_perplexity does not equal exp(test_nll)")
         if result.get("failure") is not None:
             raise ResultSchemaError("a successful result may not contain a failure")
+        if result.get("active_lease") is not None or pending_lease_teardowns:
+            raise ResultSchemaError("a successful result may not retain Worker Leases")
+        agent_control = result.get("agent_control")
+        if (
+            isinstance(agent_control, dict)
+            and agent_control.get("cleanup_complete") is not True
+        ):
+            raise ResultSchemaError(
+                "a successful result requires completed Agent-control cleanup"
+            )
     elif outcome == "failed":
         if status not in _FAILED_OUTCOME_STATUSES:
             raise ResultSchemaError(

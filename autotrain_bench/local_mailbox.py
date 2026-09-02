@@ -432,6 +432,11 @@ class LocalFileMailbox:
             try:
                 self.write_response(request_id, response)
             except MailboxMessageError as exc:
+                # The Agent controls its outbox.  If it prevents publication
+                # after a side-effecting request has run, continuing would make
+                # retries ambiguous.  Classify that manipulation as policy
+                # failure, never as trusted infrastructure failure.
+                policy_failure = True
                 events.append(
                     AgentControlEvent(
                         "MAILBOX_RESPONSE_REJECTED",

@@ -52,6 +52,24 @@ class ResultMetricTests(unittest.TestCase):
                 "test_perplexity": 1.0,
                 "failure": None,
             },
+            "success_with_active_lease": {
+                "status": "finalized",
+                "outcome": "success",
+                "final_candidate_id": "sha256:candidate",
+                "active_lease": {"lease_id": "lease-0001"},
+                "test_nll": 0.0,
+                "test_perplexity": 1.0,
+                "failure": None,
+            },
+            "success_with_pending_teardown": {
+                "status": "finalized",
+                "outcome": "success",
+                "final_candidate_id": "sha256:candidate",
+                "pending_lease_teardowns": ["lease-0001"],
+                "test_nll": 0.0,
+                "test_perplexity": 1.0,
+                "failure": None,
+            },
         }
         for name, payload in invalid.items():
             payload["result_schema_version"] = 2

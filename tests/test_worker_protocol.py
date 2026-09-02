@@ -5,6 +5,7 @@ from autotrain_bench.worker_protocol import (
     BASELINE_REQUIREMENTS,
     Capability,
     CapabilityRequirement,
+    CommandResult,
     ConformanceReceipt,
     EnforcementLevel,
     TrustLevel,
@@ -29,6 +30,14 @@ def descriptor(*, trust=TrustLevel.DEVELOPMENT, conformance=None, overrides=None
 
 
 class WorkerProtocolTests(unittest.TestCase):
+    def test_command_result_types_are_strict(self):
+        with self.assertRaisesRegex(TypeError, "exit_code"):
+            CommandResult(True, "", "")
+        with self.assertRaisesRegex(TypeError, "stdout and stderr"):
+            CommandResult(0, b"bytes", "")
+        with self.assertRaisesRegex(TypeError, "timed_out"):
+            CommandResult(0, "", "", timed_out=1)
+
     def test_capabilities_are_separate_from_deployment_trust(self):
         assessment = assess_worker(
             descriptor(),

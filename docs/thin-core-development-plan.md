@@ -231,6 +231,42 @@ The bundled local launcher is development-trust only. A real external Worker
 prototype must determine whether Phase C1 needs finer-grained evidence,
 signatures, or conformance semantics.
 
+### B6. Enforce lifecycle failure invariants
+
+Status: complete for the bundled v0 composition.
+
+Every effectful boundary follows one failure model:
+
+| Boundary | Before the call | Success | Unknown or failed teardown |
+| --- | --- | --- | --- |
+| Research Lease start | Persist the semantic Lease ID as a cleanup intent | Publish the active Lease and clear the intent | Keep the intent and retry `terminate_lease` during deployment teardown |
+| Local Agent, Gateway, or network start | Register the deterministic local name for cleanup | Keep it registered until confirmed removal | Attempt every independent cleanup and record a stable teardown code |
+| Local isolated evaluation | Register Candidate, Evaluator, and network handles inside the Worker | Remove all three before returning the metric | Retain Worker-private handles and retry them from the local deployment composition |
+| Candidate snapshot | Use an episode-private staging directory | Atomically install the content-addressed snapshot | Remove staging before propagating the infrastructure failure |
+| Terminal result publication | Keep TEST staged and `outcome: null` | Atomically replace authoritative `state.json`, then emit the terminal audit event | Roll back to the staged state and fail the command closed |
+
+Additional invariants enforced before every state write are:
+
+- Agent-control cleanup cannot complete before trusted Agent termination;
+- an active episode cannot record a terminated Agent;
+- only `closed` may contain a staged TEST result;
+- a finalized result has no active or pending Worker Lease and has completed
+  Agent termination and control cleanup;
+- failed outcomes never retain TEST metrics;
+- platform resource handles never enter Core state.
+
+These are lifecycle semantics, not Docker semantics. A different Worker may
+use a scheduler allocation, VM, process sandbox, or another mechanism, but it
+must retain its private handles until the semantic cleanup operation is
+confirmed.
+
+The bundled v0 Worker can retry evaluation teardown while its composition
+process remains alive; those random local evaluation handles are not a durable
+crash-recovery protocol. A production external Worker must persist or
+reconstruct its own handles across the failure modes it claims to tolerate.
+Core must not solve that deployment requirement by storing container, job, or
+network identifiers.
+
 ### Phase B exit criteria
 
 - The semantic request handler can be tested without creating a mailbox.

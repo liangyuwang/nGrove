@@ -401,6 +401,11 @@ Lease and official Lease accounting remains frozen at episode closure.
 Likewise, if a Worker cannot confirm cleanup after a failed `start_lease()`,
 the Supervisor retains the semantic Lease ID for a final retry; runtime or
 scheduler resource handles remain private to the Worker deployment.
+The bundled `start` command returns zero only for a finalized successful result
+with no active/pending Lease or recorded deployment teardown failure. This
+keeps a late cleanup or persistence problem from looking like process-level
+success while preserving the benchmark outcome and failure evidence in the
+report.
 
 The example proves the complete protocol:
 

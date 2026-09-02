@@ -121,6 +121,7 @@ class DockerRuntime:
         self.docker = docker_binary or shutil.which("docker") or ""
         self.monotonic = monotonic or time.monotonic
         self._worker_leases: Dict[tuple, str] = {}
+        self._pending_evaluations: Dict[tuple, Tuple[str, str, str]] = {}
 
     def describe_capabilities(self) -> WorkerDescriptor:
         """Describe the bundled development Worker without certifying its host."""
@@ -734,6 +735,13 @@ class DockerRuntime:
     def _worker_lease_key(episode_id: str, lease_id: str) -> tuple:
         return (episode_id, lease_id)
 
+    @staticmethod
+    def _worker_lease_runtime_name(episode_id: str, lease_id: str) -> str:
+        """Derive the local handle from the stable semantic Lease identity."""
+
+        runtime_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{episode_id}:{lease_id}").hex[:12]
+        return f"atb-lease-{runtime_id}"
+
     def start_lease(
         self,
         *,
@@ -751,8 +759,7 @@ class DockerRuntime:
         key = self._worker_lease_key(episode_id, lease_id)
         if key in self._worker_leases:
             raise RuntimeFailure(f"lease already exists: {lease_id}")
-        runtime_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{episode_id}:{lease_id}").hex[:12]
-        name = f"atb-lease-{runtime_id}"
+        name = self._worker_lease_runtime_name(episode_id, lease_id)
         self._worker_leases[key] = name
         try:
             self.start_training(
@@ -836,10 +843,11 @@ class DockerRuntime:
         )
 
     def _worker_lease_name(self, episode_id: str, lease_id: str) -> str:
-        try:
-            return self._worker_leases[self._worker_lease_key(episode_id, lease_id)]
-        except KeyError as exc:
-            raise RuntimeFailure(f"unknown lease: {lease_id}") from exc
+        key = self._worker_lease_key(episode_id, lease_id)
+        return self._worker_leases.get(
+            key,
+            self._worker_lease_runtime_name(episode_id, lease_id),
+        )
 
     def exec_lease(
         self,
@@ -856,30 +864,43 @@ class DockerRuntime:
         )
 
     def container_running(self, name: str) -> bool:
-        result = self._run(
-            ["inspect", "--format", "{{.State.Running}}", name], check=False
-        )
-        return result.returncode == 0 and result.stdout.strip() == "true"
+        # A failed ``docker inspect`` is ambiguous: the container may be absent,
+        # or the daemon may be unavailable.  A successful inventory query makes
+        # absence/stopped state explicit and never converts infrastructure loss
+        # into an Agent-exited classification.
+        result = self._run(["container", "ls", "--format", "{{.Names}}"])
+        return name in {line.strip() for line in result.stdout.splitlines()}
 
     def container_exit_code(self, name: str) -> Optional[int]:
+        inventory = self._run(["container", "ls", "--all", "--format", "{{.Names}}"])
+        if name not in {line.strip() for line in inventory.stdout.splitlines()}:
+            return None
         result = self._run(
             ["inspect", "--format", "{{.State.Running}} {{.State.ExitCode}}", name],
             check=False,
         )
         if result.returncode != 0:
-            return None
+            # Tolerate a removal race, but fail closed if Docker still reports
+            # the name and cannot provide authoritative state.
+            retry = self._run(["container", "ls", "--all", "--format", "{{.Names}}"])
+            if name not in {line.strip() for line in retry.stdout.splitlines()}:
+                return None
+            detail = result.stderr.strip() or result.stdout.strip() or "inspect failed"
+            raise RuntimeFailure(f"failed to inspect container {name}: {detail}")
         fields = result.stdout.split()
-        if len(fields) != 2 or fields[0] == "true":
+        if len(fields) != 2 or fields[0] not in {"true", "false"}:
+            raise RuntimeFailure(f"invalid state returned for container {name}")
+        if fields[0] == "true":
             return None
         try:
             return int(fields[1])
-        except ValueError:
-            return None
+        except ValueError as exc:
+            raise RuntimeFailure(
+                f"invalid exit code returned for container {name}"
+            ) from exc
 
     def lease_state(self, *, episode_id: str, lease_id: str) -> LeaseState:
-        name = self._worker_leases.get(self._worker_lease_key(episode_id, lease_id))
-        if name is None:
-            return LeaseState.STOPPED
+        name = self._worker_lease_name(episode_id, lease_id)
         if self.container_running(name):
             return LeaseState.RUNNING
         return LeaseState.STOPPED
@@ -911,13 +932,12 @@ class DockerRuntime:
 
     def terminate_lease(self, *, episode_id: str, lease_id: str) -> None:
         key = self._worker_lease_key(episode_id, lease_id)
-        name = self._worker_leases.get(key)
-        if name is not None:
-            try:
-                self.stop_container(name)
-            except WorkerFailure as exc:
-                raise WorkerTeardownFailure(str(exc)) from exc
-            self._worker_leases.pop(key, None)
+        name = self._worker_lease_name(episode_id, lease_id)
+        try:
+            self.stop_container(name)
+        except WorkerFailure as exc:
+            raise WorkerTeardownFailure(str(exc)) from exc
+        self._worker_leases.pop(key, None)
 
     def run_evaluator(
         self,
@@ -934,6 +954,7 @@ class DockerRuntime:
             raise RuntimeFailure(f"invalid evaluator split: {split}")
         data_path = config.val_path if split == "val" else config.test_path
         return self._run_isolated_evaluator(
+            episode_id="local-preview",
             task=EvaluationTaskSpec.from_task(config),
             resources=resources,
             candidate_dir=candidate_dir,
@@ -945,6 +966,7 @@ class DockerRuntime:
     def _run_isolated_evaluator(
         self,
         *,
+        episode_id: str,
         task: EvaluationTaskSpec,
         resources: TrainingResources,
         candidate_dir: Path,
@@ -961,10 +983,15 @@ class DockerRuntime:
             raise RuntimeFailure(f"hidden evaluator split is not a file: {data_path}")
         output_dir.mkdir(parents=True, exist_ok=True)
         result_path = output_dir / f"{split}.json"
+        try:
+            result_path.unlink(missing_ok=True)
+        except OSError as exc:
+            raise RuntimeFailure("failed to clear the prior evaluator result") from exc
         runtime_id = uuid.uuid4().hex[:12]
         candidate_name = f"atb-candidate-{runtime_id}"
         evaluator_name = f"atb-evaluator-{runtime_id}"
         network_name = f"atb-evaluation-{runtime_id}"
+        evaluation_key = (episode_id, runtime_id)
         candidate_api_dir = output_dir / ".candidate_api"
         package = candidate_api_dir / "autotrain_bench"
         if not candidate_api_dir.exists():
@@ -1094,7 +1121,11 @@ class DockerRuntime:
                 raise RuntimeFailure("evaluation deadline reached")
             return remaining
 
-        evaluator_started = False
+        self._pending_evaluations[evaluation_key] = (
+            candidate_name,
+            evaluator_name,
+            network_name,
+        )
         try:
             self.create_network(
                 network_name,
@@ -1102,7 +1133,6 @@ class DockerRuntime:
                 timeout_seconds=remaining_seconds(),
             )
             self._run(candidate_args, timeout=remaining_seconds())
-            evaluator_started = True
             self._run(
                 evaluator_args,
                 timeout=remaining_seconds(),
@@ -1131,17 +1161,7 @@ class DockerRuntime:
                 pass
             raise RuntimeFailure("isolated evaluation failed") from None
         finally:
-            teardown_steps = [
-                ("candidate", lambda: self.stop_container(candidate_name)),
-            ]
-            if evaluator_started:
-                teardown_steps.append(
-                    ("evaluator", lambda: self.stop_container(evaluator_name))
-                )
-            teardown_steps.append(
-                ("evaluation network", lambda: self.remove_network(network_name))
-            )
-            _run_runtime_teardown_steps(teardown_steps)
+            self._teardown_evaluation(evaluation_key)
         try:
             payload = json.loads(result_path.read_text(encoding="utf-8"))
             loss = validated_nll(payload["nll"])
@@ -1171,8 +1191,8 @@ class DockerRuntime:
     ) -> float:
         """Map the semantic evaluation operation to the reference runtime."""
 
-        del episode_id
         return self._run_isolated_evaluator(
+            episode_id=episode_id,
             task=task,
             resources=resources,
             candidate_dir=candidate_dir,
@@ -1180,3 +1200,31 @@ class DockerRuntime:
             output_dir=output_dir,
             timeout_seconds=timeout_seconds,
         )
+
+    def _teardown_evaluation(self, evaluation_key: tuple) -> None:
+        resources = self._pending_evaluations.get(evaluation_key)
+        if resources is None:
+            return
+        candidate_name, evaluator_name, network_name = resources
+        _run_runtime_teardown_steps(
+            [
+                ("candidate", lambda: self.stop_container(candidate_name)),
+                ("evaluator", lambda: self.stop_container(evaluator_name)),
+                ("evaluation network", lambda: self.remove_network(network_name)),
+            ]
+        )
+        self._pending_evaluations.pop(evaluation_key, None)
+
+    def teardown_pending_evaluations(self) -> None:
+        """Retry every local evaluation cleanup whose result was uncertain."""
+
+        failures = []
+        for evaluation_key in list(self._pending_evaluations):
+            try:
+                self._teardown_evaluation(evaluation_key)
+            except Exception as exc:
+                failures.append(f"{evaluation_key[1]}: {type(exc).__name__}: {exc}")
+        if failures:
+            raise WorkerTeardownFailure(
+                "pending evaluation teardown failed: " + "; ".join(failures)
+            )

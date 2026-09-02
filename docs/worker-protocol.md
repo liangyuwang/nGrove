@@ -136,8 +136,9 @@ not yet define that remote artifact transport.
 
 Worker operation failures and teardown failures have different episode
 semantics. `WorkerFailure` reports an operation that did not produce a usable
-result. `WorkerTeardownFailure` reports that the Worker could not confirm
-termination or removal of an isolated workload boundary. The latter is always
+result and may be returned only after the Worker has confirmed that the failed
+operation left no unaccounted workload boundary. `WorkerTeardownFailure`
+reports that termination or removal remains unconfirmed. The latter is always
 an infrastructure failure: evaluation must not continue and the Coordinator
 records a stable teardown code while retaining deployment-specific details only
 in its trusted event stream. In particular, `start_lease()` may fail after the
@@ -146,6 +147,12 @@ acknowledgement. A Worker must retain enough private state for
 `terminate_lease(episode_id, lease_id)` to be safely retried in that case. The
 Coordinator persists only that semantic Lease ID; container, scheduler, or
 other platform handles remain Worker-owned.
+
+The same ownership rule applies to evaluation: `evaluate_candidate()` must not
+return a metric until its isolated Candidate/Evaluator boundary has been torn
+down. If teardown cannot be confirmed, it raises `WorkerTeardownFailure` and
+retains whatever private handles its deployment needs for operator-level retry;
+those handles are not added to the Core protocol.
 
 ## Workload identity in v0
 

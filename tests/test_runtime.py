@@ -15,8 +15,12 @@ from autotrain_bench.config import (
     TaskConfig,
     TrainingResources,
 )
+from autotrain_bench.host_agent import (
+    _BoundedLogSink,
+    start_host_agent_process,
+    summarize_host_agent_trace,
+)
 from autotrain_bench.runtime import DockerRuntime, RuntimeFailure
-from autotrain_bench.host_agent import _BoundedLogSink, summarize_host_agent_trace
 from autotrain_bench.worker_protocol import (
     DEADLINE_TERMINATION,
     EnforcementLevel,
@@ -83,6 +87,17 @@ class RuntimeBoundaryTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeFailure, "failed to execute"):
                 runtime.stop_container("agent")
+
+    def test_container_state_query_does_not_treat_daemon_failure_as_exit(self):
+        runtime = DockerRuntime(docker_binary="docker")
+
+        with patch.object(
+            runtime,
+            "_run",
+            side_effect=RuntimeFailure("Docker daemon is unavailable"),
+        ):
+            with self.assertRaisesRegex(RuntimeFailure, "daemon is unavailable"):
+                runtime.container_running("agent")
 
     def test_stop_container_accepts_an_already_absent_container(self):
         runtime = DockerRuntime(docker_binary="docker")
@@ -163,6 +178,58 @@ class RuntimeBoundaryTests(unittest.TestCase):
 
         self.assertEqual(stop.call_count, 2)
         self.assertNotIn(("episode", "lease"), runtime._worker_leases)
+
+    def test_fresh_runtime_can_reconstruct_a_lease_cleanup_handle(self):
+        runtime = DockerRuntime(docker_binary="docker")
+        expected = runtime._worker_lease_runtime_name("episode", "lease-0001")
+
+        with patch.object(runtime, "stop_container") as stop:
+            runtime.terminate_lease(episode_id="episode", lease_id="lease-0001")
+
+        stop.assert_called_once_with(expected)
+
+    def test_host_agent_is_stopped_if_log_thread_startup_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            control = root / "control"
+            workspace.mkdir()
+            control.mkdir()
+            public_task = root / "task.json"
+            public_task.write_text("{}", encoding="utf-8")
+            created = []
+            popen = subprocess.Popen
+
+            def launch(*args, **kwargs):
+                process = popen(*args, **kwargs)
+                created.append(process)
+                return process
+
+            with patch(
+                "autotrain_bench.host_agent.subprocess.Popen", side_effect=launch
+            ):
+                with patch(
+                    "autotrain_bench.host_agent.threading.Thread.start",
+                    side_effect=RuntimeError("thread startup failed"),
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "thread startup failed"):
+                        start_host_agent_process(
+                            command=[
+                                sys.executable,
+                                "-c",
+                                "import time; time.sleep(30)",
+                            ],
+                            workspace=workspace,
+                            control_dir=control,
+                            public_task_path=public_task,
+                            package_root=ROOT,
+                            forwarded_environment=(),
+                            stdout_path=root / "stdout.log",
+                            stderr_path=root / "stderr.log",
+                        )
+
+            self.assertEqual(len(created), 1)
+            self.assertIsNotNone(created[0].poll())
 
     def test_runtime_profile_checks_model_count_and_memory_together(self):
         resources = TrainingResources(
@@ -808,6 +875,40 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 )
 
         self.assertEqual(runtime.teardown, ["candidate", "evaluator", "network"])
+        self.assertEqual(len(runtime._pending_evaluations), 1)
+
+        runtime.stop_container = lambda name: runtime.teardown.append("retry-container")
+        runtime.remove_network = lambda name: runtime.teardown.append("retry-network")
+        runtime.teardown_pending_evaluations()
+
+        self.assertEqual(runtime._pending_evaluations, {})
+        self.assertEqual(
+            runtime.teardown[-3:],
+            [
+                "retry-container",
+                "retry-container",
+                "retry-network",
+            ],
+        )
+
+    def test_evaluator_never_accepts_a_stale_result_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "output"
+            output.mkdir()
+            result = output / "val.json"
+            result.write_text('{"nll": 0.01}', encoding="utf-8")
+            runtime = CapturingDockerRuntime()
+
+            with self.assertRaisesRegex(RuntimeFailure, "valid NLL result"):
+                runtime.run_evaluator(
+                    config=TaskConfig.load(TASK),
+                    resources=TrainingResources(),
+                    candidate_dir=TASK.parent / "agent",
+                    split="val",
+                    output_dir=output,
+                )
+
+            self.assertFalse(result.exists())
 
     def test_candidate_logs_are_private_and_never_enter_runtime_error(self):
         class FailingRuntime(CapturingDockerRuntime):
