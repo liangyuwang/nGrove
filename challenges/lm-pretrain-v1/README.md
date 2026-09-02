@@ -69,6 +69,11 @@ fingerprint, raw and tokenized shard checksums, document mapping, dependency
 versions, and preview split checksums. It does not force the canonical stream
 to contain exactly 10,000,000,000 tokens.
 
+`--force` replaces only a recognized build of this exact task. The builder
+inventories every existing entry before and immediately around an atomic
+directory swap; if validation or installation fails, it restores the old
+build or preserves it under a named backup path instead of deleting it first.
+
 ## Supported preview lanes
 
 The initial map is intentionally small:

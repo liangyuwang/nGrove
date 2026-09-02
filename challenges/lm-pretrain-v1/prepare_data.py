@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import sys
 import uuid
 from array import array
@@ -59,7 +60,49 @@ def _paths_overlap(first: Path, second: Path) -> bool:
         return False
 
 
-def _validate_existing_output(path: Path) -> Tuple[int, int, str]:
+def _directory_metadata_digest(path: Path) -> str:
+    """Fingerprint every entry without rereading a multi-billion-token corpus."""
+
+    digest = hashlib.sha256()
+    digest.update(b"autotrain-bench-directory-metadata-v1\0")
+    try:
+        entries = sorted(path.rglob("*"), key=lambda item: os.fsencode(str(item)))
+        for entry in entries:
+            metadata = entry.lstat()
+            relative = os.fsencode(str(entry.relative_to(path)))
+            if stat.S_ISREG(metadata.st_mode):
+                kind = b"file"
+            elif stat.S_ISDIR(metadata.st_mode):
+                kind = b"directory"
+            elif stat.S_ISLNK(metadata.st_mode):
+                kind = b"symlink"
+            else:
+                kind = b"other"
+            digest.update(len(relative).to_bytes(8, "big"))
+            digest.update(relative)
+            digest.update(kind + b"\0")
+            for value in (
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_mode,
+                metadata.st_nlink,
+                metadata.st_size,
+                metadata.st_mtime_ns,
+                metadata.st_ctime_ns,
+            ):
+                digest.update(int(value).to_bytes(16, "big", signed=False))
+            if stat.S_ISLNK(metadata.st_mode):
+                target = os.fsencode(os.readlink(entry))
+                digest.update(len(target).to_bytes(8, "big"))
+                digest.update(target)
+    except OSError as exc:
+        raise PreparationError(
+            "could not inventory the existing output directory safely"
+        ) from exc
+    return digest.hexdigest()
+
+
+def _validate_existing_output(path: Path) -> Tuple[int, int, str, str]:
     """Allow --force only for a recognizable prior build of this task."""
 
     if path.is_symlink() or not path.is_dir():
@@ -97,7 +140,70 @@ def _validate_existing_output(path: Path) -> Tuple[int, int, str]:
             "refusing --force because the target belongs to another dataset build"
         )
     metadata = path.stat()
-    return metadata.st_dev, metadata.st_ino, _sha256_file(manifest_path)
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        _sha256_file(manifest_path),
+        _directory_metadata_digest(path),
+    )
+
+
+def _replace_output_directory(
+    *,
+    staging: Path,
+    output_dir: Path,
+    expected_identity: Optional[Tuple[int, int, str, str]],
+) -> None:
+    """Install a completed build while preserving the old tree on failure."""
+
+    if expected_identity is None:
+        if output_dir.exists():
+            raise PreparationError(
+                "output target appeared while the build was running; refusing to replace it"
+            )
+        os.replace(str(staging), str(output_dir))
+        return
+
+    if not output_dir.exists():
+        raise PreparationError("output target disappeared while the build was running")
+    if _validate_existing_output(output_dir) != expected_identity:
+        raise PreparationError(
+            "output target changed while the build was running; refusing to replace it"
+        )
+
+    backup = output_dir.parent / f".{output_dir.name}.replaced-{uuid.uuid4().hex}"
+    os.replace(str(output_dir), str(backup))
+    try:
+        if output_dir.exists():
+            raise PreparationError(
+                "output target reappeared during replacement; the old build was preserved"
+            )
+        if _validate_existing_output(backup) != expected_identity:
+            raise PreparationError(
+                "output target changed during replacement; the old build was preserved"
+            )
+        os.replace(str(staging), str(output_dir))
+    except Exception as exc:
+        if not output_dir.exists():
+            try:
+                os.replace(str(backup), str(output_dir))
+            except OSError as rollback_error:
+                raise PreparationError(
+                    f"replacement failed and the old build remains at {backup}"
+                ) from rollback_error
+        else:
+            raise PreparationError(
+                f"replacement failed and the old build remains at {backup}"
+            ) from exc
+        raise
+
+    try:
+        shutil.rmtree(backup)
+    except OSError:
+        print(
+            f"warning: the new build is installed but the old backup remains at {backup}",
+            file=sys.stderr,
+        )
 
 
 def _sha256_file(path: Path) -> str:
@@ -658,21 +764,11 @@ def prepare(
             },
         }
         _write_json(staging / "manifest.json", build_manifest)
-        if existing_output_identity is None and output_dir.exists():
-            raise PreparationError(
-                "output target appeared while the build was running; refusing to replace it"
-            )
-        if existing_output_identity is not None:
-            if not output_dir.exists():
-                raise PreparationError(
-                    "output target disappeared while the build was running"
-                )
-            if _validate_existing_output(output_dir) != existing_output_identity:
-                raise PreparationError(
-                    "output target changed while the build was running; refusing to replace it"
-                )
-            shutil.rmtree(output_dir)
-        os.replace(str(staging), str(output_dir))
+        _replace_output_directory(
+            staging=staging,
+            output_dir=output_dir,
+            expected_identity=existing_output_identity,
+        )
     except Exception:
         if writer is not None:
             writer.close()

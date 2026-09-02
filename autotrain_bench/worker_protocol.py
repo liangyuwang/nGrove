@@ -170,8 +170,10 @@ class ConformanceReceipt:
     passed: bool
 
     def __post_init__(self) -> None:
-        if not self.suite_version.strip():
+        if not isinstance(self.suite_version, str) or not self.suite_version.strip():
             raise ValueError("conformance suite_version must not be empty")
+        if not isinstance(self.passed, bool):
+            raise TypeError("conformance passed must be a boolean")
 
     def public_manifest(self) -> Dict[str, Any]:
         return {"suite_version": self.suite_version, "passed": self.passed}
@@ -204,6 +206,10 @@ class WorkerDescriptor:
             raise ValueError("Worker roles must not be empty")
         if len(set(self.roles)) != len(self.roles):
             raise ValueError("Worker roles must be unique")
+        if self.conformance is not None and not isinstance(
+            self.conformance, ConformanceReceipt
+        ):
+            raise TypeError("conformance must be a ConformanceReceipt")
         for name, capability in self.capabilities.items():
             if not isinstance(name, str) or not name.strip():
                 raise ValueError("capability names must not be empty")
@@ -318,7 +324,7 @@ def assess_worker(
         trust_satisfied=descriptor.trust_level.rank >= minimum_trust.rank,
         conformance_satisfied=(
             not require_conformance
-            or bool(descriptor.conformance and descriptor.conformance.passed)
+            or bool(descriptor.conformance and descriptor.conformance.passed is True)
         ),
     )
 

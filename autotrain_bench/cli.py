@@ -69,8 +69,7 @@ def _trusted_workspace_roots(task_source: Path) -> List[Path]:
 
     roots = {Path(__file__).resolve().parent.parent}
     task_checkout = _find_git_root(task_source.parent)
-    if task_checkout is not None:
-        roots.add(task_checkout)
+    roots.add(task_checkout or task_source.parent.resolve())
     return sorted(roots, key=str)
 
 
@@ -85,10 +84,11 @@ def _validate_workspace_boundary(
     resolved_workspace = workspace.resolve()
     trusted_roots = _trusted_workspace_roots(task_source.resolve())
     for root in trusted_roots:
-        if _is_within(resolved_workspace, root):
+        if _is_within(resolved_workspace, root) or _is_within(root, resolved_workspace):
             raise ConfigError(
-                "episode workspace must be outside the trusted Core/task checkout: "
-                f"{resolved_workspace} is under {root}; choose a dedicated external "
+                "episode workspace must be outside the trusted Core/task checkout "
+                "and must not contain it: "
+                f"{resolved_workspace} overlaps {root}; choose a dedicated external "
                 "--episode-dir or --episodes-root"
             )
 
@@ -96,10 +96,11 @@ def _validate_workspace_boundary(
         return
     resolved_source = agent_workspace.resolve()
     for root in trusted_roots:
-        if _is_within(resolved_source, root):
+        if _is_within(resolved_source, root) or _is_within(root, resolved_source):
             raise ConfigError(
                 "--agent-workspace must be participant-owned and outside the trusted "
-                f"Core/task checkout: {resolved_source} is under {root}"
+                "Core/task checkout, and must not contain it: "
+                f"{resolved_source} overlaps {root}"
             )
 
 
@@ -491,6 +492,7 @@ def command_start(args: argparse.Namespace) -> int:
                 termination_reason=host_termination_reason,
                 drain_seconds=drain_seconds,
             )
+        supervisor.cleanup_untrusted_mailbox()
         if gateway_started:
             reference_runtime.stop_container(gateway_name)
         supervisor.refresh_inference_usage()

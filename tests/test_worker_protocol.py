@@ -49,6 +49,12 @@ class WorkerProtocolTests(unittest.TestCase):
         )
         self.assertTrue(assessment.leaderboard_eligible)
 
+    def test_conformance_passed_must_be_a_boolean(self):
+        for invalid in ("false", "true", 0, 1, None):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(TypeError, "must be a boolean"):
+                    ConformanceReceipt("worker-v2", invalid)
+
     def test_missing_and_insufficient_capabilities_never_silently_pass(self):
         worker = descriptor(
             overrides={

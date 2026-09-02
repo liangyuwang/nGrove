@@ -20,6 +20,24 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(MODULE)
 
 
+def recognized_manifest():
+    return {
+        "builder": {"id": MODULE.BUILDER_ID},
+        "source": {
+            "dataset": MODULE.DATASET,
+            "revision": MODULE.DATASET_REVISION,
+            "upstream_sample": MODULE.UPSTREAM_SAMPLE,
+        },
+        "tokenizer": {
+            "name": MODULE.TOKENIZER,
+            "vocab_size": MODULE.VOCAB_SIZE,
+            "document_separator_token_id": MODULE.EOT_TOKEN_ID,
+        },
+        "layout": {},
+        "tokenized_train": {},
+    }
+
+
 class PretrainV1Tests(unittest.TestCase):
     def test_force_refuses_unrecognized_or_overlapping_targets(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -110,6 +128,57 @@ class PretrainV1Tests(unittest.TestCase):
             self.assertEqual(
                 (target / "important.txt").read_text(encoding="utf-8"), "keep"
             )
+
+    def test_force_identity_covers_every_directory_entry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "generated"
+            target.mkdir()
+            (target / "manifest.json").write_text(
+                json.dumps(recognized_manifest()), encoding="utf-8"
+            )
+            before = MODULE._validate_existing_output(target)
+
+            (target / "concurrent-file").write_text("new", encoding="utf-8")
+            after_addition = MODULE._validate_existing_output(target)
+            (target / "concurrent-file").write_text("old", encoding="utf-8")
+            after_same_size_change = MODULE._validate_existing_output(target)
+
+            self.assertNotEqual(before, after_addition)
+            self.assertNotEqual(after_addition, after_same_size_change)
+
+    def test_force_replacement_restores_the_old_build_on_install_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "generated"
+            target.mkdir()
+            (target / "manifest.json").write_text(
+                json.dumps(recognized_manifest()), encoding="utf-8"
+            )
+            (target / "old-data").write_text("preserve", encoding="utf-8")
+            expected = MODULE._validate_existing_output(target)
+            staging = root / ".generated.stage-test"
+            staging.mkdir()
+            (staging / "new-data").write_text("new", encoding="utf-8")
+            real_replace = MODULE.os.replace
+
+            def fail_install(source, destination):
+                if Path(source) == staging:
+                    raise OSError("simulated install failure")
+                return real_replace(source, destination)
+
+            with patch.object(MODULE.os, "replace", side_effect=fail_install):
+                with self.assertRaisesRegex(OSError, "simulated install failure"):
+                    MODULE._replace_output_directory(
+                        staging=staging,
+                        output_dir=target,
+                        expected_identity=expected,
+                    )
+
+            self.assertEqual(
+                (target / "old-data").read_text(encoding="utf-8"), "preserve"
+            )
+            self.assertTrue(staging.is_dir())
+            self.assertEqual(list(root.glob(".generated.replaced-*")), [])
 
     def test_task_uses_fixed_gpt2_ids_and_public_train_root(self):
         with tempfile.TemporaryDirectory() as directory:

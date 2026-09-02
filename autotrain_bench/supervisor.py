@@ -12,7 +12,6 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -106,7 +105,7 @@ def _json_bytes(payload: Any) -> bytes:
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
-    ).encode("utf-8")
+    ).encode("utf-8", errors="replace")
 
 
 def _valid_request_id(request_id: str) -> bool:
@@ -218,8 +217,10 @@ def _bounded_text(
     if not isinstance(value, str):
         value = str(value)
     encoded = value.encode("utf-8", errors="replace")
+    normalized = encoded.decode("utf-8")
+    sanitized = normalized != value
     if len(encoded) <= maximum_bytes:
-        return value, False
+        return normalized, sanitized
     marker = _OUTPUT_TRUNCATION_MARKER.encode("ascii")
     prefix = encoded[: max(0, maximum_bytes - len(marker))]
     while prefix:
@@ -317,7 +318,6 @@ def _sha256_file(path: Path) -> Optional[str]:
     return digest.hexdigest()
 
 
-@lru_cache(maxsize=1)
 def _core_identity() -> Dict[str, Any]:
     root = Path(__file__).resolve().parent.parent
     try:
@@ -394,6 +394,7 @@ class Supervisor:
         self.control_dir = self.episode_dir / "control"
         self.inbox = self.control_dir / "inbox"
         self.outbox = self.control_dir / "outbox"
+        self.rejected_mailbox = self.control_dir / "rejected"
         self.runs_dir = self.episode_dir / "leases"
         self.candidates_dir = self.episode_dir / "candidates"
         self.evaluations_dir = self.episode_dir / "evaluations"
@@ -413,6 +414,7 @@ class Supervisor:
         for directory in (
             self.inbox,
             self.outbox,
+            self.rejected_mailbox,
             self.runs_dir,
             self.candidates_dir,
             self.evaluations_dir,
@@ -423,6 +425,7 @@ class Supervisor:
         os.chmod(self.control_dir, 0o700)
         os.chmod(self.inbox, 0o777)
         os.chmod(self.outbox, 0o777)
+        os.chmod(self.rejected_mailbox, 0o700)
         os.chmod(self.inference_dir, 0o700)
         for directory in (
             self.runs_dir,
@@ -1624,6 +1627,65 @@ class Supervisor:
             self._event("EPISODE_INFRASTRUCTURE_FAILURE", message=message)
             self._save_state()
 
+    def _quarantine_mailbox_entry(self, request_path: Path) -> tuple[bool, bool]:
+        """Remove one untrusted entry from the live queue without following it."""
+
+        quarantined = self.rejected_mailbox / f"{uuid.uuid4().hex}.rejected"
+        try:
+            os.replace(str(request_path), str(quarantined))
+        except FileNotFoundError:
+            return True, False
+        except OSError:
+            return False, True
+        policy_violation = True
+        try:
+            metadata = quarantined.lstat()
+            policy_violation = not stat.S_ISREG(metadata.st_mode)
+            if not stat.S_ISDIR(metadata.st_mode):
+                quarantined.unlink()
+        except OSError:
+            policy_violation = True
+        return True, policy_violation
+
+    def _mailbox_policy_failed(self) -> None:
+        """End an active episode when an untrusted queue entry cannot be isolated."""
+
+        if self.state["status"] != "active":
+            return
+        self._freeze_elapsed()
+        if self.state["active_lease"] is not None:
+            self._end_active_lease("agent_policy_violation")
+        self.state["status"] = "dnf"
+        self.state["outcome"] = "failed"
+        self.state["closure_reason"] = "agent_policy_violation"
+        self.state["failure"] = "agent_mailbox_policy_violation"
+        self._event("EPISODE_DNF", reason="agent_mailbox_policy_violation")
+        self._save_state()
+
+    def cleanup_untrusted_mailbox(self) -> bool:
+        """Remove untrusted queue artifacts after the Agent has stopped."""
+
+        failures = 0
+        removed = 0
+        for directory in (self.inbox, self.rejected_mailbox):
+            for entry in directory.iterdir():
+                try:
+                    metadata = entry.lstat()
+                    if stat.S_ISDIR(metadata.st_mode):
+                        shutil.rmtree(entry)
+                    else:
+                        entry.unlink()
+                    removed += 1
+                except OSError:
+                    failures += 1
+        self._event(
+            "MAILBOX_CLEANED",
+            removed=removed,
+            failures=failures,
+        )
+        self._save_state()
+        return failures == 0
+
     def process_one_request(self) -> bool:
         paths = sorted(self.inbox.glob("*.json"))
         if not paths:
@@ -1631,15 +1693,21 @@ class Supervisor:
         request_path = paths[0]
         request_id = request_path.stem
         if not _valid_request_id(request_id):
-            request_path.unlink(missing_ok=True)
+            isolated, policy_violation = self._quarantine_mailbox_entry(request_path)
             self._event(
                 "MAILBOX_REQUEST_REJECTED",
                 code="invalid_request_id",
             )
+            if not isolated or policy_violation:
+                self._mailbox_policy_failed()
             self._save_state()
             return True
+        isolated = True
+        policy_violation = False
+        request_loaded = False
         try:
             request = _read_untrusted_request(request_path, 1024 * 1024)
+            request_loaded = True
             result = self.handle(request)
             response = {"ok": True, "result": result}
         except ProtocolError as exc:
@@ -1647,6 +1715,9 @@ class Supervisor:
                 "ok": False,
                 "error": {"code": exc.code, "message": str(exc)},
             }
+            if not request_loaded:
+                self._event("MAILBOX_REQUEST_REJECTED", code=exc.code)
+                self._save_state()
         except (json.JSONDecodeError, OSError, ValueError) as exc:
             response = {
                 "ok": False,
@@ -1660,7 +1731,17 @@ class Supervisor:
             self._event("SUPERVISOR_ERROR", message=str(exc))
             self._save_state()
         finally:
-            request_path.unlink(missing_ok=True)
+            isolated, policy_violation = self._quarantine_mailbox_entry(request_path)
+
+        if not isolated or policy_violation:
+            self._event(
+                "MAILBOX_REQUEST_REJECTED",
+                code=("quarantine_failed" if not isolated else "non_regular_request"),
+            )
+            self._mailbox_policy_failed()
+            self._save_state()
+            if not isolated:
+                return True
 
         try:
             _write_untrusted_response(self.outbox, request_id, response)

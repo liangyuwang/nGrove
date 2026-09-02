@@ -173,6 +173,31 @@ class WorkspaceSnapshotTests(unittest.TestCase):
                     agent_workspace=ROOT / "participant-agent",
                 )
 
+    def test_participant_workspace_must_not_contain_the_core(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "runs" / "episode" / "workspace"
+            with self.assertRaisesRegex(ConfigError, "must not contain"):
+                _validate_workspace_boundary(
+                    workspace=workspace,
+                    task_source=TASK,
+                    agent_workspace=ROOT.parent,
+                )
+
+    def test_non_git_task_directory_is_a_trusted_workspace_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task_root = Path(directory) / "task-package"
+            task_root.mkdir()
+            task_source = task_root / "task.json"
+            task_source.write_text("{}", encoding="utf-8")
+            workspace = task_root / "episodes" / "run" / "workspace"
+
+            with self.assertRaisesRegex(ConfigError, "outside the trusted"):
+                _validate_workspace_boundary(
+                    workspace=workspace,
+                    task_source=task_source,
+                    agent_workspace=None,
+                )
+
     def test_participant_owned_instructions_are_allowed_in_snapshot_source(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

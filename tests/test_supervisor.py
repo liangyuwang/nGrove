@@ -27,6 +27,7 @@ from autotrain_bench.supervisor import (
     MAX_MAILBOX_RESPONSE_BYTES,
     ProtocolError,
     Supervisor,
+    _core_identity,
     _write_untrusted_response,
 )
 from autotrain_bench.worker_protocol import (
@@ -393,6 +394,24 @@ class SupervisorTests(unittest.TestCase):
             supervisor.state["leaderboard_eligibility_violations"],
         )
 
+    def test_core_identity_is_recomputed_for_each_episode(self):
+        revision = "d" * 40
+        results = [
+            subprocess.CompletedProcess([], 0, revision + "\n", ""),
+            subprocess.CompletedProcess([], 0, "", ""),
+            subprocess.CompletedProcess([], 0, revision + "\n", ""),
+            subprocess.CompletedProcess([], 0, " M changed.py\n", ""),
+        ]
+        with patch(
+            "autotrain_bench.supervisor.subprocess.run", side_effect=results
+        ) as run:
+            first = _core_identity()
+            second = _core_identity()
+
+        self.assertFalse(first["dirty"])
+        self.assertTrue(second["dirty"])
+        self.assertEqual(run.call_count, 4)
+
     def test_worker_role_specs_do_not_cross_hidden_split_boundaries(self):
         supervisor = self.supervisor()
         supervisor.start_lease()
@@ -682,6 +701,30 @@ class SupervisorTests(unittest.TestCase):
         self.assertTrue(response["result"]["stdout_truncated"])
         self.assertLessEqual(response_path.stat().st_size, MAX_MAILBOX_RESPONSE_BYTES)
 
+    def test_surrogate_output_cannot_make_a_completed_command_ambiguous(self):
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+        self.worker.command_result = CommandResult(0, "\ud800", "")
+        request = {
+            "id": "surrogate-command",
+            "op": "lease_exec",
+            "argv": ["python", "non-idempotent.py"],
+        }
+        (supervisor.inbox / "surrogate-command.json").write_text(
+            json.dumps(request), encoding="utf-8"
+        )
+
+        self.assertTrue(supervisor.process_one_request())
+
+        response = json.loads(
+            (supervisor.outbox / "surrogate-command.json").read_text(encoding="utf-8")
+        )
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["result"]["exit_code"], 0)
+        self.assertEqual(response["result"]["stdout"], "?")
+        self.assertTrue(response["result"]["stdout_truncated"])
+        self.assertEqual(supervisor.state["active_lease"]["exec_count"], 1)
+
     def test_official_elapsed_time_freezes_before_agent_drain(self):
         supervisor = self.supervisor()
         self.clock.advance(4)
@@ -935,6 +978,69 @@ class SupervisorTests(unittest.TestCase):
         self.assertFalse(response["ok"])
         self.assertEqual(response["error"]["code"], "invalid_request")
         self.assertTrue(supervisor.state_path.is_file())
+        self.assertEqual(supervisor.state["status"], "dnf")
+        self.assertEqual(supervisor.state["failure"], "agent_mailbox_policy_violation")
+        self.assertEqual(list(supervisor.rejected_mailbox.iterdir()), [])
+
+    def test_mailbox_directory_causes_policy_failure_and_is_cleaned_after_stop(self):
+        supervisor = self.supervisor()
+        request = supervisor.inbox / "directory.json"
+        request.mkdir()
+        (request / "nested").write_text("untrusted", encoding="utf-8")
+
+        self.assertTrue(supervisor.process_one_request())
+
+        response = json.loads(
+            (supervisor.outbox / "directory.json").read_text(encoding="utf-8")
+        )
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error"]["code"], "invalid_request")
+        self.assertFalse(request.exists())
+        self.assertEqual(len(list(supervisor.rejected_mailbox.iterdir())), 1)
+        self.assertEqual(supervisor.state["status"], "dnf")
+        self.assertEqual(supervisor.state["outcome"], "failed")
+        self.assertEqual(supervisor.state["failure"], "agent_mailbox_policy_violation")
+
+        self.assertTrue(supervisor.cleanup_untrusted_mailbox())
+
+        self.assertEqual(list(supervisor.inbox.iterdir()), [])
+        self.assertEqual(list(supervisor.rejected_mailbox.iterdir()), [])
+        events = supervisor.events_path.read_text(encoding="utf-8")
+        self.assertIn("MAILBOX_REQUEST_REJECTED", events)
+        self.assertIn("MAILBOX_CLEANED", events)
+        self.assertNotIn("EPISODE_INFRASTRUCTURE_FAILURE", events)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFO requires os.mkfifo")
+    def test_mailbox_fifo_is_removed_and_causes_policy_failure(self):
+        supervisor = self.supervisor()
+        request = supervisor.inbox / "fifo.json"
+        os.mkfifo(request)
+
+        self.assertTrue(supervisor.process_one_request())
+
+        response = json.loads(
+            (supervisor.outbox / "fifo.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(response["error"]["code"], "invalid_request")
+        self.assertEqual(supervisor.state["status"], "dnf")
+        self.assertEqual(supervisor.state["failure"], "agent_mailbox_policy_violation")
+        self.assertFalse(request.exists())
+        self.assertEqual(list(supervisor.rejected_mailbox.iterdir()), [])
+
+    def test_unquarantinable_mailbox_entry_is_an_agent_failure(self):
+        supervisor = self.supervisor()
+        (supervisor.inbox / "directory.json").mkdir()
+
+        with patch.object(
+            supervisor, "_quarantine_mailbox_entry", return_value=(False, True)
+        ):
+            self.assertTrue(supervisor.process_one_request())
+
+        self.assertEqual(supervisor.state["status"], "dnf")
+        self.assertEqual(supervisor.state["outcome"], "failed")
+        self.assertEqual(supervisor.state["failure"], "agent_mailbox_policy_violation")
+        events = supervisor.events_path.read_text(encoding="utf-8")
+        self.assertNotIn("EPISODE_INFRASTRUCTURE_FAILURE", events)
 
     def test_mailbox_response_has_a_portable_non_dir_fd_path(self):
         supervisor = self.supervisor()
