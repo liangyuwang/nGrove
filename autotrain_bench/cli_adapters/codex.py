@@ -52,9 +52,7 @@ def build_codex_command(
         "--json",
     ]
     controlled_environment = {
-        "AUTOTRAIN_BENCH_CONTROL_DIR": shell_environment[
-            "AUTOTRAIN_BENCH_CONTROL_DIR"
-        ],
+        "AUTOTRAIN_BENCH_CONTROL_DIR": shell_environment["AUTOTRAIN_BENCH_CONTROL_DIR"],
         "AUTOTRAIN_BENCH_HOST_RUNNER": "1",
         "AUTOTRAIN_BENCH_TASK": shell_environment["AUTOTRAIN_BENCH_TASK"],
         "AUTOTRAIN_BENCH_TRAIN_DIR": "/benchmark/train",

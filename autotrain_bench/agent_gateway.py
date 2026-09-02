@@ -100,12 +100,16 @@ class GatewayHandler(BaseHTTPRequestHandler):
         started = time.monotonic()
         raw_length = self.headers.get("Content-Length")
         if raw_length is None:
-            self._reject(request_id, "length_required", "Content-Length is required", 411)
+            self._reject(
+                request_id, "length_required", "Content-Length is required", 411
+            )
             return
         try:
             length = int(raw_length)
         except ValueError:
-            self._reject(request_id, "invalid_content_length", "invalid Content-Length", 400)
+            self._reject(
+                request_id, "invalid_content_length", "invalid Content-Length", 400
+            )
             return
         if length < 0 or length > MAX_REQUEST_BYTES:
             self._reject(
@@ -117,7 +121,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
             return
         body = self.rfile.read(length)
         if len(body) != length:
-            self._reject(request_id, "incomplete_request", "request body ended early", 400)
+            self._reject(
+                request_id, "incomplete_request", "request body ended early", 400
+            )
             return
         try:
             model = validate_inference_request(

@@ -110,6 +110,13 @@ task identity, training image, TRAIN path, and generated public helper API.
 selected by the Supervisor. A complete `TaskConfig` never crosses either role
 boundary.
 
+Version 2 is a breaking interface revision in the current unreleased
+development snapshot; it does not imply a package release version. Version 1
+Workers are rejected rather than adapted implicitly. External Worker packages
+must update `start_lease` to accept `ResearchTaskSpec`, update
+`evaluate_candidate` to accept `EvaluationTaskSpec` plus `HiddenSplitRef`, and
+return the new stdout/stderr truncation flags in `CommandResult` when needed.
+
 A local development Worker may implement both roles in one process.  A formal
 deployment may place them on separate services connected only through an
 immutable artifact reference.

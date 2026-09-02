@@ -1,6 +1,5 @@
 """Tool-independent instructions for host-native CLI Agents."""
 
-
 HOST_CLI_PROMPT = """You are the autonomous participant Agent in an AutoTrain-Benchmark episode.
 Act as a benchmark participant, not as a reviewer of the benchmark implementation.
 

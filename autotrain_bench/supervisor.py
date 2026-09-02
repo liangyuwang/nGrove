@@ -16,6 +16,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
+from .challenge import (
+    FORMAL_ARTIFACT_DIGEST_FIELDS,
+    ReleaseVerificationReceipt,
+)
 from .config import (
     AgentConfig,
     TaskConfig,
@@ -46,6 +50,8 @@ MAX_COMMAND_STREAM_BYTES = 1024 * 1024
 MAX_MAILBOX_RESPONSE_BYTES = 3 * 1024 * 1024
 MAX_LOG_READ_BYTES = 4 * 1024 * 1024
 MAX_COMMAND_LOG_BYTES = 64 * 1024 * 1024
+_OUTPUT_TRUNCATION_MARKER = "\n[output truncated by AutoTrain-Bench]\n"
+_TREE_HASH_DOMAIN = b"autotrain-bench-tree-v2\0"
 
 
 class ProtocolError(RuntimeError):
@@ -59,15 +65,28 @@ class ProtocolError(RuntimeError):
 def _read_untrusted_request(path: Path, maximum_bytes: int) -> Dict[str, Any]:
     """Read one mailbox request without following Agent-created filesystem links."""
 
+    try:
+        initial_metadata = path.lstat()
+    except OSError as exc:
+        raise ProtocolError("invalid_request", "request is unavailable") from exc
+    if not stat.S_ISREG(initial_metadata.st_mode):
+        raise ProtocolError("invalid_request", "request must be a regular file")
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
         descriptor = os.open(str(path), flags)
     except OSError as exc:
-        raise ProtocolError("invalid_request", "request must be a regular file") from exc
+        raise ProtocolError(
+            "invalid_request", "request must be a regular file"
+        ) from exc
     try:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
             raise ProtocolError("invalid_request", "request must be a regular file")
+        if (metadata.st_dev, metadata.st_ino) != (
+            initial_metadata.st_dev,
+            initial_metadata.st_ino,
+        ):
+            raise ProtocolError("invalid_request", "request changed while opening")
         if metadata.st_size > maximum_bytes:
             raise ProtocolError("request_too_large", "request exceeds 1 MiB")
         with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
@@ -81,32 +100,88 @@ def _read_untrusted_request(path: Path, maximum_bytes: int) -> Dict[str, Any]:
     return payload
 
 
-def _write_untrusted_response(directory: Path, request_id: str, response: Dict[str, Any]) -> None:
+def _json_bytes(payload: Any) -> bytes:
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+
+def _valid_request_id(request_id: str) -> bool:
+    return bool(request_id) and all(
+        value in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+        for value in request_id
+    )
+
+
+def _directory_fd_operations_available() -> bool:
+    """Return whether Python exposes the required race-resistant dir-fd APIs."""
+
+    return all(
+        function in os.supports_dir_fd for function in (os.open, os.rename, os.unlink)
+    )
+
+
+def _write_untrusted_response(
+    directory: Path, request_id: str, response: Dict[str, Any]
+) -> None:
     """Publish a mailbox response without following Agent-created symlinks."""
 
-    if not request_id or any(value not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" for value in request_id):
+    if not _valid_request_id(request_id):
         raise ProtocolError("invalid_request", "request id contains invalid characters")
     temporary = f".{request_id}.{uuid.uuid4().hex}.tmp"
     destination = f"{request_id}.json"
-    encoded = json.dumps(response, sort_keys=True).encode("utf-8")
+    destination_path = directory / destination
+    if destination_path.is_dir():
+        raise ProtocolError(
+            "mailbox_conflict", "mailbox response destination is a directory"
+        )
+    encoded = _json_bytes(response)
     if len(encoded) > MAX_MAILBOX_RESPONSE_BYTES:
-        encoded = json.dumps(
+        encoded = _json_bytes(
             {
                 "ok": False,
                 "error": {
                     "code": "response_too_large",
                     "message": "supervisor response exceeds the mailbox limit",
                 },
-            },
-            sort_keys=True,
-        ).encode("utf-8")
-    flags = (
-        os.O_WRONLY
-        | os.O_CREAT
-        | os.O_EXCL
-        | getattr(os, "O_NOFOLLOW", 0)
+            }
+        )
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    if not _directory_fd_operations_available():
+        # A sandboxed container sees inbox and outbox as separate bind-mount
+        # roots, so it cannot replace this directory itself.  This fallback is
+        # also required on hosts where Python does not expose POSIX dir-fd
+        # operations.  Host-native Agents remain explicitly non-compliant.
+        if directory.is_symlink() or not directory.is_dir():
+            raise ProtocolError(
+                "invalid_request", "mailbox response directory is invalid"
+            )
+        temporary_path = directory / temporary
+        descriptor = os.open(str(temporary_path), flags, 0o600)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                descriptor = -1
+                stream.write(encoded)
+            os.replace(str(temporary_path), str(destination_path))
+        except Exception as exc:
+            temporary_path.unlink(missing_ok=True)
+            if destination_path.is_dir():
+                raise ProtocolError(
+                    "mailbox_conflict",
+                    "mailbox response destination is a directory",
+                ) from exc
+            raise
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        return
+
+    directory_flags = (
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     )
-    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     directory_descriptor = os.open(str(directory), directory_flags)
     descriptor = -1
     try:
@@ -120,11 +195,16 @@ def _write_untrusted_response(directory: Path, request_id: str, response: Dict[s
             src_dir_fd=directory_descriptor,
             dst_dir_fd=directory_descriptor,
         )
-    except Exception:
+    except Exception as exc:
         try:
             os.unlink(temporary, dir_fd=directory_descriptor)
         except FileNotFoundError:
             pass
+        if destination_path.is_dir():
+            raise ProtocolError(
+                "mailbox_conflict",
+                "mailbox response destination is a directory",
+            ) from exc
         raise
     finally:
         if descriptor >= 0:
@@ -132,13 +212,15 @@ def _write_untrusted_response(directory: Path, request_id: str, response: Dict[s
         os.close(directory_descriptor)
 
 
-def _bounded_text(value: Any, maximum_bytes: int = MAX_COMMAND_STREAM_BYTES) -> tuple[str, bool]:
+def _bounded_text(
+    value: Any, maximum_bytes: int = MAX_COMMAND_STREAM_BYTES
+) -> tuple[str, bool]:
     if not isinstance(value, str):
         value = str(value)
     encoded = value.encode("utf-8", errors="replace")
     if len(encoded) <= maximum_bytes:
         return value, False
-    marker = b"\n[output truncated by AutoTrain-Bench]\n"
+    marker = _OUTPUT_TRUNCATION_MARKER.encode("ascii")
     prefix = encoded[: max(0, maximum_bytes - len(marker))]
     while prefix:
         try:
@@ -149,6 +231,66 @@ def _bounded_text(value: Any, maximum_bytes: int = MAX_COMMAND_STREAM_BYTES) -> 
     else:
         result = ""
     return result + marker.decode("ascii"), True
+
+
+def _fit_command_record(
+    record: Dict[str, Any], *, lease_active: bool
+) -> Dict[str, Any]:
+    """Fit a completed command into one successful mailbox response.
+
+    JSON escaping can expand a stream well beyond its UTF-8 byte length.  A
+    command has already executed by this point, so replacing the response with
+    ``response_too_large`` would make a non-idempotent operation ambiguous.
+    """
+
+    original_stdout = record["stdout"]
+    original_stderr = record["stderr"]
+
+    def candidate(fraction: float) -> Dict[str, Any]:
+        result = dict(record)
+        for field in ("stdout", "stderr"):
+            original = original_stdout if field == "stdout" else original_stderr
+            kept = min(len(original), int(len(original) * fraction))
+            locally_truncated = kept < len(original)
+            text = original[:kept]
+            if locally_truncated:
+                text += _OUTPUT_TRUNCATION_MARKER
+            result[field] = text
+            flag = f"{field}_truncated"
+            result[flag] = bool(record[flag] or locally_truncated)
+        return result
+
+    def encoded_size(value: Dict[str, Any]) -> int:
+        return len(
+            _json_bytes(
+                {
+                    "ok": True,
+                    "result": {**value, "lease_active": lease_active},
+                }
+            )
+        )
+
+    if encoded_size(record) <= MAX_MAILBOX_RESPONSE_BYTES:
+        return record
+
+    smallest = candidate(0.0)
+    if encoded_size(smallest) > MAX_MAILBOX_RESPONSE_BYTES:
+        raise ProtocolError(
+            "internal_error", "command metadata exceeds the mailbox limit"
+        )
+
+    low = 0.0
+    high = 1.0
+    best = smallest
+    for _ in range(32):
+        midpoint = (low + high) / 2
+        current = candidate(midpoint)
+        if encoded_size(current) <= MAX_MAILBOX_RESPONSE_BYTES:
+            best = current
+            low = midpoint
+        else:
+            high = midpoint
+    return best
 
 
 def _tail_json_lines(path: Path, limit: int) -> tuple[list[Dict[str, Any]], bool]:
@@ -218,6 +360,7 @@ class Supervisor:
         evaluation_worker_environment: Optional[Dict[str, Any]] = None,
         comparison_key: Optional[Dict[str, str]] = None,
         challenge_release: Optional[Dict[str, Any]] = None,
+        release_verification: Optional[ReleaseVerificationReceipt] = None,
         monotonic: Callable[[], float] = time.monotonic,
         wall_time: Callable[[], float] = time.time,
     ) -> None:
@@ -232,6 +375,16 @@ class Supervisor:
         self.research_worker = research_worker
         self.evaluation_worker = evaluation_worker
         self.evaluation_task = EvaluationTaskSpec.from_task(config)
+        if release_verification is None:
+            self.release_verification = None
+        else:
+            verified_release = release_verification.validate()
+            self.release_verification = ReleaseVerificationReceipt(
+                authority=verified_release.authority,
+                release_id=verified_release.release_id,
+                core_revision=verified_release.core_revision,
+                artifact_sha256=dict(verified_release.artifact_sha256),
+            )
         self.monotonic = monotonic
         self.wall_time = wall_time
         self.lock = threading.RLock()
@@ -252,7 +405,9 @@ class Supervisor:
         self.public_task_path = self.public_dir / "task.json"
         self.agent_api_dir = self.public_dir / "agent_api"
         if self.state_path.exists() or self.events_path.exists():
-            raise ValueError(f"episode directory already contains state: {self.episode_dir}")
+            raise ValueError(
+                f"episode directory already contains state: {self.episode_dir}"
+            )
         self.episode_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(self.episode_dir, 0o700)
         for directory in (
@@ -277,9 +432,7 @@ class Supervisor:
             os.chmod(directory, 0o700)
 
         self._publish_agent_api()
-        self.research_task = ResearchTaskSpec.from_task(
-            config, self.agent_api_dir
-        )
+        self.research_task = ResearchTaskSpec.from_task(config, self.agent_api_dir)
 
         research_descriptor = research_worker.describe_capabilities()
         evaluation_descriptor = evaluation_worker.describe_capabilities()
@@ -287,22 +440,30 @@ class Supervisor:
         evaluation_requirements = list(EVALUATION_REQUIREMENTS)
         if resources.nvidia_gpu_count:
             research_requirements.append(
-                CapabilityRequirement(
-                    GPU_DEVICE_ISOLATION, EnforcementLevel.ENFORCED
-                )
+                CapabilityRequirement(GPU_DEVICE_ISOLATION, EnforcementLevel.ENFORCED)
             )
         if config.evaluator_device == "cuda":
             evaluation_requirements.append(
-                CapabilityRequirement(
-                    GPU_DEVICE_ISOLATION, EnforcementLevel.ENFORCED
-                )
+                CapabilityRequirement(GPU_DEVICE_ISOLATION, EnforcementLevel.ENFORCED)
             )
-        research_assessment = assess_worker(
-            research_descriptor, research_requirements
-        )
+        research_assessment = assess_worker(research_descriptor, research_requirements)
         evaluation_assessment = assess_worker(
             evaluation_descriptor, evaluation_requirements
         )
+        core_identity = _core_identity()
+        artifact_identities = {
+            "challenge_manifest_sha256": (
+                challenge_release.get("challenge_manifest_sha256")
+                if isinstance(challenge_release, dict)
+                else None
+            ),
+            "task_manifest_sha256": _sha256_file(config.source),
+            "policy_sha256": _sha256_file(config.source.parent / "POLICY.md"),
+            "evaluator_sha256": _sha256_file(config.evaluator_entrypoint),
+            "train_manifest_sha256": _sha256_file(config.train_dir / "manifest.json"),
+            "val_sha256": _sha256_file(config.val_path),
+            "test_sha256": _sha256_file(config.test_path),
+        }
 
         policy_violations = []
         if not agent.policy_compliant:
@@ -361,11 +522,9 @@ class Supervisor:
                 eligibility_violations.append("challenge_release_not_official")
             if challenge_release.get("leaderboard_eligible") is not True:
                 eligibility_violations.append("challenge_release_not_eligible")
-            if (
-                isinstance(comparison_key, dict)
-                and challenge_release.get("challenge_id")
-                != comparison_key.get("challenge_id")
-            ):
+            if isinstance(comparison_key, dict) and challenge_release.get(
+                "challenge_id"
+            ) != comparison_key.get("challenge_id"):
                 eligibility_violations.append("challenge_release_identity_mismatch")
             for digest_field in (
                 "challenge_manifest_sha256",
@@ -378,9 +537,17 @@ class Supervisor:
                     or any(value not in "0123456789abcdef" for value in digest)
                 ):
                     eligibility_violations.append(f"{digest_field}_missing")
+            if (
+                challenge_release.get("task_manifest_sha256")
+                != artifact_identities["task_manifest_sha256"]
+            ):
+                eligibility_violations.append("task_manifest_identity_mismatch")
             for field in ("track_config", "runtime_profile"):
                 selected = challenge_release.get(field)
-                if not isinstance(selected, dict) or selected.get("provisional") is not False:
+                if (
+                    not isinstance(selected, dict)
+                    or selected.get("provisional") is not False
+                ):
                     eligibility_violations.append(f"{field}_not_frozen")
             if isinstance(comparison_key, dict):
                 for release_field, comparison_field in (
@@ -390,11 +557,33 @@ class Supervisor:
                     if challenge_release.get(release_field) != comparison_key.get(
                         comparison_field
                     ):
-                        eligibility_violations.append(
-                            f"{release_field}_mismatch"
-                        )
+                        eligibility_violations.append(f"{release_field}_mismatch")
         if agent.runner != "container" or not immutable_image_reference(agent.image):
             eligibility_violations.append("agent_image_not_digest_pinned")
+        core_revision = core_identity.get("revision")
+        if not isinstance(core_revision, str) or not core_revision:
+            eligibility_violations.append("core_identity_unknown")
+        if core_identity.get("dirty") is not False:
+            eligibility_violations.append("core_worktree_not_clean")
+        if self.release_verification is None:
+            eligibility_violations.append("formal_release_verification_missing")
+        else:
+            receipt = self.release_verification
+            if not isinstance(
+                comparison_key, dict
+            ) or receipt.release_id != comparison_key.get("challenge_id"):
+                eligibility_violations.append(
+                    "formal_release_verification_identity_mismatch"
+                )
+            if receipt.core_revision != core_revision:
+                eligibility_violations.append(
+                    "formal_release_verification_core_mismatch"
+                )
+            for field in FORMAL_ARTIFACT_DIGEST_FIELDS:
+                if receipt.artifact_sha256[field] != artifact_identities.get(field):
+                    eligibility_violations.append(
+                        f"formal_release_verification_artifact_mismatch:{field}"
+                    )
 
         leaderboard_eligible = (
             config.leaderboard_eligible
@@ -417,18 +606,28 @@ class Supervisor:
             "challenge_release": (
                 dict(challenge_release) if challenge_release else None
             ),
+            "formal_release_verification": (
+                self.release_verification.private_manifest()
+                if self.release_verification
+                else None
+            ),
             "artifact_identities": {
-                "core_git": _core_identity(),
-                "task_manifest_sha256": _sha256_file(config.source),
-                "policy_sha256": _sha256_file(config.source.parent / "POLICY.md"),
-                "evaluator_sha256": _sha256_file(config.evaluator_entrypoint),
-                "train_manifest_sha256": _sha256_file(
-                    config.train_dir / "manifest.json"
-                ),
+                "core_git": core_identity,
+                "challenge_manifest_sha256": artifact_identities[
+                    "challenge_manifest_sha256"
+                ],
+                "task_manifest_sha256": artifact_identities["task_manifest_sha256"],
+                "policy_sha256": artifact_identities["policy_sha256"],
+                "evaluator_sha256": artifact_identities["evaluator_sha256"],
+                "train_manifest_sha256": artifact_identities["train_manifest_sha256"],
                 "hidden_splits": {
-                    "val_sha256": _sha256_file(config.val_path),
-                    "test_sha256": _sha256_file(config.test_path),
+                    "val_sha256": artifact_identities["val_sha256"],
+                    "test_sha256": artifact_identities["test_sha256"],
                 },
+            },
+            "artifact_identity_algorithms": {
+                "candidate_tree": "autotrain-bench-tree-v2-sha256",
+                "file": "sha256",
             },
             "policy_compliant": policy_compliant,
             "policy_violations": policy_violations,
@@ -461,13 +660,15 @@ class Supervisor:
                     "gateway_image": (
                         config.inference_gateway_image if agent.inference else None
                     ),
-                    "allowed_models": list(agent.inference.allowed_models) if agent.inference else [],
-                    "allowed_paths": list(agent.inference.allowed_paths) if agent.inference else [],
+                    "allowed_models": list(agent.inference.allowed_models)
+                    if agent.inference
+                    else [],
+                    "allowed_paths": list(agent.inference.allowed_paths)
+                    if agent.inference
+                    else [],
                 },
                 "forwarded_environment": list(agent.environment),
-                "initial_workspace_sha256": self._tree_hash(
-                    agent.workspace
-                ),
+                "initial_workspace_sha256": self._tree_hash(agent.workspace),
             },
             "evaluation_system": {
                 "backend": config.evaluator_backend,
@@ -515,12 +716,21 @@ class Supervisor:
             "violations": policy_violations,
         }
         public_manifest["leaderboard_eligible"] = leaderboard_eligible
+        public_manifest["candidate_artifact_identity"] = (
+            "autotrain-bench-tree-v2-sha256"
+        )
+        public_manifest["formal_release_verified"] = (
+            self.release_verification is not None
+            and not any(
+                violation.startswith("formal_release_verification")
+                for violation in eligibility_violations
+            )
+        )
         public_manifest["comparison_key"] = self.state["comparison_key"]
         if challenge_release is not None:
             public_manifest["challenge_release"] = dict(challenge_release)
         self.public_task_path.write_text(
-            json.dumps(public_manifest, indent=2, sort_keys=True)
-            + "\n",
+            json.dumps(public_manifest, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
         self._save_state()
@@ -701,9 +911,7 @@ class Supervisor:
                 "agent_termination_reason": self.state["agent_system"][
                     "termination_reason"
                 ],
-                "agent_finish_observed": self.state["agent_system"][
-                    "finish_observed"
-                ],
+                "agent_finish_observed": self.state["agent_system"]["finish_observed"],
                 "agent_drain_seconds": self.state["agent_system"]["drain_seconds"],
                 "status": self.state["status"],
                 "outcome": self.state["outcome"],
@@ -764,14 +972,18 @@ class Supervisor:
         with self.lock:
             self._require_active()
             if self.state["active_lease"] is not None:
-                raise ProtocolError("lease_active", "a training lease is already active")
+                raise ProtocolError(
+                    "lease_active", "a training lease is already active"
+                )
 
             if requested_seconds is not None and (
                 not isinstance(requested_seconds, int)
                 or isinstance(requested_seconds, bool)
                 or requested_seconds <= 0
             ):
-                raise ProtocolError("invalid_duration", "lease duration must be positive")
+                raise ProtocolError(
+                    "invalid_duration", "lease duration must be positive"
+                )
 
             if self.track == "A":
                 maximum = self._track_a_remaining()
@@ -780,7 +992,9 @@ class Supervisor:
                     raise ProtocolError("lease_budget_exhausted", "no leases remain")
                 maximum = float(self.config.track_b_lease_seconds)
 
-            duration = maximum if requested_seconds is None else float(requested_seconds)
+            duration = (
+                maximum if requested_seconds is None else float(requested_seconds)
+            )
             if duration > maximum + 1e-9:
                 raise ProtocolError(
                     "lease_too_long",
@@ -818,9 +1032,7 @@ class Supervisor:
                 "exec_count": 0,
             }
             self.state["last_lease_id"] = lease_id
-            self._event(
-                "LEASE_STARTED", lease_id=lease_id, duration_seconds=duration
-            )
+            self._event("LEASE_STARTED", lease_id=lease_id, duration_seconds=duration)
             self._save_state()
             return {
                 "lease_id": lease_id,
@@ -834,8 +1046,10 @@ class Supervisor:
         with self.lock:
             self._require_active()
             active = self._active_lease()
-            if not isinstance(argv, list) or not argv or not all(
-                isinstance(value, str) and value for value in argv
+            if (
+                not isinstance(argv, list)
+                or not argv
+                or not all(isinstance(value, str) and value for value in argv)
             ):
                 raise ProtocolError("invalid_command", "argv must be a string array")
             remaining = active["deadline_monotonic"] - self.monotonic()
@@ -870,12 +1084,8 @@ class Supervisor:
             )
             stdout, local_stdout_truncated = _bounded_text(result.stdout)
             stderr, local_stderr_truncated = _bounded_text(result.stderr)
-            stdout_truncated = (
-                result.stdout_truncated or local_stdout_truncated
-            )
-            stderr_truncated = (
-                result.stderr_truncated or local_stderr_truncated
-            )
+            stdout_truncated = result.stdout_truncated or local_stdout_truncated
+            stderr_truncated = result.stderr_truncated or local_stderr_truncated
             active["exec_count"] += 1
             record = {
                 "exec": active["exec_count"],
@@ -887,8 +1097,6 @@ class Supervisor:
                 "stderr_truncated": stderr_truncated,
                 "timed_out": result.timed_out,
             }
-            with log_path.open("a", encoding="utf-8") as stream:
-                stream.write(json.dumps(record, sort_keys=True) + "\n")
             self._event(
                 "LEASE_COMMAND_FINISHED",
                 lease_id=active["lease_id"],
@@ -906,6 +1114,9 @@ class Supervisor:
                     "timeout" if result.timed_out else "worker_lease_stopped"
                 )
                 lease_active = False
+            record = _fit_command_record(record, lease_active=lease_active)
+            with log_path.open("a", encoding="utf-8") as stream:
+                stream.write(_json_bytes(record).decode("utf-8") + "\n")
             self._save_state()
             return {**record, "lease_active": lease_active}
 
@@ -922,11 +1133,19 @@ class Supervisor:
             if not log_path.exists():
                 return {"lease_id": lease_id, "commands": []}
             commands, truncated = _tail_json_lines(log_path, limit)
-            return {
+            result = {
                 "lease_id": lease_id,
                 "commands": commands,
                 "history_truncated": truncated,
             }
+            while (
+                commands
+                and len(_json_bytes({"ok": True, "result": result}))
+                > MAX_MAILBOX_RESPONSE_BYTES
+            ):
+                commands.pop(0)
+                result["history_truncated"] = True
+            return result
 
     def _end_active_lease(self, reason: str) -> Optional[str]:
         active = self.state.get("active_lease")
@@ -985,7 +1204,8 @@ class Supervisor:
             ) from exc
         if not resolved.is_dir():
             raise ProtocolError(
-                "invalid_candidate", f"candidate directory does not exist: {candidate_path}"
+                "invalid_candidate",
+                f"candidate directory does not exist: {candidate_path}",
             )
         entry_count = 0
         total_bytes = 0
@@ -1027,6 +1247,7 @@ class Supervisor:
     @staticmethod
     def _tree_hash(root: Path) -> str:
         digest = hashlib.sha256()
+        digest.update(_TREE_HASH_DOMAIN)
         for path in sorted(root.rglob("*")):
             relative = path.relative_to(root).as_posix().encode("utf-8")
             metadata = path.lstat()
@@ -1051,6 +1272,7 @@ class Supervisor:
             digest.update(len(relative).to_bytes(8, "big"))
             digest.update(relative)
             digest.update(mode)
+            digest.update(metadata.st_size.to_bytes(8, "big"))
             with path.open("rb") as stream:
                 for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                     digest.update(chunk)
@@ -1122,9 +1344,7 @@ class Supervisor:
                         timeout_seconds=timeout_seconds,
                     )
                 )
-                deadline_reached = (
-                    self.track == "A" and self._track_a_remaining() <= 0
-                )
+                deadline_reached = self.track == "A" and self._track_a_remaining() <= 0
                 if not deadline_reached:
                     metadata["val_nll"] = val_nll
                     self._event(
@@ -1133,9 +1353,7 @@ class Supervisor:
                         nll=val_nll,
                     )
             except (ValueError, WorkerFailure):
-                deadline_reached = (
-                    self.track == "A" and self._track_a_remaining() <= 0
-                )
+                deadline_reached = self.track == "A" and self._track_a_remaining() <= 0
                 if not deadline_reached:
                     metadata["evaluation_error"] = "evaluation_failed"
                     self._event(
@@ -1144,21 +1362,18 @@ class Supervisor:
                         code="evaluation_failed",
                     )
             finally:
-                evaluation_seconds = max(
-                    0.0, self.monotonic() - evaluation_started
-                )
+                evaluation_seconds = max(0.0, self.monotonic() - evaluation_started)
                 if self.track == "A":
                     evaluation_seconds = min(
                         evaluation_seconds,
                         max(
                             0.0,
-                            self._track_a_deadline_monotonic()
-                            - evaluation_started,
+                            self._track_a_deadline_monotonic() - evaluation_started,
                         ),
                     )
-                self.state["timing"][
-                    "validation_evaluation_seconds"
-                ] += evaluation_seconds
+                self.state["timing"]["validation_evaluation_seconds"] += (
+                    evaluation_seconds
+                )
             if deadline_reached:
                 metadata["evaluation_error"] = "track_a_deadline"
                 self._event(
@@ -1182,9 +1397,7 @@ class Supervisor:
                 )
             candidate = self.state["candidates"].get(candidate_id)
             if candidate is None:
-                raise ProtocolError(
-                    "unknown_candidate", "candidate is not registered"
-                )
+                raise ProtocolError("unknown_candidate", "candidate is not registered")
             if candidate.get("val_nll") is None:
                 raise ProtocolError(
                     "candidate_not_validated",
@@ -1225,9 +1438,7 @@ class Supervisor:
         """Attach trusted runner metadata after the Agent process exits."""
 
         with self.lock:
-            normalized_exit_code = (
-                int(exit_code) if exit_code is not None else None
-            )
+            normalized_exit_code = int(exit_code) if exit_code is not None else None
             self.state["agent_system"]["exit_code"] = normalized_exit_code
             self.state["agent_system"]["termination_reason"] = termination_reason
             self.state["agent_system"]["finish_observed"] = (
@@ -1266,9 +1477,7 @@ class Supervisor:
         self.state["closure_reason"] = reason
         self.state["agent_system"]["finish_observed"] = reason == "agent_finished"
         self.state["final_candidate_id"] = candidate_id
-        self._event(
-            "EPISODE_CLOSED", reason=reason, candidate_id=candidate_id
-        )
+        self._event("EPISODE_CLOSED", reason=reason, candidate_id=candidate_id)
         self._save_state()
 
         if candidate_id is None:
@@ -1279,6 +1488,7 @@ class Supervisor:
         evaluation_started = self.monotonic()
         test_nll: Optional[float] = None
         test_failure: Optional[str] = None
+        test_infrastructure_failure = False
         try:
             test_nll = validated_nll(
                 self.evaluation_worker.evaluate_candidate(
@@ -1305,10 +1515,22 @@ class Supervisor:
                 candidate_id=candidate_id,
                 code="invalid_metric",
             )
+        except Exception as exc:
+            self._event(
+                "TEST_INFRASTRUCTURE_FAILURE",
+                candidate_id=candidate_id,
+                exception_type=type(exc).__name__,
+                message=str(exc),
+            )
+            test_infrastructure_failure = True
         finally:
             self.state["timing"]["test_evaluation_seconds"] += max(
                 0.0, self.monotonic() - evaluation_started
             )
+
+        if test_infrastructure_failure:
+            self.infrastructure_failed("test_evaluation_infrastructure_failure")
+            return self.public_status()
 
         if test_failure is not None or test_nll is None:
             return self._finalize_failed_test(
@@ -1389,7 +1611,7 @@ class Supervisor:
 
     def infrastructure_failed(self, message: str) -> None:
         with self.lock:
-            if self.state["status"] not in {"created", "active"}:
+            if self.state["status"] not in {"created", "active", "closed"}:
                 return
             if self.state["status"] == "active":
                 self._freeze_elapsed()
@@ -1408,6 +1630,14 @@ class Supervisor:
             return False
         request_path = paths[0]
         request_id = request_path.stem
+        if not _valid_request_id(request_id):
+            request_path.unlink(missing_ok=True)
+            self._event(
+                "MAILBOX_REQUEST_REJECTED",
+                code="invalid_request_id",
+            )
+            self._save_state()
+            return True
         try:
             request = _read_untrusted_request(request_path, 1024 * 1024)
             result = self.handle(request)
@@ -1432,5 +1662,12 @@ class Supervisor:
         finally:
             request_path.unlink(missing_ok=True)
 
-        _write_untrusted_response(self.outbox, request_id, response)
+        try:
+            _write_untrusted_response(self.outbox, request_id, response)
+        except ProtocolError as exc:
+            self._event(
+                "MAILBOX_RESPONSE_REJECTED",
+                code=exc.code,
+            )
+            self._save_state()
         return True

@@ -77,11 +77,16 @@ def summarize_host_agent_trace(path: Path) -> Dict[str, Any]:
 
     saw_usage = False
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        encoded = path.read_bytes()
     except OSError:
         summary["malformed_records"] = 1
         summary["usage_complete"] = False
         return summary
+    decoded = encoded.decode("utf-8", errors="replace")
+    if "\ufffd" in decoded or _LOG_TRUNCATION_MARKER in encoded:
+        summary["malformed_records"] += 1
+        summary["usage_complete"] = False
+    lines = decoded.splitlines()
 
     for line in lines:
         if not line.strip():
@@ -110,13 +115,18 @@ def summarize_host_agent_trace(path: Path) -> Dict[str, Any]:
                 summary["usage_complete"] = False
                 continue
             saw_usage = True
-            if record_type == "autotrain_bench.agent_usage" and record.get(
-                "usage_complete"
-            ) is False:
+            if (
+                record_type == "autotrain_bench.agent_usage"
+                and record.get("usage_complete") is False
+            ):
                 summary["usage_complete"] = False
             for field in _USAGE_FIELDS:
                 value = usage.get(field, 0)
-                if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                if (
+                    isinstance(value, int)
+                    and not isinstance(value, bool)
+                    and value >= 0
+                ):
                     summary[field] += value
                 else:
                     summary["usage_complete"] = False
@@ -218,9 +228,7 @@ def start_host_agent_process(
         "USER",
     )
     environment = {
-        name: os.environ[name]
-        for name in inherited_names
-        if name in os.environ
+        name: os.environ[name] for name in inherited_names if name in os.environ
     }
     for name in forwarded_environment:
         if name in os.environ:

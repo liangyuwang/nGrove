@@ -118,9 +118,7 @@ def _snapshot_agent_workspace(source: Path, destination: Path) -> None:
         raise ConfigError(f"failed to snapshot agent workspace: {exc}") from exc
 
 
-def _initialize_agent_workspace(
-    source: Optional[Path], destination: Path
-) -> None:
+def _initialize_agent_workspace(source: Optional[Path], destination: Path) -> None:
     """Create an empty episode workspace or snapshot explicit participant files."""
 
     if source is None:
@@ -191,14 +189,8 @@ def _resolve_challenge_run(
             "--track is selected by --track-config when --challenge is used"
         )
     if not args.track_config or not args.runtime_profile:
-        raise ConfigError(
-            "--challenge requires --track-config and --runtime-profile"
-        )
-    if (
-        args.training_gpus
-        or args.training_gpu_model
-        or args.training_devices
-    ):
+        raise ConfigError("--challenge requires --track-config and --runtime-profile")
+    if args.training_gpus or args.training_gpu_model or args.training_devices:
         raise ConfigError(
             "manual training resources may not override a challenge runtime profile"
         )
@@ -363,7 +355,9 @@ def command_start(args: argparse.Namespace) -> int:
                 agent=agent,
                 control_dir=supervisor.control_dir,
                 public_task_path=supervisor.public_task_path,
-                inference_network=agent_network if agent.inference is not None else None,
+                inference_network=agent_network
+                if agent.inference is not None
+                else None,
             )
         else:
             host_agent = reference_runtime.start_host_agent(
@@ -466,9 +460,7 @@ def command_start(args: argparse.Namespace) -> int:
                             if running
                             else reference_runtime.container_exit_code(agent_name)
                         ),
-                        termination_reason=(
-                            "drain_timeout" if running else "exited"
-                        ),
+                        termination_reason=("drain_timeout" if running else "exited"),
                         drain_seconds=(
                             max(0.0, time.monotonic() - terminal_at)
                             if terminal_at is not None

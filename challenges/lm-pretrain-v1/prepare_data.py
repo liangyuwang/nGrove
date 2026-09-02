@@ -41,6 +41,7 @@ DEFAULT_RAW_DIR = DATA_DIR / "raw" / DATASET_REVISION
 DEFAULT_OUTPUT_DIR = DATA_DIR / "generated"
 BUILDER_ID = "autotrain-bench/lm-pretrain-v1"
 
+
 class PreparationError(RuntimeError):
     pass
 
@@ -58,10 +59,10 @@ def _paths_overlap(first: Path, second: Path) -> bool:
         return False
 
 
-def _validate_existing_output(path: Path) -> None:
+def _validate_existing_output(path: Path) -> Tuple[int, int, str]:
     """Allow --force only for a recognizable prior build of this task."""
 
-    if not path.is_dir():
+    if path.is_symlink() or not path.is_dir():
         raise PreparationError("--force target must be a generated data directory")
     manifest_path = path / "manifest.json"
     try:
@@ -74,18 +75,29 @@ def _validate_existing_output(path: Path) -> None:
     builder = payload.get("builder")
     source = payload.get("source")
     tokenizer = payload.get("tokenizer")
-    recognized = (
-        isinstance(builder, dict)
-        and builder.get("id", BUILDER_ID) == BUILDER_ID
-        and isinstance(source, dict)
+    task_identity = (
+        isinstance(source, dict)
         and source.get("dataset") == DATASET
+        and source.get("revision") == DATASET_REVISION
+        and source.get("upstream_sample") == UPSTREAM_SAMPLE
         and isinstance(tokenizer, dict)
         and tokenizer.get("name") == TOKENIZER
+        and tokenizer.get("vocab_size") == VOCAB_SIZE
+        and tokenizer.get("document_separator_token_id") == EOT_TOKEN_ID
+        and isinstance(payload.get("layout"), dict)
+        and isinstance(payload.get("tokenized_train"), dict)
     )
+    current_builder = (
+        task_identity and isinstance(builder, dict) and builder.get("id") == BUILDER_ID
+    )
+    legacy_builder = task_identity and isinstance(builder, dict) and "id" not in builder
+    recognized = current_builder or legacy_builder
     if not recognized:
         raise PreparationError(
             "refusing --force because the target belongs to another dataset build"
         )
+    metadata = path.stat()
+    return metadata.st_dev, metadata.st_ino, _sha256_file(manifest_path)
 
 
 def _sha256_file(path: Path) -> str:
@@ -136,9 +148,10 @@ def tokenizer_fingerprint(encoding: Any) -> str:
 def preview_split(source_key: str) -> str:
     """Select small deterministic local-preview holdouts by pinned row identity."""
 
-    bucket = int.from_bytes(
-        hashlib.sha256(source_key.encode("utf-8")).digest()[:8], "big"
-    ) % SPLIT_BUCKETS
+    bucket = (
+        int.from_bytes(hashlib.sha256(source_key.encode("utf-8")).digest()[:8], "big")
+        % SPLIT_BUCKETS
+    )
     if bucket == 0:
         return "val"
     if bucket == 1:
@@ -311,9 +324,7 @@ class RawParquetWriter:
                 "text": row["text"],
                 "url": _json_scalar(row.get("url")),
                 "language": _json_scalar(row.get("language")),
-                "score": self._optional_float(
-                    row.get("score", row.get("int_score"))
-                ),
+                "score": self._optional_float(row.get("score", row.get("int_score"))),
                 "metadata_json": json.dumps(
                     metadata, separators=(",", ":"), sort_keys=True
                 ),
@@ -448,12 +459,15 @@ def prepare(
     accept_large_download: bool,
     force: bool,
 ) -> Dict[str, Any]:
-    if min(
-        target_train_tokens,
-        shard_tokens,
-        eval_target_tokens,
-        eval_sequence_targets,
-    ) <= 0:
+    if (
+        min(
+            target_train_tokens,
+            shard_tokens,
+            eval_target_tokens,
+            eval_sequence_targets,
+        )
+        <= 0
+    ):
         raise PreparationError("all token limits must be positive")
     if eval_sequence_targets > 2_048:
         raise PreparationError("evaluation sequences exceed task context_length=2048")
@@ -472,8 +486,9 @@ def prepare(
         raise PreparationError(
             f"output already exists: {output_dir}; pass --force to rebuild it"
         )
-    if output_dir.exists():
-        _validate_existing_output(output_dir)
+    existing_output_identity = (
+        _validate_existing_output(output_dir) if output_dir.exists() else None
+    )
 
     if source_dir is None:
         if not accept_large_download:
@@ -557,8 +572,7 @@ def prepare(
                     },
                 }
                 document_index.write(
-                    json.dumps(metadata, separators=(",", ":"), sort_keys=True)
-                    + "\n"
+                    json.dumps(metadata, separators=(",", ":"), sort_keys=True) + "\n"
                 )
                 train_documents += 1
         shards = writer.close()
@@ -585,12 +599,10 @@ def prepare(
             for path in files
         ]
         public_raw_shards = [
-            {**shard, "file": f"raw/{shard['file']}"}
-            for shard in raw_train_shards
+            {**shard, "file": f"raw/{shard['file']}"} for shard in raw_train_shards
         ]
         public_token_shards = [
-            {**shard, "file": f"tokenized/{shard['file']}"}
-            for shard in shards
+            {**shard, "file": f"tokenized/{shard['file']}"} for shard in shards
         ]
         public_manifest = {
             "layout": {
@@ -621,9 +633,7 @@ def prepare(
                 "exact_tokens": writer.total_tokens,
                 "target_scale_reached": writer.total_tokens >= target_train_tokens,
                 "documents": train_documents,
-                "document_index": (
-                    f"tokenized/{document_index_path.name}"
-                ),
+                "document_index": (f"tokenized/{document_index_path.name}"),
                 "document_index_format": "JSON Lines with shard token spans",
                 "document_index_sha256": _sha256_file(document_index_path),
                 "shards": public_token_shards,
@@ -648,7 +658,19 @@ def prepare(
             },
         }
         _write_json(staging / "manifest.json", build_manifest)
-        if output_dir.exists():
+        if existing_output_identity is None and output_dir.exists():
+            raise PreparationError(
+                "output target appeared while the build was running; refusing to replace it"
+            )
+        if existing_output_identity is not None:
+            if not output_dir.exists():
+                raise PreparationError(
+                    "output target disappeared while the build was running"
+                )
+            if _validate_existing_output(output_dir) != existing_output_identity:
+                raise PreparationError(
+                    "output target changed while the build was running; refusing to replace it"
+                )
             shutil.rmtree(output_dir)
         os.replace(str(staging), str(output_dir))
     except Exception:
@@ -671,9 +693,7 @@ def main() -> None:
         help="existing directory containing the pinned sample/10BT Parquet files",
     )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument(
-        "--target-train-tokens", type=int, default=TARGET_TRAIN_TOKENS
-    )
+    parser.add_argument("--target-train-tokens", type=int, default=TARGET_TRAIN_TOKENS)
     parser.add_argument("--shard-tokens", type=int, default=SHARD_TOKENS)
     parser.add_argument(
         "--eval-target-tokens", type=int, default=PREVIEW_EVAL_TARGET_TOKENS

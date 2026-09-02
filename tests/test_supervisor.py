@@ -1,7 +1,9 @@
+import hashlib
 import json
 import math
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -10,7 +12,9 @@ import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
+from autotrain_bench.challenge import ReleaseVerificationReceipt
 from autotrain_bench.config import (
     AgentConfig,
     InferenceConfig,
@@ -20,8 +24,10 @@ from autotrain_bench.config import (
 from autotrain_bench.client import Client
 from autotrain_bench.supervisor import (
     MAX_COMMAND_STREAM_BYTES,
+    MAX_MAILBOX_RESPONSE_BYTES,
     ProtocolError,
     Supervisor,
+    _write_untrusted_response,
 )
 from autotrain_bench.worker_protocol import (
     BASELINE_REQUIREMENTS,
@@ -74,9 +80,7 @@ class FakeWorker:
     def describe_capabilities(self):
         names = [requirement.name for requirement in BASELINE_REQUIREMENTS]
         names.append(GPU_DEVICE_ISOLATION)
-        capabilities = {
-            name: Capability(EnforcementLevel.ENFORCED) for name in names
-        }
+        capabilities = {name: Capability(EnforcementLevel.ENFORCED) for name in names}
         capabilities.update(self.capability_overrides)
         return WorkerDescriptor(
             worker_id="test-worker",
@@ -112,9 +116,7 @@ class FakeWorker:
         )
         self.running.add((episode_id, lease_id))
 
-    def exec_lease(
-        self, *, episode_id, lease_id, argv, timeout_seconds
-    ):
+    def exec_lease(self, *, episode_id, lease_id, argv, timeout_seconds):
         del timeout_seconds
         self.assert_running(episode_id, lease_id)
         if self.command_result is not None:
@@ -176,6 +178,7 @@ class SupervisorTests(unittest.TestCase):
             workspace=workspace,
             runner="container",
             command=["python", "/workspace/agent.py"],
+            initial_workspace="participant_snapshot",
             image="python:test-agent",
             mode="sandboxed",
         )
@@ -195,6 +198,7 @@ class SupervisorTests(unittest.TestCase):
         agent=None,
         comparison_key=None,
         challenge_release=None,
+        release_verification=None,
     ):
         supervisor = Supervisor(
             config=config or self.config,
@@ -206,6 +210,7 @@ class SupervisorTests(unittest.TestCase):
             evaluation_worker=self.worker,
             comparison_key=comparison_key,
             challenge_release=challenge_release,
+            release_verification=release_verification,
             monotonic=self.clock,
             wall_time=lambda: 1_700_000_000.0,
         )
@@ -245,9 +250,7 @@ class SupervisorTests(unittest.TestCase):
         )
         self.assertEqual(supervisor.state["comparison_key"], comparison_key)
         self.assertFalse(supervisor.state["leaderboard_eligible"])
-        self.assertEqual(
-            supervisor.public_status()["comparison_key"], comparison_key
-        )
+        self.assertEqual(supervisor.public_status()["comparison_key"], comparison_key)
         public_task = json.loads(
             supervisor.public_task_path.read_text(encoding="utf-8")
         )
@@ -256,8 +259,22 @@ class SupervisorTests(unittest.TestCase):
 
     def test_leaderboard_eligibility_requires_the_complete_formal_contract(self):
         digest = "@sha256:" + "a" * 64
+        formal_task_dir = self.episode.parent / "formal-task"
+        formal_task_dir.mkdir()
+        formal_task = formal_task_dir / "task.json"
+        formal_task.write_bytes(self.config.source.read_bytes())
+        (formal_task_dir / "POLICY.md").write_text(
+            "# Frozen formal policy\n", encoding="utf-8"
+        )
+        formal_train_dir = formal_task_dir / "train"
+        formal_train_dir.mkdir()
+        (formal_train_dir / "manifest.json").write_text(
+            '{"frozen":true}\n', encoding="utf-8"
+        )
         config = replace(
             self.config,
+            source=formal_task,
+            train_dir=formal_train_dir,
             task_kind="benchmark_challenge",
             leaderboard_eligible=True,
             training_image="example/training" + digest,
@@ -277,7 +294,9 @@ class SupervisorTests(unittest.TestCase):
         release = {
             "challenge_id": "test-byte-lm-v1",
             "challenge_manifest_sha256": "b" * 64,
-            "task_manifest_sha256": "c" * 64,
+            "task_manifest_sha256": hashlib.sha256(
+                config.source.read_bytes()
+            ).hexdigest(),
             "release_stage": "official",
             "leaderboard_eligible": True,
             "track_config_id": "b-final",
@@ -285,15 +304,93 @@ class SupervisorTests(unittest.TestCase):
             "track_config": {"provisional": False},
             "runtime_profile": {"provisional": False},
         }
-        supervisor = self.supervisor(
-            config=config,
-            agent=agent,
-            comparison_key=comparison_key,
-            challenge_release=release,
+        artifacts = {
+            "challenge_manifest_sha256": release["challenge_manifest_sha256"],
+            "task_manifest_sha256": release["task_manifest_sha256"],
+            "policy_sha256": hashlib.sha256(
+                (config.source.parent / "POLICY.md").read_bytes()
+            ).hexdigest(),
+            "evaluator_sha256": hashlib.sha256(
+                config.evaluator_entrypoint.read_bytes()
+            ).hexdigest(),
+            "train_manifest_sha256": hashlib.sha256(
+                (config.train_dir / "manifest.json").read_bytes()
+            ).hexdigest(),
+            "val_sha256": hashlib.sha256(config.val_path.read_bytes()).hexdigest(),
+            "test_sha256": hashlib.sha256(config.test_path.read_bytes()).hexdigest(),
+        }
+        core_revision = "d" * 40
+        receipt = ReleaseVerificationReceipt(
+            authority="test-organizer",
+            release_id="test-byte-lm-v1",
+            core_revision=core_revision,
+            artifact_sha256=artifacts,
         )
+        with patch(
+            "autotrain_bench.supervisor._core_identity",
+            return_value={"revision": core_revision, "dirty": False},
+        ):
+            supervisor = self.supervisor(
+                config=config,
+                agent=agent,
+                comparison_key=comparison_key,
+                challenge_release=release,
+                release_verification=receipt,
+            )
         self.assertTrue(supervisor.state["leaderboard_eligible"])
-        self.assertEqual(
-            supervisor.state["leaderboard_eligibility_violations"], []
+        self.assertEqual(supervisor.state["leaderboard_eligibility_violations"], [])
+
+    def test_dirty_core_and_mismatched_release_cannot_be_formal(self):
+        digest = "@sha256:" + "a" * 64
+        config = replace(
+            self.config,
+            task_kind="benchmark_challenge",
+            leaderboard_eligible=True,
+            training_image="example/training" + digest,
+            candidate_image="example/candidate" + digest,
+            evaluator_image="example/evaluator" + digest,
+            inference_gateway_image="example/gateway" + digest,
+        )
+        agent = replace(self.agent, image="example/agent" + digest)
+        self.worker.trust_level = TrustLevel.CERTIFIED
+        self.worker.conformance = ConformanceReceipt("worker-v2", True)
+        with patch(
+            "autotrain_bench.supervisor._core_identity",
+            return_value={"revision": "d" * 40, "dirty": True},
+        ):
+            supervisor = self.supervisor(
+                config=config,
+                agent=agent,
+                comparison_key={
+                    "challenge_id": "test-byte-lm-v1",
+                    "track": "B",
+                    "track_config": "b-final",
+                    "runtime_profile": "h100-final",
+                },
+                challenge_release={
+                    "challenge_id": "test-byte-lm-v1",
+                    "challenge_manifest_sha256": "b" * 64,
+                    "task_manifest_sha256": "c" * 64,
+                    "release_stage": "official",
+                    "leaderboard_eligible": True,
+                    "track_config_id": "b-final",
+                    "runtime_profile_id": "h100-final",
+                    "track_config": {"provisional": False},
+                    "runtime_profile": {"provisional": False},
+                },
+            )
+        self.assertFalse(supervisor.state["leaderboard_eligible"])
+        self.assertIn(
+            "task_manifest_identity_mismatch",
+            supervisor.state["leaderboard_eligibility_violations"],
+        )
+        self.assertIn(
+            "core_worktree_not_clean",
+            supervisor.state["leaderboard_eligibility_violations"],
+        )
+        self.assertIn(
+            "formal_release_verification_missing",
+            supervisor.state["leaderboard_eligibility_violations"],
         )
 
     def test_worker_role_specs_do_not_cross_hidden_split_boundaries(self):
@@ -321,9 +418,7 @@ class SupervisorTests(unittest.TestCase):
             },
         )
         environment = os.environ.copy()
-        environment["PYTHONPATH"] = str(
-            self.worker.research_tasks[0].public_api_dir
-        )
+        environment["PYTHONPATH"] = str(self.worker.research_tasks[0].public_api_dir)
         smoke = subprocess.run(
             [sys.executable, "-m", "autotrain_bench.cli", "agent", "--help"],
             cwd=self.workspace,
@@ -367,9 +462,7 @@ class SupervisorTests(unittest.TestCase):
             supervisor.state["evaluation_system"]["backend"],
             "isolated_candidate",
         )
-        self.assertTrue(
-            supervisor.state["evaluation_system"]["policy_compliant"]
-        )
+        self.assertTrue(supervisor.state["evaluation_system"]["policy_compliant"])
         self.assertEqual(
             len(supervisor.state["agent_system"]["initial_workspace_sha256"]), 64
         )
@@ -381,9 +474,7 @@ class SupervisorTests(unittest.TestCase):
             "participant_snapshot",
         )
         self.assertEqual(
-            public_task["training_environment"]["resources"][
-                "nvidia_gpu_count"
-            ],
+            public_task["training_environment"]["resources"]["nvidia_gpu_count"],
             0,
         )
         self.assertEqual(public_task["policy"]["violations"], [])
@@ -451,6 +542,24 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(final["status"], "finalized")
         self.assertEqual(final["outcome"], "failed")
         self.assertEqual(final["failure"], "test_evaluation_failed")
+        self.assertIsNone(final["test_nll"])
+        self.assertIsNone(final["test_perplexity"])
+
+    def test_unexpected_test_exception_reaches_an_explicit_terminal_state(self):
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+        committed = supervisor.commit_lease("/output/candidate")
+        supervisor.declare_incumbent(committed["candidate_id"])
+
+        def fail_test(_timeout):
+            raise RuntimeError("simulated coordinator failure")
+
+        self.worker.evaluation_hook = fail_test
+        final = supervisor.finish()
+
+        self.assertEqual(final["status"], "infrastructure_failure")
+        self.assertEqual(final["outcome"], "failed")
+        self.assertEqual(final["failure"], "test_evaluation_infrastructure_failure")
         self.assertIsNone(final["test_nll"])
         self.assertIsNone(final["test_perplexity"])
 
@@ -547,6 +656,32 @@ class SupervisorTests(unittest.TestCase):
             len(result["stdout"].encode("utf-8")), MAX_COMMAND_STREAM_BYTES
         )
 
+    def test_json_escaping_cannot_replace_a_completed_command_response(self):
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+        self.worker.command_result = CommandResult(
+            0,
+            "\x00" * MAX_COMMAND_STREAM_BYTES,
+            "",
+        )
+        request = {
+            "id": "large-command",
+            "op": "lease_exec",
+            "argv": ["python", "non-idempotent.py"],
+        }
+        (supervisor.inbox / "large-command.json").write_text(
+            json.dumps(request), encoding="utf-8"
+        )
+
+        self.assertTrue(supervisor.process_one_request())
+
+        response_path = supervisor.outbox / "large-command.json"
+        response = json.loads(response_path.read_text(encoding="utf-8"))
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["result"]["exit_code"], 0)
+        self.assertTrue(response["result"]["stdout_truncated"])
+        self.assertLessEqual(response_path.stat().st_size, MAX_MAILBOX_RESPONSE_BYTES)
+
     def test_official_elapsed_time_freezes_before_agent_drain(self):
         supervisor = self.supervisor()
         self.clock.advance(4)
@@ -607,9 +742,7 @@ class SupervisorTests(unittest.TestCase):
     def test_candidate_output_symlink_is_rejected_after_lease_stop(self):
         supervisor = self.supervisor()
         lease = supervisor.start_lease()
-        candidate = (
-            supervisor.runs_dir / lease["lease_id"] / "output" / "candidate"
-        )
+        candidate = supervisor.runs_dir / lease["lease_id"] / "output" / "candidate"
         (candidate / "candidate.py").unlink()
         (candidate / "candidate.py").symlink_to(self.config.val_path)
         with self.assertRaises(ProtocolError) as caught:
@@ -621,9 +754,7 @@ class SupervisorTests(unittest.TestCase):
         supervisor = self.supervisor()
         lease = supervisor.start_lease()
         candidate_file = (
-            supervisor.runs_dir
-            / lease["lease_id"]
-            / "output/candidate/candidate.py"
+            supervisor.runs_dir / lease["lease_id"] / "output/candidate/candidate.py"
         )
         candidate_file.unlink()
         os.link(self.workspace / "candidate/candidate.py", candidate_file)
@@ -640,13 +771,24 @@ class SupervisorTests(unittest.TestCase):
         (first / "candidate.py").write_text("pass\n", encoding="utf-8")
         (second / "candidate.py").write_text("pass\n", encoding="utf-8")
         (first / "behavior-flag").mkdir()
-        self.assertNotEqual(
-            Supervisor._tree_hash(first), Supervisor._tree_hash(second)
-        )
+        self.assertNotEqual(Supervisor._tree_hash(first), Supervisor._tree_hash(second))
 
         original = Supervisor._tree_hash(second)
         (second / "candidate.py").chmod(0o755)
         self.assertNotEqual(original, Supervisor._tree_hash(second))
+
+    def test_candidate_identity_separates_file_content_from_the_next_entry(self):
+        first = self.workspace / "collision-first"
+        second = self.workspace / "collision-second"
+        first.mkdir()
+        second.mkdir()
+        (second / "a").write_bytes(b"x")
+        (second / "b").write_bytes(b"")
+        mode = stat.S_IMODE((second / "b").stat().st_mode).to_bytes(4, "big")
+        forged_next_entry = b"file\0" + (1).to_bytes(8, "big") + b"b" + mode
+        (first / "a").write_bytes(b"x" + forged_next_entry)
+
+        self.assertNotEqual(Supervisor._tree_hash(first), Supervisor._tree_hash(second))
 
     def test_candidate_entry_limit_counts_directories(self):
         config = replace(self.config, candidate_max_files=1)
@@ -754,9 +896,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertTrue(supervisor.enforce_deadlines())
         self.assertEqual(supervisor.state["final_candidate_id"], first["candidate_id"])
         self.assertEqual(supervisor.state["test_nll"], 1.5)
-        self.assertAlmostEqual(
-            supervisor.state["test_perplexity"], math.exp(1.5)
-        )
+        self.assertAlmostEqual(supervisor.state["test_perplexity"], math.exp(1.5))
 
     def test_agent_mailbox_exposes_only_public_status(self):
         supervisor = self.supervisor()
@@ -796,11 +936,56 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(response["error"]["code"], "invalid_request")
         self.assertTrue(supervisor.state_path.is_file())
 
+    def test_mailbox_response_has_a_portable_non_dir_fd_path(self):
+        supervisor = self.supervisor()
+        with patch(
+            "autotrain_bench.supervisor._directory_fd_operations_available",
+            return_value=False,
+        ):
+            _write_untrusted_response(
+                supervisor.outbox,
+                "portable",
+                {"ok": True, "result": {"status": "active"}},
+            )
+
+        response = json.loads(
+            (supervisor.outbox / "portable.json").read_text(encoding="utf-8")
+        )
+        self.assertTrue(response["ok"])
+
+    def test_invalid_mailbox_filename_is_untrusted_input_not_infrastructure(self):
+        supervisor = self.supervisor()
+        (supervisor.inbox / "é.json").write_text(
+            json.dumps({"op": "status"}), encoding="utf-8"
+        )
+
+        self.assertTrue(supervisor.process_one_request())
+
+        self.assertEqual(supervisor.state["status"], "active")
+        events = supervisor.events_path.read_text(encoding="utf-8")
+        self.assertIn("MAILBOX_REQUEST_REJECTED", events)
+        self.assertNotIn("EPISODE_INFRASTRUCTURE_FAILURE", events)
+
+    def test_agent_created_outbox_conflict_does_not_end_the_episode(self):
+        supervisor = self.supervisor()
+        (supervisor.inbox / "conflict.json").write_text(
+            json.dumps({"op": "status"}), encoding="utf-8"
+        )
+        (supervisor.outbox / "conflict.json").mkdir()
+
+        self.assertTrue(supervisor.process_one_request())
+
+        self.assertEqual(supervisor.state["status"], "active")
+        events = supervisor.events_path.read_text(encoding="utf-8")
+        self.assertIn("MAILBOX_RESPONSE_REJECTED", events)
+        self.assertNotIn("EPISODE_INFRASTRUCTURE_FAILURE", events)
+
     def test_host_cli_runner_is_recorded_as_non_compliant(self):
         agent = AgentConfig(
             workspace=self.workspace,
             runner="host_cli",
             command=["example-agent"],
+            initial_workspace="participant_snapshot",
         )
         supervisor = self.supervisor(agent=agent)
         self.assertEqual(supervisor.state["agent_system"]["runner"], "host_cli")
@@ -876,7 +1061,6 @@ class SupervisorTests(unittest.TestCase):
         self.assertTrue(summary["usage_complete"])
         state = json.loads(supervisor.state_path.read_text(encoding="utf-8"))
         self.assertEqual(state["inference_usage"], summary)
-
 
 
 if __name__ == "__main__":

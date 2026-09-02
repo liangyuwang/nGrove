@@ -132,9 +132,7 @@ class InferenceGatewayTests(unittest.TestCase):
 
     def request(self, payload, path="/v1/responses"):
         body = json.dumps(payload).encode()
-        connection = http.client.HTTPConnection(
-            *self.gateway.server_address, timeout=3
-        )
+        connection = http.client.HTTPConnection(*self.gateway.server_address, timeout=3)
         connection.request(
             "POST", path, body=body, headers={"Content-Type": "application/json"}
         )
@@ -155,9 +153,7 @@ class InferenceGatewayTests(unittest.TestCase):
 
     def test_forwards_registered_model_and_records_usage(self):
         with patch.dict(os.environ, {"TEST_GATEWAY_KEY": "host-secret"}):
-            status, _, body = self.request(
-                {"model": "researcher-a", "input": "hello"}
-            )
+            status, _, body = self.request({"model": "researcher-a", "input": "hello"})
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body)["id"], "response")
         self.assertEqual(_UpstreamHandler.seen_auth, "Bearer host-secret")
@@ -245,9 +241,7 @@ class InferenceGatewayTests(unittest.TestCase):
     def test_sse_is_forwarded_before_upstream_finishes_and_usage_is_parsed(self):
         _UpstreamHandler.mode = "sse"
         body = json.dumps({"model": "researcher-a", "stream": True}).encode()
-        connection = http.client.HTTPConnection(
-            *self.gateway.server_address, timeout=2
-        )
+        connection = http.client.HTTPConnection(*self.gateway.server_address, timeout=2)
         with patch.dict(os.environ, {"TEST_GATEWAY_KEY": "host-secret"}):
             connection.request(
                 "POST",

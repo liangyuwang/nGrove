@@ -96,9 +96,7 @@ class ResearchTaskSpec:
     public_api_dir: Path
 
     @classmethod
-    def from_task(
-        cls, task: "TaskConfig", public_api_dir: Path
-    ) -> "ResearchTaskSpec":
+    def from_task(cls, task: "TaskConfig", public_api_dir: Path) -> "ResearchTaskSpec":
         return cls(
             task_id=task.task_id,
             training_image=task.training_image,
@@ -248,11 +246,7 @@ class CapabilityAssessment:
 
     @property
     def leaderboard_eligible(self) -> bool:
-        return (
-            self.satisfied
-            and self.trust_satisfied
-            and self.conformance_satisfied
-        )
+        return self.satisfied and self.trust_satisfied and self.conformance_satisfied
 
     def public_manifest(self) -> Dict[str, Any]:
         return {
@@ -270,9 +264,7 @@ GPU_DEVICE_ISOLATION = "gpu_device_isolation"
 TRAINING_DATA_READ_ONLY = "training_data_read_only"
 TRAINING_NETWORK_ISOLATION = "training_network_isolation"
 HIDDEN_DATASET_ISOLATION = "hidden_dataset_isolation"
-CANDIDATE_EVALUATOR_CHANNEL_ISOLATION = (
-    "candidate_evaluator_channel_isolation"
-)
+CANDIDATE_EVALUATOR_CHANNEL_ISOLATION = "candidate_evaluator_channel_isolation"
 DEADLINE_TERMINATION = "deadline_termination"
 IMMUTABLE_CANDIDATE_ARTIFACT = "immutable_candidate_artifact"
 
@@ -335,8 +327,7 @@ def assess_worker(
 class ResearchWorker(Protocol):
     """Semantic execution surface required by the research Supervisor."""
 
-    def describe_capabilities(self) -> WorkerDescriptor:
-        ...
+    def describe_capabilities(self) -> WorkerDescriptor: ...
 
     def start_lease(
         self,
@@ -348,8 +339,7 @@ class ResearchWorker(Protocol):
         workspace: Path,
         resources: "TrainingResources",
         lease_dir: Path,
-    ) -> None:
-        ...
+    ) -> None: ...
 
     def exec_lease(
         self,
@@ -358,22 +348,18 @@ class ResearchWorker(Protocol):
         lease_id: str,
         argv: Sequence[str],
         timeout_seconds: float,
-    ) -> CommandResult:
-        ...
+    ) -> CommandResult: ...
 
-    def lease_state(self, *, episode_id: str, lease_id: str) -> LeaseState:
-        ...
+    def lease_state(self, *, episode_id: str, lease_id: str) -> LeaseState: ...
 
-    def terminate_lease(self, *, episode_id: str, lease_id: str) -> None:
-        ...
+    def terminate_lease(self, *, episode_id: str, lease_id: str) -> None: ...
 
 
 @runtime_checkable
 class EvaluationWorker(Protocol):
     """Semantic hidden-evaluation surface, separable from ResearchWorker."""
 
-    def describe_capabilities(self) -> WorkerDescriptor:
-        ...
+    def describe_capabilities(self) -> WorkerDescriptor: ...
 
     def evaluate_candidate(
         self,
@@ -385,8 +371,7 @@ class EvaluationWorker(Protocol):
         hidden_split: HiddenSplitRef,
         output_dir: Path,
         timeout_seconds: Optional[float] = None,
-    ) -> float:
-        ...
+    ) -> float: ...
 
 
 @runtime_checkable

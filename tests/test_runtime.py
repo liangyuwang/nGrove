@@ -16,7 +16,7 @@ from autotrain_bench.config import (
     TrainingResources,
 )
 from autotrain_bench.runtime import DockerRuntime, RuntimeFailure
-from autotrain_bench.host_agent import summarize_host_agent_trace
+from autotrain_bench.host_agent import _BoundedLogSink, summarize_host_agent_trace
 from autotrain_bench.worker_protocol import (
     DEADLINE_TERMINATION,
     EnforcementLevel,
@@ -52,9 +52,7 @@ class CapturingDockerRuntime(DockerRuntime):
 
 class RuntimeBoundaryTests(unittest.TestCase):
     def test_local_reference_worker_is_explicitly_development_only(self):
-        descriptor = DockerRuntime(
-            docker_binary="docker"
-        ).describe_capabilities()
+        descriptor = DockerRuntime(docker_binary="docker").describe_capabilities()
         self.assertEqual(descriptor.trust_level, TrustLevel.DEVELOPMENT)
         self.assertIsNone(descriptor.conformance)
         self.assertEqual(
@@ -78,23 +76,27 @@ class RuntimeBoundaryTests(unittest.TestCase):
         )
         runtime = DockerRuntime(docker_binary="docker")
         with patch("autotrain_bench.runtime.shutil.which", return_value="nvidia-smi"):
-            with patch("autotrain_bench.runtime.subprocess.run", return_value=inventory):
+            with patch(
+                "autotrain_bench.runtime.subprocess.run", return_value=inventory
+            ):
                 runtime.validate_hardware(resources)
 
         undersized = subprocess.CompletedProcess(
             ["nvidia-smi"],
             0,
-            "NVIDIA H100 80GB HBM3, 81559\n"
-            "NVIDIA H100 PCIe, 65536\n",
+            "NVIDIA H100 80GB HBM3, 81559\n" "NVIDIA H100 PCIe, 65536\n",
             "",
         )
         with patch("autotrain_bench.runtime.shutil.which", return_value="nvidia-smi"):
-            with patch("autotrain_bench.runtime.subprocess.run", return_value=undersized):
+            with patch(
+                "autotrain_bench.runtime.subprocess.run", return_value=undersized
+            ):
                 with self.assertRaisesRegex(RuntimeFailure, "at least 80000 MiB"):
                     runtime.validate_hardware(resources)
 
     def test_training_timeout_decodes_partial_byte_output(self):
         runtime = DockerRuntime(docker_binary="docker")
+
         class TimedOutProcess:
             def __init__(self):
                 self.stdout = io.BytesIO(b"partial stdout: \xff")
@@ -197,6 +199,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 workspace=workspace,
                 runner="host_cli",
                 command=[sys.executable, "-c", script],
+                initial_workspace="participant_snapshot",
                 environment=["VISIBLE"],
             )
             runtime = DockerRuntime(docker_binary="docker")
@@ -298,6 +301,18 @@ class RuntimeBoundaryTests(unittest.TestCase):
             summary = summarize_host_agent_trace(trace)
             self.assertFalse(summary["usage_complete"])
 
+    def test_host_agent_log_truncation_may_split_utf8_without_breaking_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / "agent.stdout.log"
+            sink = _BoundedLogSink(trace)
+            sink.limit = 3
+            sink.drain(io.BytesIO("😀".encode("utf-8")))
+
+            summary = summarize_host_agent_trace(trace)
+
+            self.assertFalse(summary["usage_complete"])
+            self.assertGreater(summary["malformed_records"], 0)
+
     def test_agent_mount_does_not_expose_repository_or_private_splits(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -313,6 +328,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 workspace=workspace,
                 runner="container",
                 command=["python", "/workspace/agent.py"],
+                initial_workspace="participant_snapshot",
                 image="python:test-agent",
                 mode="sandboxed",
             )
@@ -362,6 +378,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 workspace=workspace,
                 runner="container",
                 command=["node", "/workspace/agent.js"],
+                initial_workspace="participant_snapshot",
                 image="python:test-agent",
                 mode="sandboxed",
                 inference=inference,
@@ -399,13 +416,17 @@ class RuntimeBoundaryTests(unittest.TestCase):
             self.assertIn("--internal", runtime.calls[0])
             run_calls = [call for call in runtime.calls if call and call[0] == "run"]
             gateway_command = next(
-                call for call in run_calls if call[call.index("--name") + 1] == "gateway"
+                call
+                for call in run_calls
+                if call[call.index("--name") + 1] == "gateway"
             )
             agent_command = next(
                 call for call in run_calls if call[call.index("--name") + 1] == "agent"
             )
             training_command = next(
-                call for call in run_calls if call[call.index("--name") + 1] == "training"
+                call
+                for call in run_calls
+                if call[call.index("--name") + 1] == "training"
             )
             self.assertEqual(
                 gateway_command[gateway_command.index("--network") + 1], "egress-net"
@@ -458,6 +479,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 workspace=workspace,
                 runner="container",
                 command=["python", "/workspace/agent.py"],
+                initial_workspace="participant_snapshot",
                 image="python:test-agent",
                 mode="unrestricted-dev",
             )
@@ -531,14 +553,14 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 )
             create = runtime.calls[0]
             run_calls = [call for call in runtime.calls if call and call[0] == "run"]
-            candidate = next(call for call in run_calls if "candidate_server" in " ".join(call))
+            candidate = next(
+                call for call in run_calls if "candidate_server" in " ".join(call)
+            )
             evaluator = next(call for call in run_calls if "/opt/evaluator.py" in call)
             self.assertIn("--internal", create)
             self.assertIn("dst=/candidate,readonly", "\n".join(candidate))
             self.assertIn("dst=/opt/candidate-api,readonly", "\n".join(candidate))
-            self.assertNotIn(
-                str(ROOT / "autotrain_bench"), "\n".join(candidate)
-            )
+            self.assertNotIn(str(ROOT / "autotrain_bench"), "\n".join(candidate))
             self.assertNotIn(str(config.val_path), "\n".join(candidate))
             self.assertNotIn("dst=/candidate", "\n".join(evaluator))
             self.assertIn(str(config.val_path), "\n".join(evaluator))
@@ -659,9 +681,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                             return result
 
                     runtime = ResultRuntime()
-                    with self.assertRaisesRegex(
-                        RuntimeFailure, "valid NLL result"
-                    ):
+                    with self.assertRaisesRegex(RuntimeFailure, "valid NLL result"):
                         runtime.run_evaluator(
                             config=TaskConfig.load(TASK),
                             resources=TrainingResources(),
@@ -685,6 +705,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 workspace=Path(directory),
                 runner="container",
                 command=["agent"],
+                initial_workspace="participant_snapshot",
                 image="agent:image",
                 mode="sandboxed",
                 inference=inference,

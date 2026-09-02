@@ -175,6 +175,7 @@ class ConfigTests(unittest.TestCase):
                 workspace=workspace,
                 runner="container",
                 command=["python", "/workspace/agent.py"],
+                initial_workspace="participant_snapshot",
                 image="python:test",
                 mode="sandboxed",
             ).validate()
@@ -189,6 +190,7 @@ class ConfigTests(unittest.TestCase):
                 workspace=workspace,
                 runner="host_cli",
                 command=["example-agent"],
+                initial_workspace="participant_snapshot",
             ).validate()
             self.assertFalse(host.policy_compliant)
             self.assertEqual(host.network, "host_managed")
@@ -213,6 +215,7 @@ class ConfigTests(unittest.TestCase):
                 workspace=Path(directory),
                 runner="container",
                 command=["agent"],
+                initial_workspace="participant_snapshot",
                 image="agent:image",
                 mode="sandboxed",
                 inference=inference,
@@ -232,6 +235,7 @@ class ConfigTests(unittest.TestCase):
                     workspace=Path(directory),
                     runner="host_cli",
                     command=["agent"],
+                    initial_workspace="participant_snapshot",
                     inference=inference,
                 ).validate()
 
@@ -272,12 +276,8 @@ class ConfigTests(unittest.TestCase):
             minimum_gpu_memory_mib=80000,
             devices=["/dev/accel0"],
         ).validate_for(task)
-        self.assertEqual(
-            resources.public_manifest()["selection"], "episode_runtime"
-        )
-        self.assertEqual(
-            resources.public_manifest()["minimum_gpu_memory_mib"], 80000
-        )
+        self.assertEqual(resources.public_manifest()["selection"], "episode_runtime")
+        self.assertEqual(resources.public_manifest()["minimum_gpu_memory_mib"], 80000)
         with self.assertRaises(ConfigError):
             TrainingResources(required_gpu_model="H100").validate()
         with self.assertRaises(ConfigError):

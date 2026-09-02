@@ -83,11 +83,7 @@ def _migrate_legacy_result(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     status = result.get("status")
     candidate_id = result.get("final_candidate_id")
-    if (
-        status == "finalized"
-        and isinstance(candidate_id, str)
-        and candidate_id.strip()
-    ):
+    if status == "finalized" and isinstance(candidate_id, str) and candidate_id.strip():
         try:
             nll = validated_nll(result.get("test_nll"))
         except ValueError:

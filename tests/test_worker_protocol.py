@@ -52,9 +52,7 @@ class WorkerProtocolTests(unittest.TestCase):
     def test_missing_and_insufficient_capabilities_never_silently_pass(self):
         worker = descriptor(
             overrides={
-                "training_network_isolation": Capability(
-                    EnforcementLevel.BEST_EFFORT
-                )
+                "training_network_isolation": Capability(EnforcementLevel.BEST_EFFORT)
             }
         )
         requirements = tuple(BASELINE_REQUIREMENTS) + (
@@ -63,9 +61,7 @@ class WorkerProtocolTests(unittest.TestCase):
         assessment = assess_worker(worker, requirements)
         self.assertFalse(assessment.satisfied)
         self.assertEqual(assessment.missing, ("site_attestation",))
-        self.assertEqual(
-            assessment.insufficient, ("training_network_isolation",)
-        )
+        self.assertEqual(assessment.insufficient, ("training_network_isolation",))
 
     def test_descriptor_manifest_contains_no_platform_schema(self):
         manifest = descriptor().public_manifest()

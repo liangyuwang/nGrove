@@ -118,9 +118,7 @@ class DockerRuntime:
                 IMMUTABLE_WORKLOAD_IDENTITY: Capability(
                     enforced, "immutable image reference"
                 ),
-                GPU_DEVICE_ISOLATION: Capability(
-                    enforced, "explicit device grant"
-                ),
+                GPU_DEVICE_ISOLATION: Capability(enforced, "explicit device grant"),
                 TRAINING_DATA_READ_ONLY: Capability(
                     enforced, "read-only task data mount"
                 ),
@@ -168,7 +166,9 @@ class DockerRuntime:
                 timeout=timeout,
             )
         except subprocess.TimeoutExpired as exc:
-            raise RuntimeFailure(f"runtime command timed out: {' '.join(command)}") from exc
+            raise RuntimeFailure(
+                f"runtime command timed out: {' '.join(command)}"
+            ) from exc
         if check and result.returncode != 0:
             detail = result.stderr.strip() or result.stdout.strip() or "unknown error"
             raise RuntimeFailure(f"Docker command failed: {detail}")
@@ -251,8 +251,7 @@ class DockerRuntime:
         matching = [
             (name, memory_mib)
             for name, memory_mib in inventory
-            if not resources.required_gpu_model
-            or resources.required_gpu_model in name
+            if not resources.required_gpu_model or resources.required_gpu_model in name
         ]
         if len(matching) < resources.nvidia_gpu_count:
             raise RuntimeFailure(
@@ -260,10 +259,14 @@ class DockerRuntime:
                 f"{resources.required_gpu_model!r}; "
                 f"found {[name for name, _memory in inventory]}"
             )
-        if resources.minimum_gpu_memory_mib is not None and sum(
-            memory_mib >= resources.minimum_gpu_memory_mib
-            for _name, memory_mib in matching
-        ) < resources.nvidia_gpu_count:
+        if (
+            resources.minimum_gpu_memory_mib is not None
+            and sum(
+                memory_mib >= resources.minimum_gpu_memory_mib
+                for _name, memory_mib in matching
+            )
+            < resources.nvidia_gpu_count
+        ):
             raise RuntimeFailure(
                 "episode requires at least "
                 f"{resources.minimum_gpu_memory_mib} MiB on each selected GPU; "
@@ -390,7 +393,9 @@ class DockerRuntime:
             names = ", ".join(missing_environment)
             raise RuntimeFailure(f"agent environment variable is not set: {names}")
         if agent.inference is not None and not inference_network:
-            raise RuntimeFailure("inference_network is required when inference is enabled")
+            raise RuntimeFailure(
+                "inference_network is required when inference is enabled"
+            )
         agent_network = (
             inference_network
             if agent.inference is not None
@@ -716,9 +721,7 @@ class DockerRuntime:
         key = self._worker_lease_key(episode_id, lease_id)
         if key in self._worker_leases:
             raise RuntimeFailure(f"lease already exists: {lease_id}")
-        runtime_id = uuid.uuid5(
-            uuid.NAMESPACE_URL, f"{episode_id}:{lease_id}"
-        ).hex[:12]
+        runtime_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{episode_id}:{lease_id}").hex[:12]
         name = f"atb-lease-{runtime_id}"
         self.start_training(
             name=name,
@@ -785,9 +788,7 @@ class DockerRuntime:
 
     def _worker_lease_name(self, episode_id: str, lease_id: str) -> str:
         try:
-            return self._worker_leases[
-                self._worker_lease_key(episode_id, lease_id)
-            ]
+            return self._worker_leases[self._worker_lease_key(episode_id, lease_id)]
         except KeyError as exc:
             raise RuntimeFailure(f"unknown lease: {lease_id}") from exc
 
@@ -827,9 +828,7 @@ class DockerRuntime:
             return None
 
     def lease_state(self, *, episode_id: str, lease_id: str) -> LeaseState:
-        name = self._worker_leases.get(
-            self._worker_lease_key(episode_id, lease_id)
-        )
+        name = self._worker_leases.get(self._worker_lease_key(episode_id, lease_id))
         if name is None:
             return LeaseState.STOPPED
         if self.container_running(name):
@@ -892,9 +891,7 @@ class DockerRuntime:
         resources.validate()
         split = hidden_split.name
         if task.backend != "isolated_candidate":
-            raise RuntimeFailure(
-                f"unsupported evaluator backend: {task.backend}"
-            )
+            raise RuntimeFailure(f"unsupported evaluator backend: {task.backend}")
         data_path = hidden_split.path
         if not data_path.is_file():
             raise RuntimeFailure(f"hidden evaluator split is not a file: {data_path}")
@@ -1085,7 +1082,9 @@ class DockerRuntime:
             ValueError,
             json.JSONDecodeError,
         ) as exc:
-            raise RuntimeFailure("evaluator did not produce a valid NLL result") from exc
+            raise RuntimeFailure(
+                "evaluator did not produce a valid NLL result"
+            ) from exc
         return loss
 
     def evaluate_candidate(

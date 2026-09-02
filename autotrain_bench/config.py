@@ -149,13 +149,17 @@ class InferenceConfig:
     timeout_seconds: int
 
     @classmethod
-    def load(cls, value: Any, field: str = "agent.inference") -> Optional["InferenceConfig"]:
+    def load(
+        cls, value: Any, field: str = "agent.inference"
+    ) -> Optional["InferenceConfig"]:
         if value is None:
             return None
         raw = _mapping(value, field)
         if raw.get("enabled", True) is False:
             return None
-        protocol = _string(raw.get("protocol", "openai_compatible"), f"{field}.protocol")
+        protocol = _string(
+            raw.get("protocol", "openai_compatible"), f"{field}.protocol"
+        )
         if protocol != "openai_compatible":
             raise ConfigError(f"{field}.protocol must be 'openai_compatible' in v0")
         base_url = _string(raw.get("base_url"), f"{field}.base_url")
@@ -163,19 +167,27 @@ class InferenceConfig:
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ConfigError(f"{field}.base_url must be an http(s) origin")
         if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
-            raise ConfigError(f"{field}.base_url must not contain a path, query, or fragment")
+            raise ConfigError(
+                f"{field}.base_url must not contain a path, query, or fragment"
+            )
 
         api_key_env = raw.get("api_key_env")
         if api_key_env is not None:
-            if not isinstance(api_key_env, str) or not _ENVIRONMENT_NAME.fullmatch(api_key_env):
-                raise ConfigError(f"{field}.api_key_env must be an environment variable name or null")
+            if not isinstance(api_key_env, str) or not _ENVIRONMENT_NAME.fullmatch(
+                api_key_env
+            ):
+                raise ConfigError(
+                    f"{field}.api_key_env must be an environment variable name or null"
+                )
             if api_key_env in RESERVED_INFERENCE_CREDENTIAL_ENVIRONMENT:
                 raise ConfigError(
                     f"{field}.api_key_env may not use reserved gateway variable "
                     f"{api_key_env}"
                 )
 
-        allowed_models = _string_list(raw.get("allowed_models"), f"{field}.allowed_models")
+        allowed_models = _string_list(
+            raw.get("allowed_models"), f"{field}.allowed_models"
+        )
         allowed_paths = _string_list(
             raw.get("allowed_paths", ["/v1/responses", "/v1/chat/completions"]),
             f"{field}.allowed_paths",
@@ -189,7 +201,9 @@ class InferenceConfig:
                 or parsed_path.query
                 or parsed_path.fragment
             ):
-                raise ConfigError(f"{field}.allowed_paths must contain exact absolute paths")
+                raise ConfigError(
+                    f"{field}.allowed_paths must contain exact absolute paths"
+                )
         timeout_seconds = _positive_int(
             raw.get("timeout_seconds", 300), f"{field}.timeout_seconds"
         )
@@ -215,11 +229,11 @@ class AgentConfig:
     workspace: Path
     runner: str
     command: List[str]
+    initial_workspace: str
     image: Optional[str] = None
     mode: Optional[str] = None
     environment: List[str] = dataclass_field(default_factory=list)
     inference: Optional[InferenceConfig] = None
-    initial_workspace: str = "participant_snapshot"
 
     def validate(self) -> "AgentConfig":
         resolved_runner = agent_runner(self.runner, "agent runner")
@@ -251,9 +265,7 @@ class AgentConfig:
             self.environment or [], "agent environment"
         )
         if normalized_environment != (self.environment or []):
-            raise ConfigError(
-                "agent environment must be normalized and duplicate-free"
-            )
+            raise ConfigError("agent environment must be normalized and duplicate-free")
         if (
             self.inference
             and self.inference.api_key_env
@@ -334,16 +346,18 @@ class TrainingResources:
                 )
         normalized: List[str] = []
         for device in self.devices:
-            if not isinstance(device, str) or not device.startswith("/") or ":" in device:
+            if (
+                not isinstance(device, str)
+                or not device.startswith("/")
+                or ":" in device
+            ):
                 raise ConfigError(
                     "--training-device must be an absolute device path without ':'"
                 )
             if device not in normalized:
                 normalized.append(device)
         if normalized != self.devices:
-            raise ConfigError(
-                "training devices must be normalized and duplicate-free"
-            )
+            raise ConfigError("training devices must be normalized and duplicate-free")
         return self
 
     def validate_for(self, task: "TaskConfig") -> "TrainingResources":
@@ -384,9 +398,7 @@ class LeaderboardMetricConfig:
         return cls(
             name=_string(raw.get("name"), f"{field}.name"),
             field=_string(raw.get("field"), f"{field}.field"),
-            derived_from=_string(
-                raw.get("derived_from"), f"{field}.derived_from"
-            ),
+            derived_from=_string(raw.get("derived_from"), f"{field}.derived_from"),
             formula=_string(raw.get("formula"), f"{field}.formula"),
             direction=_string(raw.get("direction"), f"{field}.direction"),
         ).validate()
@@ -501,8 +513,7 @@ class TaskConfig:
         evaluator_entrypoint = (base / configured_evaluator_entrypoint).resolve()
         if not evaluator_entrypoint.is_file():
             raise ConfigError(
-                "evaluation.entrypoint is not a file: "
-                f"{evaluator_entrypoint}"
+                "evaluation.entrypoint is not a file: " f"{evaluator_entrypoint}"
             )
 
         config = cls(
@@ -571,11 +582,11 @@ class TaskConfig:
         """Validate the immutable task definition and its release classification."""
         task_kind(self.task_kind)
         if self.task_kind == "development_smoke" and self.leaderboard_eligible:
-            raise ConfigError(
-                "development smoke tasks may not be leaderboard eligible"
-            )
+            raise ConfigError("development smoke tasks may not be leaderboard eligible")
         if self.metric != "autoregressive_nll":
-            raise ConfigError("v0 only implements evaluation.metric='autoregressive_nll'")
+            raise ConfigError(
+                "v0 only implements evaluation.metric='autoregressive_nll'"
+            )
         self.leaderboard_metric.validate()
         if self.leaderboard_metric.derived_from != self.metric:
             raise ConfigError(
@@ -618,8 +629,7 @@ class TaskConfig:
                 )
         if not self.evaluator_entrypoint.is_file():
             raise ConfigError(
-                "evaluation.entrypoint is not a file: "
-                f"{self.evaluator_entrypoint}"
+                "evaluation.entrypoint is not a file: " f"{self.evaluator_entrypoint}"
             )
         return self
 

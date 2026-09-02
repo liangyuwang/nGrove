@@ -69,9 +69,9 @@ class CandidateClient:
         raise EvaluationError(f"Candidate server did not become ready: {last_error}")
 
     def predict(self, prefixes: Sequence[Sequence[int]]) -> List[List[float]]:
-        body = json.dumps(
-            {"input_ids": prefixes}, separators=(",", ":")
-        ).encode("utf-8")
+        body = json.dumps({"input_ids": prefixes}, separators=(",", ":")).encode(
+            "utf-8"
+        )
         request = urllib.request.Request(
             f"{self.base_url}/v1/next-token-logits",
             data=body,
@@ -101,7 +101,9 @@ class CandidateClient:
         result: List[List[float]] = []
         for row in value:
             if not isinstance(row, list) or len(row) != self.vocab_size:
-                raise EvaluationError("Candidate returned the wrong vocabulary dimension")
+                raise EvaluationError(
+                    "Candidate returned the wrong vocabulary dimension"
+                )
             if any(
                 isinstance(item, bool) or not isinstance(item, (int, float))
                 for item in row
@@ -140,7 +142,9 @@ def evaluate(
             raise EvaluationError("Candidate returned the wrong batch dimension")
         for logits, target in zip(output, targets):
             if len(logits) != vocab_size:
-                raise EvaluationError("Candidate returned the wrong vocabulary dimension")
+                raise EvaluationError(
+                    "Candidate returned the wrong vocabulary dimension"
+                )
             maximum = max(logits)
             log_normalizer = maximum + math.log(
                 sum(math.exp(value - maximum) for value in logits)

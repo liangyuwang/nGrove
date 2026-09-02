@@ -13,13 +13,22 @@ import json
 import re
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 from .config import ConfigError, TaskConfig, TrainingResources
 
 
 RELEASE_STAGES = {"preview", "official"}
 _IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+FORMAL_ARTIFACT_DIGEST_FIELDS = (
+    "challenge_manifest_sha256",
+    "task_manifest_sha256",
+    "policy_sha256",
+    "evaluator_sha256",
+    "train_manifest_sha256",
+    "val_sha256",
+    "test_sha256",
+)
 
 
 def _sha256_file(path: Path) -> str:
@@ -84,14 +93,10 @@ class TrackConfig:
         if track not in {"A", "B"}:
             raise ConfigError(f"{field}.track must be A or B")
         label = _string(raw.get("label", config_id), f"{field}.label")
-        provisional = _boolean(
-            raw.get("provisional", False), f"{field}.provisional"
-        )
+        provisional = _boolean(raw.get("provisional", False), f"{field}.provisional")
         if track == "A":
             if "max_leases" in raw or "lease_seconds" in raw:
-                raise ConfigError(
-                    f"{field} may not contain Track B lease fields"
-                )
+                raise ConfigError(f"{field} may not contain Track B lease fields")
             return cls(
                 config_id=config_id,
                 label=label,
@@ -171,9 +176,7 @@ class RuntimeProfile:
         host_count = _positive_int(raw.get("host_count"), f"{field}.host_count")
         if host_count != 1:
             raise ConfigError(f"{field}.host_count must be 1 in the v0 runtime")
-        provisional = _boolean(
-            raw.get("provisional", False), f"{field}.provisional"
-        )
+        provisional = _boolean(raw.get("provisional", False), f"{field}.provisional")
         label = _string(raw.get("label", profile_id), f"{field}.label")
         if accelerator is None:
             return cls(
@@ -260,6 +263,65 @@ class ComparisonKey:
 
 
 @dataclass(frozen=True)
+class ReleaseVerificationReceipt:
+    """Trusted organizer-side verification supplied by a formal deployment.
+
+    Challenge manifests can describe and hash themselves, but that does not
+    prove that the files came from the organizer.  A local preview therefore
+    cannot manufacture this receipt; a formal Coordinator receives it from its
+    trusted release-verification boundary.
+    """
+
+    authority: str
+    release_id: str
+    core_revision: str
+    artifact_sha256: Mapping[str, str]
+
+    def validate(self) -> "ReleaseVerificationReceipt":
+        _string(self.authority, "release verification authority")
+        _identifier(self.release_id, "release verification release_id")
+        if len(self.core_revision) not in {40, 64} or any(
+            value not in "0123456789abcdef" for value in self.core_revision
+        ):
+            raise ConfigError(
+                "release verification core_revision must be a Git object ID"
+            )
+        missing = [
+            field
+            for field in FORMAL_ARTIFACT_DIGEST_FIELDS
+            if field not in self.artifact_sha256
+        ]
+        invalid = [
+            field
+            for field in FORMAL_ARTIFACT_DIGEST_FIELDS
+            if field in self.artifact_sha256
+            and (
+                not isinstance(self.artifact_sha256[field], str)
+                or len(self.artifact_sha256[field]) != 64
+                or any(
+                    value not in "0123456789abcdef"
+                    for value in self.artifact_sha256[field]
+                )
+            )
+        ]
+        if missing or invalid:
+            details = sorted(set(missing + invalid))
+            raise ConfigError(
+                "release verification requires SHA-256 identities for: "
+                + ", ".join(details)
+            )
+        return self
+
+    def private_manifest(self) -> Dict[str, Any]:
+        return {
+            "authority": self.authority,
+            "release_id": self.release_id,
+            "core_revision": self.core_revision,
+            "artifact_sha256": dict(self.artifact_sha256),
+        }
+
+
+@dataclass(frozen=True)
 class ResolvedChallengeRun:
     task: TaskConfig
     track: str
@@ -311,8 +373,7 @@ class ChallengeRelease:
             key: TrackConfig.load(key, value) for key, value in raw_tracks.items()
         }
         runtime_profiles = {
-            key: RuntimeProfile.load(key, value)
-            for key, value in raw_runtimes.items()
+            key: RuntimeProfile.load(key, value) for key, value in raw_runtimes.items()
         }
         task_file = _string(root.get("task"), "task")
         configured_task = Path(task_file)

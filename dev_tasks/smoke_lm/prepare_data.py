@@ -83,7 +83,9 @@ def _download_page(offset: int) -> List[str]:
             last_error = exc
             if attempt < 3:
                 time.sleep(attempt)
-    raise RuntimeError(f"failed to fetch TinyStories rows at offset {offset}: {last_error}")
+    raise RuntimeError(
+        f"failed to fetch TinyStories rows at offset {offset}: {last_error}"
+    )
 
 
 def download_documents() -> List[str]:
@@ -225,7 +227,9 @@ def prepare(*, force: bool = False) -> Dict[str, object]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--force", action="store_true", help="download and rebuild even if verified data exists"
+        "--force",
+        action="store_true",
+        help="download and rebuild even if verified data exists",
     )
     args = parser.parse_args()
     prepare(force=args.force)

@@ -91,7 +91,12 @@ def validate_inference_request(
             405,
         )
     parsed_path = urlsplit(path)
-    if parsed_path.scheme or parsed_path.netloc or parsed_path.query or parsed_path.fragment:
+    if (
+        parsed_path.scheme
+        or parsed_path.netloc
+        or parsed_path.query
+        or parsed_path.fragment
+    ):
         raise InferenceFailure(
             "path_not_allowed",
             "inference requests must use an exact configured API path",
@@ -275,7 +280,9 @@ def summarize_inference_trace(path: Path) -> Dict[str, Any]:
             except json.JSONDecodeError:
                 malformed_records += 1
                 continue
-            if not isinstance(record, dict) or not isinstance(record.get("request_id"), str):
+            if not isinstance(record, dict) or not isinstance(
+                record.get("request_id"), str
+            ):
                 malformed_records += 1
                 continue
             request_id = record["request_id"]

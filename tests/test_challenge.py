@@ -4,7 +4,11 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from autotrain_bench.challenge import ChallengeRelease
+from autotrain_bench.challenge import (
+    FORMAL_ARTIFACT_DIGEST_FIELDS,
+    ChallengeRelease,
+    ReleaseVerificationReceipt,
+)
 from autotrain_bench.config import ConfigError, TaskConfig
 
 
@@ -175,6 +179,21 @@ class ChallengeReleaseTests(unittest.TestCase):
             path.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaisesRegex(ConfigError, "provisional"):
                 ChallengeRelease.load(path)
+
+    def test_formal_release_receipt_requires_every_trusted_artifact(self):
+        digests = {field: "a" * 64 for field in FORMAL_ARTIFACT_DIGEST_FIELDS}
+        receipt = ReleaseVerificationReceipt(
+            authority="test-organizer",
+            release_id="test-byte-lm-v1",
+            core_revision="b" * 40,
+            artifact_sha256=digests,
+        )
+        self.assertIs(receipt.validate(), receipt)
+
+        missing = dict(digests)
+        missing.pop("test_sha256")
+        with self.assertRaisesRegex(ConfigError, "test_sha256"):
+            replace(receipt, artifact_sha256=missing).validate()
 
 
 if __name__ == "__main__":

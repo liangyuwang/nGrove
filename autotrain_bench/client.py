@@ -54,7 +54,10 @@ class Client:
         response_path = self.outbox / f"{request_id}.json"
         started = time.monotonic()
         while not response_path.exists():
-            if timeout_seconds is not None and time.monotonic() - started > timeout_seconds:
+            if (
+                timeout_seconds is not None
+                and time.monotonic() - started > timeout_seconds
+            ):
                 raise ClientError(f"supervisor request timed out: {operation}")
             time.sleep(self.poll_seconds)
 

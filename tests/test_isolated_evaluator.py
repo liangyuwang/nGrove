@@ -59,17 +59,13 @@ class IsolatedEvaluatorTests(unittest.TestCase):
                 for prefix in prefixes:
                     leaked_target = None
                     for longer in prefixes:
-                        if (
-                            len(longer) > len(prefix)
-                            and list(longer[: len(prefix)]) == list(prefix)
-                        ):
+                        if len(longer) > len(prefix) and list(
+                            longer[: len(prefix)]
+                        ) == list(prefix):
                             leaked_target = longer[len(prefix)]
                             break
                     rows.append(
-                        [
-                            100.0 if leaked_target == token else 0.0
-                            for token in range(3)
-                        ]
+                        [100.0 if leaked_target == token else 0.0 for token in range(3)]
                         if leaked_target is not None
                         else [0.0, 0.0, 0.0]
                     )
@@ -89,9 +85,7 @@ class IsolatedEvaluatorTests(unittest.TestCase):
                 encoding="utf-8",
             )
             module, model = load_candidate(candidate, "cpu")
-            logits = normalized_logits(
-                module, model, [[0], [1, 2]], vocab_size=3
-            )
+            logits = normalized_logits(module, model, [[0], [1, 2]], vocab_size=3)
             self.assertEqual(logits, [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
 
     def test_legacy_sequence_logits_are_rejected(self):
@@ -107,6 +101,7 @@ class IsolatedEvaluatorTests(unittest.TestCase):
     def test_candidate_abi_rejects_boolean_and_string_logits(self):
         for raw_logit in (True, "1.0"):
             with self.subTest(raw_logit=raw_logit):
+
                 class Candidate:
                     @staticmethod
                     def next_token_logits(model, input_ids):
@@ -139,9 +134,7 @@ class IsolatedEvaluatorTests(unittest.TestCase):
 
         for raw_logit in (True, "1.0"):
             with self.subTest(raw_logit=raw_logit):
-                encoded = json.dumps(
-                    {"logits": [[raw_logit, 0.0]]}
-                ).encode("utf-8")
+                encoded = json.dumps({"logits": [[raw_logit, 0.0]]}).encode("utf-8")
                 with patch.object(
                     MODULE.urllib.request,
                     "urlopen",

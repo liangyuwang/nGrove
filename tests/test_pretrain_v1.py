@@ -78,6 +78,39 @@ class PretrainV1Tests(unittest.TestCase):
                     force=True,
                 )
 
+    def test_force_recognizer_requires_the_exact_task_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "generated"
+            target.mkdir()
+            manifest = {
+                "builder": {"id": MODULE.BUILDER_ID},
+                "source": {
+                    "dataset": MODULE.DATASET,
+                    "revision": "not-the-pinned-revision",
+                    "upstream_sample": MODULE.UPSTREAM_SAMPLE,
+                },
+                "tokenizer": {
+                    "name": MODULE.TOKENIZER,
+                    "vocab_size": MODULE.VOCAB_SIZE,
+                    "document_separator_token_id": MODULE.EOT_TOKEN_ID,
+                },
+                "layout": {},
+                "tokenized_train": {},
+            }
+            (target / "manifest.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+            (target / "important.txt").write_text("keep", encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                MODULE.PreparationError, "belongs to another dataset build"
+            ):
+                MODULE._validate_existing_output(target)
+
+            self.assertEqual(
+                (target / "important.txt").read_text(encoding="utf-8"), "keep"
+            )
+
     def test_task_uses_fixed_gpt2_ids_and_public_train_root(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -69,6 +69,11 @@ under the resource constraints of the selected benchmark track.
 
 The repository now contains an executable, single-host Docker prototype of the benchmark protocol. It is intended to validate episode lifecycle, Training Lease accounting, hidden evaluation, and the agent-facing control surface before the first official benchmark instance is selected.
 
+The current development snapshot uses Worker Protocol v2 but does not carry a
+release package version yet. Protocol v2 is a breaking Worker API revision:
+external v1 Workers must migrate to the role-specific `ResearchTaskSpec`,
+`EvaluationTaskSpec`, and `HiddenSplitRef` interfaces.
+
 Docker is the bundled v0 compatibility implementation, not a general platform
 abstraction. The benchmark Supervisor now depends on the semantic
 `autotrain_bench.worker_protocol` boundary: it asks a Worker to start, execute,
