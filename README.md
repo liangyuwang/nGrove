@@ -1224,11 +1224,16 @@ most recently committed candidate; that decision belongs to the Agent.
 
 Each incumbent declaration records:
 
-* artifact hash;
-* timestamp;
-* lease number;
-* model metadata;
-* current research resource usage.
+* a strictly ordered Supervisor event sequence and episode-relative time;
+* the Candidate artifact hash and previous incumbent;
+* the Candidate's source Leases;
+* the number of Leases consumed at declaration time.
+
+The append-only Supervisor event stream is the authoritative incumbent history.
+Agent and inference traces may be correlated with its episode-relative times to
+help explain a decision, but those traces are diagnostic: they may be partial or
+truncated and do not determine declaration order. The research seal separately
+freezes the final declared incumbent used for TEST.
 
 TEST remains unavailable.
 

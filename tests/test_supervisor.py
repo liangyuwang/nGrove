@@ -1689,6 +1689,51 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(supervisor.state["test_nll"], 1.5)
         self.assertAlmostEqual(supervisor.state["test_perplexity"], math.exp(1.5))
 
+    def test_incumbent_history_is_ordered_by_supervisor_events(self):
+        supervisor = self.supervisor()
+
+        supervisor.start_lease()
+        first = supervisor.commit_lease("/output/candidate")
+        self.clock.advance(1)
+        supervisor.declare_incumbent(first["candidate_id"])
+
+        (self.workspace / "candidate/candidate.py").write_text(
+            "def load(candidate_dir, device): return None\n"
+            "def next_token_logits(model, input_ids): return []\n"
+            "# second candidate\n",
+            encoding="utf-8",
+        )
+        supervisor.start_lease()
+        second = supervisor.commit_lease("/output/candidate")
+        self.clock.advance(2)
+        supervisor.declare_incumbent(second["candidate_id"])
+        self.clock.advance(3)
+        supervisor.declare_incumbent(first["candidate_id"])
+
+        events = [
+            json.loads(line)
+            for line in supervisor.events_path.read_text(encoding="utf-8").splitlines()
+        ]
+        declarations = [
+            event for event in events if event["type"] == "INCUMBENT_DECLARED"
+        ]
+        self.assertEqual(
+            [event["candidate_id"] for event in declarations],
+            [first["candidate_id"], second["candidate_id"], first["candidate_id"]],
+        )
+        self.assertEqual(
+            [event["previous_candidate_id"] for event in declarations],
+            [None, first["candidate_id"], second["candidate_id"]],
+        )
+        self.assertEqual(
+            [event["seq"] for event in declarations],
+            sorted(event["seq"] for event in declarations),
+        )
+        self.assertEqual(
+            [event["elapsed_seconds"] for event in declarations],
+            sorted(event["elapsed_seconds"] for event in declarations),
+        )
+
     def test_agent_mailbox_exposes_only_public_status(self):
         supervisor = self.supervisor()
         self.assertEqual(supervisor.episode_dir.stat().st_mode & 0o777, 0o700)
