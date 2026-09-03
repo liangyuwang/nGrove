@@ -87,6 +87,10 @@ class FakeWorker:
         self.roles = ("research", "evaluation")
         self.research_tasks = []
         self.hidden_splits = []
+        # Simulates benchmark-owned preparation inside start_lease: queue wait,
+        # image materialization, workload startup.
+        self.start_lease_delay = 0.0
+        self.clock = None
 
     def describe_capabilities(self):
         names = [requirement.name for requirement in BASELINE_REQUIREMENTS]
@@ -113,6 +117,8 @@ class FakeWorker:
         lease_dir,
     ):
         del duration_seconds, resources
+        if self.start_lease_delay and self.clock is not None:
+            self.clock.advance(self.start_lease_delay)
         if hasattr(task, "val_path") or hasattr(task, "test_path"):
             raise AssertionError("Research Worker received a hidden split path")
         self.research_tasks.append(task)
@@ -2233,6 +2239,90 @@ class SupervisorTests(unittest.TestCase):
         self.assertTrue(summary["usage_complete"])
         state = json.loads(supervisor.state_path.read_text(encoding="utf-8"))
         self.assertEqual(state["inference_usage"], summary)
+
+    def test_slow_worker_startup_does_not_shorten_the_track_a_lease_it_grants(self):
+        """Worker preparation is benchmark-owned and must not bill the Agent.
+
+        The fixture budget is 100s. The Agent spends 10s thinking, then asks for
+        a lease while the Worker needs 40s to materialize the workload. The
+        Agent must still receive the full 90s it was told it has, and every
+        Agent-visible clock must agree about it.
+        """
+
+        self.worker.clock = self.clock
+        supervisor = self.supervisor(track="A")
+        self.clock.advance(10)
+
+        self.worker.start_lease_delay = 40
+        granted = supervisor.start_lease()
+        status = supervisor.public_status()
+
+        # The Agent plans against this number, so it must be the truth.
+        self.assertEqual(granted["duration_seconds"], 90)
+
+        # Worker preparation is not participant time.
+        self.assertEqual(status["elapsed_seconds"], 10)
+        self.assertEqual(status["remaining_wall_clock_seconds"], 90)
+        self.assertEqual(
+            status["timing"]["benchmark_overhead_seconds"],
+            40,
+        )
+
+        # The lease-scoped clock and the episode-scoped clock must not disagree.
+        self.assertLessEqual(
+            status["active_lease"]["remaining_seconds"],
+            status["remaining_wall_clock_seconds"],
+        )
+
+        # The lease really gets its full duration: it is still alive one second
+        # before the granted deadline, and the episode has not closed early.
+        self.clock.advance(89)
+        self.assertFalse(supervisor.enforce_deadlines())
+        self.assertIsNotNone(supervisor.public_status()["active_lease"])
+
+    def test_failed_slow_worker_startup_still_refunds_its_preparation_time(self):
+        """A Lease that never started must not bill its queue wait either."""
+
+        self.worker.clock = self.clock
+        supervisor = self.supervisor(track="A")
+        self.clock.advance(10)
+
+        self.worker.start_lease_delay = 40
+        self.worker.fail_start = True
+        with self.assertRaises(ProtocolError) as raised:
+            supervisor.start_lease()
+        self.assertEqual(raised.exception.code, "infrastructure_failure")
+
+        status = supervisor.public_status()
+        self.assertEqual(status["timing"]["benchmark_overhead_seconds"], 40)
+        self.assertEqual(status["elapsed_seconds"], 10)
+        self.assertEqual(status["remaining_wall_clock_seconds"], 90)
+        # A Lease that never started is not consumed.
+        self.assertEqual(status["leases_used"], 0)
+
+    def test_a_release_may_declare_that_worker_startup_is_participant_time(self):
+        """The accounting boundary is the release's choice, not the runtime's."""
+
+        charged = replace(self.config, benchmark_owned_preparation=())
+        self.worker.clock = self.clock
+        supervisor = self.supervisor(track="A", config=charged)
+        self.clock.advance(10)
+
+        self.worker.start_lease_delay = 40
+        granted = supervisor.start_lease()
+        status = supervisor.public_status()
+
+        # Nothing is refunded, so the Agent is charged for the 40s of startup...
+        self.assertEqual(status["timing"]["benchmark_overhead_seconds"], 0)
+        self.assertEqual(status["elapsed_seconds"], 50)
+        self.assertEqual(status["remaining_wall_clock_seconds"], 50)
+        # ...and the granted duration is clamped to what actually remains, so
+        # the Agent is still never promised time it cannot have.
+        self.assertEqual(granted["duration_seconds"], 50)
+        self.assertLessEqual(
+            status["active_lease"]["remaining_seconds"],
+            status["remaining_wall_clock_seconds"],
+        )
 
 
 if __name__ == "__main__":

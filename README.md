@@ -1381,6 +1381,37 @@ Examples may include:
 
 The exact boundary is defined by each benchmark release and must be identical across participants.
 
+A release declares that boundary in its task manifest:
+
+```json
+"timing": { "benchmark_owned_preparation": ["worker_lease_startup"] }
+```
+
+`worker_lease_startup` is the wall clock a Worker spends inside
+`start_lease` — scheduler queueing, image conversion, workload startup.
+Declaring it refunds that time to the participant, including when the Lease
+fails to start. An
+explicit empty list is the opposite and equally valid choice: every second is
+charged to the participant. The field is optional and currently defaults to
+refunding Worker Lease startup; unknown phase names are rejected rather than
+ignored. Because the declaration lives in `task.json`, it is covered by the
+manifest digest recorded with every result, so the accounting boundary belongs
+to the frozen challenge rather than to whichever runtime revision executed it.
+
+The refund is never hidden. Every result reports the cumulative amount as
+`timing.benchmark_overhead_seconds`, and the Track A deadline moves out by the
+same amount so that `remaining_wall_clock_seconds` and the duration granted by
+`lease-start` always describe the same instant. Independently of the boundary
+a release chooses, a granted Lease duration is clamped to the budget that
+actually remains, so the Agent is never promised time it cannot have.
+
+Without this boundary the same Track A budget would mean different things at
+different sites, because the cost of starting a Lease is a property of the
+deployment rather than of the participant. A local Docker Worker with warm
+images needs well under a second; a scheduler-backed Worker can need minutes.
+An episode's real wall clock is therefore not bounded by its Track A budget —
+only the participant's measured research time is.
+
 ---
 
 # Isolation
@@ -1619,6 +1650,7 @@ contract as a challenge preview:
     "candidate": "pytorch/pytorch@sha256:<digest>",
     "evaluator": "python@sha256:<digest>"
   },
+  "timing": { "benchmark_owned_preparation": ["worker_lease_startup"] },
   "track_a": { "total_seconds": 300 },
   "track_b": { "max_leases": 3, "lease_seconds": 75 },
   "evaluation": {

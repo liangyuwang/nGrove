@@ -32,6 +32,11 @@
     "max_candidate_files": 100000,
     "timeout_seconds": 14400
   },
+  "timing": {
+    "benchmark_owned_preparation": [
+      "worker_lease_startup"
+    ]
+  },
   "track_a": {
     "total_seconds": 28800
   },

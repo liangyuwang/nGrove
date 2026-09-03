@@ -14,9 +14,23 @@ class ConfigError(ValueError):
     """Raised when a task configuration is invalid."""
 
 
-# Agent-facing control protocol.  Version 2 renamed the ``agent_mode`` status
-# field to ``agent_egress`` and its ``"sandboxed"`` value to ``"denied"``.
-AGENT_PROTOCOL_VERSION = 2
+# Agent-facing control protocol.
+#
+# Version 2 renamed the ``agent_mode`` status field to ``agent_egress`` and its
+# ``"sandboxed"`` value to ``"denied"``.
+#
+# Version 3 excludes benchmark-owned preparation from participant timing, so
+# ``elapsed_seconds`` and ``remaining_wall_clock_seconds`` no longer track raw
+# wall clock since task reveal.  An Agent that measured the budget with its own
+# clock instead of the reported one would now disagree with the Coordinator.
+AGENT_PROTOCOL_VERSION = 3
+
+# Phases a release may declare as benchmark-owned rather than participant time.
+# `README.md` requires this boundary to be release-defined and identical across
+# participants, so it belongs in the task manifest digest rather than in
+# whichever Core revision happens to execute the episode.
+BENCHMARK_OWNED_PREPARATION_PHASES = {"worker_lease_startup"}
+DEFAULT_BENCHMARK_OWNED_PREPARATION = ("worker_lease_startup",)
 
 AGENT_RUNNERS = {"container", "host_cli"}
 AGENT_EGRESS_POLICIES = {"denied", "unrestricted-dev"}
@@ -95,6 +109,31 @@ def agent_environment_names(value: Any, field: str = "agent.environment") -> Lis
         if item not in names:
             names.append(item)
     return names
+
+
+def benchmark_owned_preparation(
+    value: Any, field: str = "timing.benchmark_owned_preparation"
+) -> Tuple[str, ...]:
+    """Validate the release's participant-timing boundary.
+
+    An absent field keeps the v0 default.  An explicit empty list is a valid and
+    different choice: it declares that every second, including Worker Lease
+    materialization, is charged to the participant.
+    """
+
+    if value is None:
+        return DEFAULT_BENCHMARK_OWNED_PREPARATION
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise ConfigError(f"{field} must be an array of phase names")
+    unknown = [item for item in value if item not in BENCHMARK_OWNED_PREPARATION_PHASES]
+    if unknown:
+        allowed = ", ".join(sorted(BENCHMARK_OWNED_PREPARATION_PHASES))
+        raise ConfigError(
+            f"{field} contains unknown phases {unknown}; allowed: {allowed}"
+        )
+    if len(set(value)) != len(value):
+        raise ConfigError(f"{field} must not repeat a phase")
+    return tuple(value)
 
 
 def agent_egress(value: Any, field: str = "agent.egress") -> str:
@@ -460,6 +499,7 @@ class TaskConfig:
     leaderboard_metric: LeaderboardMetricConfig
     vocab_size: int
     context_length: int
+    benchmark_owned_preparation: Tuple[str, ...]
     track_a_total_seconds: int
     track_b_max_leases: int
     track_b_lease_seconds: int
@@ -501,6 +541,9 @@ class TaskConfig:
                 "hardware allocation is episode-owned and may not appear in a task"
             )
         evaluation = _mapping(root.get("evaluation"), "evaluation")
+        timing = root.get("timing")
+        if timing is not None:
+            timing = _mapping(timing, "timing")
         track_a = _mapping(root.get("track_a"), "track_a")
         track_b = _mapping(root.get("track_b"), "track_b")
 
@@ -550,6 +593,9 @@ class TaskConfig:
             ),
             context_length=_positive_int(
                 evaluation.get("context_length"), "evaluation.context_length"
+            ),
+            benchmark_owned_preparation=benchmark_owned_preparation(
+                None if timing is None else timing.get("benchmark_owned_preparation")
             ),
             track_a_total_seconds=_positive_int(
                 track_a.get("total_seconds"), "track_a.total_seconds"
@@ -672,6 +718,9 @@ class TaskConfig:
 
         return {
             "protocol_version": AGENT_PROTOCOL_VERSION,
+            "timing": {
+                "benchmark_owned_preparation": list(self.benchmark_owned_preparation)
+            },
             "task_id": self.task_id,
             "task_kind": self.task_kind,
             "leaderboard_eligible": self.leaderboard_eligible,

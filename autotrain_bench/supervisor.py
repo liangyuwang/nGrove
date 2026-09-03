@@ -605,6 +605,7 @@ class Supervisor:
             "started_at": None,
             "elapsed_seconds": 0.0,
             "timing": {
+                "benchmark_overhead_seconds": 0.0,
                 "training_lease_seconds": 0.0,
                 "validation_evaluation_seconds": 0.0,
                 "test_evaluation_seconds": 0.0,
@@ -682,6 +683,27 @@ class Supervisor:
             )
             self._save_state()
 
+    def _benchmark_overhead(self) -> float:
+        """Wall clock spent on benchmark-owned preparation, not on the Agent.
+
+        `README.md` places "benchmark infrastructure startup" outside
+        participant timing.  Worker Lease materialization -- scheduler queueing,
+        image conversion, workload startup -- is that preparation, and its cost
+        varies by deployment, so billing it to the participant would make the
+        same budget mean different things at different sites.
+        """
+
+        return float(self.state["timing"]["benchmark_overhead_seconds"])
+
+    def _record_benchmark_overhead(self, phase: str, since_monotonic: float) -> None:
+        """Refund a phase only when the release declares it benchmark-owned."""
+
+        if phase not in self.config.benchmark_owned_preparation:
+            return
+        self.state["timing"]["benchmark_overhead_seconds"] += max(
+            0.0, self.monotonic() - since_monotonic
+        )
+
     def _elapsed(self) -> float:
         if self.started_monotonic is None:
             return 0.0
@@ -690,7 +712,7 @@ class Supervisor:
             if self.closed_monotonic is not None
             else self.monotonic()
         )
-        return max(0.0, end - self.started_monotonic)
+        return max(0.0, end - self.started_monotonic - self._benchmark_overhead())
 
     def _freeze_elapsed(self, at_monotonic: Optional[float] = None) -> None:
         if self.closed_monotonic is None:
@@ -701,7 +723,11 @@ class Supervisor:
     def _track_a_deadline_monotonic(self) -> float:
         if self.started_monotonic is None:
             raise ProtocolError("invalid_state", "episode has not started")
-        return self.started_monotonic + self.config.track_a_total_seconds
+        return (
+            self.started_monotonic
+            + self.config.track_a_total_seconds
+            + self._benchmark_overhead()
+        )
 
     def _track_a_remaining(self) -> float:
         return max(0.0, self.config.track_a_total_seconds - self._elapsed())
@@ -730,6 +756,7 @@ class Supervisor:
         )
         result: Dict[str, Any] = {
             "official_elapsed_seconds": round(elapsed, 6),
+            "benchmark_overhead_seconds": round(self._benchmark_overhead(), 6),
             "training_lease_seconds": round(lease_seconds, 6),
             "validation_evaluation_seconds": round(validation_seconds, 6),
             "agent_and_worker_seconds": round(
@@ -1005,6 +1032,7 @@ class Supervisor:
             pending = self.state["pending_lease_teardowns"]
             pending.append(lease_id)
             self._save_state()
+            worker_call_started = self.monotonic()
             try:
                 self.research_worker.start_lease(
                     episode_id=self.state["episode_id"],
@@ -1016,6 +1044,9 @@ class Supervisor:
                     lease_dir=lease_dir,
                 )
             except WorkerTeardownFailure as exc:
+                self._record_benchmark_overhead(
+                    "worker_lease_startup", worker_call_started
+                )
                 self._event(
                     "LEASE_INFRA_FAILURE",
                     lease_id=lease_id,
@@ -1030,6 +1061,9 @@ class Supervisor:
                     "research worker teardown failed",
                 ) from exc
             except WorkerFailure as exc:
+                self._record_benchmark_overhead(
+                    "worker_lease_startup", worker_call_started
+                )
                 pending.remove(lease_id)
                 try:
                     shutil.rmtree(lease_dir)
@@ -1055,7 +1089,12 @@ class Supervisor:
                     "infrastructure_failure", "training lease startup failed"
                 ) from exc
 
+            self._record_benchmark_overhead("worker_lease_startup", worker_call_started)
             started = self.monotonic()
+            if self.track == "A":
+                # Defence in depth: whatever else consumed budget between the
+                # admission check and here, never promise more than remains.
+                duration = min(duration, self._track_a_remaining())
             self.state["leases_used"] += 1
             self.state["active_lease"] = {
                 "lease_id": lease_id,
