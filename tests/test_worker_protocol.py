@@ -3,6 +3,7 @@ import unittest
 
 from autotrain_bench.worker_protocol import (
     BASELINE_REQUIREMENTS,
+    IMMUTABLE_WORKLOAD_IDENTITY,
     Capability,
     CapabilityRequirement,
     CommandResult,
@@ -96,6 +97,45 @@ class WorkerProtocolTests(unittest.TestCase):
                 roles=("research",),
                 capabilities={},
             )
+
+    def test_a_capability_required_by_both_roles_is_reported_once(self):
+        """`IMMUTABLE_WORKLOAD_IDENTITY` belongs to both requirement sets.
+
+        A deployment self-check assesses itself against the combined baseline,
+        so an undeduplicated shortfall list reports the same gap twice.
+        """
+
+        assessment = assess_worker(
+            descriptor(
+                overrides={
+                    IMMUTABLE_WORKLOAD_IDENTITY: Capability(EnforcementLevel.UNVERIFIED)
+                }
+            ),
+            BASELINE_REQUIREMENTS,
+        )
+
+        self.assertEqual(assessment.insufficient, (IMMUTABLE_WORKLOAD_IDENTITY,))
+        self.assertEqual(
+            assessment.public_manifest()["insufficient_capabilities"],
+            [IMMUTABLE_WORKLOAD_IDENTITY],
+        )
+
+    def test_a_capability_missing_from_both_roles_is_reported_once(self):
+        capabilities = {
+            requirement.name: Capability(EnforcementLevel.ENFORCED)
+            for requirement in BASELINE_REQUIREMENTS
+            if requirement.name != IMMUTABLE_WORKLOAD_IDENTITY
+        }
+        incomplete = WorkerDescriptor(
+            worker_id="test-deployment",
+            trust_level=TrustLevel.DEVELOPMENT,
+            roles=("research", "evaluation"),
+            capabilities=capabilities,
+        )
+
+        assessment = assess_worker(incomplete, BASELINE_REQUIREMENTS)
+
+        self.assertEqual(assessment.missing, (IMMUTABLE_WORKLOAD_IDENTITY,))
 
 
 if __name__ == "__main__":

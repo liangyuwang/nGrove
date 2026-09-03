@@ -332,8 +332,11 @@ def assess_worker(
             insufficient.append(requirement.name)
     return CapabilityAssessment(
         satisfied=not missing and not insufficient,
-        missing=tuple(sorted(missing)),
-        insufficient=tuple(sorted(insufficient)),
+        # A capability may be required by more than one role, so a shortfall
+        # can be recorded more than once.  Report each name once: callers that
+        # need per-role attribution assess each role separately.
+        missing=tuple(sorted(set(missing))),
+        insufficient=tuple(sorted(set(insufficient))),
         trust_satisfied=descriptor.trust_level.rank >= minimum_trust.rank,
         conformance_satisfied=(
             not require_conformance
