@@ -134,13 +134,13 @@ The Agent image, command, initial workspace, inference registration, and model
 identity must be fixed before the episode starts. Do not create or inject an
 operator-provided reference Agent as an implicit fallback.
 
-Prefer the sandboxed container runner. Route registered remote inference only
-through the benchmark's controlled inference gateway. `host_cli` and
-`unrestricted-dev` are preview/debug modes and must be reported as
-`policy_compliant: false`; never present them as a compliant fallback. If the
-available Agent cannot be accessed within the required boundary, explain the
-gap and ask whether the user wants a clearly labeled non-compliant preview or
-will provide a compliant packaging/deployment.
+Prefer the container runner with `--agent-egress denied`. Route registered
+remote inference only through the benchmark's controlled inference gateway.
+`host_cli` and `unrestricted-dev` are preview/debug modes and must be reported
+as `policy_compliant: false`; never present them as a compliant fallback. If
+the available Agent cannot be accessed within the required boundary, explain
+the gap and ask whether the user wants a clearly labeled non-compliant preview
+or will provide a compliant packaging/deployment.
 
 ### Authorization checkpoint
 

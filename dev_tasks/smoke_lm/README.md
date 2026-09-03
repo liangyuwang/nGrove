@@ -24,8 +24,8 @@ The participant owns the Agent image or CLI, its command, and every initial
 workspace file. If `--agent-workspace` is omitted, AutoTrain-Bench creates an
 empty episode workspace. The Agent must create its own training program, model,
 experiments, Candidate implementation, and incumbent decisions after task
-reveal. This task does not ship a reference or starter Agent. A sandboxed Agent
-sees only its episode workspace, TRAIN, the public task manifest, and the
+reveal. This task does not ship a reference or starter Agent. An egress-denied
+Agent sees only its episode workspace, TRAIN, the public task manifest, and the
 control mailbox; it cannot see the trusted Core checkout.
 
 ## Fixed smoke task
@@ -73,7 +73,7 @@ and writes ignored generated artifacts under `dev_tasks/smoke_lm/data/`.
 
 ## Run an Agent integration
 
-A sandboxed participant is supplied explicitly as an Agent Container.
+An egress-denied participant is supplied explicitly as an Agent Container.
 The image contains the Agent executable, while the writable episode workspace
 starts empty:
 
@@ -122,7 +122,7 @@ autotrain-bench start \
 
 The `host_cli` run reports `policy_compliant: false` because a host process can
 access files and networking outside the enforced episode boundary. The
-Candidate/Evaluator boundary remains isolated. A sandboxed participant
+Candidate/Evaluator boundary remains isolated. An egress-denied participant
 container exercises the strongest local v0 path, but the bundled Worker is a
 Development deployment and its deadline guard shares the Coordinator process.
 It therefore cannot produce a formal leaderboard result.

@@ -29,6 +29,7 @@ from .challenge import (
     ReleaseVerificationReceipt,
 )
 from .config import (
+    AGENT_PROTOCOL_VERSION,
     AgentConfig,
     TaskConfig,
     TrainingResources,
@@ -503,7 +504,7 @@ class Supervisor:
         )
 
         self.state: Dict[str, Any] = {
-            "protocol_version": 1,
+            "protocol_version": AGENT_PROTOCOL_VERSION,
             "result_schema_version": RESULT_SCHEMA_VERSION,
             "episode_id": self.episode_dir.name,
             "task_id": config.task_id,
@@ -556,7 +557,7 @@ class Supervisor:
                 "runner": agent.runner,
                 "image": agent.image if agent.runner == "container" else None,
                 "command": list(agent.command),
-                "mode": agent.mode,
+                "egress": agent.egress,
                 "network": agent.network,
                 "policy_compliant": agent_execution.policy_compliant,
                 "execution_evidence": agent_execution.public_manifest(),
@@ -676,7 +677,7 @@ class Supervisor:
                 "TASK_REVEALED",
                 track=self.track,
                 agent_runner=self.agent.runner,
-                agent_mode=self.agent.mode,
+                agent_egress=self.agent.egress,
                 inference_enabled=self.agent.inference is not None,
             )
             self._save_state()
@@ -885,7 +886,7 @@ class Supervisor:
                 "track": self.track,
                 "comparison_key": self.state["comparison_key"],
                 "agent_runner": self.agent.runner,
-                "agent_mode": self.agent.mode,
+                "agent_egress": self.agent.egress,
                 "agent_network": self.agent.network,
                 "policy_compliant": self.state["policy_compliant"],
                 "policy_violations": list(self.state["policy_violations"]),

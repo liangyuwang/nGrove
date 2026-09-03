@@ -31,6 +31,7 @@ from autotrain_bench.local_mailbox import (
     write_untrusted_response,
 )
 from autotrain_bench.local_agent_execution import describe_local_agent_execution
+from autotrain_bench.results import RESULT_SCHEMA_VERSION
 from autotrain_bench.supervisor import (
     MAX_COMMAND_STREAM_BYTES,
     ProtocolError,
@@ -197,7 +198,7 @@ class SupervisorTests(unittest.TestCase):
             command=["python", "/workspace/agent.py"],
             initial_workspace="participant_snapshot",
             image="python:test-agent",
-            mode="sandboxed",
+            egress="denied",
         )
         self.resources = TrainingResources()
         self.workspace = workspace
@@ -593,7 +594,7 @@ class SupervisorTests(unittest.TestCase):
 
         final = self.finalize_after_agent_stop(supervisor)
         self.assertEqual(final["status"], "finalized")
-        self.assertEqual(final["result_schema_version"], 2)
+        self.assertEqual(final["result_schema_version"], RESULT_SCHEMA_VERSION)
         self.assertEqual(final["outcome"], "success")
         self.assertEqual(final["test_nll"], 1.5)
         self.assertAlmostEqual(final["test_perplexity"], math.exp(1.5))
@@ -1627,7 +1628,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(result["task_kind"], "development_smoke")
         self.assertFalse(result["leaderboard_eligible"])
         self.assertEqual(result["agent_network"], "disabled")
-        self.assertEqual(result["agent_mode"], "sandboxed")
+        self.assertEqual(result["agent_egress"], "denied")
         serialized = json.dumps(result)
         self.assertNotIn(str(self.config.val_path), serialized)
         self.assertNotIn(str(self.config.test_path), serialized)
@@ -2177,7 +2178,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(supervisor.state["agent_usage"], usage)
         status = supervisor.public_status()
         self.assertEqual(status["agent_runner"], "host_cli")
-        self.assertIsNone(status["agent_mode"])
+        self.assertIsNone(status["agent_egress"])
         self.assertEqual(status["agent_usage"], usage)
         self.assertEqual(status["agent_exit_code"], 0)
         self.assertEqual(status["agent_termination_reason"], "exited")

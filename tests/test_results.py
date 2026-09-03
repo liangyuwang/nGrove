@@ -2,11 +2,29 @@ import math
 import unittest
 
 from autotrain_bench.results import (
+    AGENT_MODE_RESULT_SCHEMA_VERSION,
+    RESULT_SCHEMA_VERSION,
     ResultSchemaError,
     normalize_result_report,
     perplexity_from_nll,
     validated_nll,
 )
+
+
+def _finalized(*, schema_version=RESULT_SCHEMA_VERSION, **overrides):
+    """A minimal valid finalized result, so each test varies only one thing."""
+
+    payload = {
+        "result_schema_version": schema_version,
+        "status": "finalized",
+        "outcome": "success",
+        "final_candidate_id": "sha256:candidate",
+        "test_nll": 0.0,
+        "test_perplexity": 1.0,
+        "failure": None,
+    }
+    payload.update(overrides)
+    return payload
 
 
 class ResultMetricTests(unittest.TestCase):
@@ -93,7 +111,7 @@ class ResultMetricTests(unittest.TestCase):
             },
         }
         for name, payload in invalid.items():
-            payload["result_schema_version"] = 2
+            payload["result_schema_version"] = RESULT_SCHEMA_VERSION
             with self.subTest(name=name):
                 with self.assertRaises(ResultSchemaError):
                     normalize_result_report(payload)
@@ -101,7 +119,7 @@ class ResultMetricTests(unittest.TestCase):
     def test_current_result_schema_accepts_test_in_progress(self):
         report = normalize_result_report(
             {
-                "result_schema_version": 2,
+                "result_schema_version": RESULT_SCHEMA_VERSION,
                 "status": "closed",
                 "outcome": None,
                 "final_candidate_id": "sha256:candidate",
@@ -115,7 +133,7 @@ class ResultMetricTests(unittest.TestCase):
     def test_current_result_accepts_a_prepared_publication_reference(self):
         report = normalize_result_report(
             {
-                "result_schema_version": 2,
+                "result_schema_version": RESULT_SCHEMA_VERSION,
                 "status": "finalized",
                 "outcome": "success",
                 "final_candidate_id": "sha256:candidate",
@@ -149,7 +167,7 @@ class ResultMetricTests(unittest.TestCase):
     def test_private_staged_result_is_not_part_of_a_report(self):
         report = normalize_result_report(
             {
-                "result_schema_version": 2,
+                "result_schema_version": RESULT_SCHEMA_VERSION,
                 "status": "closed",
                 "outcome": None,
                 "final_candidate_id": "sha256:candidate",
@@ -172,7 +190,7 @@ class ResultMetricTests(unittest.TestCase):
         with self.assertRaisesRegex(ResultSchemaError, "closed"):
             normalize_result_report(
                 {
-                    "result_schema_version": 2,
+                    "result_schema_version": RESULT_SCHEMA_VERSION,
                     "status": "closed",
                     "outcome": "failed",
                     "final_candidate_id": "sha256:candidate",
@@ -201,6 +219,124 @@ class ResultMetricTests(unittest.TestCase):
                     "status": "unknown",
                     "final_candidate_id": None,
                     "test_nll": None,
+                    "failure": None,
+                }
+            )
+
+    def test_v2_agent_mode_is_migrated_to_the_v3_egress_field(self):
+        report = normalize_result_report(
+            {
+                "result_schema_version": AGENT_MODE_RESULT_SCHEMA_VERSION,
+                "status": "finalized",
+                "outcome": "success",
+                "final_candidate_id": "sha256:candidate",
+                "test_nll": 0.0,
+                "test_perplexity": 1.0,
+                "failure": None,
+                "agent_system": {"runner": "container", "mode": "sandboxed"},
+            }
+        )
+
+        self.assertEqual(report["result_schema_version"], RESULT_SCHEMA_VERSION)
+        self.assertEqual(
+            report["migrated_from_result_schema_version"],
+            AGENT_MODE_RESULT_SCHEMA_VERSION,
+        )
+        self.assertEqual(report["agent_system"]["egress"], "denied")
+        self.assertNotIn("mode", report["agent_system"])
+
+    def test_v2_host_runner_agent_mode_migrates_without_inventing_a_policy(self):
+        report = normalize_result_report(
+            {
+                "result_schema_version": AGENT_MODE_RESULT_SCHEMA_VERSION,
+                "status": "dnf",
+                "outcome": "failed",
+                "final_candidate_id": None,
+                "test_nll": None,
+                "test_perplexity": None,
+                "failure": "agent exited without finishing the episode",
+                "agent_system": {"runner": "host_cli", "mode": None},
+            }
+        )
+
+        self.assertIsNone(report["agent_system"]["egress"])
+        self.assertNotIn("mode", report["agent_system"])
+
+    def test_current_schema_report_is_not_marked_as_migrated(self):
+        report = normalize_result_report(
+            {
+                "result_schema_version": RESULT_SCHEMA_VERSION,
+                "status": "finalized",
+                "outcome": "success",
+                "final_candidate_id": "sha256:candidate",
+                "test_nll": 0.0,
+                "test_perplexity": 1.0,
+                "failure": None,
+                "agent_system": {"runner": "container", "egress": "denied"},
+            }
+        )
+
+        self.assertNotIn("migrated_from_result_schema_version", report)
+        self.assertEqual(report["agent_system"]["egress"], "denied")
+
+    def test_v3_rejects_a_result_that_still_carries_the_v2_agent_mode(self):
+        with self.assertRaisesRegex(ResultSchemaError, "agent_system.mode"):
+            normalize_result_report(
+                _finalized(agent_system={"runner": "container", "mode": "sandboxed"})
+            )
+
+    def test_v2_migration_rejects_an_unknown_agent_mode(self):
+        with self.assertRaisesRegex(ResultSchemaError, "unknown Agent mode"):
+            normalize_result_report(
+                _finalized(
+                    schema_version=AGENT_MODE_RESULT_SCHEMA_VERSION,
+                    agent_system={"runner": "container", "mode": "unknown-policy"},
+                )
+            )
+
+    def test_an_unknown_agent_egress_policy_is_rejected(self):
+        with self.assertRaisesRegex(ResultSchemaError, "agent_system.egress"):
+            normalize_result_report(
+                _finalized(
+                    agent_system={"runner": "container", "egress": "unknown-policy"}
+                )
+            )
+
+    def test_a_host_runner_result_may_not_declare_an_egress_policy(self):
+        with self.assertRaisesRegex(ResultSchemaError, "host_cli"):
+            normalize_result_report(
+                _finalized(agent_system={"runner": "host_cli", "egress": "denied"})
+            )
+
+    def test_a_container_runner_result_must_declare_an_egress_policy(self):
+        with self.assertRaisesRegex(ResultSchemaError, "must declare"):
+            normalize_result_report(
+                _finalized(agent_system={"runner": "container", "egress": None})
+            )
+
+    def test_an_unknown_agent_runner_is_rejected(self):
+        with self.assertRaisesRegex(ResultSchemaError, "agent_system.runner"):
+            normalize_result_report(
+                _finalized(agent_system={"runner": "microvm", "egress": "denied"})
+            )
+
+    def test_a_valid_host_runner_result_is_accepted(self):
+        report = normalize_result_report(
+            _finalized(agent_system={"runner": "host_cli", "egress": None})
+        )
+
+        self.assertIsNone(report["agent_system"]["egress"])
+
+    def test_a_future_result_schema_version_is_rejected(self):
+        with self.assertRaisesRegex(ResultSchemaError, "unsupported result schema"):
+            normalize_result_report(
+                {
+                    "result_schema_version": RESULT_SCHEMA_VERSION + 1,
+                    "status": "finalized",
+                    "outcome": "success",
+                    "final_candidate_id": "sha256:candidate",
+                    "test_nll": 0.0,
+                    "test_perplexity": 1.0,
                     "failure": None,
                 }
             )

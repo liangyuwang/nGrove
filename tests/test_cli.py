@@ -26,6 +26,7 @@ from autotrain_bench.cli import (
     command_start,
 )
 from autotrain_bench.config import ConfigError, TaskConfig
+from autotrain_bench.results import RESULT_SCHEMA_VERSION
 from autotrain_bench.runtime import DockerRuntime, RuntimeFailure
 
 
@@ -54,6 +55,31 @@ class WorkspaceSnapshotTests(unittest.TestCase):
             1,
         )
 
+    def test_removed_agent_mode_flag_reports_the_egress_migration(self):
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "start",
+                "--task",
+                str(TASK),
+                "--track",
+                "A",
+                "--episodes-root",
+                "/tmp/does-not-matter",
+                "--agent-runner",
+                "container",
+                "--agent-image",
+                "example:test",
+                "--agent-command",
+                "example",
+                "--agent-mode",
+                "sandboxed",
+            ]
+        )
+        self.assertEqual(args.agent_mode, "sandboxed")
+        with self.assertRaisesRegex(ConfigError, "--agent-egress"):
+            command_start(args)
+
     def test_report_migrates_a_legacy_success_without_rewriting_state(self):
         with tempfile.TemporaryDirectory() as directory:
             episode = Path(directory)
@@ -73,7 +99,7 @@ class WorkspaceSnapshotTests(unittest.TestCase):
 
             report = json.loads(output.getvalue())
             self.assertEqual(return_code, 0)
-            self.assertEqual(report["result_schema_version"], 2)
+            self.assertEqual(report["result_schema_version"], RESULT_SCHEMA_VERSION)
             self.assertEqual(report["migrated_from_result_schema_version"], 1)
             self.assertEqual(report["outcome"], "success")
             self.assertEqual(report["test_nll"], 1.5)

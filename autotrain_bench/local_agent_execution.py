@@ -11,9 +11,9 @@ def describe_local_agent_execution(agent: AgentConfig) -> AgentExecutionEvidence
     """Describe the v0 launcher honestly without making the mechanism proof."""
 
     agent.validate()
-    sandboxed_container = agent.runner == "container" and agent.mode == "sandboxed"
+    confined_container = agent.runner == "container" and agent.egress == "denied"
     limitations = []
-    if not sandboxed_container:
+    if not confined_container:
         limitations.append("agent_execution_boundary")
     # Both bundled launch paths expose writable host bind mounts without a
     # deployment-enforced filesystem quota. Application-level mailbox limits
@@ -28,7 +28,7 @@ def describe_local_agent_execution(agent: AgentConfig) -> AgentExecutionEvidence
         mechanism=agent.runner,
         enforcement=(
             EnforcementLevel.BEST_EFFORT
-            if sandboxed_container
+            if confined_container
             else EnforcementLevel.UNVERIFIED
         ),
         trust_level=TrustLevel.DEVELOPMENT,

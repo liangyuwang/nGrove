@@ -14,8 +14,12 @@ class ConfigError(ValueError):
     """Raised when a task configuration is invalid."""
 
 
+# Agent-facing control protocol.  Version 2 renamed the ``agent_mode`` status
+# field to ``agent_egress`` and its ``"sandboxed"`` value to ``"denied"``.
+AGENT_PROTOCOL_VERSION = 2
+
 AGENT_RUNNERS = {"container", "host_cli"}
-AGENT_MODES = {"sandboxed", "unrestricted-dev"}
+AGENT_EGRESS_POLICIES = {"denied", "unrestricted-dev"}
 EVALUATOR_BACKENDS = {"isolated_candidate"}
 TASK_KINDS = {"benchmark_challenge", "development_smoke"}
 RESERVED_AGENT_ENVIRONMENT = {
@@ -93,9 +97,9 @@ def agent_environment_names(value: Any, field: str = "agent.environment") -> Lis
     return names
 
 
-def agent_mode(value: Any, field: str = "agent.mode") -> str:
-    if not isinstance(value, str) or value not in AGENT_MODES:
-        allowed = ", ".join(sorted(AGENT_MODES))
+def agent_egress(value: Any, field: str = "agent.egress") -> str:
+    if not isinstance(value, str) or value not in AGENT_EGRESS_POLICIES:
+        allowed = ", ".join(sorted(AGENT_EGRESS_POLICIES))
         raise ConfigError(f"{field} must be one of: {allowed}")
     return value
 
@@ -231,19 +235,21 @@ class AgentConfig:
     command: List[str]
     initial_workspace: str
     image: Optional[str] = None
-    mode: Optional[str] = None
+    egress: Optional[str] = None
     environment: List[str] = dataclass_field(default_factory=list)
     inference: Optional[InferenceConfig] = None
 
     def validate(self) -> "AgentConfig":
         resolved_runner = agent_runner(self.runner, "agent runner")
         if resolved_runner == "container":
-            agent_mode(self.mode, "agent mode")
+            agent_egress(self.egress, "agent egress")
             if not self.image:
                 raise ConfigError("--agent-image is required for the container runner")
         else:
-            if self.mode is not None:
-                raise ConfigError("--agent-mode is not valid with the host_cli runner")
+            if self.egress is not None:
+                raise ConfigError(
+                    "--agent-egress is not valid with the host_cli runner"
+                )
             if self.image is not None:
                 raise ConfigError("--agent-image is not valid with the host_cli runner")
             if self.inference is not None:
@@ -281,7 +287,7 @@ class AgentConfig:
     def network(self) -> str:
         if self.runner == "host_cli":
             return "host_managed"
-        return "disabled" if self.mode == "sandboxed" else "unrestricted_dev"
+        return "disabled" if self.egress == "denied" else "unrestricted_dev"
 
     def public_manifest(
         self,
@@ -303,7 +309,7 @@ class AgentConfig:
             }
         return {
             "runner": self.runner,
-            "mode": self.mode,
+            "egress": self.egress,
             "network": self.network,
             "workspace": "." if self.runner == "host_cli" else "/workspace",
             "training_workspace": "/workspace",
@@ -665,7 +671,7 @@ class TaskConfig:
             }
 
         return {
-            "protocol_version": 1,
+            "protocol_version": AGENT_PROTOCOL_VERSION,
             "task_id": self.task_id,
             "task_kind": self.task_kind,
             "leaderboard_eligible": self.leaderboard_eligible,

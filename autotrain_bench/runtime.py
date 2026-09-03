@@ -420,7 +420,7 @@ class DockerRuntime:
         agent_network = (
             inference_network
             if agent.inference is not None
-            else ("none" if agent.mode == "sandboxed" else "bridge")
+            else ("none" if agent.egress == "denied" else "bridge")
         )
         args: List[str] = [
             "run",

@@ -146,7 +146,7 @@ def validate_inference_request(
             if not isinstance(tool, dict) or tool.get("type") != "function":
                 raise InferenceFailure(
                     "external_tool_not_allowed",
-                    "only function tools executed by the sandboxed Agent are allowed",
+                    "only function tools executed by the Agent Container are allowed",
                     403,
                 )
     if payload.get("web_search_options") is not None:

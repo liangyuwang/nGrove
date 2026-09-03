@@ -5,9 +5,22 @@ from __future__ import annotations
 import math
 from typing import Any, Dict
 
+from .config import AGENT_EGRESS_POLICIES, AGENT_RUNNERS
 
-RESULT_SCHEMA_VERSION = 2
+
+RESULT_SCHEMA_VERSION = 3
 LEGACY_RESULT_SCHEMA_VERSION = 1
+# Version 2 recorded the Agent egress policy as ``agent_system.mode`` with the
+# value ``"sandboxed"``.  Version 3 renames that field to ``agent_system.egress``
+# with the value ``"denied"`` so a schema version identifies one structure.
+AGENT_MODE_RESULT_SCHEMA_VERSION = 2
+_SUPPORTED_INPUT_SCHEMA_VERSIONS = frozenset(
+    {
+        LEGACY_RESULT_SCHEMA_VERSION,
+        AGENT_MODE_RESULT_SCHEMA_VERSION,
+        RESULT_SCHEMA_VERSION,
+    }
+)
 _VALID_STATUSES = {
     "created",
     "active",
@@ -21,6 +34,15 @@ _FAILED_OUTCOME_STATUSES = {
     "dnf",
     "finalized",
     "infrastructure_failure",
+}
+
+
+# The complete set of ``agent_system.mode`` values a version 2 state could hold.
+# ``None`` belongs to the host_cli runner, which never had an egress policy.
+_V2_EGRESS_BY_AGENT_MODE = {
+    None: None,
+    "sandboxed": "denied",
+    "unrestricted-dev": "unrestricted-dev",
 }
 
 
@@ -63,24 +85,73 @@ def normalize_result_report(payload: Any) -> Dict[str, Any]:
     version = payload.get("result_schema_version", LEGACY_RESULT_SCHEMA_VERSION)
     if isinstance(version, bool) or not isinstance(version, int):
         raise ResultSchemaError("result_schema_version must be an integer")
-    if version == RESULT_SCHEMA_VERSION:
-        result = dict(payload)
-        result.setdefault("deployment_teardown_failures", [])
-        result.pop("pending_result", None)
-        _validate_current_result(result)
-        return result
-    if version != LEGACY_RESULT_SCHEMA_VERSION:
+    if version not in _SUPPORTED_INPUT_SCHEMA_VERSIONS:
         raise ResultSchemaError(f"unsupported result schema version: {version}")
-    result = _migrate_legacy_result(payload)
+    if version == LEGACY_RESULT_SCHEMA_VERSION:
+        result = _migrate_legacy_result(payload)
+    else:
+        result = dict(payload)
+    if version < RESULT_SCHEMA_VERSION:
+        result = _migrate_agent_mode_to_egress(result)
+        result["result_schema_version"] = RESULT_SCHEMA_VERSION
+        result["migrated_from_result_schema_version"] = version
+    result.setdefault("deployment_teardown_failures", [])
     result.pop("pending_result", None)
     _validate_current_result(result)
     return result
 
 
+def _migrate_agent_mode_to_egress(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Rename the pre-v3 Agent egress field without inventing a value."""
+
+    agent_system = result.get("agent_system")
+    if not isinstance(agent_system, dict) or "mode" not in agent_system:
+        return result
+    migrated = dict(agent_system)
+    mode = migrated.pop("mode")
+    if "egress" not in migrated:
+        try:
+            migrated["egress"] = _V2_EGRESS_BY_AGENT_MODE[mode]
+        except (KeyError, TypeError) as exc:
+            raise ResultSchemaError(
+                f"cannot migrate an unknown Agent mode: {mode!r}"
+            ) from exc
+    result["agent_system"] = migrated
+    return result
+
+
+def _validate_agent_system(result: Dict[str, Any]) -> None:
+    """Pin the current ``agent_system`` structure to the current schema version."""
+
+    agent_system = result.get("agent_system")
+    if agent_system is None:
+        return
+    if not isinstance(agent_system, dict):
+        raise ResultSchemaError("agent_system must be an object")
+    if "mode" in agent_system:
+        raise ResultSchemaError(
+            "agent_system.mode is not part of result schema version "
+            f"{RESULT_SCHEMA_VERSION}; it was renamed to agent_system.egress"
+        )
+    runner = agent_system.get("runner")
+    if runner is not None and runner not in AGENT_RUNNERS:
+        raise ResultSchemaError(f"invalid agent_system.runner: {runner!r}")
+    egress = agent_system.get("egress")
+    if egress is not None and egress not in AGENT_EGRESS_POLICIES:
+        raise ResultSchemaError(f"invalid agent_system.egress: {egress!r}")
+    if runner == "host_cli":
+        if egress is not None:
+            raise ResultSchemaError(
+                "a host_cli Agent result may not declare an Agent egress policy"
+            )
+    elif runner is not None and egress is None:
+        raise ResultSchemaError(
+            f"a {runner} Agent result must declare an Agent egress policy"
+        )
+
+
 def _migrate_legacy_result(payload: Dict[str, Any]) -> Dict[str, Any]:
     result = dict(payload)
-    result["result_schema_version"] = RESULT_SCHEMA_VERSION
-    result["migrated_from_result_schema_version"] = LEGACY_RESULT_SCHEMA_VERSION
     result.setdefault("deployment_teardown_failures", [])
     result.setdefault("test_nll", None)
     result["test_perplexity"] = None
@@ -130,6 +201,7 @@ def _mark_migrated_failure(result: Dict[str, Any], failure: str) -> Dict[str, An
 
 
 def _validate_current_result(result: Dict[str, Any]) -> None:
+    _validate_agent_system(result)
     status = result.get("status")
     if status not in _VALID_STATUSES:
         raise ResultSchemaError(f"invalid result status: {status!r}")

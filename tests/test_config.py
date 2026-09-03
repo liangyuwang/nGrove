@@ -5,6 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from autotrain_bench.config import (
+    AGENT_PROTOCOL_VERSION,
     AgentConfig,
     ConfigError,
     InferenceConfig,
@@ -168,7 +169,16 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ConfigError, "distinct files"):
                 TaskConfig.load(task)
 
-    def test_agent_mode_environment_and_host_runner_are_separate(self):
+    def test_public_task_manifest_declares_the_current_agent_protocol(self):
+        config = TaskConfig.load(TASK)
+        manifest = config.public_manifest("A")
+
+        # The Agent reads this manifest and the `agent status` response.  A
+        # rename in either surface must move this version with it.
+        self.assertEqual(manifest["protocol_version"], AGENT_PROTOCOL_VERSION)
+        self.assertEqual(AGENT_PROTOCOL_VERSION, 2)
+
+    def test_agent_egress_environment_and_host_runner_are_separate(self):
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)
             container = AgentConfig(
@@ -177,7 +187,7 @@ class ConfigTests(unittest.TestCase):
                 command=["python", "/workspace/agent.py"],
                 initial_workspace="participant_snapshot",
                 image="python:test",
-                mode="sandboxed",
+                egress="denied",
             ).validate()
             self.assertEqual(container.network, "disabled")
             self.assertEqual(
@@ -198,11 +208,11 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(host.network, "host_managed")
 
             with self.assertRaises(ConfigError):
-                replace(container, mode="host").validate()
+                replace(container, egress="host").validate()
             with self.assertRaises(ConfigError):
                 replace(container, environment=["HOME"]).validate()
             with self.assertRaises(ConfigError):
-                replace(host, mode="sandboxed").validate()
+                replace(host, egress="denied").validate()
 
     def test_registered_inference_belongs_to_agent_run_not_task(self):
         inference = InferenceConfig.load(
@@ -219,7 +229,7 @@ class ConfigTests(unittest.TestCase):
                 command=["agent"],
                 initial_workspace="participant_snapshot",
                 image="agent:image",
-                mode="sandboxed",
+                egress="denied",
                 inference=inference,
             ).validate()
             public = agent.public_manifest(

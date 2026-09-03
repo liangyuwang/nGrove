@@ -23,8 +23,8 @@ from .config import (
     InferenceConfig,
     TaskConfig,
     TrainingResources,
+    agent_egress,
     agent_environment_names,
-    agent_mode,
     agent_runner,
 )
 from .host_agent import (
@@ -323,6 +323,11 @@ def _resolve_challenge_run(
 
 
 def command_start(args: argparse.Namespace) -> int:
+    if getattr(args, "agent_mode", None) is not None:
+        raise ConfigError(
+            "--agent-mode was renamed to --agent-egress and its values changed: "
+            "'sandboxed' is now 'denied'; 'unrestricted-dev' is unchanged"
+        )
     release = ChallengeRelease.load(args.challenge) if args.challenge else None
     if release is None:
         if args.task is None:
@@ -351,11 +356,11 @@ def command_start(args: argparse.Namespace) -> int:
         challenge_release = resolved_challenge.release_manifest
     resolved_runner = agent_runner(args.agent_runner, "--agent-runner")
     if resolved_runner == "host_cli":
-        if args.agent_mode:
-            raise ConfigError("--agent-mode is not valid with host_cli")
-        resolved_mode = None
+        if args.agent_egress:
+            raise ConfigError("--agent-egress is not valid with host_cli")
+        resolved_egress = None
     else:
-        resolved_mode = agent_mode(args.agent_mode or "sandboxed", "--agent-mode")
+        resolved_egress = agent_egress(args.agent_egress or "denied", "--agent-egress")
     command = shlex.split(args.agent_command)
     environment = agent_environment_names(args.agent_environment, "--agent-env")
 
@@ -399,7 +404,7 @@ def command_start(args: argparse.Namespace) -> int:
             runner=resolved_runner,
             command=command,
             image=args.agent_image,
-            mode=resolved_mode,
+            egress=resolved_egress,
             environment=environment,
             inference=inference,
             initial_workspace=(
@@ -464,7 +469,7 @@ def command_start(args: argparse.Namespace) -> int:
             networks_to_cleanup.append(agent_network)
             reference_runtime.create_network(
                 agent_network,
-                internal=agent.mode == "sandboxed",
+                internal=agent.egress == "denied",
             )
             networks_to_cleanup.append(egress_network)
             reference_runtime.create_network(egress_network, internal=False)
@@ -922,11 +927,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="participant Agent command",
     )
     start.add_argument(
+        # Removed in favour of --agent-egress; accepted only so an old script
+        # fails with a migration message instead of an argparse usage error.
         "--agent-mode",
-        choices=["sandboxed", "unrestricted-dev"],
+        help=argparse.SUPPRESS,
+    )
+    start.add_argument(
+        "--agent-egress",
+        choices=["denied", "unrestricted-dev"],
         help=(
-            "Agent execution mode; unrestricted-dev is convenient for "
-            "debugging but is not policy-compliant"
+            "Agent egress policy; denied gives the Agent no route to the public "
+            "internet, while unrestricted-dev is convenient for debugging but "
+            "is not policy-compliant"
         ),
     )
     start.add_argument(

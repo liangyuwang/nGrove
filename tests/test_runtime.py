@@ -671,7 +671,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 command=["python", "/workspace/agent.py"],
                 initial_workspace="participant_snapshot",
                 image="python:test-agent",
-                mode="sandboxed",
+                egress="denied",
             )
             runtime = CapturingDockerRuntime()
             runtime.start_agent(
@@ -694,7 +694,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             self.assertNotIn(str(config.val_path), command)
             self.assertNotIn(str(config.test_path), command)
 
-    def test_sandboxed_inference_uses_trusted_sidecar_and_internal_network(self):
+    def test_egress_denied_inference_uses_trusted_sidecar_and_internal_network(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             workspace = root / "workspace"
@@ -721,7 +721,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 command=["node", "/workspace/agent.js"],
                 initial_workspace="participant_snapshot",
                 image="python:test-agent",
-                mode="sandboxed",
+                egress="denied",
                 inference=inference,
             )
             runtime = CapturingDockerRuntime()
@@ -804,7 +804,9 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 runtime.calls,
             )
 
-    def test_unrestricted_dev_mode_has_bridge_network_and_is_not_training_network(self):
+    def test_unrestricted_dev_egress_has_bridge_network_and_is_not_training_network(
+        self,
+    ):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             workspace = root / "workspace"
@@ -822,7 +824,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 command=["python", "/workspace/agent.py"],
                 initial_workspace="participant_snapshot",
                 image="python:test-agent",
-                mode="unrestricted-dev",
+                egress="unrestricted-dev",
             )
             runtime = CapturingDockerRuntime()
             runtime.start_agent(
@@ -1113,7 +1115,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 command=["agent"],
                 initial_workspace="participant_snapshot",
                 image="agent:image",
-                mode="sandboxed",
+                egress="denied",
                 inference=inference,
             )
             runtime = CapturingDockerRuntime()

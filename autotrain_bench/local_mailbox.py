@@ -164,7 +164,7 @@ def write_untrusted_response(
         )
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     if not directory_fd_operations_available():
-        # A sandboxed workload sees inbox and outbox as separate mount roots, so
+        # An isolated workload sees inbox and outbox as separate mount roots, so
         # it cannot replace this directory itself. Host-native Agents remain
         # explicitly non-compliant.
         if directory.is_symlink() or not directory.is_dir():

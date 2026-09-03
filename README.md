@@ -279,7 +279,7 @@ execution loop still runs inside the Agent Container so the benchmark can enforc
 its policy boundary; remote model inference is exposed through a narrow
 official Gateway sidecar rather than arbitrary public Internet access.
 
-In the normal `sandboxed` mode an Agent without remote inference uses
+In the default `denied` egress policy an Agent without remote inference uses
 `--network none`. When a registered inference channel is configured,
 AutoTrain-Bench creates an episode-private Docker `--internal` network shared
 only by the Agent and a trusted OpenAI-compatible Gateway at:
@@ -324,7 +324,7 @@ model identities and records usage.
 For compatibility with common OpenAI-style clients, the Agent Container receives
 `OPENAI_BASE_URL=http://inference-gateway:8765/v1` and a dummy local API key. The
 real key is copied only into the trusted Gateway. V0 permits ordinary
-function-tool schemas because the tool is executed by the sandboxed Agent, but
+function-tool schemas because the tool is executed by the Agent Container, but
 rejects provider-hosted web/retrieval tools that would create a second
 external-information channel. JSON and SSE responses are forwarded incrementally;
 the Gateway writes model calls and provider-reported usage to the append-only
@@ -346,6 +346,12 @@ python -m autotrain_bench.cli agent declare-incumbent sha256:<candidate-hash>
 python -m autotrain_bench.cli agent finish
 ```
 
+The public task manifest at `$AUTOTRAIN_BENCH_TASK` declares the Agent-facing
+control protocol as `protocol_version`. Version 2 renamed the `agent status`
+field `agent_mode` to `agent_egress` and its `"sandboxed"` value to `"denied"`.
+An Agent that parses the version 1 field name must be updated; the benchmark
+does not emit both names.
+
 Training code writes Candidate artifacts into the lease-owned `/output` mount.
 `lease-commit` first stops the Training Container, validates and snapshots the
 now-immutable artifact, and returns one aggregate VAL result; it does not change
@@ -359,8 +365,8 @@ not attach a user input stream after task reveal, so the user cannot continue
 steering the Agent during the episode. Each episode receives a private copy of
 the prepared Agent workspace.
 
-For debugging only, `agent.mode` may be set to `unrestricted-dev`. That gives the
-Agent Container ordinary Docker bridge egress and marks the run
+For debugging only, `--agent-egress unrestricted-dev` gives the Agent Container
+ordinary Docker bridge egress and marks the run
 `policy_compliant: false`. It is not a closed AutoTrain-Bench result and exists
 only to make local integration easier.
 
@@ -371,14 +377,19 @@ autotrain-bench report \
   --episode /path/to/autotrain-bench-runs/episodes/<episode-id>
 ```
 
-New episode states declare `result_schema_version: 2`. Reporting an older
-unversioned v1 state performs a read-only migration: a completed result with a
-valid TEST NLL receives `outcome: "success"` and a derived `test_perplexity`,
-while an unscored terminal result receives `outcome: "failed"` with both TEST
-metrics left `null`. The persisted historical `state.json` is never rewritten,
-and unknown future result-schema versions are rejected rather than guessed.
+New episode states declare `result_schema_version: 3`. Reporting an older state
+performs a read-only migration. An unversioned v1 state receives the v2
+outcome fields: a completed result with a valid TEST NLL receives
+`outcome: "success"` and a derived `test_perplexity`, while an unscored
+terminal result receives `outcome: "failed"` with both TEST metrics left
+`null`. A v1 or v2 state additionally has its `agent_system.mode` field renamed
+to `agent_system.egress`, with the value `"sandboxed"` mapped to `"denied"`, so
+one schema version always identifies one structure. A migrated report records
+`migrated_from_result_schema_version`. The persisted historical `state.json` is
+never rewritten, and unknown future result-schema versions are rejected rather
+than guessed.
 
-In v2, `outcome: "success"` requires a finalized episode, a non-empty final
+In v3, `outcome: "success"` requires a finalized episode, a non-empty final
 Candidate ID, and both consistent TEST metrics. A failed outcome requires a
 failure reason and keeps both TEST metrics `null`. A null outcome is allowed
 only before a result exists (`created`, `active`, or the transient `closed`
@@ -469,7 +480,7 @@ error codes to the Agent; raw Candidate logs stay in the trusted episode
 directory. Candidate and Evaluator are destroyed after each query. This backend
 satisfies the v0 reference isolation contract.
 
-The sandboxed Agent receives a generated, minimal `autotrain_bench.client`
+The Agent Container receives a generated, minimal `autotrain_bench.client`
 package rather than the Core source tree. Its mailbox inbox and outbox are
 mounted as separate directory roots, so it cannot replace the shared control
 parent. Training Containers receive TRAIN, the participant workspace, scratch,
@@ -1790,7 +1801,8 @@ The repository contains a working v0 local reference prototype with:
 * a Supervisor-controlled Agent command mailbox;
 * disposable Docker Training Containers;
 * candidate hashing and immutable snapshots;
-* sandboxed Agent execution with an optional trusted streaming inference sidecar;
+* egress-denied Agent execution with an optional trusted streaming inference
+  sidecar;
 * a generic host CLI runner and a logged-in Codex CLI adapter;
 * isolated hidden-split lifecycle and post-closure TEST evaluation;
 * append-only benchmark, inference, and host-Agent JSONL traces;

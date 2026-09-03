@@ -31,7 +31,7 @@ class AgentExecutionEvidenceTests(unittest.TestCase):
                 command=["agent"],
                 initial_workspace="empty",
                 image="example/agent@sha256:" + "a" * 64,
-                mode="sandboxed",
+                egress="denied",
             ).validate()
 
             evidence = describe_local_agent_execution(agent)
