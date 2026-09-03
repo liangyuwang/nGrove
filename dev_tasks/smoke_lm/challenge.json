@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "challenge_id": "tinystories-byte-lm-smoke-v1",
   "task_id": "tinystories-byte-lm-smoke-v1",
   "task": "task.json",

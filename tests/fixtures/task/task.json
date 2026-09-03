@@ -1,10 +1,11 @@
 {
+  "schema_version": 2,
   "task_id": "test-byte-lm-v1",
   "task_kind": "development_smoke",
   "leaderboard_eligible": false,
   "paths": {
     "train": "train",
-    "val": "private/val.json",
+    "analysis": "private/analysis.json",
     "test": "private/test.json"
   },
   "images": {
@@ -15,6 +16,7 @@
   },
   "evaluation": {
     "backend": "isolated_candidate",
+    "candidate_protocol": "next_token_logits_v1",
     "entrypoint": "evaluator.py",
     "metric": "autoregressive_nll",
     "leaderboard_metric": {
@@ -31,6 +33,11 @@
     "max_candidate_bytes": 1048576,
     "max_candidate_files": 100,
     "timeout_seconds": 30
+  },
+  "analysis": {
+    "candidate_selection": "all_committed",
+    "max_candidates": 8,
+    "result_visibility": "organizer_only"
   },
   "track_a": {"total_seconds": 100},
   "track_b": {"max_leases": 2, "lease_seconds": 10}

@@ -1,10 +1,11 @@
 {
+  "schema_version": 2,
   "task_id": "tinystories-byte-lm-smoke-v1",
   "task_kind": "development_smoke",
   "leaderboard_eligible": false,
   "paths": {
     "train": "data/train",
-    "val": "data/private/val.json",
+    "analysis": "data/private/analysis.json",
     "test": "data/private/test.json"
   },
   "images": {
@@ -15,6 +16,7 @@
   },
   "evaluation": {
     "backend": "isolated_candidate",
+    "candidate_protocol": "next_token_logits_v1",
     "entrypoint": "evaluator/evaluator.py",
     "metric": "autoregressive_nll",
     "leaderboard_metric": {
@@ -31,6 +33,11 @@
     "max_candidate_bytes": 2147483648,
     "max_candidate_files": 10000,
     "timeout_seconds": 240
+  },
+  "analysis": {
+    "candidate_selection": "all_committed",
+    "max_candidates": 16,
+    "result_visibility": "organizer_only"
   },
   "timing": {
     "benchmark_owned_preparation": [

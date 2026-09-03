@@ -25,7 +25,7 @@
     "asset_fingerprint": "generated-by-prepare_data.py"
   },
   "hidden_evaluation": {
-    "preview_val_target_tokens": 4096,
+    "preview_analysis_target_tokens": 4096,
     "preview_test_target_tokens": 4096,
     "construction": "deterministic local preview holdout excluded from both public representations",
     "verified_release": "organizer-owned replacement pending"

@@ -29,7 +29,7 @@ images, policy-compliant execution, and certified conformant Research and
 Evaluation Workers. Formal deployments must also supply a trusted
 `ReleaseVerificationReceipt` from the organizer-controlled Coordinator. The
 receipt binds the accepted Core revision and the challenge, task, policy,
-evaluator, TRAIN-manifest, VAL, and TEST digests; hashes calculated only from
+evaluator, TRAIN-manifest, ANALYSIS, and TEST digests; hashes calculated only from
 local files cannot self-promote a run. Missing evidence is recorded in
 `leaderboard_eligibility_violations`; it never silently promotes a preview.
 

@@ -32,6 +32,23 @@ class ArchitectureBoundaryTests(unittest.TestCase):
                 modules = imported_modules(ROOT / "autotrain_bench" / filename)
                 self.assertTrue(forbidden.isdisjoint(modules))
 
+    def test_task_evaluators_do_not_select_a_candidate_transport(self):
+        for path in (
+            ROOT / "dev_tasks/smoke_lm/evaluator/evaluator.py",
+            ROOT / "challenges/lm-pretrain-v1/evaluator/evaluator.py",
+        ):
+            with self.subTest(path=path):
+                source = path.read_text(encoding="utf-8")
+                modules = imported_modules(path)
+                self.assertNotIn("urllib.request", modules)
+                self.assertNotIn("http", source.lower())
+                self.assertNotIn("candidate-url", source)
+                tree = ast.parse(source)
+                functions = {
+                    node.name for node in tree.body if isinstance(node, ast.FunctionDef)
+                }
+                self.assertIn("evaluate", functions)
+
 
 if __name__ == "__main__":
     unittest.main()

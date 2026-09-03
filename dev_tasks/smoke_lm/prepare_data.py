@@ -28,7 +28,7 @@ SOURCE_SPLIT = "train"
 DOCUMENT_COUNT = 1_200
 PAGE_SIZE = 100
 TRAIN_DOCUMENTS = 1_000
-VAL_DOCUMENTS = 100
+ANALYSIS_DOCUMENTS = 100
 TEST_DOCUMENTS = 100
 SOURCE_SHA256 = "0d17abc36c327b1acf37b2f172a76c77a5f4b099fb8608645f4149c8e987529e"
 SEQUENCE_TARGET_TOKENS = 128
@@ -38,7 +38,7 @@ EVAL_TARGET_TOKENS = 8_192
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 TRAIN_PATH = DATA_DIR / "train" / "train.json"
-VAL_PATH = DATA_DIR / "private" / "val.json"
+ANALYSIS_PATH = DATA_DIR / "private" / "analysis.json"
 TEST_PATH = DATA_DIR / "private" / "test.json"
 METADATA_PATH = DATA_DIR / "metadata.json"
 
@@ -160,7 +160,7 @@ def _existing_data_is_valid() -> bool:
         artifacts: Dict[str, str] = metadata["artifact_sha256"]
         return all(
             path.is_file() and _sha256_file(path) == artifacts[path.name]
-            for path in (TRAIN_PATH, VAL_PATH, TEST_PATH)
+            for path in (TRAIN_PATH, ANALYSIS_PATH, TEST_PATH)
         )
     except (FileNotFoundError, KeyError, TypeError, json.JSONDecodeError):
         return False
@@ -174,14 +174,16 @@ def prepare(*, force: bool = False) -> Dict[str, object]:
 
     documents = download_documents()
     train_docs = documents[:TRAIN_DOCUMENTS]
-    val_docs = documents[TRAIN_DOCUMENTS : TRAIN_DOCUMENTS + VAL_DOCUMENTS]
+    analysis_docs = documents[TRAIN_DOCUMENTS : TRAIN_DOCUMENTS + ANALYSIS_DOCUMENTS]
     test_docs = documents[-TEST_DOCUMENTS:]
     train_sequences = make_sequences(train_docs)
-    val_sequences = make_sequences(val_docs, max_target_tokens=EVAL_TARGET_TOKENS)
+    analysis_sequences = make_sequences(
+        analysis_docs, max_target_tokens=EVAL_TARGET_TOKENS
+    )
     test_sequences = make_sequences(test_docs, max_target_tokens=EVAL_TARGET_TOKENS)
 
     _write_json(TRAIN_PATH, {"sequences": train_sequences})
-    _write_json(VAL_PATH, {"sequences": val_sequences}, private=True)
+    _write_json(ANALYSIS_PATH, {"sequences": analysis_sequences}, private=True)
     _write_json(TEST_PATH, {"sequences": test_sequences}, private=True)
 
     metadata: Dict[str, object] = {
@@ -204,10 +206,10 @@ def prepare(*, force: bool = False) -> Dict[str, object]:
                 "sequences": len(train_sequences),
                 "target_tokens": sum(len(row) - 1 for row in train_sequences),
             },
-            "val": {
-                "documents": VAL_DOCUMENTS,
-                "sequences": len(val_sequences),
-                "target_tokens": sum(len(row) - 1 for row in val_sequences),
+            "analysis": {
+                "documents": ANALYSIS_DOCUMENTS,
+                "sequences": len(analysis_sequences),
+                "target_tokens": sum(len(row) - 1 for row in analysis_sequences),
             },
             "test": {
                 "documents": TEST_DOCUMENTS,
@@ -216,7 +218,8 @@ def prepare(*, force: bool = False) -> Dict[str, object]:
             },
         },
         "artifact_sha256": {
-            path.name: _sha256_file(path) for path in (TRAIN_PATH, VAL_PATH, TEST_PATH)
+            path.name: _sha256_file(path)
+            for path in (TRAIN_PATH, ANALYSIS_PATH, TEST_PATH)
         },
     }
     _write_json(METADATA_PATH, metadata)

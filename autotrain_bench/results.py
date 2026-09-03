@@ -8,16 +8,18 @@ from typing import Any, Dict
 from .config import AGENT_EGRESS_POLICIES, AGENT_RUNNERS
 
 
-RESULT_SCHEMA_VERSION = 3
+RESULT_SCHEMA_VERSION = 4
 LEGACY_RESULT_SCHEMA_VERSION = 1
 # Version 2 recorded the Agent egress policy as ``agent_system.mode`` with the
 # value ``"sandboxed"``.  Version 3 renames that field to ``agent_system.egress``
 # with the value ``"denied"`` so a schema version identifies one structure.
 AGENT_MODE_RESULT_SCHEMA_VERSION = 2
+PRE_ANALYSIS_RESULT_SCHEMA_VERSION = 3
 _SUPPORTED_INPUT_SCHEMA_VERSIONS = frozenset(
     {
         LEGACY_RESULT_SCHEMA_VERSION,
         AGENT_MODE_RESULT_SCHEMA_VERSION,
+        PRE_ANALYSIS_RESULT_SCHEMA_VERSION,
         RESULT_SCHEMA_VERSION,
     }
 )
@@ -91,8 +93,10 @@ def normalize_result_report(payload: Any) -> Dict[str, Any]:
         result = _migrate_legacy_result(payload)
     else:
         result = dict(payload)
-    if version < RESULT_SCHEMA_VERSION:
+    if version < PRE_ANALYSIS_RESULT_SCHEMA_VERSION:
         result = _migrate_agent_mode_to_egress(result)
+    if version < RESULT_SCHEMA_VERSION:
+        result = _migrate_pre_analysis_result(result)
         result["result_schema_version"] = RESULT_SCHEMA_VERSION
         result["migrated_from_result_schema_version"] = version
     result.setdefault("deployment_teardown_failures", [])
@@ -118,6 +122,69 @@ def _migrate_agent_mode_to_egress(result: Dict[str, Any]) -> Dict[str, Any]:
             ) from exc
     result["agent_system"] = migrated
     return result
+
+
+def _migrate_pre_analysis_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Preserve legacy VAL evidence without relabelling it as ANALYSIS."""
+
+    migrated = dict(result)
+    migrated["legacy_semantics"] = {
+        "organizer_validation_feedback": True,
+        "postmortem_analysis": False,
+    }
+    migrated.setdefault("research_sealed_at", None)
+    migrated.setdefault("analysis_complete", False)
+    migrated.setdefault("analysis_trajectory", [])
+    migrated.setdefault("candidate_commits", [])
+
+    candidates = migrated.get("candidates")
+    if isinstance(candidates, dict):
+        migrated_candidates = {}
+        for candidate_id, metadata in candidates.items():
+            if not isinstance(metadata, dict):
+                migrated_candidates[candidate_id] = metadata
+                continue
+            item = dict(metadata)
+            legacy_validation = {
+                "nll": item.pop("val_nll", None),
+                "perplexity": item.pop("val_perplexity", None),
+                "error": item.pop("evaluation_error", None),
+            }
+            if any(value is not None for value in legacy_validation.values()):
+                item["legacy_validation"] = legacy_validation
+            item.setdefault("analysis_status", "legacy_not_run")
+            item.setdefault("analysis_nll", None)
+            item.setdefault("analysis_perplexity", None)
+            item.setdefault("analysis_error", None)
+            migrated_candidates[candidate_id] = item
+        migrated["candidates"] = migrated_candidates
+
+    timing = migrated.get("timing")
+    if isinstance(timing, dict):
+        migrated_timing = dict(timing)
+        if "validation_evaluation_seconds" in migrated_timing:
+            migrated_timing["legacy_validation_evaluation_seconds"] = (
+                migrated_timing.pop("validation_evaluation_seconds")
+            )
+        migrated_timing.setdefault("analysis_evaluation_seconds", 0.0)
+        migrated["timing"] = migrated_timing
+
+    artifacts = migrated.get("artifact_identities")
+    if isinstance(artifacts, dict) and "hidden_splits" in artifacts:
+        migrated_artifacts = dict(artifacts)
+        legacy_hidden = migrated_artifacts.pop("hidden_splits")
+        migrated_artifacts["legacy_hidden_splits"] = legacy_hidden
+        test_digest = (
+            legacy_hidden.get("test_sha256")
+            if isinstance(legacy_hidden, dict)
+            else None
+        )
+        migrated_artifacts.setdefault(
+            "hidden_evaluation",
+            {"analysis_sha256": None, "test_sha256": test_digest},
+        )
+        migrated["artifact_identities"] = migrated_artifacts
+    return migrated
 
 
 def _validate_agent_system(result: Dict[str, Any]) -> None:
@@ -205,6 +272,29 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
     status = result.get("status")
     if status not in _VALID_STATUSES:
         raise ResultSchemaError(f"invalid result status: {status!r}")
+    migrated_legacy = "migrated_from_result_schema_version" in result
+    analysis_complete = result.get("analysis_complete")
+    analysis_trajectory = result.get("analysis_trajectory")
+    research_sealed_at = result.get("research_sealed_at")
+    if analysis_complete is not None and not isinstance(analysis_complete, bool):
+        raise ResultSchemaError("analysis_complete must be null or boolean")
+    if analysis_trajectory is not None and not isinstance(analysis_trajectory, list):
+        raise ResultSchemaError("analysis_trajectory must be an array")
+    if isinstance(analysis_trajectory, list):
+        _validate_analysis_trajectory(analysis_trajectory)
+    if not migrated_legacy:
+        if not isinstance(analysis_trajectory, list):
+            raise ResultSchemaError(
+                "current results require an ANALYSIS trajectory array"
+            )
+        if status in {"closed", "finalized"} and (
+            not isinstance(research_sealed_at, str) or not research_sealed_at.strip()
+        ):
+            raise ResultSchemaError("sealed research requires research_sealed_at")
+        if status == "finalized" and analysis_complete is not True:
+            raise ResultSchemaError(
+                "a finalized result requires completed postmortem ANALYSIS"
+            )
     candidate_id = result.get("final_candidate_id")
     if candidate_id is not None and (
         not isinstance(candidate_id, str) or not candidate_id.strip()
@@ -283,6 +373,12 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
             raise ResultSchemaError("test_perplexity does not equal exp(test_nll)")
         if result.get("failure") is not None:
             raise ResultSchemaError("a successful result may not contain a failure")
+        if not migrated_legacy and not any(
+            point["candidate_id"] == candidate_id for point in analysis_trajectory
+        ):
+            raise ResultSchemaError(
+                "the final Candidate must appear in the ANALYSIS trajectory"
+            )
         if result.get("active_lease") is not None or pending_lease_teardowns:
             raise ResultSchemaError("a successful result may not retain Worker Leases")
         agent_control = result.get("agent_control")
@@ -306,3 +402,79 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
         failure = result.get("failure")
         if not isinstance(failure, str) or not failure.strip():
             raise ResultSchemaError("a failed result must contain a failure reason")
+
+
+def _validate_analysis_trajectory(trajectory: list[Any]) -> None:
+    """Validate the auditable postmortem measurement attached to result v4."""
+
+    commit_indices = []
+    for point in trajectory:
+        if not isinstance(point, dict):
+            raise ResultSchemaError("ANALYSIS trajectory points must be objects")
+        candidate_id = point.get("candidate_id")
+        source_lease = point.get("source_lease")
+        if not isinstance(candidate_id, str) or not candidate_id.strip():
+            raise ResultSchemaError("ANALYSIS trajectory candidate_id must be a string")
+        if not isinstance(source_lease, str) or not source_lease.strip():
+            raise ResultSchemaError("ANALYSIS trajectory source_lease must be a string")
+        for field in ("commit_index", "event_seq"):
+            value = point.get(field)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ResultSchemaError(
+                    f"ANALYSIS trajectory {field} must be a positive integer"
+                )
+        elapsed = point.get("elapsed_seconds")
+        if (
+            isinstance(elapsed, bool)
+            or not isinstance(elapsed, (int, float))
+            or not math.isfinite(float(elapsed))
+            or elapsed < 0
+        ):
+            raise ResultSchemaError(
+                "ANALYSIS trajectory elapsed_seconds must be finite and non-negative"
+            )
+        if not isinstance(point.get("declared_incumbent"), bool):
+            raise ResultSchemaError(
+                "ANALYSIS trajectory declared_incumbent must be a boolean"
+            )
+        status = point.get("analysis_status")
+        if status == "evaluated":
+            try:
+                nll = validated_nll(point.get("analysis_nll"))
+                expected_perplexity = perplexity_from_nll(nll)
+                perplexity = validated_nll(point.get("analysis_perplexity"))
+            except ValueError as exc:
+                raise ResultSchemaError(
+                    f"invalid ANALYSIS trajectory metric: {exc}"
+                ) from exc
+            if not math.isclose(perplexity, expected_perplexity, rel_tol=1e-12):
+                raise ResultSchemaError(
+                    "ANALYSIS perplexity does not equal exp(ANALYSIS NLL)"
+                )
+            if point.get("analysis_error") is not None:
+                raise ResultSchemaError(
+                    "an evaluated ANALYSIS point may not contain an error"
+                )
+        elif status == "failed":
+            if (
+                point.get("analysis_nll") is not None
+                or point.get("analysis_perplexity") is not None
+            ):
+                raise ResultSchemaError(
+                    "a failed ANALYSIS point may not contain metrics"
+                )
+            error = point.get("analysis_error")
+            if not isinstance(error, str) or not error.strip():
+                raise ResultSchemaError(
+                    "a failed ANALYSIS point requires a stable error code"
+                )
+        else:
+            raise ResultSchemaError(
+                "ANALYSIS trajectory status must be 'evaluated' or 'failed'"
+            )
+        commit_indices.append(point["commit_index"])
+
+    if commit_indices != list(range(1, len(commit_indices) + 1)):
+        raise ResultSchemaError(
+            "ANALYSIS trajectory commit_index values must be contiguous and ordered"
+        )

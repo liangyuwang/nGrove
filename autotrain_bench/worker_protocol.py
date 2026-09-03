@@ -27,7 +27,8 @@ if TYPE_CHECKING:
     from .config import TaskConfig, TrainingResources
 
 
-WORKER_PROTOCOL_VERSION = 2
+WORKER_PROTOCOL_VERSION = 3
+WORKER_CONFORMANCE_SUITE_VERSION = f"worker-v{WORKER_PROTOCOL_VERSION}"
 
 
 class WorkerFailure(RuntimeError):
@@ -119,8 +120,33 @@ class ResearchTaskSpec:
 
 
 @dataclass(frozen=True)
+class CandidateChannelRequirements:
+    """Release-owned application semantics, not a transport selection."""
+
+    protocol: str
+    hidden_data_to_candidate: bool = False
+    candidate_egress_allowed: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.protocol, str) or not self.protocol.strip():
+            raise ValueError("Candidate channel protocol must not be empty")
+        if self.hidden_data_to_candidate is not False:
+            raise ValueError("Candidate channel may not expose hidden data")
+        if self.candidate_egress_allowed is not False:
+            raise ValueError("Candidate channel may not grant Candidate egress")
+
+    def public_manifest(self) -> Dict[str, Any]:
+        return {
+            "protocol": self.protocol,
+            "mechanism": "worker_defined",
+            "hidden_data_to_candidate": "forbidden",
+            "candidate_egress": "denied",
+        }
+
+
+@dataclass(frozen=True)
 class EvaluationTaskSpec:
-    """Evaluator configuration without either hidden split location."""
+    """Evaluator configuration without either hidden-dataset location."""
 
     task_id: str
     backend: str
@@ -133,6 +159,7 @@ class EvaluationTaskSpec:
     batch_size: int
     device: str
     timeout_seconds: int
+    candidate_channel: CandidateChannelRequirements
 
     @classmethod
     def from_task(cls, task: "TaskConfig") -> "EvaluationTaskSpec":
@@ -148,19 +175,27 @@ class EvaluationTaskSpec:
             batch_size=task.evaluator_batch_size,
             device=task.evaluator_device,
             timeout_seconds=task.evaluator_timeout_seconds,
+            candidate_channel=CandidateChannelRequirements(
+                protocol=task.candidate_protocol
+            ),
         )
 
 
 @dataclass(frozen=True)
-class HiddenSplitRef:
-    """One organizer-selected hidden split visible to an Evaluation Worker."""
+class HiddenDatasetRef:
+    """One organizer-selected hidden dataset visible only after research seal.
+
+    ``path`` remains a version 3 local/shared-filesystem deployment handle. It
+    is not required to exist while the Agent or Research Worker can still act;
+    the Evaluation Worker may materialize it immediately before evaluation.
+    """
 
     name: str
     path: Path
 
     def __post_init__(self) -> None:
-        if self.name not in {"val", "test"}:
-            raise ValueError("hidden split name must be 'val' or 'test'")
+        if self.name not in {"analysis", "test"}:
+            raise ValueError("hidden dataset name must be 'analysis' or 'test'")
 
 
 @dataclass(frozen=True)
@@ -340,7 +375,12 @@ def assess_worker(
         trust_satisfied=descriptor.trust_level.rank >= minimum_trust.rank,
         conformance_satisfied=(
             not require_conformance
-            or bool(descriptor.conformance and descriptor.conformance.passed is True)
+            or bool(
+                descriptor.conformance
+                and descriptor.conformance.suite_version
+                == WORKER_CONFORMANCE_SUITE_VERSION
+                and descriptor.conformance.passed is True
+            )
         ),
     )
 
@@ -390,7 +430,7 @@ class EvaluationWorker(Protocol):
         task: EvaluationTaskSpec,
         resources: "TrainingResources",
         candidate_dir: Path,
-        hidden_split: HiddenSplitRef,
+        hidden_dataset: HiddenDatasetRef,
         output_dir: Path,
         timeout_seconds: Optional[float] = None,
     ) -> float: ...

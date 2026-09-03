@@ -187,14 +187,14 @@ class PretrainV1Tests(unittest.TestCase):
             private = root / "private"
             public.mkdir()
             private.mkdir()
-            val = private / "val.json"
+            analysis = private / "analysis.json"
             test = private / "test.json"
-            val.write_text('{"sequences":[[50256,1]]}', encoding="utf-8")
+            analysis.write_text('{"sequences":[[50256,1]]}', encoding="utf-8")
             test.write_text('{"sequences":[[50256,2]]}', encoding="utf-8")
             payload = json.loads(TASK.read_text(encoding="utf-8"))
             payload["paths"] = {
                 "train": str(public),
-                "val": str(val),
+                "analysis": str(analysis),
                 "test": str(test),
             }
             payload["evaluation"]["entrypoint"] = str(
@@ -303,7 +303,7 @@ class PretrainV1Tests(unittest.TestCase):
                 return FakeEncoding()
 
         rows = [
-            {"text": "vv", "url": "val", "_source_file": "part", "_source_row": 0},
+            {"text": "vv", "url": "analysis", "_source_file": "part", "_source_row": 0},
             {"text": "tt", "url": "test", "_source_file": "part", "_source_row": 1},
             {"text": "ab", "url": "train-1", "_source_file": "part", "_source_row": 2},
             {"text": "cd", "url": "train-2", "_source_file": "part", "_source_row": 3},
@@ -311,7 +311,7 @@ class PretrainV1Tests(unittest.TestCase):
 
         def split(source_key):
             if source_key.endswith(":0"):
-                return "val"
+                return "analysis"
             if source_key.endswith(":1"):
                 return "test"
             return "train"
@@ -350,7 +350,7 @@ class PretrainV1Tests(unittest.TestCase):
                 ["train-1", "train-2"],
             )
             self.assertTrue((output / "public/tokenized/tokens-00000.bin").is_file())
-            self.assertTrue((output / "private/val.json").is_file())
+            self.assertTrue((output / "private/analysis.json").is_file())
             self.assertTrue((output / "private/test.json").is_file())
             self.assertEqual(manifest["raw_train"]["documents"], 2)
             self.assertEqual(manifest["tokenized_train"]["documents"], 2)

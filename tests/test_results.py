@@ -3,12 +3,28 @@ import unittest
 
 from autotrain_bench.results import (
     AGENT_MODE_RESULT_SCHEMA_VERSION,
+    PRE_ANALYSIS_RESULT_SCHEMA_VERSION,
     RESULT_SCHEMA_VERSION,
     ResultSchemaError,
     normalize_result_report,
     perplexity_from_nll,
     validated_nll,
 )
+
+
+def _analysis_point(candidate_id="sha256:candidate"):
+    return {
+        "commit_index": 1,
+        "event_seq": 1,
+        "candidate_id": candidate_id,
+        "source_lease": "lease-0001",
+        "elapsed_seconds": 1.0,
+        "declared_incumbent": True,
+        "analysis_status": "evaluated",
+        "analysis_nll": 0.0,
+        "analysis_perplexity": 1.0,
+        "analysis_error": None,
+    }
 
 
 def _finalized(*, schema_version=RESULT_SCHEMA_VERSION, **overrides):
@@ -22,6 +38,9 @@ def _finalized(*, schema_version=RESULT_SCHEMA_VERSION, **overrides):
         "test_nll": 0.0,
         "test_perplexity": 1.0,
         "failure": None,
+        "research_sealed_at": "2026-01-01T00:00:00+00:00",
+        "analysis_complete": True,
+        "analysis_trajectory": [_analysis_point()],
     }
     payload.update(overrides)
     return payload
@@ -47,6 +66,9 @@ class ResultMetricTests(unittest.TestCase):
                 "test_nll": None,
                 "test_perplexity": None,
                 "failure": None,
+                "research_sealed_at": "2026-01-01T00:00:00+00:00",
+                "analysis_complete": False,
+                "analysis_trajectory": [_analysis_point()],
             },
             "success_without_candidate": {
                 "status": "finalized",
@@ -55,6 +77,9 @@ class ResultMetricTests(unittest.TestCase):
                 "test_nll": 0.0,
                 "test_perplexity": 1.0,
                 "failure": None,
+                "research_sealed_at": "2026-01-01T00:00:00+00:00",
+                "analysis_complete": True,
+                "analysis_trajectory": [_analysis_point()],
             },
             "active_failure": {
                 "status": "active",
@@ -69,6 +94,9 @@ class ResultMetricTests(unittest.TestCase):
                 "test_nll": 0.0,
                 "test_perplexity": 1.0,
                 "failure": None,
+                "research_sealed_at": "2026-01-01T00:00:00+00:00",
+                "analysis_complete": False,
+                "analysis_trajectory": [],
             },
             "success_with_active_lease": {
                 "status": "finalized",
@@ -126,6 +154,9 @@ class ResultMetricTests(unittest.TestCase):
                 "test_nll": None,
                 "test_perplexity": None,
                 "failure": None,
+                "research_sealed_at": "2026-01-01T00:00:00+00:00",
+                "analysis_complete": False,
+                "analysis_trajectory": [],
             }
         )
         self.assertIsNone(report["outcome"])
@@ -140,6 +171,9 @@ class ResultMetricTests(unittest.TestCase):
                 "test_nll": 0.0,
                 "test_perplexity": 1.0,
                 "failure": None,
+                "research_sealed_at": "2026-01-01T00:00:00+00:00",
+                "analysis_complete": True,
+                "analysis_trajectory": [_analysis_point()],
                 "result_publication": {
                     "publication_id": "publication",
                     "prepared_event_seq": 7,
@@ -148,6 +182,19 @@ class ResultMetricTests(unittest.TestCase):
         )
 
         self.assertEqual(report["result_publication"]["prepared_event_seq"], 7)
+
+    def test_current_result_rejects_a_malformed_analysis_trajectory(self):
+        malformed = _analysis_point()
+        malformed["analysis_perplexity"] = 2.0
+
+        with self.assertRaisesRegex(ResultSchemaError, "ANALYSIS perplexity"):
+            normalize_result_report(_finalized(analysis_trajectory=[malformed]))
+
+    def test_final_candidate_must_be_in_the_analysis_trajectory(self):
+        with self.assertRaisesRegex(ResultSchemaError, "final Candidate"):
+            normalize_result_report(
+                _finalized(analysis_trajectory=[_analysis_point("sha256:other")])
+            )
 
     def test_older_v2_finalized_result_without_publication_remains_readable(self):
         report = normalize_result_report(
@@ -164,6 +211,36 @@ class ResultMetricTests(unittest.TestCase):
 
         self.assertNotIn("result_publication", report)
 
+    def test_v3_validation_evidence_remains_explicitly_legacy(self):
+        report = normalize_result_report(
+            {
+                "result_schema_version": PRE_ANALYSIS_RESULT_SCHEMA_VERSION,
+                "status": "finalized",
+                "outcome": "success",
+                "final_candidate_id": "sha256:candidate",
+                "test_nll": 0.0,
+                "test_perplexity": 1.0,
+                "failure": None,
+                "candidates": {
+                    "sha256:candidate": {
+                        "val_nll": 1.25,
+                        "val_perplexity": math.exp(1.25),
+                        "evaluation_error": None,
+                    }
+                },
+                "timing": {"validation_evaluation_seconds": 2.0},
+            }
+        )
+
+        candidate = report["candidates"]["sha256:candidate"]
+        self.assertEqual(candidate["legacy_validation"]["nll"], 1.25)
+        self.assertNotIn("val_nll", candidate)
+        self.assertEqual(candidate["analysis_status"], "legacy_not_run")
+        self.assertFalse(report["analysis_complete"])
+        self.assertEqual(report["analysis_trajectory"], [])
+        self.assertTrue(report["legacy_semantics"]["organizer_validation_feedback"])
+        self.assertEqual(report["timing"]["legacy_validation_evaluation_seconds"], 2.0)
+
     def test_private_staged_result_is_not_part_of_a_report(self):
         report = normalize_result_report(
             {
@@ -174,6 +251,9 @@ class ResultMetricTests(unittest.TestCase):
                 "test_nll": None,
                 "test_perplexity": None,
                 "failure": None,
+                "research_sealed_at": "2026-01-01T00:00:00+00:00",
+                "analysis_complete": False,
+                "analysis_trajectory": [],
                 "pending_result": {
                     "outcome": "success",
                     "test_nll": 1.0,
@@ -197,6 +277,9 @@ class ResultMetricTests(unittest.TestCase):
                     "test_nll": None,
                     "test_perplexity": None,
                     "failure": "legacy_unscored_result",
+                    "research_sealed_at": "2026-01-01T00:00:00+00:00",
+                    "analysis_complete": False,
+                    "analysis_trajectory": [],
                 }
             )
 
@@ -273,6 +356,9 @@ class ResultMetricTests(unittest.TestCase):
                 "test_perplexity": 1.0,
                 "failure": None,
                 "agent_system": {"runner": "container", "egress": "denied"},
+                "research_sealed_at": "2026-01-01T00:00:00+00:00",
+                "analysis_complete": True,
+                "analysis_trajectory": [_analysis_point()],
             }
         )
 

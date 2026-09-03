@@ -35,21 +35,23 @@ class ConfigTests(unittest.TestCase):
         config = TaskConfig.load(TASK)
         public = config.public_manifest("B")
         serialized = json.dumps(public)
-        self.assertNotIn(str(config.val_path), serialized)
+        self.assertNotIn(str(config.analysis_path), serialized)
         self.assertNotIn(str(config.test_path), serialized)
         self.assertNotIn("agent_environment", public)
         self.assertNotIn("agent", public)
         self.assertNotIn("hardware", public)
         self.assertEqual(public["task_kind"], "development_smoke")
         self.assertFalse(public["leaderboard_eligible"])
-        self.assertEqual(public["budget"]["official_val_queries_per_lease"], 1)
+        self.assertNotIn("official_val_queries_per_lease", public["budget"])
+        self.assertEqual(public["validation"]["organizer_feedback"], "none")
+        self.assertEqual(public["analysis"]["feedback"], "never_agent_visible")
         self.assertEqual(config.evaluator_batch_size, 2)
         self.assertEqual(config.evaluator_device, "cpu")
         self.assertEqual(config.evaluator_backend, "isolated_candidate")
         self.assertTrue(config.evaluator_policy_compliant)
         boundary = public["evaluation"]["candidate_boundary"]
         self.assertEqual(boundary["hidden_data_mount"], "none")
-        self.assertEqual(boundary["network"], "ephemeral_internal_only")
+        self.assertEqual(boundary["channel_mechanism"], "worker_defined")
         limits = public["evaluation"]["candidate_artifact_limits"]
         self.assertEqual(limits, {"max_bytes": 1048576, "max_files": 100})
         self.assertEqual(
@@ -155,19 +157,32 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ConfigError, "digest-pinned"):
                 TaskConfig.load(task)
 
-    def test_hidden_splits_must_be_distinct_and_outside_train(self):
+    def test_hidden_datasets_must_be_distinct_and_outside_train(self):
         with tempfile.TemporaryDirectory() as directory:
             task = self._write_task(directory)
             payload = json.loads(task.read_text(encoding="utf-8"))
-            payload["paths"]["val"] = str(TASK.parent / "train/train.json")
+            payload["paths"]["analysis"] = str(TASK.parent / "train/train.json")
             task.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaisesRegex(ConfigError, "outside.*TRAIN"):
                 TaskConfig.load(task)
 
-            payload["paths"]["val"] = payload["paths"]["test"]
+            payload["paths"]["analysis"] = payload["paths"]["test"]
             task.write_text(json.dumps(payload), encoding="utf-8")
-            with self.assertRaisesRegex(ConfigError, "distinct files"):
+            with self.assertRaisesRegex(ConfigError, "distinct locations"):
                 TaskConfig.load(task)
+
+    def test_hidden_datasets_need_not_exist_when_task_is_loaded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = self._write_task(directory)
+            payload = json.loads(task.read_text(encoding="utf-8"))
+            payload["paths"]["analysis"] = str(Path(directory) / "late/analysis.json")
+            payload["paths"]["test"] = str(Path(directory) / "late/test.json")
+            task.write_text(json.dumps(payload), encoding="utf-8")
+
+            config = TaskConfig.load(task)
+
+            self.assertFalse(config.analysis_path.exists())
+            self.assertFalse(config.test_path.exists())
 
     def test_public_task_manifest_declares_the_current_agent_protocol(self):
         config = TaskConfig.load(TASK)
@@ -176,7 +191,7 @@ class ConfigTests(unittest.TestCase):
         # The Agent reads this manifest and the `agent status` response.  A
         # rename in either surface must move this version with it.
         self.assertEqual(manifest["protocol_version"], AGENT_PROTOCOL_VERSION)
-        self.assertEqual(AGENT_PROTOCOL_VERSION, 3)
+        self.assertEqual(AGENT_PROTOCOL_VERSION, 4)
 
     def test_agent_egress_environment_and_host_runner_are_separate(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -10,6 +10,7 @@ from autotrain_bench.worker_protocol import (
     ConformanceReceipt,
     EnforcementLevel,
     TrustLevel,
+    WORKER_CONFORMANCE_SUITE_VERSION,
     WorkerDescriptor,
     assess_worker,
 )
@@ -53,7 +54,7 @@ class WorkerProtocolTests(unittest.TestCase):
         assessment = assess_worker(
             descriptor(
                 trust=TrustLevel.CERTIFIED,
-                conformance=ConformanceReceipt("worker-v2", True),
+                conformance=ConformanceReceipt(WORKER_CONFORMANCE_SUITE_VERSION, True),
             ),
             BASELINE_REQUIREMENTS,
         )
@@ -63,7 +64,19 @@ class WorkerProtocolTests(unittest.TestCase):
         for invalid in ("false", "true", 0, 1, None):
             with self.subTest(invalid=invalid):
                 with self.assertRaisesRegex(TypeError, "must be a boolean"):
-                    ConformanceReceipt("worker-v2", invalid)
+                    ConformanceReceipt(WORKER_CONFORMANCE_SUITE_VERSION, invalid)
+
+    def test_stale_conformance_suite_cannot_certify_a_new_protocol(self):
+        assessment = assess_worker(
+            descriptor(
+                trust=TrustLevel.CERTIFIED,
+                conformance=ConformanceReceipt("worker-v2", True),
+            ),
+            BASELINE_REQUIREMENTS,
+        )
+
+        self.assertFalse(assessment.conformance_satisfied)
+        self.assertFalse(assessment.leaderboard_eligible)
 
     def test_missing_and_insufficient_capabilities_never_silently_pass(self):
         worker = descriptor(
@@ -81,7 +94,7 @@ class WorkerProtocolTests(unittest.TestCase):
 
     def test_descriptor_manifest_contains_no_platform_schema(self):
         manifest = descriptor().public_manifest()
-        self.assertEqual(manifest["protocol_version"], 2)
+        self.assertEqual(manifest["protocol_version"], 3)
         self.assertEqual(manifest["roles"], ["research", "evaluation"])
         serialized = json.dumps(manifest).lower()
         self.assertNotIn("docker", serialized)
@@ -92,7 +105,7 @@ class WorkerProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "protocol version"):
             WorkerDescriptor(
                 worker_id="future-worker",
-                protocol_version=3,
+                protocol_version=4,
                 trust_level=TrustLevel.DEVELOPMENT,
                 roles=("research",),
                 capabilities={},

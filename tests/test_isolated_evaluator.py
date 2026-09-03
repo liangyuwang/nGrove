@@ -20,6 +20,14 @@ if SPEC is None or SPEC.loader is None:  # pragma: no cover - repository invaria
     raise RuntimeError(f"cannot import evaluator at {EVALUATOR}")
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
+ADAPTER_PATH = ROOT / "autotrain_bench/docker_evaluator_adapter.py"
+ADAPTER_SPEC = importlib.util.spec_from_file_location(
+    "docker_evaluator_adapter", ADAPTER_PATH
+)
+if ADAPTER_SPEC is None or ADAPTER_SPEC.loader is None:  # pragma: no cover
+    raise RuntimeError(f"cannot import adapter at {ADAPTER_PATH}")
+ADAPTER = importlib.util.module_from_spec(ADAPTER_SPEC)
+ADAPTER_SPEC.loader.exec_module(ADAPTER)
 
 
 class IsolatedEvaluatorTests(unittest.TestCase):
@@ -114,7 +122,7 @@ class IsolatedEvaluatorTests(unittest.TestCase):
                     normalized_logits(Candidate, None, [[0]], vocab_size=3)
 
     def test_evaluator_client_rejects_boolean_and_string_json_logits(self):
-        client = MODULE.CandidateClient.__new__(MODULE.CandidateClient)
+        client = ADAPTER.HttpCandidateClient.__new__(ADAPTER.HttpCandidateClient)
         client.base_url = "http://candidate"
         client.vocab_size = 2
         client.timeout_seconds = 1
@@ -136,12 +144,12 @@ class IsolatedEvaluatorTests(unittest.TestCase):
             with self.subTest(raw_logit=raw_logit):
                 encoded = json.dumps({"logits": [[raw_logit, 0.0]]}).encode("utf-8")
                 with patch.object(
-                    MODULE.urllib.request,
+                    ADAPTER.urllib.request,
                     "urlopen",
                     return_value=Response(encoded),
                 ):
                     with self.assertRaisesRegex(
-                        MODULE.EvaluationError, "logits must be numeric"
+                        ADAPTER.AdapterError, "logits must be numeric"
                     ):
                         client.predict([[0]])
 

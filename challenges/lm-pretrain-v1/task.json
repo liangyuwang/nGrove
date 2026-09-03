@@ -1,10 +1,11 @@
 {
+  "schema_version": 2,
   "task_id": "lm-pretrain-v1",
   "task_kind": "benchmark_challenge",
   "leaderboard_eligible": false,
   "paths": {
     "train": "data/generated/public",
-    "val": "data/generated/private/val.json",
+    "analysis": "data/generated/private/analysis.json",
     "test": "data/generated/private/test.json"
   },
   "images": {
@@ -15,6 +16,7 @@
   },
   "evaluation": {
     "backend": "isolated_candidate",
+    "candidate_protocol": "next_token_logits_v1",
     "entrypoint": "evaluator/evaluator.py",
     "metric": "autoregressive_nll",
     "leaderboard_metric": {
@@ -31,6 +33,11 @@
     "max_candidate_bytes": 137438953472,
     "max_candidate_files": 100000,
     "timeout_seconds": 14400
+  },
+  "analysis": {
+    "candidate_selection": "all_committed",
+    "max_candidates": 64,
+    "result_visibility": "organizer_only"
   },
   "timing": {
     "benchmark_owned_preparation": [

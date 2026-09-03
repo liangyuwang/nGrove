@@ -20,7 +20,7 @@ LM_PRETRAIN_PREVIEW = ROOT / "challenges/lm-pretrain-v1/challenge.json"
 class ChallengeReleaseTests(unittest.TestCase):
     def _write_release(self, directory: str) -> Path:
         payload = {
-            "schema_version": 1,
+            "schema_version": 2,
             "challenge_id": "test-byte-lm-v1",
             "task_id": "test-byte-lm-v1",
             "task": "task.json",

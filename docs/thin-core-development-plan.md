@@ -6,6 +6,11 @@ AutoTrain-Bench Core defines what an episode is allowed to do. It does not
 define where workloads run, how an Operator reaches a host, or which platform
 mechanism enforces the contract.
 
+The reusable idea is **sandbox-style workload semantics**: fixed identity,
+bounded visibility and resources, revocable execution, immutable artifacts,
+and auditable receipts. Docker is one bundled mechanism for those semantics,
+not the idea that Core standardizes.
+
 This document records the incremental path from the bundled v0 local Docker
 prototype to independently distributed Worker deployments. The migration is
 deliberately driven by a real external Worker instead of an up-front framework
@@ -36,8 +41,9 @@ remote Worker service for the other, or replace either independently.
 ## Invariants throughout the migration
 
 - The Coordinator remains authoritative for Track A/B budgets, Lease
-  admission, Candidate commit timing, VAL feedback, incumbent selection, TEST
-  lifecycle, results, and leaderboard eligibility.
+  admission, Candidate commit timing, incumbent selection, irreversible
+  research sealing, postmortem ANALYSIS/TEST lifecycle, results, and
+  leaderboard eligibility. It provides no organizer feedback during research.
 - A Challenge Release defines every resource property that is normative for
   comparison or eligibility. Core validates the requested requirements and
   the semantic evidence selected by that release. A Worker deployment chooses
@@ -47,9 +53,11 @@ remote Worker service for the other, or replace either independently.
   acceptance and canonical identity. A Worker guarantees that the producing
   workload can no longer mutate the selected output; who materializes the
   immutable snapshot depends on the protocol stage described below.
-- The Research Worker never receives hidden VAL or TEST data.
-- The Evaluation Worker receives one selected hidden split and an immutable
-  Candidate, but not the research workspace.
+- The Research Worker never receives hidden ANALYSIS or TEST data or the
+  credentials needed to resolve them.
+- The Evaluation Worker receives one selected hidden dataset and an immutable
+  Candidate, but not the research workspace, and may act only after research
+  teardown is confirmed.
 - The Tested Agent never receives Supervisor state, Worker privilege, hidden
   data, evaluator diagnostics, or an unrestricted platform control channel.
 - No security-sensitive local transport extraction may replace the existing
@@ -67,8 +75,8 @@ budget, isolation, comparison, or eligibility. Device selection, scheduler
 requests, cgroups, filesystem quotas, and other enforcement mechanisms remain
 Worker-owned.
 
-This paragraph states the target contract, not a claim that version 2 already
-has an allocation receipt. Version 2 passes requested `TrainingResources` into
+This paragraph states the target contract, not a claim that version 3 already
+has an allocation receipt. Version 3 passes requested `TrainingResources` into
 Worker operations and records deployment inventory, but `start_lease()` returns
 no normalized effective-allocation evidence. That gap is deferred to C4 and
 must remain explicit for formal evaluation.
@@ -81,7 +89,7 @@ The v0 support statement is:
 
 - The bundled `autotrain-bench prepare` and `autotrain-bench start` commands
   are a single-host local Docker reference composition.
-- `autotrain_bench.worker_protocol` version 2 is a synchronous in-process
+- `autotrain_bench.worker_protocol` version 3 is a synchronous in-process
   Python contract. Its `Path` values are local deployment handles, not a
   serializable remote wire format.
 - The bundled Agent-facing control transport is a local file mailbox. Mailbox
@@ -106,11 +114,12 @@ The v0 support statement is:
   define site storage policy. The bundled launcher records this limitation and
   therefore does not claim policy compliance.
 - After the v0 Worker stops a Lease, the Coordinator validates, copies, hashes,
-  and atomically stores the Candidate from a shared path. Version 2 has no
+  and atomically stores the Candidate from a shared path. Version 3 has no
   Worker-side capture operation or remote `ArtifactRef`.
 
-Phase A changes documentation only. It does not rename schema fields, change
-Worker Protocol version 2, or claim support for a new deployment.
+Phase A originally changed documentation only. The later postmortem-evaluation
+migration deliberately advanced the Agent, Worker, task, challenge, and result
+schemas; it still did not claim support for a new deployment.
 
 ## Phase B: expose the existing seams
 
@@ -131,7 +140,8 @@ Before moving code, preserve tests for:
 - malformed mailbox files, symlinks, directories, FIFOs, output conflicts,
   size limits, Unicode normalization, and cleanup;
 - episode terminal states and failure classification;
-- Task reveal, Lease accounting, Candidate commit, VAL/TEST, and incumbent;
+- Task reveal, Lease accounting, Candidate commit, research sealing,
+  ANALYSIS/TEST, and incumbent;
 - Worker capability, trust, conformance, and eligibility records;
 - Docker reference mount, network, deadline, and evaluation boundaries.
 
@@ -174,10 +184,10 @@ Failure ownership must remain explicit:
 - a failed `start_lease()` is treated as an uncertain creation until the Worker
   confirms termination; Core retains the semantic Lease ID for teardown retry,
   while the Worker retains every platform-specific resource handle;
-- TEST output remains staged while the episode is `closed`, and the Coordinator
-  publishes exactly one terminal result only after Agent stop metadata and
-  transport cleanup are complete. Cleanup is rejected until termination has
-  been recorded; a launcher must first stop the workload and then record it.
+- hidden evaluation cannot begin until Agent stop metadata, Research Worker
+  teardown, and transport cleanup are complete. TEST output is then staged
+  briefly while the episode is `closed`, and the Coordinator publishes exactly
+  one terminal result. Cleanup is rejected until termination has been recorded.
 
 The initial extraction should move proven code rather than redesign the wire
 format.
@@ -243,7 +253,7 @@ Every effectful boundary follows one failure model:
 | Local Agent, Gateway, or network start | Register the deterministic local name for cleanup | Keep it registered until confirmed removal | Attempt every independent cleanup and record a stable teardown code |
 | Local isolated evaluation | Register Candidate, Evaluator, and network handles inside the Worker | Remove all three before returning the metric | Retain Worker-private handles and retry them from the local deployment composition |
 | Candidate snapshot | Use an episode-private staging directory | Atomically install the content-addressed snapshot | Remove staging before propagating the infrastructure failure |
-| Terminal result publication | Keep TEST staged and `outcome: null`; append a non-terminal publication-prepared record | Atomically replace authoritative `state.json` with a reference to that prepared record | Leave the prepared record orphaned, keep audit sequence numbers monotonic, and fail the command closed |
+| Terminal result publication | Keep postmortem ANALYSIS/TEST staged and `outcome: null`; append a non-terminal publication-prepared record | Atomically replace authoritative `state.json` with a reference to that prepared record | Leave the prepared record orphaned, keep audit sequence numbers monotonic, and fail the command closed |
 
 Additional invariants enforced before every state write are:
 
@@ -253,6 +263,8 @@ Additional invariants enforced before every state write are:
 - a finalized result has no active or pending Worker Lease and has completed
   Agent termination and control cleanup, and references its audit preparation
   record;
+- a finalized result has completed postmortem ANALYSIS, and ANALYSIS never
+  changes the Agent-declared incumbent;
 - failed outcomes never retain TEST metrics;
 - platform resource handles never enter Core state.
 
@@ -284,24 +296,25 @@ network identifiers.
   bundled reference composition/runtime.
 - An external launcher can supply Research and Evaluation Worker
   implementations without modifying the Core CLI or adding a backend branch.
-- Existing v0 tasks and tests run without a Worker Protocol revision.
+- Platform mechanisms remain outside Core even when a semantic protocol
+  revision is required.
 
 ## External validation deployment
 
-Status: planned outside this repository.
+Status: completed outside this repository.
 
-After Phase B, build one development-only Worker package using a real
-non-Docker runtime. The preferred first target is a shared-filesystem Slurm
-allocation with Apptainer, optionally preceded by a same-host Apptainer smoke
-deployment.
+An independently distributed shared-filesystem Worker was exercised on a real
+scheduler/runtime deployment without changing Core. It implemented the
+semantic Lease lifecycle successfully. The site commands, configuration, and
+resource handles remain outside this repository.
 
 The external Operator obtains the allocation and stages the repository and
 artifacts. The Worker consumes that authorized environment; Core does not call
 `ssh`, `sbatch`, `srun`, or `apptainer`.
 
-The first preview deliberately retains the version 2 `Path` contract:
+The prototype deliberately retained the local/shared-filesystem `Path` contract:
 
-- TRAIN, workspace, Lease output, Candidate snapshots, hidden splits, and
+- TRAIN, workspace, Lease output, Candidate snapshots, hidden datasets, and
   evaluation output are materialized on the shared filesystem;
 - the Research and Evaluation implementations map semantic Worker operations
   to the site runtime;
@@ -311,13 +324,34 @@ The first preview deliberately retains the version 2 `Path` contract:
 - Worker-local deadline and termination behavior are exercised rather than
   simulated by Core.
 
-The deployment should keep an observation log containing each place where the
-version 2 local contract forced a platform-specific workaround. Those observed
-constraints, not hypothetical topologies, determine the next protocol work.
+The observation log demonstrated four follow-up needs: workload-resolution
+evidence, resource-allocation evidence, non-blocking Worker operations, and a
+Worker-owned Candidate/Evaluator channel mechanism. It also supplied negative
+evidence: shared paths were sufficient, so remote `ArtifactRef` work remains
+deferred. No scheduler or runtime mechanism is promoted into Core.
+
+## Postmortem hidden evaluation migration
+
+Status: implemented in the development schemas.
+
+- Agent Protocol v4 makes Candidate commit return artifact acceptance only.
+- Task and Challenge schema v2 replace legacy VAL with hidden ANALYSIS and a
+  release-frozen Candidate limit, selection rule, and result-visibility policy.
+- Research is durably sealed before Agent/Research teardown; hidden evaluation
+  is rejected until teardown and Agent-control cleanup are confirmed.
+- Every selected historical Candidate is scored on ANALYSIS after sealing; the
+  final Agent-declared incumbent alone is scored on TEST.
+- Result schema v4 records the frozen Candidate inventory, ANALYSIS trajectory,
+  and analysis completeness. Read-only migration preserves old VAL evidence as
+  legacy evidence and never calls it ANALYSIS.
+- Worker Protocol v3 expresses a transport-neutral Candidate application
+  contract. The task evaluator exports `evaluate(..., predict, ...)`; the
+  bundled Docker Worker supplies its HTTP adapter, while external Workers may
+  supply another isolated mechanism.
 
 ## Phase C: add only demonstrated semantic capabilities
 
-Status: deferred and split into independent decisions.
+Status: split by independently observed triggers.
 
 ### C1. Agent execution evidence
 
@@ -328,7 +362,11 @@ configuration.
 Possible result: a semantic Agent execution descriptor or receipt assessed
 independently from its runtime mechanism.
 
-Result schema version 3 pins `agent_system` to the bundled v0 runner
+External result: not fired. The tested Agent could be sandboxed, but its
+inference channel could not be mediated by the registered Gateway. A different
+participant with a compliant inference path is needed before redesigning C1.
+
+Result schema version 4 still pins `agent_system` to the bundled v0 runner
 vocabulary, so this phase also owns that structure. `_validate_agent_system()`
 in `autotrain_bench/results.py` rejects a `runner` outside `AGENT_RUNNERS` and
 keys its "a host runner declares no egress policy" rule on the literal
@@ -351,6 +389,9 @@ own Candidate acceptance and canonical identity rules. The remote Worker owns
 atomic capture and transport enforcement. This replaces, rather than
 retroactively describes, the v0 Coordinator-side shared-path snapshot.
 
+External result: not fired. The tested deployment safely shared every required
+path and could use Coordinator-side Candidate capture.
+
 ### C3. Workload resolution evidence
 
 Trigger: a deployment executes a SIF, VM image, or proprietary workload derived
@@ -358,6 +399,10 @@ from the release-owned OCI reference.
 
 Possible result: a receipt binding the requested canonical workload, effective
 artifact identity, transformation provenance, and organizer acceptance.
+
+External result: fired. OCI-to-SIF conversion produced a different effective
+artifact without a normalized binding receipt. The receipt design remains open;
+an arbitrary Worker assertion must not be mistaken for organizer acceptance.
 
 ### C4. Resource allocation evidence
 
@@ -371,14 +416,19 @@ identity needed by Core's comparison and eligibility checks. The schema must
 remain property-extensible; it must not turn one platform's CPU, accelerator,
 topology, cgroup, or storage vocabulary into a universal Core checklist.
 
-Worker Protocol v2 has no such receipt: `start_lease()` returns `None`. This
-phase is intentionally deferred until an external Worker demonstrates the
-required evidence and lifecycle semantics.
+Worker Protocol v3 has no such receipt: `start_lease()` returns `None`.
+
+External result: fired. Requested resources, scheduler allocation,
+workload-visible resources, and the enforcing layer differed. The future schema
+must distinguish those views and allow the trusted scheduler—not necessarily the
+sandbox runtime—to supply enforcement evidence. It must not encode one
+scheduler's vocabulary as the universal model.
 
 ### Other independently triggered work
 
 - atomic episode activation with Worker-local monotonic timing;
-- asynchronous operations and idempotent operation IDs;
+- asynchronous operations and idempotent operation IDs (trigger fired because
+  slow admission blocks Coordinator request and deadline processing);
 - event streaming;
 - a remote authenticated Worker transport;
 - deployment certification.
@@ -388,13 +438,14 @@ inside Core.
 
 ## Versioning rule
 
-Phase A documentation and a behavior-preserving Phase B refactor do not change
-Worker Protocol version 2.
+Phase A documentation and a behavior-preserving Phase B refactor did not change
+the then-current protocol. The postmortem hidden-evaluation contract advanced
+Worker Protocol to version 3.
 
 A new protocol revision is required when an implementation must change a
 required method, argument, return value, ordering guarantee, or failure
 semantic. Optional negotiated evidence may instead advance its own schema or
-the conformance-suite version, provided a version 2 Worker can still implement
+the conformance-suite version, provided an existing Worker can still implement
 the same required contract without ambiguity.
 
 The Python package remains an unreleased development package until the project

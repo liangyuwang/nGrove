@@ -816,6 +816,14 @@ def command_start(args: argparse.Namespace) -> int:
         if cleanup_reporting_error is not None:
             raise cleanup_reporting_error
 
+        # Hidden evaluation is deliberately outside the Agent-facing request
+        # loop.  It starts only after the Agent is confirmed stopped, all
+        # Research Leases are gone, and the control transport is cleaned.  A
+        # Worker deployment may materialize ANALYSIS/TEST at this point; Core
+        # neither downloads hidden data nor selects a platform mechanism.
+        if supervisor.state["status"] == "closed":
+            supervisor.evaluate_postmortem()
+
     _print(supervisor.public_status())
     return _episode_exit_code(supervisor.state)
 

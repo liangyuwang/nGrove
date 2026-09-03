@@ -46,7 +46,7 @@ from .worker_protocol import (
     EvaluationWorker,
     EnforcementLevel,
     EvaluationTaskSpec,
-    HiddenSplitRef,
+    HiddenDatasetRef,
     LeaseState,
     ResearchTaskSpec,
     ResearchWorker,
@@ -368,8 +368,11 @@ class Supervisor:
             "policy_sha256": _sha256_file(config.source.parent / "POLICY.md"),
             "evaluator_sha256": _sha256_file(config.evaluator_entrypoint),
             "train_manifest_sha256": _sha256_file(config.train_dir / "manifest.json"),
-            "val_sha256": _sha256_file(config.val_path),
-            "test_sha256": _sha256_file(config.test_path),
+            # Hidden identities are deliberately resolved only after the
+            # research phase is irreversibly sealed. A same-host deployment
+            # may keep the bytes physically absent until then.
+            "analysis_sha256": None,
+            "test_sha256": None,
         }
 
         policy_violations = []
@@ -490,10 +493,16 @@ class Supervisor:
                     "formal_release_verification_core_mismatch"
                 )
             for field in FORMAL_ARTIFACT_DIGEST_FIELDS:
+                if field in {"analysis_sha256", "test_sha256"}:
+                    continue
                 if receipt.artifact_sha256[field] != artifact_identities.get(field):
                     eligibility_violations.append(
                         f"formal_release_verification_artifact_mismatch:{field}"
                     )
+            # Hidden bytes may be absent until research teardown. Formal
+            # eligibility therefore remains provisional until ANALYSIS and
+            # TEST identities are resolved and matched post-seal.
+            eligibility_violations.append("formal_hidden_evaluation_pending")
 
         leaderboard_eligible = (
             config.leaderboard_eligible
@@ -530,8 +539,8 @@ class Supervisor:
                 "policy_sha256": artifact_identities["policy_sha256"],
                 "evaluator_sha256": artifact_identities["evaluator_sha256"],
                 "train_manifest_sha256": artifact_identities["train_manifest_sha256"],
-                "hidden_splits": {
-                    "val_sha256": artifact_identities["val_sha256"],
+                "hidden_evaluation": {
+                    "analysis_sha256": artifact_identities["analysis_sha256"],
                     "test_sha256": artifact_identities["test_sha256"],
                 },
             },
@@ -595,6 +604,7 @@ class Supervisor:
                 "image": config.evaluator_image,
                 "candidate_image": config.candidate_image,
                 "boundary": "candidate_evaluator_channel",
+                "candidate_channel": self.evaluation_task.candidate_channel.public_manifest(),
                 "policy_compliant": (
                     config.evaluator_policy_compliant
                     and evaluation_assessment.satisfied
@@ -607,7 +617,7 @@ class Supervisor:
             "timing": {
                 "benchmark_overhead_seconds": 0.0,
                 "training_lease_seconds": 0.0,
-                "validation_evaluation_seconds": 0.0,
+                "analysis_evaluation_seconds": 0.0,
                 "test_evaluation_seconds": 0.0,
             },
             "lease_serial": 0,
@@ -620,8 +630,17 @@ class Supervisor:
             "last_lease_id": None,
             "deployment_teardown_failures": [],
             "candidates": {},
+            "candidate_commits": [],
             "incumbent_id": None,
             "final_candidate_id": None,
+            "research_sealed_at": None,
+            "analysis_complete": None,
+            "analysis_policy": {
+                "candidate_selection": config.analysis_candidate_selection,
+                "max_candidates": config.max_analysis_candidates,
+                "result_visibility": config.analysis_result_visibility,
+            },
+            "analysis_trajectory": [],
             "test_nll": None,
             "test_perplexity": None,
             "pending_result": None,
@@ -652,7 +671,8 @@ class Supervisor:
         public_manifest["formal_release_verified"] = (
             self.release_verification is not None
             and not any(
-                violation.startswith("formal_release_verification")
+                violation == "formal_hidden_evaluation_pending"
+                or violation.startswith("formal_release_verification")
                 for violation in eligibility_violations
             )
         )
@@ -664,6 +684,17 @@ class Supervisor:
             encoding="utf-8",
         )
         self._save_state()
+
+    def _refresh_leaderboard_eligibility(self) -> None:
+        research = self.state["workers"]["research"]["assessment"]
+        evaluation = self.state["workers"]["evaluation"]["assessment"]
+        self.state["leaderboard_eligible"] = bool(
+            self.config.leaderboard_eligible
+            and self.state["policy_compliant"]
+            and research["leaderboard_eligible"]
+            and evaluation["leaderboard_eligible"]
+            and not self.state["leaderboard_eligibility_violations"]
+        )
 
     def begin(self) -> None:
         with self.lock:
@@ -733,12 +764,12 @@ class Supervisor:
         return max(0.0, self.config.track_a_total_seconds - self._elapsed())
 
     def _close_at_track_a_deadline(self) -> Dict[str, Any]:
-        """Close Track A at its fixed deadline and TEST the prior incumbent."""
+        """Irreversibly seal Track A at its fixed participant deadline."""
 
         self._freeze_elapsed(self._track_a_deadline_monotonic())
         if self.state["active_lease"] is not None:
             self._end_active_lease("track_a_deadline")
-        return self._close_and_test(
+        return self._seal_research(
             self.state["incumbent_id"], reason="track_a_deadline"
         )
 
@@ -751,16 +782,13 @@ class Supervisor:
                 active["duration_seconds"],
                 max(0.0, self.monotonic() - active["started_monotonic"]),
             )
-        validation_seconds = float(
-            self.state["timing"]["validation_evaluation_seconds"]
-        )
         result: Dict[str, Any] = {
             "official_elapsed_seconds": round(elapsed, 6),
             "benchmark_overhead_seconds": round(self._benchmark_overhead(), 6),
             "training_lease_seconds": round(lease_seconds, 6),
-            "validation_evaluation_seconds": round(validation_seconds, 6),
-            "agent_and_worker_seconds": round(
-                max(0.0, elapsed - lease_seconds - validation_seconds), 6
+            "agent_and_worker_seconds": round(max(0.0, elapsed - lease_seconds), 6),
+            "analysis_evaluation_seconds": round(
+                float(self.state["timing"]["analysis_evaluation_seconds"]), 6
             ),
             "test_evaluation_seconds": round(
                 float(self.state["timing"]["test_evaluation_seconds"]), 6
@@ -849,6 +877,16 @@ class Supervisor:
             raise RuntimeError("only a finalized episode may publish a result")
         if self.state.get("pending_result") is not None and status != "closed":
             raise RuntimeError("a staged TEST result requires the closed state")
+        sealed_at = self.state.get("research_sealed_at")
+        if status in {"created", "active"} and sealed_at is not None:
+            raise RuntimeError("active research cannot already be sealed")
+        if status in {"closed", "finalized"} and not _safe_protocol_text(sealed_at):
+            raise RuntimeError("closed research requires a sealing timestamp")
+        analysis_complete = self.state.get("analysis_complete")
+        if analysis_complete is not None and not isinstance(analysis_complete, bool):
+            raise RuntimeError("analysis_complete must be null or boolean")
+        if analysis_complete is not None and status in {"created", "active"}:
+            raise RuntimeError("ANALYSIS state requires sealed research")
         if outcome == "failed" and (
             self.state.get("test_nll") is not None
             or self.state.get("test_perplexity") is not None
@@ -882,6 +920,8 @@ class Supervisor:
                 raise RuntimeError("a finalized result cannot retain Worker Leases")
             if self.state.get("pending_result") is not None:
                 raise RuntimeError("a finalized result cannot remain staged")
+            if analysis_complete is not True:
+                raise RuntimeError("a finalized result requires completed ANALYSIS")
 
     def _require_active(self) -> None:
         if self.state["status"] != "active":
@@ -941,6 +981,7 @@ class Supervisor:
                 ),
                 "incumbent_id": self.state["incumbent_id"],
                 "candidates": self.state["candidates"],
+                "candidate_commits": list(self.state["candidate_commits"]),
             }
             if active:
                 status["active_lease"] = {
@@ -960,6 +1001,9 @@ class Supervisor:
                     self.config.track_b_max_leases - self.state["leases_used"],
                 )
             if self.state["status"] != "active":
+                status["research_sealed_at"] = self.state["research_sealed_at"]
+                status["analysis_complete"] = self.state["analysis_complete"]
+                status["analysis_trajectory"] = list(self.state["analysis_trajectory"])
                 status["final_candidate_id"] = self.state["final_candidate_id"]
                 status["test_nll"] = self.state["test_nll"]
                 status["test_perplexity"] = self.state["test_perplexity"]
@@ -1405,7 +1449,7 @@ class Supervisor:
             self._require_active()
             lease_id = self._active_lease()["lease_id"]
             self._end_active_lease("agent_stopped_without_candidate")
-            return {"lease_id": lease_id, "candidate_id": None, "val_nll": None}
+            return {"lease_id": lease_id, "candidate_id": None}
 
     def _candidate_source(self, candidate_path: Any, lease_id: str) -> Path:
         if not isinstance(candidate_path, str) or not candidate_path:
@@ -1564,9 +1608,15 @@ class Supervisor:
             digest = self._tree_hash(stage)
             candidate_id = f"sha256:{digest}"
             destination = self.candidates_dir / digest
+            created = False
             if not destination.exists():
                 os.replace(str(stage), str(destination))
-            return {"candidate_id": candidate_id, "path": destination}
+                created = True
+            return {
+                "candidate_id": candidate_id,
+                "path": destination,
+                "created": created,
+            }
         finally:
             if stage.exists():
                 self._remove_staging_tree(stage)
@@ -1610,6 +1660,20 @@ class Supervisor:
                 )
                 self._save_state()
                 raise
+            if (
+                len(self.state["candidate_commits"])
+                >= self.config.max_analysis_candidates
+            ):
+                self._event(
+                    "CANDIDATE_REJECTED",
+                    lease_id=lease_id,
+                    code="candidate_limit_reached",
+                )
+                self._save_state()
+                raise ProtocolError(
+                    "candidate_limit_reached",
+                    "the release Candidate commit limit has been reached",
+                )
             try:
                 snapshot = self._snapshot_candidate(source)
             except OSError as exc:
@@ -1629,123 +1693,40 @@ class Supervisor:
                     "candidate snapshot infrastructure failed",
                 ) from None
             candidate_id = snapshot["candidate_id"]
-            metadata = {
-                "candidate_id": candidate_id,
-                "source_lease": lease_id,
-                "val_nll": None,
-                "evaluation_error": None,
-            }
-            self.state["candidates"][candidate_id] = metadata
-            self._event(
+            existing = self.state["candidates"].get(candidate_id)
+            if existing is None:
+                metadata = {
+                    "candidate_id": candidate_id,
+                    "source_leases": [lease_id],
+                    "declared_incumbent": False,
+                    "analysis_status": "pending",
+                    "analysis_nll": None,
+                    "analysis_perplexity": None,
+                    "analysis_error": None,
+                }
+                self.state["candidates"][candidate_id] = metadata
+            else:
+                metadata = existing
+                if lease_id not in metadata["source_leases"]:
+                    metadata["source_leases"].append(lease_id)
+
+            commit_index = len(self.state["candidate_commits"]) + 1
+            commit_event_seq = self._event(
                 "CANDIDATE_COMMITTED",
                 lease_id=lease_id,
                 candidate_id=candidate_id,
+                commit_index=commit_index,
             )
-            evaluation_started = self.monotonic()
-            deadline_reached = False
-            teardown_failure: Optional[str] = None
-            infrastructure_failure: Optional[str] = None
-            try:
-                timeout_seconds = float(self.config.evaluator_timeout_seconds)
-                if self.track == "A":
-                    remaining = self._track_a_remaining()
-                    if remaining <= 0:
-                        deadline_reached = True
-                    else:
-                        timeout_seconds = min(timeout_seconds, remaining)
-                if deadline_reached:
-                    raise WorkerFailure("evaluation deadline reached")
-                val_nll = validated_nll(
-                    self.evaluation_worker.evaluate_candidate(
-                        episode_id=self.state["episode_id"],
-                        task=self.evaluation_task,
-                        resources=self.resources,
-                        candidate_dir=snapshot["path"],
-                        hidden_split=HiddenSplitRef("val", self.config.val_path),
-                        output_dir=self.evaluations_dir / snapshot["path"].name,
-                        timeout_seconds=timeout_seconds,
-                    )
-                )
-                deadline_reached = self.track == "A" and self._track_a_remaining() <= 0
-                if not deadline_reached:
-                    metadata["val_nll"] = val_nll
-                    self._event(
-                        "VAL_EVALUATED",
-                        candidate_id=candidate_id,
-                        nll=val_nll,
-                    )
-            except WorkerTeardownFailure as exc:
-                metadata["evaluation_error"] = "evaluation_worker_teardown_failure"
-                teardown_failure = str(exc)
-                self._event(
-                    "VAL_INFRASTRUCTURE_FAILURE",
-                    candidate_id=candidate_id,
-                    code="worker_teardown_failure",
-                )
-            except (ValueError, WorkerFailure):
-                deadline_reached = self.track == "A" and self._track_a_remaining() <= 0
-                if not deadline_reached:
-                    metadata["evaluation_error"] = "evaluation_failed"
-                    self._event(
-                        "VAL_EVALUATION_FAILED",
-                        candidate_id=candidate_id,
-                        code="evaluation_failed",
-                    )
-            except Exception as exc:
-                metadata["evaluation_error"] = "evaluation_infrastructure_failure"
-                infrastructure_failure = str(exc)
-                self._event(
-                    "VAL_INFRASTRUCTURE_FAILURE",
-                    candidate_id=candidate_id,
-                    code="unexpected_worker_failure",
-                    exception_type=type(exc).__name__,
-                    message=str(exc),
-                )
-            finally:
-                evaluation_seconds = max(0.0, self.monotonic() - evaluation_started)
-                if self.track == "A":
-                    evaluation_seconds = min(
-                        evaluation_seconds,
-                        max(
-                            0.0,
-                            self._track_a_deadline_monotonic() - evaluation_started,
-                        ),
-                    )
-                self.state["timing"]["validation_evaluation_seconds"] += (
-                    evaluation_seconds
-                )
-            if teardown_failure is not None:
-                # Persist the timing update and the failure transition in one
-                # authoritative state write.  Raising inside the except block
-                # would skip the save that normally follows this finally.
-                self.deployment_teardown_failed(
-                    "evaluation_worker_teardown_failure",
-                    private_detail=teardown_failure,
-                )
-                raise ProtocolError(
-                    "infrastructure_failure",
-                    "evaluation worker teardown failed",
-                ) from None
-            if infrastructure_failure is not None:
-                self.infrastructure_failed(
-                    "val_evaluation_infrastructure_failure",
-                    private_detail=infrastructure_failure,
-                )
-                raise ProtocolError(
-                    "infrastructure_failure",
-                    "validation evaluation infrastructure failed",
-                ) from None
-            if deadline_reached:
-                metadata["evaluation_error"] = "track_a_deadline"
-                self._event(
-                    "VAL_EVALUATION_DISCARDED",
-                    candidate_id=candidate_id,
-                    code="track_a_deadline",
-                )
+            commit = {
+                "commit_index": commit_index,
+                "event_seq": commit_event_seq,
+                "candidate_id": candidate_id,
+                "source_lease": lease_id,
+                "elapsed_seconds": round(self._elapsed(), 6),
+            }
+            self.state["candidate_commits"].append(commit)
             self._save_state()
-            if deadline_reached:
-                self._close_at_track_a_deadline()
-            return dict(metadata)
+            return dict(commit)
 
     def declare_incumbent(self, candidate_id: Any) -> Dict[str, Any]:
         """Record the candidate the Agent would submit if the episode ended now."""
@@ -1759,26 +1740,20 @@ class Supervisor:
             candidate = self.state["candidates"].get(candidate_id)
             if candidate is None:
                 raise ProtocolError("unknown_candidate", "candidate is not registered")
-            if candidate.get("val_nll") is None:
-                raise ProtocolError(
-                    "candidate_not_validated",
-                    "candidate has no successful VAL result",
-                )
             previous_id = self.state["incumbent_id"]
             self.state["incumbent_id"] = candidate_id
+            candidate["declared_incumbent"] = True
             self._event(
                 "INCUMBENT_DECLARED",
                 candidate_id=candidate_id,
                 previous_candidate_id=previous_id,
-                source_lease=candidate["source_lease"],
-                val_nll=candidate["val_nll"],
+                source_leases=list(candidate["source_leases"]),
                 leases_used=self.state["leases_used"],
             )
             self._save_state()
             return {
                 "incumbent_id": candidate_id,
                 "previous_incumbent_id": previous_id,
-                "val_nll": candidate["val_nll"],
             }
 
     def refresh_inference_usage(self) -> Dict[str, Any]:
@@ -1821,8 +1796,7 @@ class Supervisor:
                     or self.state["agent_usage"] != normalized_usage
                 ):
                     raise RuntimeError("Agent termination metadata is immutable")
-                if not self._publish_staged_result():
-                    self._save_state()
+                self._save_state()
                 return
             self.state["agent_system"]["exit_code"] = normalized_exit_code
             self.state["agent_system"]["termination_reason"] = termination_reason
@@ -1839,8 +1813,7 @@ class Supervisor:
                 finish_observed=self.state["agent_system"]["finish_observed"],
                 drain_seconds=self.state["agent_system"]["drain_seconds"],
             )
-            if not self._publish_staged_result():
-                self._save_state()
+            self._save_state()
 
     def finish(self) -> Dict[str, Any]:
         with self.lock:
@@ -1849,11 +1822,11 @@ class Supervisor:
                 raise ProtocolError(
                     "lease_active", "commit or stop the active lease before finish"
                 )
-            return self._close_and_test(
+            return self._seal_research(
                 self.state["incumbent_id"], reason="agent_finished"
             )
 
-    def _close_and_test(
+    def _seal_research(
         self, candidate_id: Optional[str], *, reason: str
     ) -> Dict[str, Any]:
         self._freeze_elapsed()
@@ -1861,104 +1834,320 @@ class Supervisor:
         self.state["closure_reason"] = reason
         self.state["agent_system"]["finish_observed"] = reason == "agent_finished"
         self.state["final_candidate_id"] = candidate_id
-        self._event("EPISODE_CLOSED", reason=reason, candidate_id=candidate_id)
-        self._save_state()
-
-        if candidate_id is None:
-            return self._stage_failed_test("no_candidate")
-
-        digest = candidate_id.split(":", 1)[1]
-        candidate_dir = self.candidates_dir / digest
-        evaluation_started = self.monotonic()
-        test_nll: Optional[float] = None
-        test_failure: Optional[str] = None
-        test_infrastructure_failure = False
-        test_teardown_failure: Optional[str] = None
-        try:
-            test_nll = validated_nll(
-                self.evaluation_worker.evaluate_candidate(
-                    episode_id=self.state["episode_id"],
-                    task=self.evaluation_task,
-                    resources=self.resources,
-                    candidate_dir=candidate_dir,
-                    hidden_split=HiddenSplitRef("test", self.config.test_path),
-                    output_dir=self.evaluations_dir / digest,
-                    timeout_seconds=float(self.config.evaluator_timeout_seconds),
-                )
-            )
-        except WorkerTeardownFailure as exc:
-            test_teardown_failure = str(exc)
-            self._event(
-                "TEST_INFRASTRUCTURE_FAILURE",
-                candidate_id=candidate_id,
-                code="worker_teardown_failure",
-            )
-        except WorkerFailure:
-            test_failure = "test_evaluation_failed"
-            self._event(
-                "TEST_EVALUATION_FAILED",
-                candidate_id=candidate_id,
-                code="evaluation_failed",
-            )
-        except ValueError:
-            test_failure = "invalid_test_metric"
-            self._event(
-                "TEST_EVALUATION_FAILED",
-                candidate_id=candidate_id,
-                code="invalid_metric",
-            )
-        except Exception as exc:
-            self._event(
-                "TEST_INFRASTRUCTURE_FAILURE",
-                candidate_id=candidate_id,
-                exception_type=type(exc).__name__,
-                message=str(exc),
-            )
-            test_infrastructure_failure = True
-        finally:
-            self.state["timing"]["test_evaluation_seconds"] += max(
-                0.0, self.monotonic() - evaluation_started
-            )
-
-        if test_teardown_failure is not None:
-            self.deployment_teardown_failed(
-                "evaluation_worker_teardown_failure",
-                private_detail=test_teardown_failure,
-            )
-            return self.public_status()
-
-        if test_infrastructure_failure:
-            self.infrastructure_failed("test_evaluation_infrastructure_failure")
-            return self.public_status()
-
-        if test_failure is not None or test_nll is None:
-            return self._stage_failed_test(test_failure or "test_evaluation_failed")
-
-        try:
-            test_perplexity = perplexity_from_nll(test_nll)
-        except ValueError:
-            self._event(
-                "TEST_EVALUATION_FAILED",
-                candidate_id=candidate_id,
-                code="perplexity_overflow",
-            )
-            return self._stage_failed_test("perplexity_overflow")
-
-        self.state["pending_result"] = {
-            "outcome": "success",
-            "failure": None,
-            "test_nll": test_nll,
-            "test_perplexity": test_perplexity,
-            "publication_id": uuid.uuid4().hex,
-        }
+        self.state["research_sealed_at"] = datetime.fromtimestamp(
+            self.wall_time(), tz=timezone.utc
+        ).isoformat()
+        self.state["analysis_complete"] = False
         self._event(
-            "TEST_EVALUATED",
+            "RESEARCH_SEALED",
+            reason=reason,
             candidate_id=candidate_id,
-            nll=test_nll,
-            perplexity=test_perplexity,
+            candidate_inventory=list(self.state["candidate_commits"]),
         )
         self._save_state()
         return self.public_status()
+
+    def _record_hidden_dataset_identity(self, name: str, path: Path) -> bool:
+        """Resolve a hidden local handle only after research has been sealed."""
+
+        try:
+            digest = _sha256_file(path)
+        except OSError as exc:
+            self._event(
+                "HIDDEN_DATASET_RESOLUTION_FAILED",
+                dataset=name,
+                exception_type=type(exc).__name__,
+                message=str(exc),
+            )
+            self.infrastructure_failed(
+                "hidden_dataset_resolution_failure", private_detail=str(exc)
+            )
+            return False
+        if digest is None:
+            self._event(
+                "HIDDEN_DATASET_RESOLUTION_FAILED",
+                dataset=name,
+                code="dataset_unavailable",
+            )
+            self.infrastructure_failed("hidden_dataset_unavailable")
+            return False
+        field = f"{name}_sha256"
+        self.state["artifact_identities"]["hidden_evaluation"][field] = digest
+        receipt = self.release_verification
+        if receipt is not None and receipt.artifact_sha256[field] != digest:
+            violation = f"formal_release_verification_artifact_mismatch:{field}"
+            if violation not in self.state["leaderboard_eligibility_violations"]:
+                self.state["leaderboard_eligibility_violations"].append(violation)
+            self.state["leaderboard_eligible"] = False
+            self._event(
+                "HIDDEN_DATASET_IDENTITY_MISMATCH",
+                dataset=name,
+                expected_sha256=receipt.artifact_sha256[field],
+                actual_sha256=digest,
+            )
+            self.infrastructure_failed("hidden_dataset_identity_mismatch")
+            return False
+        identities = self.state["artifact_identities"]["hidden_evaluation"]
+        if all(identities.get(key) for key in ("analysis_sha256", "test_sha256")):
+            violation = "formal_hidden_evaluation_pending"
+            if violation in self.state["leaderboard_eligibility_violations"]:
+                self.state["leaderboard_eligibility_violations"].remove(violation)
+            self._refresh_leaderboard_eligibility()
+        self._event("HIDDEN_DATASET_RESOLVED", dataset=name, sha256=digest)
+        return True
+
+    def evaluate_postmortem(self) -> Dict[str, Any]:
+        """Run hidden ANALYSIS and TEST after trusted research teardown."""
+
+        with self.lock:
+            if self.state["status"] != "closed":
+                raise RuntimeError("postmortem evaluation requires sealed research")
+            if self.state["agent_system"]["termination_reason"] is None:
+                raise RuntimeError("Agent termination must precede hidden evaluation")
+            if self.state["agent_control"]["cleanup_complete"] is not True:
+                raise RuntimeError(
+                    "Agent-control cleanup must precede hidden evaluation"
+                )
+            if self.state.get("active_lease") is not None or self.state.get(
+                "pending_lease_teardowns"
+            ):
+                raise RuntimeError("Research Worker teardown must precede evaluation")
+            if self.state.get("deployment_teardown_failures"):
+                raise RuntimeError("deployment teardown failure blocks evaluation")
+            if self.state.get("pending_result") is not None:
+                self._publish_staged_result()
+                return self.public_status()
+            if self.state["analysis_complete"] is True:
+                raise RuntimeError("postmortem evaluation has already completed")
+
+            candidate_ids = list(self.state["candidates"])
+            if candidate_ids and not self._record_hidden_dataset_identity(
+                "analysis", self.config.analysis_path
+            ):
+                return self.public_status()
+
+            analysis_started = self.monotonic()
+            analysis_teardown_failure: Optional[str] = None
+            analysis_infrastructure_failure: Optional[str] = None
+            try:
+                for candidate_id in candidate_ids:
+                    metadata = self.state["candidates"][candidate_id]
+                    digest = candidate_id.split(":", 1)[1]
+                    try:
+                        nll = validated_nll(
+                            self.evaluation_worker.evaluate_candidate(
+                                episode_id=self.state["episode_id"],
+                                task=self.evaluation_task,
+                                resources=self.resources,
+                                candidate_dir=self.candidates_dir / digest,
+                                hidden_dataset=HiddenDatasetRef(
+                                    "analysis", self.config.analysis_path
+                                ),
+                                output_dir=self.evaluations_dir / "analysis" / digest,
+                                timeout_seconds=float(
+                                    self.config.evaluator_timeout_seconds
+                                ),
+                            )
+                        )
+                        perplexity = perplexity_from_nll(nll)
+                    except WorkerTeardownFailure as exc:
+                        metadata["analysis_status"] = "infrastructure_failure"
+                        metadata["analysis_error"] = "worker_teardown_failure"
+                        analysis_teardown_failure = str(exc)
+                        self._event(
+                            "ANALYSIS_INFRASTRUCTURE_FAILURE",
+                            candidate_id=candidate_id,
+                            code="worker_teardown_failure",
+                        )
+                        break
+                    except WorkerFailure:
+                        metadata["analysis_status"] = "failed"
+                        metadata["analysis_error"] = "evaluation_failed"
+                        self._event(
+                            "ANALYSIS_EVALUATION_FAILED",
+                            candidate_id=candidate_id,
+                            code="evaluation_failed",
+                        )
+                    except ValueError:
+                        metadata["analysis_status"] = "failed"
+                        metadata["analysis_error"] = "invalid_metric"
+                        self._event(
+                            "ANALYSIS_EVALUATION_FAILED",
+                            candidate_id=candidate_id,
+                            code="invalid_metric",
+                        )
+                    except Exception as exc:
+                        metadata["analysis_status"] = "infrastructure_failure"
+                        metadata["analysis_error"] = "unexpected_worker_failure"
+                        analysis_infrastructure_failure = str(exc)
+                        self._event(
+                            "ANALYSIS_INFRASTRUCTURE_FAILURE",
+                            candidate_id=candidate_id,
+                            exception_type=type(exc).__name__,
+                            message=str(exc),
+                        )
+                        break
+                    else:
+                        metadata["analysis_status"] = "evaluated"
+                        metadata["analysis_nll"] = nll
+                        metadata["analysis_perplexity"] = perplexity
+                        self._event(
+                            "ANALYSIS_EVALUATED",
+                            candidate_id=candidate_id,
+                            nll=nll,
+                            perplexity=perplexity,
+                        )
+            finally:
+                self.state["timing"]["analysis_evaluation_seconds"] += max(
+                    0.0, self.monotonic() - analysis_started
+                )
+
+            if analysis_teardown_failure is not None:
+                self.deployment_teardown_failed(
+                    "evaluation_worker_teardown_failure",
+                    private_detail=analysis_teardown_failure,
+                )
+                return self.public_status()
+            if analysis_infrastructure_failure is not None:
+                self.infrastructure_failed(
+                    "analysis_evaluation_infrastructure_failure",
+                    private_detail=analysis_infrastructure_failure,
+                )
+                return self.public_status()
+
+            trajectory = []
+            for commit in self.state["candidate_commits"]:
+                metadata = self.state["candidates"][commit["candidate_id"]]
+                trajectory.append(
+                    {
+                        **commit,
+                        "analysis_status": metadata["analysis_status"],
+                        "analysis_nll": metadata["analysis_nll"],
+                        "analysis_perplexity": metadata["analysis_perplexity"],
+                        "analysis_error": metadata["analysis_error"],
+                        "declared_incumbent": metadata["declared_incumbent"],
+                    }
+                )
+            self.state["analysis_trajectory"] = trajectory
+            self.state["analysis_complete"] = True
+            self._event(
+                "ANALYSIS_COMPLETED",
+                candidates=len(candidate_ids),
+                failed=sum(
+                    item["analysis_status"] != "evaluated" for item in trajectory
+                ),
+            )
+            self._save_state()
+
+            candidate_id = self.state["final_candidate_id"]
+            if candidate_id is None:
+                self._stage_failed_test("no_candidate")
+                self._publish_staged_result()
+                return self.public_status()
+
+            if not self._record_hidden_dataset_identity("test", self.config.test_path):
+                return self.public_status()
+
+            digest = candidate_id.split(":", 1)[1]
+            candidate_dir = self.candidates_dir / digest
+            evaluation_started = self.monotonic()
+            test_nll: Optional[float] = None
+            test_failure: Optional[str] = None
+            test_infrastructure_failure: Optional[str] = None
+            test_teardown_failure: Optional[str] = None
+            try:
+                test_nll = validated_nll(
+                    self.evaluation_worker.evaluate_candidate(
+                        episode_id=self.state["episode_id"],
+                        task=self.evaluation_task,
+                        resources=self.resources,
+                        candidate_dir=candidate_dir,
+                        hidden_dataset=HiddenDatasetRef("test", self.config.test_path),
+                        output_dir=self.evaluations_dir / "test" / digest,
+                        timeout_seconds=float(self.config.evaluator_timeout_seconds),
+                    )
+                )
+            except WorkerTeardownFailure as exc:
+                test_teardown_failure = str(exc)
+                self._event(
+                    "TEST_INFRASTRUCTURE_FAILURE",
+                    candidate_id=candidate_id,
+                    code="worker_teardown_failure",
+                )
+            except WorkerFailure:
+                test_failure = "test_evaluation_failed"
+                self._event(
+                    "TEST_EVALUATION_FAILED",
+                    candidate_id=candidate_id,
+                    code="evaluation_failed",
+                )
+            except ValueError:
+                test_failure = "invalid_test_metric"
+                self._event(
+                    "TEST_EVALUATION_FAILED",
+                    candidate_id=candidate_id,
+                    code="invalid_metric",
+                )
+            except Exception as exc:
+                test_infrastructure_failure = str(exc)
+                self._event(
+                    "TEST_INFRASTRUCTURE_FAILURE",
+                    candidate_id=candidate_id,
+                    exception_type=type(exc).__name__,
+                    message=str(exc),
+                )
+            finally:
+                self.state["timing"]["test_evaluation_seconds"] += max(
+                    0.0, self.monotonic() - evaluation_started
+                )
+
+            if test_teardown_failure is not None:
+                self.deployment_teardown_failed(
+                    "evaluation_worker_teardown_failure",
+                    private_detail=test_teardown_failure,
+                )
+                return self.public_status()
+
+            if test_infrastructure_failure is not None:
+                self.infrastructure_failed(
+                    "test_evaluation_infrastructure_failure",
+                    private_detail=test_infrastructure_failure,
+                )
+                return self.public_status()
+
+            if test_failure is not None or test_nll is None:
+                self._stage_failed_test(test_failure or "test_evaluation_failed")
+                self._publish_staged_result()
+                return self.public_status()
+
+            try:
+                test_perplexity = perplexity_from_nll(test_nll)
+            except ValueError:
+                self._event(
+                    "TEST_EVALUATION_FAILED",
+                    candidate_id=candidate_id,
+                    code="perplexity_overflow",
+                )
+                self._stage_failed_test("perplexity_overflow")
+                self._publish_staged_result()
+                return self.public_status()
+
+            self.state["pending_result"] = {
+                "outcome": "success",
+                "failure": None,
+                "test_nll": test_nll,
+                "test_perplexity": test_perplexity,
+                "publication_id": uuid.uuid4().hex,
+            }
+            self._event(
+                "TEST_EVALUATED",
+                candidate_id=candidate_id,
+                nll=test_nll,
+                perplexity=test_perplexity,
+            )
+            self._save_state()
+            self._publish_staged_result()
+            return self.public_status()
 
     def _stage_failed_test(self, failure: str) -> Dict[str, Any]:
         """Stage a failed result without manufacturing a missing TEST metric."""
@@ -2180,7 +2369,6 @@ class Supervisor:
                 "Agent termination must be recorded before control cleanup"
             )
         if self.state["agent_control"]["cleanup_complete"] is True:
-            self._publish_staged_result()
             return True
         if self.agent_control_transport is None:
             self.state["agent_control"].update(
@@ -2199,8 +2387,7 @@ class Supervisor:
                 agent_caused_failures=0,
                 infrastructure_failures=0,
             )
-            if not self._publish_staged_result():
-                self._save_state()
+            self._save_state()
             return True
         try:
             cleanup = self.agent_control_transport.cleanup()
@@ -2263,8 +2450,6 @@ class Supervisor:
                 self.deployment_teardown_failed("agent_control_teardown_failure")
         elif cleanup.infrastructure_failures:
             self.deployment_teardown_failed("agent_control_teardown_failure")
-        elif self._publish_staged_result():
-            return cleanup_complete
         self._save_state()
         return cleanup_complete
 

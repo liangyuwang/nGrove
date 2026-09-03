@@ -26,7 +26,7 @@ FORMAL_ARTIFACT_DIGEST_FIELDS = (
     "policy_sha256",
     "evaluator_sha256",
     "train_manifest_sha256",
-    "val_sha256",
+    "analysis_sha256",
     "test_sha256",
 )
 
@@ -136,7 +136,6 @@ class TrackConfig:
             budget = {
                 "max_leases": self.max_leases,
                 "lease_seconds": self.lease_seconds,
-                "official_val_queries_per_lease": 1,
             }
         return {
             "label": self.label,
@@ -357,8 +356,8 @@ class ChallengeRelease:
             raise ConfigError(f"invalid JSON in {source}: {exc}") from exc
         root = _mapping(raw, "root")
         schema_version = _positive_int(root.get("schema_version"), "schema_version")
-        if schema_version != 1:
-            raise ConfigError("challenge schema_version must be 1")
+        if schema_version != 2:
+            raise ConfigError("challenge schema_version must be 2")
         release_stage = _string(root.get("release_stage"), "release_stage")
         if release_stage not in RELEASE_STAGES:
             allowed = ", ".join(sorted(RELEASE_STAGES))

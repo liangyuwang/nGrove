@@ -63,16 +63,23 @@ $$
 
 under the resource constraints of the selected benchmark track.
 
+The architectural model is **sandbox-style workload semantics**, not “Docker
+semantics”: workloads have fixed identities, bounded visibility and resources,
+revocable lifetimes, immutable outputs, and auditable evidence. Docker is only
+the bundled local mechanism. Other Workers may realize the same contract with a
+scheduler sandbox, VM, another container runtime, or a certified process
+sandbox without adding platform branches to Core.
+
 ---
 
 # Local Reference Prototype
 
 The repository now contains an executable, single-host Docker prototype of the benchmark protocol. It is intended to validate episode lifecycle, Training Lease accounting, hidden evaluation, and the agent-facing control surface before the first official benchmark instance is selected.
 
-The current development snapshot uses Worker Protocol v2 but does not carry a
-release package version yet. Protocol v2 is a breaking Worker API revision:
-external v1 Workers must migrate to the role-specific `ResearchTaskSpec`,
-`EvaluationTaskSpec`, and `HiddenSplitRef` interfaces.
+The current development snapshot uses Worker Protocol v3 but does not carry a
+release package version yet. Protocol v3 is a breaking Worker API revision:
+external Workers must migrate to the post-seal `HiddenDatasetRef` evaluation
+surface and the transport-neutral `CandidateChannelRequirements` contract.
 
 Docker is the bundled v0 compatibility implementation, not a general platform
 abstraction. The benchmark Supervisor now depends on the semantic
@@ -91,7 +98,7 @@ being hidden behind application-level mailbox limits.
 
 The bundled `autotrain-bench prepare` and `autotrain-bench start` commands are
 the composition root for that local Docker implementation; they are not a
-generic backend loader. Worker Protocol v2 is currently a synchronous,
+generic backend loader. Worker Protocol v3 is currently a synchronous,
 in-process Python contract whose `Path` values are local deployment handles,
 not a remote wire format. An external Worker package uses its own trusted
 launcher to compose Core with its deployment rather than adding a platform
@@ -162,7 +169,7 @@ autotrain-bench prepare --task dev_tasks/smoke_lm/task.json
 ```
 
 The smoke task downloads about 0.98 MB of real text and uses hidden 8K-token
-VAL/TEST splits. By default the selected Agent receives an empty workspace and
+ANALYSIS/TEST datasets. By default the selected Agent receives an empty workspace and
 must create its own training system. See `dev_tasks/smoke_lm/README.md` for the
 development workflow, Candidate ABI, Policy, and reproducibility details.
 Smoke-task scores are not benchmark results.
@@ -350,15 +357,17 @@ The public task manifest at `$AUTOTRAIN_BENCH_TASK` declares the Agent-facing
 control protocol as `protocol_version`. Version 2 renamed the `agent status`
 field `agent_mode` to `agent_egress` and its `"sandboxed"` value to `"denied"`.
 An Agent that parses the version 1 field name must be updated; the benchmark
-does not emit both names.
+does not emit both names. Version 3 corrected participant-time accounting for
+release-declared Worker preparation. Version 4 removes organizer validation
+feedback: Candidate commit returns artifact acceptance only.
 
 Training code writes Candidate artifacts into the lease-owned `/output` mount.
-`lease-commit` first stops the Training Container, validates and snapshots the
-now-immutable artifact, and returns one aggregate VAL result; it does not change
-the incumbent. After interpreting that scalar, the Agent must explicitly call
+`lease-commit` first stops the Training sandbox, validates and snapshots the
+now-immutable artifact, and returns its content identity. It does not run hidden
+evaluation or change the incumbent. The Agent must explicitly call
 `declare-incumbent` for the model it would submit if the episode ended
-immediately. `finish` and an automatic Track A deadline test only that last
-Agent-declared incumbent.
+immediately. The Agent may choose whether and how to validate using permitted
+TRAIN information; Core supplies no validation recipe or official feedback.
 
 The submitted Agent command must be autonomous and non-interactive. Docker does
 not attach a user input stream after task reveal, so the user cannot continue
@@ -377,7 +386,7 @@ autotrain-bench report \
   --episode /path/to/autotrain-bench-runs/episodes/<episode-id>
 ```
 
-New episode states declare `result_schema_version: 3`. Reporting an older state
+New episode states declare `result_schema_version: 4`. Reporting an older state
 performs a read-only migration. An unversioned v1 state receives the v2
 outcome fields: a completed result with a valid TEST NLL receives
 `outcome: "success"` and a derived `test_perplexity`, while an unscored
@@ -387,28 +396,28 @@ to `agent_system.egress`, with the value `"sandboxed"` mapped to `"denied"`, so
 one schema version always identifies one structure. A migrated report records
 `migrated_from_result_schema_version`. The persisted historical `state.json` is
 never rewritten, and unknown future result-schema versions are rejected rather
-than guessed.
+than guessed. Legacy VAL fields remain explicitly labelled legacy; reporting
+never relabels an old Agent-visible VAL trajectory as postmortem ANALYSIS.
 
-In v3, `outcome: "success"` requires a finalized episode, a non-empty final
+In v4, `outcome: "success"` requires a finalized episode, a non-empty final
 Candidate ID, and both consistent TEST metrics. A failed outcome requires a
 failure reason and keeps both TEST metrics `null`. A null outcome is allowed
 only before a result exists (`created`, `active`, or the transient `closed`
-state while post-mortem TEST and trusted finalization are running), and may not
-carry TEST metrics or a failure reason. TEST first stages a private result;
-`finalized` is published only after the Agent has stopped, its execution
-metadata has been recorded, and Agent-control cleanup has completed. A cleanup
-failure therefore produces a failure terminal directly, never a success that
-is later rewritten. The Supervisor rejects control cleanup until trusted Agent
-termination metadata has been recorded; the Operator or deployment launcher
-must stop the workload before recording that metadata.
+state while postmortem ANALYSIS, TEST, and trusted finalization are running),
+and may not carry TEST metrics or a failure reason. Research is first sealed
+irreversibly. Hidden evaluation begins only after the Agent and Research Worker
+have stopped and Agent-control cleanup has completed. ANALYSIS scores the frozen
+Candidate history without returning feedback; TEST scores only the frozen final
+incumbent. A cleanup failure therefore produces a failure terminal directly,
+never a success that is later rewritten.
 
 `state.json` is the authoritative result commit point. Immediately before that
 atomic commit, the Supervisor appends a non-terminal
-`RESULT_PUBLICATION_PREPARED` audit record. A finalized v2 state created by the
+`RESULT_PUBLICATION_PREPARED` audit record. A finalized v4 state created by the
 current implementation includes `result_publication`, which binds the result
 to that record's publication ID and sequence number. An unreferenced prepared
-record documents an interrupted attempt and is not a terminal result. Older v2
-states without this optional reference remain readable.
+record documents an interrupted attempt and is not a terminal result. Older
+states without this optional reference remain readable through migration.
 
 Deployment cleanup can still fail after an episode has already reached DNF or
 an infrastructure-failure state. Those failures do not rewrite the original
@@ -433,13 +442,13 @@ task reveal
 → interactive lease
 → TRAIN-only experimentation
 → candidate commit
-→ hidden VAL scalar
 → autonomous revision
 → finish
-→ episode closed
-→ hidden TEST
-→ Agent stop and execution metadata
+→ research sealed permanently
+→ Agent and Research Worker stop confirmed
 → Agent-control cleanup
+→ historical Candidates scored on hidden ANALYSIS
+→ final incumbent scored once on hidden TEST
 → one final result
 ```
 
@@ -449,7 +458,7 @@ The reference implementation uses an official host-side Supervisor, a
 development Agent Container or host CLI process, a thin trusted Inference
 Gateway when registered, disposable Training Containers, and separate trusted
 Evaluator and untrusted Candidate containers. Agent, Training, and Candidate
-containers receive neither the Docker socket nor VAL/TEST mounts. Sandboxed
+containers receive neither the Docker socket nor ANALYSIS/TEST mounts. Sandboxed
 Agent and Training networking is disabled; Candidate evaluation uses only an
 ephemeral internal network shared with its Evaluator. The Gateway handles only
 frozen researcher-inference endpoints. The bundled launcher nevertheless
@@ -470,7 +479,7 @@ container-runtime, or GPU-driver exploits. Official adversarial evaluation may
 require stronger worker or VM isolation.
 
 The `isolated_candidate` backend starts a fresh internal Docker network per
-query. The trusted Evaluator mounts only the selected hidden split and output;
+query. The trusted Evaluator mounts only the selected hidden dataset and output;
 the untrusted Candidate mounts only its content-addressed artifact. The
 Evaluator sends same-length, prefix-free batches over `next_token_logits_v1`
 and validates a bounded `[batch, vocabulary]` response. It scores each response
@@ -577,7 +586,7 @@ User-owned host
     ├── untrusted Agent Container
     ├── disposable Training Container
     └── ephemeral internal evaluation network
-        ├── trusted Evaluator Container with hidden split
+        ├── trusted Evaluator Container with one hidden dataset
         └── untrusted Candidate Container without hidden files or public network
 ```
 
@@ -589,12 +598,13 @@ Agent cannot access Supervisor state or a privileged Worker control channel.
 
 The Agent receives interactive access to a Training Container only through the Supervisor's narrow command channel during an active **Training Lease**. It may inspect logs, edit the shared workspace, compile code, profile, and run any number of TRAIN-only experiments inside that lease.
 
-VAL and TEST files are mounted only in trusted Evaluator Containers. The
-Evaluator communicates with a separate ephemeral Candidate Container through a
-restricted next-token inference protocol. A committed candidate receives at
-most one official VAL evaluation per lease, and the Agent receives only the
-permitted aggregate metric. TEST cannot run until the episode has been
-permanently closed.
+ANALYSIS and TEST are unavailable to the Agent and Research Worker trust domain.
+Only after research is durably sealed and those workloads are confirmed stopped
+may an Evaluation Worker materialize either hidden dataset. It communicates with
+a separate Candidate sandbox through the release-owned next-token application
+protocol. Core fixes the information-flow and isolation requirements; the Worker
+chooses the channel mechanism. The bundled Docker Worker uses a private HTTP/TCP
+network, but that mechanism is not part of the benchmark contract.
 
 ---
 
@@ -624,71 +634,28 @@ For example, it may autonomously explore:
 * repeated exposure;
 * model-dependent sampling.
 
-Importantly, **data policy is part of the research problem**.
-
-The system is explicitly allowed to modify its data policy in response to validation results.
-
-For example:
-
-```text
-Run 1
-random subset
-↓
-VAL = 2.95
-
-Run 2
-quality-filtered subset
-↓
-VAL = 2.91
-
-Run 3
-new domain mixture
-↓
-VAL = 2.87
-
-Run 4
-dynamic curriculum
-↓
-VAL = 2.84
-```
-
-This is intended behavior.
-
-AutoTrain-Bench does not attempt to prevent validation-guided dataset research.
-
-Generalization is enforced by TEST.
+Importantly, **data policy and experimental methodology are part of the research
+problem**. The Agent may reserve some permitted TRAIN data, devise another
+permitted validation method, or perform no validation at all. AutoTrain-Bench
+neither requires a holdout nor prescribes a replacement for organizer-owned VAL.
 
 ---
 
-## VAL
+## ANALYSIS
 
-VAL is the benchmark's **research feedback channel**.
+ANALYSIS is an organizer-owned hidden **postmortem measurement**, not a research
+feedback channel. After research is irreversibly sealed, the Evaluation Worker
+scores the release-selected frozen Candidate inventory on the same ANALYSIS data
+and metric. This produces a comparable within-episode quality trajectory without
+letting the Agent adapt to an official oracle.
 
-After a Training Lease commits a candidate and closes, the official evaluator may return the fixed validation metric to the AutoTrain system.
-
-The AutoTrain system is free to use this result to change anything it controls, including:
-
-* architecture;
-* model size;
-* optimizer;
-* data selection;
-* data mixture;
-* training objective;
-* infrastructure;
-* experiment strategy;
-* or its own autonomous research process.
-
-By default, the benchmark returns an aggregate validation metric rather than arbitrary per-example queries.
-
-The evaluator's canonical measurement is autoregressive validation negative
-log-likelihood under the benchmark tokenizer. The leaderboard metric is token
-perplexity derived from the aggregate mean NLL.
-
-Exact auxiliary metrics, if any, are defined by the benchmark release.
-
-Overfitting VAL is not considered a rules violation.
-
-It is considered a research failure if it harms TEST performance.
+ANALYSIS is never returned through Agent control, never selects an incumbent,
+and never replaces TEST as the primary score. A release freezes its Candidate
+selection limit and result-visibility policy before task reveal. Publication may
+be organizer-only or delayed to reduce cross-episode leakage. The local
+`report` command is a trusted Operator view and retains the complete audit
+record; an organizer's submission/publication layer must enforce the declared
+visibility policy when distributing that record.
 
 ---
 
@@ -703,25 +670,27 @@ TEST is:
 * unavailable through the agent environment;
 * unavailable during the active research episode.
 
-TEST results are **not** computed and returned after each experiment.
+Neither ANALYSIS nor TEST is computed during autonomous research.
 
 Instead, the benchmark first permanently terminates the research episode and freezes the relevant artifacts.
 
-Only then does the official evaluator run TEST.
+Only then does the official evaluator run ANALYSIS on the frozen history and
+TEST once on the final Agent-declared incumbent.
 
 Therefore:
 
 $$
-\boxed{\text{VAL is part of the research loop}}
+\boxed{\text{validation strategy belongs to the Tested Agent}}
 $$
 
 while:
 
 $$
-\boxed{\text{TEST is post-mortem only}}
+\boxed{\text{ANALYSIS and TEST are postmortem only}}
 $$
 
-The system cannot resume research after receiving TEST results.
+The system cannot resume research after sealing, including when hidden
+evaluation fails.
 
 ---
 
@@ -877,7 +846,7 @@ Supervisor creates Training Container
   ▼
 lease permanently ends
   │
-  └── committed candidate → one hidden VAL query → aggregate metric
+  └── committed Candidate → immutable content identity only
 ```
 
 The Agent interacts with the Training Container only through Supervisor-controlled operations. It never receives Docker or host control.
@@ -887,7 +856,10 @@ Agent may repeatedly change architecture, optimization, data policy, kernels,
 distributed code, or its own research tools as long as it remains within the
 visible Training Environment and time limits.
 
-Each lease may commit at most one candidate. Commit immediately terminates the lease before VAL is evaluated, so VAL feedback can influence only a later lease. A lease may also end without a candidate because of failure, timeout, or an explicit stop.
+Each lease may commit at most one Candidate. Commit immediately terminates the
+lease, validates the artifact, and freezes it without quality-scoring it. A
+lease may also end without a Candidate because of failure, timeout, or an
+explicit stop.
 
 The lease is consumed when the Training Container starts successfully. Participant-controlled crashes, OOMs, compile failures, early termination, or failure to commit do not restore it. A failure before the Training Container starts is an infrastructure failure and does not consume the lease.
 
@@ -915,8 +887,7 @@ TASK REVEAL
 ├── coding
 ├── self-improvement
 ├── Training Lease 1
-├── VAL feedback
-├── analysis
+├── participant-chosen experiments and analysis
 ├── Training Lease 2
 ├── infrastructure changes
 ├── architecture changes
@@ -938,11 +909,11 @@ A system may choose to:
 * rewrite its training stack;
 * improve its own autonomous workflow.
 
-All of these decisions compete for the same wall-clock budget. Official VAL
-evaluation receives at most the Track A time remaining when a Candidate is
-committed. At the deadline its containers are terminated, an unfinished or late
-VAL result is discarded, and TEST runs only on the previously declared
-incumbent.
+All of these decisions compete for the same wall-clock budget. At the deadline,
+research workloads are terminated and the previously declared incumbent and
+Candidate inventory are sealed. Benchmark-owned postmortem ANALYSIS and TEST
+time does not consume participant research time because the Agent can no longer
+act or benefit from it.
 
 The primary Track A score is:
 
@@ -986,7 +957,7 @@ For example:
 Maximum Training Leases:   defined by the selected track config
 Maximum Time per Lease:    defined by the selected track config
 Runtime Profile:           selected independently at episode launch
-VAL Queries per Lease:     1
+Official feedback:         none
 Agent Research Time:       Unbounded by benchmark score
 ```
 
@@ -1007,16 +978,10 @@ Agent research
 LEASE 1
  │
  ▼
-VAL 1
- │
- ▼
 Agent research / self-improvement
  │
  ▼
 LEASE 2
- │
- ▼
-VAL 2
  │
  ...
  ▼
@@ -1044,13 +1009,13 @@ for the final incumbent selected by the AutoTrain system.
 
 Track B asks:
 
-> **How effectively can an autonomous researcher use a limited number of Training Environment windows and official validation-feedback rounds?**
+> **How effectively can an autonomous researcher use a limited number of Training Environment windows while generating and interpreting its own experimental evidence?**
 
 It emphasizes:
 
 * experiment selection;
 * strength of prior reasoning;
-* information gained per lease and VAL query;
+* information gained per lease and participant-chosen experiment;
 * interpretation of failures;
 * hypothesis quality;
 * efficiency of autonomous research under bounded Training Environment access.
@@ -1074,7 +1039,7 @@ The two tracks constrain different scarce resources.
 | Agent research time | Counts against deadline          | Not score-limited                              |
 | Number of leases    | Unlimited within deadline        | Fixed                                          |
 | Experiments in lease| Unlimited within time/environment| Unlimited within time/environment              |
-| Official VAL        | At most once per committed lease | At most once per committed lease               |
+| Official feedback   | None during research             | None during research                           |
 | Self-improvement    | Allowed                          | Allowed                                        |
 | Human intervention  | Forbidden                        | Forbidden                                      |
 | Primary question    | How fast can the system improve? | How well can it use bounded training access?    |
@@ -1183,7 +1148,7 @@ $$
 = f(
 \text{agent tokens},
 \text{research time},
-\text{lease and validation interactions}
+\text{lease and experiment interactions}
 ).
 $$
 
@@ -1210,7 +1175,7 @@ This may include:
 * profiler results;
 * throughput;
 * model checkpoints;
-* VAL scores;
+* participant-chosen metrics and observations;
 * previous reasoning;
 * research notes;
 * experiment lineage.
@@ -1225,29 +1190,13 @@ The benchmark controls information through evaluator and environment boundaries 
 
 ---
 
-# Validation-Guided Data Research
+# Participant-Owned Experimental Methodology
 
-AutoTrain-Bench explicitly permits using VAL results to change the training-data strategy.
+AutoTrain-Bench deliberately does not provide an organizer validation oracle.
+An Agent may decide that internal holdouts or other permitted experiments are
+useful, but it may also choose a different method or no explicit validation.
 
-For example:
-
-$$
-\text{VAL feedback}
-\rightarrow
-\text{new subset}
-\rightarrow
-\text{new mixture}
-\rightarrow
-\text{new curriculum}.
-$$
-
-This may eventually overfit VAL.
-
-That is not prohibited.
-
-The hidden TEST set exists specifically to distinguish genuine improvement from validation overfitting.
-
-A capable AutoTrain system may therefore need to autonomously discover good research practices such as:
+A capable AutoTrain system may autonomously discover practices such as:
 
 * internal holdouts;
 * uncertainty estimation;
@@ -1256,7 +1205,8 @@ A capable AutoTrain system may therefore need to autonomously discover good rese
 * robustness checks;
 * avoiding overreaction to small validation changes.
 
-The benchmark does not prescribe these practices.
+The benchmark encourages careful empirical reasoning but does not prescribe any
+of these practices.
 
 Discovering when and how to use them is part of the task.
 
@@ -1269,7 +1219,7 @@ The benchmark should not record only a single final score.
 Throughout an episode, the AutoTrain system may declare a **current incumbent**: the model it would submit if the benchmark ended immediately.
 
 Candidate commitment and incumbent declaration are separate operations. The
-Supervisor never infers an incumbent by sorting VAL scores or by choosing the
+Supervisor never infers an incumbent by sorting hidden scores or by choosing the
 most recently committed candidate; that decision belongs to the Agent.
 
 Each incumbent declaration records:
@@ -1277,20 +1227,20 @@ Each incumbent declaration records:
 * artifact hash;
 * timestamp;
 * lease number;
-* VAL score;
 * model metadata;
 * current research resource usage.
 
 TEST remains unavailable.
 
-After the episode is permanently closed, the evaluator evaluates only the
-single final declared incumbent on TEST. Historical incumbents are not exposed
-to TEST, so one episode does not produce a TEST trajectory. Candidate and
-incumbent progress is represented by the VAL trajectory. Scaling studies may
-compare final TEST results from separate episodes only when their complete
-comparison keys match.
+After the episode is permanently sealed, the evaluator evaluates the final
+declared incumbent once on TEST. Historical committed Candidates are evaluated
+on ANALYSIS under the release-frozen selection rule, so one episode produces a
+postmortem quality trajectory but never a TEST trajectory. Scaling studies may
+compare trajectories and final TEST results only when their complete comparison
+keys match.
 
-The VAL trajectory can reveal behavior that a final scalar cannot.
+The ANALYSIS trajectory can reveal behavior that a final scalar cannot, without
+providing an official signal while the Agent can still act.
 
 For example:
 
@@ -1331,10 +1281,11 @@ The benchmark should avoid combining many metrics into a complicated scoring for
 
 The benchmark also records:
 
-* VAL NLL;
+* postmortem ANALYSIS NLL;
 * final TEST NLL;
-* VAL NLL trajectory;
-* final VAL–TEST gap;
+* postmortem ANALYSIS NLL trajectory;
+* final ANALYSIS–TEST disagreement as a distribution diagnostic, not a measure
+  of overfitting to ANALYSIS;
 * agent input/output tokens;
 * number of agent calls;
 * number and duration of Training Leases;
@@ -1434,10 +1385,10 @@ The Training Environment:
 * executes in an already-allocated local Docker environment;
 * shares the Agent workspace during an active lease;
 * permits repeated interactive commands inside that lease;
-* has no Docker socket, public network, VAL, or TEST access;
+* has no Docker socket, public network, ANALYSIS, or TEST access;
 * is forcibly terminated by the host Supervisor at lease expiry.
 
-The trusted Eval Environment receives only the selected hidden split. A separate
+The trusted Eval Environment receives only the selected hidden dataset. A separate
 read-only Candidate Environment receives only the immutable Candidate artifact;
 the two communicate through the restricted inference protocol. Both are
 inaccessible to Agent and Training Containers, and the Evaluator returns only
@@ -1526,7 +1477,7 @@ lease command metadata
 candidate artifact hashes
 training logs
 hardware telemetry
-VAL outputs
+postmortem ANALYSIS trajectory
 incumbent declarations
 final artifact
 post-mortem TEST results
@@ -1574,12 +1525,12 @@ Ranked primarily by:
 final TEST perplexity after at most N Training Leases
 ```
 
-with fixed maximum duration per lease and at most one official VAL query per committed lease.
+with fixed maximum duration per lease and no organizer feedback during research.
 
 Reported alongside:
 
 ```text
-VAL NLL by lease number
+postmortem ANALYSIS NLL by Candidate commit
 final TEST perplexity
 agent tokens
 agent reasoning between leases
@@ -1609,7 +1560,7 @@ challenge_id + track + track_config + runtime_profile
 Only results with the same four fields are directly comparable. CPU, B300,
 TPU, and future platforms may execute the same challenge without changing its
 identity, but each belongs to a separate runtime profile. The runtime profile
-is an episode-time allocation and validation input, not a field in `task.json`.
+is an episode-time allocation and eligibility input, not a field in `task.json`.
 
 Inspect a release's supported maps with:
 
@@ -1624,7 +1575,7 @@ overrides are rejected so the recorded key cannot disagree with the run.
 
 The `lm-pretrain-v1` TRAIN mount contains both raw FineWeb-Edu TRAIN documents with
 source metadata and official GPT-2 token shards linked by document IDs and
-token spans. The Agent may use either representation. Preview VAL/TEST rows are
+token spans. The Agent may use either representation. Preview ANALYSIS/TEST rows are
 excluded from both Agent-visible forms and remain evaluator-only.
 
 ---
@@ -1637,12 +1588,13 @@ contract as a challenge preview:
 
 ```json
 {
+  "schema_version": 2,
   "task_id": "tinystories-byte-lm-smoke-v1",
   "task_kind": "development_smoke",
   "leaderboard_eligible": false,
   "paths": {
     "train": "data/train",
-    "val": "data/private/val.json",
+    "analysis": "data/private/analysis.json",
     "test": "data/private/test.json"
   },
   "images": {
@@ -1651,10 +1603,16 @@ contract as a challenge preview:
     "evaluator": "python@sha256:<digest>"
   },
   "timing": { "benchmark_owned_preparation": ["worker_lease_startup"] },
+  "analysis": {
+    "candidate_selection": "all_committed",
+    "max_candidates": 16,
+    "result_visibility": "organizer_only"
+  },
   "track_a": { "total_seconds": 300 },
   "track_b": { "max_leases": 3, "lease_seconds": 75 },
   "evaluation": {
     "backend": "isolated_candidate",
+    "candidate_protocol": "next_token_logits_v1",
     "entrypoint": "evaluator/evaluator.py",
     "metric": "autoregressive_nll",
     "leaderboard_metric": {
@@ -1694,7 +1652,8 @@ while leaving the participant's training system open.
 
 ### 2. TEST, not rules, should punish overfitting
 
-If an autonomous system over-optimizes VAL, its TEST score should reveal the failure.
+The Agent owns its experimental methodology; hidden TEST reveals whether the
+final result generalizes.
 
 The benchmark should avoid unnecessary restrictions on legitimate research.
 
@@ -1777,7 +1736,7 @@ $$
 
 ### Lease-efficiency scaling
 
-How does model quality scale with the number of Training Leases and official validation-feedback rounds?
+How does model quality scale with the number of Training Leases?
 
 $$
 L_{\mathrm{TEST}}(n)
@@ -1803,9 +1762,10 @@ L_{\mathrm{initial}}
 L_{\mathrm{final}}.
 $$
 
-### Validation overfitting
+### Autonomous model-selection quality
 
-When does continued autonomous optimization stop improving hidden generalization?
+How reliably does the Agent's own experimental methodology select an incumbent
+that generalizes to hidden TEST?
 
 ### Research strategy
 
@@ -1836,12 +1796,13 @@ The repository contains a working v0 local reference prototype with:
 * egress-denied Agent execution with an optional trusted streaming inference
   sidecar;
 * a generic host CLI runner and a logged-in Codex CLI adapter;
-* isolated hidden-split lifecycle and post-closure TEST evaluation;
+* irreversible research sealing followed by isolated postmortem ANALYSIS and
+  TEST evaluation;
 * append-only benchmark, inference, and host-Agent JSONL traces;
 * one reproducible TinyStories development smoke task with no bundled
   reference Agent and no implicitly injected training code.
 
-The smoke task fixes its TRAIN/VAL/TEST construction, public evaluation contract,
+The smoke task fixes its TRAIN/ANALYSIS/TEST construction, public evaluation contract,
 budgets, task-owned software images, and isolated Candidate serving protocol so
 developers can verify a complete episode cheaply. It is explicitly marked
 `leaderboard_eligible: false`. The selected Agent and its initial workspace
@@ -1853,7 +1814,7 @@ small set of single-host A100/H100 runtime profiles, the four-field comparison
 key, the initial external-resource policy, a task/evaluator, and a builder that
 retains both raw TRAIN documents and GPT-2 token shards. Full-scale validation
 of participant-side 10B data preparation, including scale receipts and checksum
-manifests, remains open release work alongside organizer-owned hidden splits,
+manifests, remains open release work alongside organizer-owned hidden datasets,
 final pinned task images, calibrated budgets, submission services, and
 leaderboard infrastructure. Additional
 inference-provider adapters and isolation beyond the v0 Docker threat model
@@ -1889,11 +1850,11 @@ $$
 $$
 
 $$
-\boxed{\text{VAL feedback}}
+\boxed{\text{No organizer feedback during research}}
 $$
 
 $$
-\boxed{\text{Hidden TEST}}
+\boxed{\text{Postmortem hidden ANALYSIS and TEST}}
 $$
 
 while leaving the training stack open.
@@ -1914,7 +1875,8 @@ $$
 }
 $$
 
-with at most one official VAL query for each committed lease.
+with the Agent responsible for deciding whether and how to gather validation
+evidence from permitted information.
 
 In both tracks:
 

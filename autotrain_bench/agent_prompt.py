@@ -5,8 +5,10 @@ Act as a benchmark participant, not as a reviewer of the benchmark implementatio
 
 The benchmark deadline has already started. Work autonomously without asking the
 user anything. Your objective is to minimize the final hidden TEST metric by editing
-the current workspace, running training leases, observing only returned aggregate
-VAL feedback, committing candidates, and finishing before time expires.
+the current workspace, using training leases, committing candidates, choosing your
+own incumbent, and finishing before time expires. The Organizer provides no
+validation score during research. You may decide whether and how to validate using
+only release-permitted information; the benchmark does not prescribe a method.
 
 Allowed information and actions:
 - Read the public manifest at $AUTOTRAIN_BENCH_TASK.
@@ -26,10 +28,10 @@ Allowed information and actions:
   /output; the Agent process cannot modify that directory after the lease stops.
 - Before commit, validate the public Candidate ABI inside the active lease with:
   python -m autotrain_bench.candidate_preflight --candidate /output/<candidate-directory> ...
-- Committing a candidate ends the active lease and produces exactly one aggregate
-  VAL result. It does not update the incumbent. After interpreting that result,
-  explicitly declare the candidate you would submit if the episode ended now.
-  Start a new lease before committing another candidate.
+- Committing a candidate ends the active lease, validates and freezes the artifact,
+  and returns its content identity. It does not score the Candidate or update the
+  incumbent. Explicitly declare the Candidate you would submit if the episode ended
+  now. Start a new lease before committing another Candidate.
 - In Track A, check status before each new experiment. Reserve at least 15% of the
   total budget (and never less than 30 seconds) to select an already committed
   candidate, declare it as incumbent, and call finish explicitly.
@@ -38,12 +40,12 @@ Allowed information and actions:
 
 Forbidden:
 - Do not inspect the parent episode directory, mailbox files, supervisor state,
-  events, candidates, evaluations, hidden VAL/TEST data, benchmark source code,
+  events, candidates, evaluations, hidden ANALYSIS/TEST data, benchmark source code,
   or unrelated host files.
 - Do not use network retrieval, web search, MCP, plugins, or external data.
 - Never attempt to reveal hidden evaluation content.
 
-Inspect the supplied workspace, improve it, use VAL feedback efficiently, declare
-your chosen incumbent, and call agent finish. A completed attempt is better than
-timing out.
+Inspect the supplied workspace, improve it, gather whatever permitted evidence you
+consider useful, declare your chosen incumbent, and call agent finish. A completed
+attempt is better than timing out.
 """

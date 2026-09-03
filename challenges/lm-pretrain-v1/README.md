@@ -7,9 +7,9 @@ token IDs only at the evaluation boundary.
 
 The package now contains `task.json`, a trusted evaluator, and a reproducible
 data builder. It remains `leaderboard_eligible: false`: the current budgets,
-task images, local preview VAL/TEST size, and runtime profiles are provisional,
+task images, local preview ANALYSIS/TEST size, and runtime profiles are provisional,
 and a verified release will replace the reproducible local holdouts with
-organizer-owned hidden splits.
+organizer-owned hidden datasets.
 
 ## Public TRAIN layout
 
@@ -24,7 +24,7 @@ data/generated/
 │   │   └── manifest.json
 │   └── manifest.json
 ├── private/                   mounted only in trusted Evaluator containers
-│   ├── val.json
+│   ├── analysis.json
 │   └── test.json
 └── manifest.json
 ```
@@ -32,11 +32,17 @@ data/generated/
 The Agent may use the ready-made token shards or ignore them and work from raw
 TRAIN documents. It can filter, deduplicate, rescore, reorder, retokenize, or
 construct a curriculum. Raw public Parquet contains only TRAIN documents; rows
-selected for preview VAL/TEST are not copied into the Agent-visible directory.
+selected for preview ANALYSIS/TEST are not copied into the Agent-visible directory.
 Evaluation always sends and scores GPT-2 vocabulary IDs.
 
+The local preview builder pre-stages ANALYSIS/TEST under the trusted task root,
+but neither path is mounted into the Agent or Research Worker. A formal Worker
+may instead fetch, mount, or decrypt the same release-frozen identities only
+after research sealing; Core does not prescribe that mechanism.
+
 The Evaluator computes token-weighted mean autoregressive NLL and preserves it
-in the episode record. The primary leaderboard-style score is TEST perplexity,
+in the episode record. ANALYSIS produces a postmortem trajectory over frozen
+Candidates and is never Agent feedback. The primary leaderboard-style score is TEST perplexity,
 derived once as `exp(mean_token_nll)`; lower is better. A run without a
 successful finite TEST result has no NLL or perplexity score and is reported as
 a failed experiment.
@@ -66,7 +72,7 @@ python3 challenges/lm-pretrain-v1/prepare_data.py \
 
 The builder records the exact resulting token count, GPT-2 encoding
 fingerprint, raw and tokenized shard checksums, document mapping, dependency
-versions, and preview split checksums. It does not force the canonical stream
+versions, and preview hidden-dataset checksums. It does not force the canonical stream
 to contain exactly 10,000,000,000 tokens.
 
 `--force` replaces only a recognized build of this exact task. The builder

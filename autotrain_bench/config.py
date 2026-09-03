@@ -23,7 +23,11 @@ class ConfigError(ValueError):
 # ``elapsed_seconds`` and ``remaining_wall_clock_seconds`` no longer track raw
 # wall clock since task reveal.  An Agent that measured the budget with its own
 # clock instead of the reported one would now disagree with the Coordinator.
-AGENT_PROTOCOL_VERSION = 3
+#
+# Version 4 removes organizer-owned validation feedback. Candidate commit now
+# returns artifact acceptance only; hidden ANALYSIS and TEST run after the
+# research phase is irreversibly sealed.
+AGENT_PROTOCOL_VERSION = 4
 
 # Phases a release may declare as benchmark-owned rather than participant time.
 # `README.md` requires this boundary to be release-defined and identical across
@@ -35,6 +39,12 @@ DEFAULT_BENCHMARK_OWNED_PREPARATION = ("worker_lease_startup",)
 AGENT_RUNNERS = {"container", "host_cli"}
 AGENT_EGRESS_POLICIES = {"denied", "unrestricted-dev"}
 EVALUATOR_BACKENDS = {"isolated_candidate"}
+ANALYSIS_CANDIDATE_SELECTIONS = {"all_committed"}
+ANALYSIS_RESULT_VISIBILITIES = {
+    "organizer_only",
+    "delayed_public",
+    "public_after_finalization",
+}
 TASK_KINDS = {"benchmark_challenge", "development_smoke"}
 RESERVED_AGENT_ENVIRONMENT = {
     "AUTOTRAIN_BENCH_CONTROL_DIR",
@@ -485,11 +495,12 @@ class TaskConfig:
     """
 
     source: Path
+    schema_version: int
     task_id: str
     task_kind: str
     leaderboard_eligible: bool
     train_dir: Path
-    val_path: Path
+    analysis_path: Path
     test_path: Path
     training_image: str
     candidate_image: str
@@ -510,6 +521,10 @@ class TaskConfig:
     candidate_max_files: int
     evaluator_backend: str
     evaluator_entrypoint: Path
+    candidate_protocol: str
+    analysis_candidate_selection: str
+    analysis_result_visibility: str
+    max_analysis_candidates: int
 
     @classmethod
     def load(cls, path: Path) -> "TaskConfig":
@@ -541,6 +556,7 @@ class TaskConfig:
                 "hardware allocation is episode-owned and may not appear in a task"
             )
         evaluation = _mapping(root.get("evaluation"), "evaluation")
+        analysis = _mapping(root.get("analysis"), "analysis")
         timing = root.get("timing")
         if timing is not None:
             timing = _mapping(timing, "timing")
@@ -549,12 +565,14 @@ class TaskConfig:
 
         base = source.parent
 
-        def resolved_path(key: str, *, directory: bool) -> Path:
+        def resolved_path(
+            key: str, *, directory: bool, require_exists: bool = True
+        ) -> Path:
             configured = _string(paths.get(key), f"paths.{key}")
             value = (base / configured).resolve()
-            if directory and not value.is_dir():
+            if require_exists and directory and not value.is_dir():
                 raise ConfigError(f"paths.{key} is not a directory: {value}")
-            if not directory and not value.is_file():
+            if require_exists and not directory and not value.is_file():
                 raise ConfigError(f"paths.{key} is not a file: {value}")
             return value
 
@@ -569,14 +587,20 @@ class TaskConfig:
 
         config = cls(
             source=source,
+            schema_version=_positive_int(root.get("schema_version"), "schema_version"),
             task_id=_string(root.get("task_id"), "task_id"),
             task_kind=task_kind(root.get("task_kind")),
             leaderboard_eligible=_boolean(
                 root.get("leaderboard_eligible"), "leaderboard_eligible"
             ),
             train_dir=resolved_path("train", directory=True),
-            val_path=resolved_path("val", directory=False),
-            test_path=resolved_path("test", directory=False),
+            # Hidden data may be materialized by the Evaluation Worker only
+            # after research sealing. Loading a task must not require either
+            # file to exist in the research execution environment.
+            analysis_path=resolved_path(
+                "analysis", directory=False, require_exists=False
+            ),
+            test_path=resolved_path("test", directory=False, require_exists=False),
             training_image=_string(images.get("training"), "images.training"),
             candidate_image=_string(images.get("candidate"), "images.candidate"),
             evaluator_image=_string(images.get("evaluator"), "images.evaluator"),
@@ -628,12 +652,30 @@ class TaskConfig:
             ),
             evaluator_backend=evaluator_backend(evaluation.get("backend")),
             evaluator_entrypoint=evaluator_entrypoint,
+            candidate_protocol=_string(
+                evaluation.get("candidate_protocol", "next_token_logits_v1"),
+                "evaluation.candidate_protocol",
+            ),
+            analysis_candidate_selection=_string(
+                analysis.get("candidate_selection"),
+                "analysis.candidate_selection",
+            ),
+            analysis_result_visibility=_string(
+                analysis.get("result_visibility"),
+                "analysis.result_visibility",
+            ),
+            max_analysis_candidates=_positive_int(
+                analysis.get("max_candidates"),
+                "analysis.max_candidates",
+            ),
         )
 
         return config.validate()
 
     def validate(self) -> "TaskConfig":
         """Validate the immutable task definition and its release classification."""
+        if self.schema_version != 2:
+            raise ConfigError("task schema_version must be 2")
         task_kind(self.task_kind)
         if self.task_kind == "development_smoke" and self.leaderboard_eligible:
             raise ConfigError("development smoke tasks may not be leaderboard eligible")
@@ -650,8 +692,18 @@ class TaskConfig:
         if self.evaluator_device not in {"cpu", "cuda"}:
             raise ConfigError("evaluation.device must be 'cpu' or 'cuda'")
         evaluator_backend(self.evaluator_backend)
+        if self.candidate_protocol != "next_token_logits_v1":
+            raise ConfigError(
+                "v0 only implements evaluation.candidate_protocol="
+                "'next_token_logits_v1'"
+            )
+        if self.analysis_candidate_selection not in ANALYSIS_CANDIDATE_SELECTIONS:
+            raise ConfigError("analysis.candidate_selection must be 'all_committed'")
+        if self.analysis_result_visibility not in ANALYSIS_RESULT_VISIBILITIES:
+            allowed = ", ".join(sorted(ANALYSIS_RESULT_VISIBILITIES))
+            raise ConfigError(f"analysis.result_visibility must be one of: {allowed}")
         for name, hidden_path in (
-            ("paths.val", self.val_path),
+            ("paths.analysis", self.analysis_path),
             ("paths.test", self.test_path),
         ):
             try:
@@ -662,8 +714,12 @@ class TaskConfig:
                 raise ConfigError(
                     f"{name} must be outside the Research Worker TRAIN directory"
                 )
-        if self.val_path.samefile(self.test_path):
-            raise ConfigError("paths.val and paths.test must be distinct files")
+        if self.analysis_path == self.test_path:
+            raise ConfigError(
+                "paths.analysis and paths.test must be distinct locations"
+            )
+        if self.max_analysis_candidates < self.track_b_max_leases:
+            raise ConfigError("analysis.max_candidates must cover every Track B Lease")
         if self.leaderboard_eligible:
             images = {
                 "images.training": self.training_image,
@@ -713,7 +769,6 @@ class TaskConfig:
             budget = {
                 "max_leases": self.track_b_max_leases,
                 "max_seconds_per_lease": self.track_b_lease_seconds,
-                "official_val_queries_per_lease": 1,
             }
 
         return {
@@ -727,8 +782,15 @@ class TaskConfig:
             "track": normalized,
             "train": {"path": "/benchmark/train", "visibility": "read_only"},
             "validation": {
-                "content_visibility": "evaluator_only",
-                "feedback": "aggregate_metric_after_commit",
+                "organizer_feedback": "none",
+                "participant_method": "unprescribed",
+            },
+            "analysis": {
+                "content_visibility": "postmortem_evaluator_only",
+                "feedback": "never_agent_visible",
+                "candidate_selection": self.analysis_candidate_selection,
+                "max_candidates": self.max_analysis_candidates,
+                "result_visibility": self.analysis_result_visibility,
             },
             "test": {
                 "content_visibility": "postmortem_evaluator_only",
@@ -737,6 +799,7 @@ class TaskConfig:
             "evaluation": {
                 "backend": self.evaluator_backend,
                 "candidate_image": self.candidate_image,
+                "candidate_protocol": self.candidate_protocol,
                 "metric": self.metric,
                 "leaderboard_metric": self.leaderboard_metric.public_manifest(),
                 "vocab_size": self.vocab_size,
@@ -750,8 +813,9 @@ class TaskConfig:
                 "policy_compliant": self.evaluator_policy_compliant,
                 "candidate_boundary": {
                     "hidden_data_mount": "none",
-                    "network": "ephemeral_internal_only",
-                    "protocol": "next_token_logits_v1",
+                    "channel_mechanism": "worker_defined",
+                    "candidate_egress": "denied",
+                    "protocol": self.candidate_protocol,
                 },
             },
             "budget": budget,

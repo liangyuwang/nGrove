@@ -691,7 +691,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             self.assertIn("HOME=/agent-home", command)
             self.assertNotIn("reference_agent", command)
             self.assertNotIn(str(TASK.parent / "private"), command)
-            self.assertNotIn(str(config.val_path), command)
+            self.assertNotIn(str(config.analysis_path), command)
             self.assertNotIn(str(config.test_path), command)
 
     def test_egress_denied_inference_uses_trusted_sidecar_and_internal_network(self):
@@ -890,7 +890,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                     config=config,
                     resources=resources,
                     candidate_dir=TASK.parent / "agent",
-                    split="val",
+                    split="analysis",
                     output_dir=output,
                     timeout_seconds=7,
                 )
@@ -904,9 +904,9 @@ class RuntimeBoundaryTests(unittest.TestCase):
             self.assertIn("dst=/candidate,readonly", "\n".join(candidate))
             self.assertIn("dst=/opt/candidate-api,readonly", "\n".join(candidate))
             self.assertNotIn(str(ROOT / "autotrain_bench"), "\n".join(candidate))
-            self.assertNotIn(str(config.val_path), "\n".join(candidate))
+            self.assertNotIn(str(config.analysis_path), "\n".join(candidate))
             self.assertNotIn("dst=/candidate", "\n".join(evaluator))
-            self.assertIn(str(config.val_path), "\n".join(evaluator))
+            self.assertIn(str(config.analysis_path), "\n".join(evaluator))
             self.assertIn(str(config.evaluator_entrypoint), "\n".join(evaluator))
             self.assertIn("http://candidate:8766", evaluator)
             self.assertIn("--gpus", candidate)
@@ -951,7 +951,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                     config=config,
                     resources=TrainingResources(),
                     candidate_dir=TASK.parent / "agent",
-                    split="val",
+                    split="analysis",
                     output_dir=Path(directory) / "output",
                     timeout_seconds=7,
                 )
@@ -1000,7 +1000,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                     config=TaskConfig.load(TASK),
                     resources=TrainingResources(),
                     candidate_dir=TASK.parent / "agent",
-                    split="val",
+                    split="analysis",
                     output_dir=Path(directory) / "output",
                 )
 
@@ -1025,7 +1025,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "output"
             output.mkdir()
-            result = output / "val.json"
+            result = output / "analysis.json"
             result.write_text('{"nll": 0.01}', encoding="utf-8")
             runtime = CapturingDockerRuntime()
 
@@ -1034,7 +1034,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                     config=TaskConfig.load(TASK),
                     resources=TrainingResources(),
                     candidate_dir=TASK.parent / "agent",
-                    split="val",
+                    split="analysis",
                     output_dir=output,
                 )
 
@@ -1064,11 +1064,11 @@ class RuntimeBoundaryTests(unittest.TestCase):
                     config=config,
                     resources=TrainingResources(),
                     candidate_dir=TASK.parent / "agent",
-                    split="val",
+                    split="analysis",
                     output_dir=output,
                 )
             self.assertNotIn("input_ids", str(caught.exception))
-            diagnostic = output / "val.failure.log"
+            diagnostic = output / "analysis.failure.log"
             self.assertEqual(diagnostic.stat().st_mode & 0o777, 0o600)
             self.assertIn("hidden input_ids", diagnostic.read_text(encoding="utf-8"))
 
@@ -1083,7 +1083,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                             result = super()._run(args, **kwargs)
                             if "/opt/evaluator.py" in args:
                                 output.mkdir(parents=True, exist_ok=True)
-                                (output / "val.json").write_text(
+                                (output / "analysis.json").write_text(
                                     json.dumps({"nll": raw_nll}), encoding="utf-8"
                                 )
                             return result
@@ -1094,7 +1094,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                             config=TaskConfig.load(TASK),
                             resources=TrainingResources(),
                             candidate_dir=TASK.parent / "agent",
-                            split="val",
+                            split="analysis",
                             output_dir=output,
                         )
 

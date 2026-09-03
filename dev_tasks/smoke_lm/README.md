@@ -14,7 +14,7 @@ eligible.
 The smoke task owns only:
 
 - the public TRAIN split and its preparation recipe;
-- the hidden VAL/TEST splits and trusted Evaluator;
+- the hidden ANALYSIS/TEST datasets and trusted Evaluator;
 - the public metric and Candidate ABI;
 - the Training, Candidate, Evaluator, and Gateway images;
 - the finite Track/runtime profile maps, budgets, and artifact limits;
@@ -28,13 +28,19 @@ reveal. This task does not ship a reference or starter Agent. An egress-denied
 Agent sees only its episode workspace, TRAIN, the public task manifest, and the
 control mailbox; it cannot see the trusted Core checkout.
 
+The task provides no organizer validation feedback during research. The Agent
+may decide whether and how to validate using permitted TRAIN information, or may
+decide not to create a holdout. After research is permanently sealed, ANALYSIS
+scores the frozen Candidate history and TEST scores only the declared final
+incumbent.
+
 ## Fixed smoke task
 
 | Smoke-task property | Value |
 | --- | --- |
 | Corpus | 1,200 pinned TinyStories documents |
 | TRAIN | 1,000 documents, about 818K target bytes |
-| VAL / TEST | 8,192 hidden target bytes each |
+| ANALYSIS / TEST | 8,192 hidden target bytes each |
 | Token representation | UTF-8 bytes plus BOS, vocabulary 257 |
 | Evaluation prefix limit | 128 tokens |
 | Track A | 300 seconds total wall clock |
@@ -134,8 +140,7 @@ contain extra training corpora or a pretrained target-model checkpoint.
 ## Candidate artifact contract
 
 Training commands write Candidate artifacts beneath the lease-owned `/output`
-mount. A participant can validate the public ABI before spending its one VAL
-query for the lease:
+mount. A participant can validate the public ABI before committing the artifact:
 
 ```bash
 python -m autotrain_bench.cli agent lease-exec -- \
@@ -146,8 +151,9 @@ python -m autotrain_bench.cli agent lease-exec -- \
 python -m autotrain_bench.cli agent lease-commit /output/candidate
 ```
 
-Commit stops the Training Container before validating and snapshotting the
-artifact. Candidate bundles may contain only regular files and directories,
+Commit stops the Training sandbox before validating and snapshotting the
+artifact. It returns a content identity but no organizer score. Candidate
+bundles may contain only regular files and directories,
 may not contain symbolic or hard links, and must fit the task-defined file and
 byte limits.
 
@@ -161,12 +167,12 @@ def next_token_logits(model, input_ids): ...  # [batch, vocabulary]
 Every logit must be a finite numeric value. Booleans and numeric strings are
 not part of the Candidate ABI and are rejected.
 
-During VAL/TEST, a fresh internal Docker network connects two short-lived
-containers:
+After research sealing and confirmed Agent/Research teardown, the bundled
+Docker Worker uses a fresh internal network for each ANALYSIS/TEST evaluation:
 
 ```text
-trusted Evaluator: hidden split, no Candidate files
-untrusted Candidate: Candidate files, no hidden split, no public network
+trusted Evaluator: one hidden dataset, no Candidate files
+untrusted Candidate: Candidate files, no hidden dataset, no public network
 ```
 
 Only same-length, prefix-free input batches and one `[batch, vocabulary]` logit
@@ -174,3 +180,8 @@ matrix cross this boundary. Each response is scored before any longer prefix is
 sent. Candidate failures expose only a fixed error code to the Agent; raw logs
 remain private to the trusted episode directory. Both containers and the
 network are removed after every query.
+
+The HTTP/TCP network is only the bundled Docker adapter. The task-owned
+Evaluator exports an `evaluate(..., predict, ...)` function; another Worker may
+provide a different isolated channel mechanism without changing the Candidate
+ABI or Core.

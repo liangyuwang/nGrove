@@ -127,7 +127,9 @@ participant-owned instructions.
 
 Do not copy benchmark datasets into the Agent workspace. The Worker provides
 public TRAIN data through its separate read-only training-data view and keeps
-hidden VAL/TEST data outside the Research Worker. Lease-owned Candidate output
+hidden ANALYSIS/TEST data and resolving credentials outside the Agent and
+Research Worker trust domain. Prefer materializing hidden data only after
+research sealing and confirmed research teardown. Lease-owned Candidate output
 also remains separate from the Agent workspace.
 
 The Agent image, command, initial workspace, inference registration, and model
@@ -170,10 +172,13 @@ retries, a different lane, relaxed isolation, or changes to benchmark policy.
    that boundary; keep any explicitly authorized site integration outside the
    tracked core repository.
 4. Keep the trusted Core checkout, task data, task images, and episode state
-   separate from the Tested Agent workspace. Prepare and verify task-owned data
-   and immutable images in the trusted execution environment. Record actual
-   sizes, checksums, and whether the declared target scale was reached. Do not
-   claim that an approximate artifact is exact.
+   separate from the Tested Agent workspace. Prepare and verify public TRAIN
+   data and immutable images in the trusted execution environment. Freeze the
+   expected ANALYSIS/TEST identities before task reveal, but let the Evaluation
+   Worker materialize their bytes only after research sealing when the
+   deployment supports it. Record actual sizes, checksums, and whether the
+   declared target scale was reached. Do not claim that an approximate artifact
+   is exact.
 5. Preflight only the hardware requirements declared by the selected runtime
    profile: host count and accelerator vendor, model, count, and minimum
    memory. Do not expand preflight into unrelated diagnostics.
@@ -181,27 +186,31 @@ retries, a different lane, relaxed isolation, or changes to benchmark policy.
    lease accounting, Candidate validation, incumbent declaration, evaluation
    isolation, or deadlines.
 7. Monitor the allocator job and episode state. Track leases, committed
-   Candidates, incumbent changes, aggregate VAL results, final TEST result,
-   Agent usage, failures, and policy flags. Do not inspect hidden evaluation
-   content.
+   Candidates, incumbent changes, research sealing, postmortem ANALYSIS
+   completeness, final TEST result, Agent usage, failures, and policy flags. Do
+   not inspect hidden evaluation content.
 8. On failure, collect the smallest relevant logs, identify the direct cause
    and downstream effects, and report them. Do not cancel, mutate, relax policy,
    or submit a replacement job unless the user authorized that action.
 9. At completion, report the exact lane, runtime profile, artifact identities,
-   resource usage, Candidate/VAL trajectory, incumbent, TEST metric, Agent
-   usage completeness, and compliance/eligibility status. Compare runs only
-   when their full comparison keys match.
+   resource usage, postmortem Candidate/ANALYSIS trajectory, incumbent, TEST
+   metric, Agent usage completeness, and compliance/eligibility status. Compare
+   runs only when their full comparison keys match.
 
 ## Policy invariants
 
 - The Research Worker may see TRAIN, the Agent workspace, and training output,
-  but never hidden VAL or TEST data.
+  but never hidden ANALYSIS or TEST data or resolving credentials.
 - The Evaluation Worker may see an immutable Candidate and one selected hidden
-  split, but not the research workspace.
-- The Tested Agent receives only aggregate VAL feedback through the official
-  control plane. It must not inspect Supervisor state, episode internals,
-  evaluator logs, hidden data, unrelated host files, or unrestricted external
-  information.
+  dataset, but not the research workspace.
+- The Tested Agent receives no organizer-owned validation data or score. It may
+  decide whether and how to validate using release-permitted information. It
+  must not inspect Supervisor state, episode internals, evaluator logs, hidden
+  data, unrelated host files, or unrestricted external information.
+- ANALYSIS and TEST may begin only after research is irreversibly sealed and all
+  Agent/Research workloads and control capabilities are confirmed terminated.
+  ANALYSIS never selects the final incumbent; TEST evaluates only the final
+  Agent-declared incumbent.
 - Training deadlines, resource envelopes, visibility, network restrictions,
   termination, and immutable Candidate capture remain Worker-enforced.
 - Missing capabilities or trust are recorded explicitly. Never silently fall

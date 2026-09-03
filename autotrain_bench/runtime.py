@@ -34,7 +34,7 @@ from .worker_protocol import (
     CommandResult,
     EnforcementLevel,
     EvaluationTaskSpec,
-    HiddenSplitRef,
+    HiddenDatasetRef,
     LeaseState,
     ResearchTaskSpec,
     TrustLevel,
@@ -968,15 +968,15 @@ class DockerRuntime:
         timeout_seconds: Optional[float] = None,
     ) -> float:
         resources.validate_for(config)
-        if split not in {"val", "test"}:
+        if split not in {"analysis", "test"}:
             raise RuntimeFailure(f"invalid evaluator split: {split}")
-        data_path = config.val_path if split == "val" else config.test_path
+        data_path = config.analysis_path if split == "analysis" else config.test_path
         return self._run_isolated_evaluator(
             episode_id="local-preview",
             task=EvaluationTaskSpec.from_task(config),
             resources=resources,
             candidate_dir=candidate_dir,
-            hidden_split=HiddenSplitRef(split, data_path),
+            hidden_dataset=HiddenDatasetRef(split, data_path),
             output_dir=output_dir,
             timeout_seconds=timeout_seconds,
         )
@@ -988,15 +988,17 @@ class DockerRuntime:
         task: EvaluationTaskSpec,
         resources: TrainingResources,
         candidate_dir: Path,
-        hidden_split: HiddenSplitRef,
+        hidden_dataset: HiddenDatasetRef,
         output_dir: Path,
         timeout_seconds: Optional[float] = None,
     ) -> float:
         resources.validate()
-        split = hidden_split.name
+        split = hidden_dataset.name
         if task.backend != "isolated_candidate":
             raise RuntimeFailure(f"unsupported evaluator backend: {task.backend}")
-        data_path = hidden_split.path
+        if task.candidate_channel.protocol != "next_token_logits_v1":
+            raise RuntimeFailure("unsupported Candidate application protocol")
+        data_path = hidden_dataset.path
         if not data_path.is_file():
             raise RuntimeFailure(f"hidden evaluator split is not a file: {data_path}")
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -1011,6 +1013,9 @@ class DockerRuntime:
         network_name = f"atb-evaluation-{runtime_id}"
         evaluation_key = (episode_id, runtime_id)
         candidate_api_dir = output_dir / ".candidate_api"
+        docker_evaluator_adapter = (
+            Path(__file__).resolve().parent / "docker_evaluator_adapter.py"
+        )
         package = candidate_api_dir / "autotrain_bench"
         if not candidate_api_dir.exists():
             package.mkdir(parents=True)
@@ -1109,11 +1114,19 @@ class DockerRuntime:
                 read_only=True,
             ),
             "--mount",
+            self._mount(
+                docker_evaluator_adapter,
+                "/opt/docker-evaluator-adapter.py",
+                read_only=True,
+            ),
+            "--mount",
             self._mount(output_dir, "/output", read_only=False),
             "--env",
             "PYTHONDONTWRITEBYTECODE=1",
             task.evaluator_image,
             "python",
+            "/opt/docker-evaluator-adapter.py",
+            "--evaluator",
             "/opt/evaluator.py",
             "--candidate-url",
             "http://candidate:8766",
@@ -1203,7 +1216,7 @@ class DockerRuntime:
         task: EvaluationTaskSpec,
         resources: TrainingResources,
         candidate_dir: Path,
-        hidden_split: HiddenSplitRef,
+        hidden_dataset: HiddenDatasetRef,
         output_dir: Path,
         timeout_seconds: Optional[float] = None,
     ) -> float:
@@ -1214,7 +1227,7 @@ class DockerRuntime:
             task=task,
             resources=resources,
             candidate_dir=candidate_dir,
-            hidden_split=hidden_split,
+            hidden_dataset=hidden_dataset,
             output_dir=output_dir,
             timeout_seconds=timeout_seconds,
         )

@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "challenge_id": "lm-pretrain-v1",
   "task_id": "lm-pretrain-v1",
   "task": "task.json",

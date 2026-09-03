@@ -259,7 +259,7 @@ def preview_split(source_key: str) -> str:
         % SPLIT_BUCKETS
     )
     if bucket == 0:
-        return "val"
+        return "analysis"
     if bucket == 1:
         return "test"
     return "train"
@@ -632,7 +632,7 @@ def prepare(
             parquet=parquet,
         )
         document_index_path = tokenized_dir / "documents.jsonl"
-        val = EvaluationCollector(
+        analysis = EvaluationCollector(
             target_tokens=eval_target_tokens,
             sequence_targets=eval_sequence_targets,
         )
@@ -646,20 +646,20 @@ def prepare(
             for row in iter_documents(files, parquet):
                 source_key = f"{row['_source_file']}:{row['_source_row']}"
                 split = preview_split(source_key)
-                if split == "val" and val.complete:
+                if split == "analysis" and analysis.complete:
                     split = "train"
                 elif split == "test" and test.complete:
                     split = "train"
                 if split == "train" and writer.total_tokens >= target_train_tokens:
-                    if val.complete and test.complete:
+                    if analysis.complete and test.complete:
                         break
                     continue
 
                 tokens = [EOT_TOKEN_ID, *encoding.encode_ordinary(row["text"])]
                 if len(tokens) < 2:
                     continue
-                if split == "val":
-                    val.add_document(tokens)
+                if split == "analysis":
+                    analysis.add_document(tokens)
                     continue
                 if split == "test":
                     test.add_document(tokens)
@@ -683,12 +683,12 @@ def prepare(
                 train_documents += 1
         shards = writer.close()
         raw_train_shards = raw_writer.close()
-        if not val.complete or not test.complete:
-            raise PreparationError("source sample did not fill preview VAL/TEST")
+        if not analysis.complete or not test.complete:
+            raise PreparationError("source sample did not fill preview ANALYSIS/TEST")
 
         _write_json(
-            private_dir / "val.json",
-            {"sequences": val.sequences},
+            private_dir / "analysis.json",
+            {"sequences": analysis.sequences},
             private=True,
         )
         _write_json(
@@ -751,10 +751,10 @@ def prepare(
             **public_manifest,
             "preview_hidden_evaluation": {
                 "policy": "local-preview-only; replace for a verified release",
-                "val_target_tokens": val.token_count,
+                "analysis_target_tokens": analysis.token_count,
                 "test_target_tokens": test.token_count,
                 "sequence_target_tokens": eval_sequence_targets,
-                "val_sha256": _sha256_file(private_dir / "val.json"),
+                "analysis_sha256": _sha256_file(private_dir / "analysis.json"),
                 "test_sha256": _sha256_file(private_dir / "test.json"),
             },
             "builder": {
