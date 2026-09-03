@@ -8,7 +8,7 @@ from typing import Any, Dict
 from .config import AGENT_EGRESS_POLICIES, AGENT_RUNNERS
 
 
-RESULT_SCHEMA_VERSION = 5
+RESULT_SCHEMA_VERSION = 6
 LEGACY_RESULT_SCHEMA_VERSION = 1
 # Version 2 recorded the Agent egress policy as ``agent_system.mode`` with the
 # value ``"sandboxed"``.  Version 3 renames that field to ``agent_system.egress``
@@ -16,12 +16,16 @@ LEGACY_RESULT_SCHEMA_VERSION = 1
 AGENT_MODE_RESULT_SCHEMA_VERSION = 2
 PRE_ANALYSIS_RESULT_SCHEMA_VERSION = 3
 POSTMORTEM_RESULT_SCHEMA_VERSION = 4
+# Version 5 carried the ANALYSIS trajectory but no summary counts, so a reader
+# of the summary fields alone could not see that a `complete` pass had gaps.
+UNCOUNTED_ANALYSIS_RESULT_SCHEMA_VERSION = 5
 _SUPPORTED_INPUT_SCHEMA_VERSIONS = frozenset(
     {
         LEGACY_RESULT_SCHEMA_VERSION,
         AGENT_MODE_RESULT_SCHEMA_VERSION,
         PRE_ANALYSIS_RESULT_SCHEMA_VERSION,
         POSTMORTEM_RESULT_SCHEMA_VERSION,
+        UNCOUNTED_ANALYSIS_RESULT_SCHEMA_VERSION,
         RESULT_SCHEMA_VERSION,
     }
 )
@@ -99,14 +103,43 @@ def normalize_result_report(payload: Any) -> Dict[str, Any]:
         result = _migrate_agent_mode_to_egress(result)
     if version < POSTMORTEM_RESULT_SCHEMA_VERSION:
         result = _migrate_pre_analysis_result(result)
-    if version < RESULT_SCHEMA_VERSION:
+    if version < UNCOUNTED_ANALYSIS_RESULT_SCHEMA_VERSION:
         result = _migrate_v4_analysis_result(result)
+    if version < RESULT_SCHEMA_VERSION:
+        result = _migrate_uncounted_analysis_result(result)
         result["result_schema_version"] = RESULT_SCHEMA_VERSION
         result["migrated_from_result_schema_version"] = version
     result.setdefault("deployment_teardown_failures", [])
     result.pop("pending_result", None)
-    _validate_current_result(result)
+    # Validation compatibility follows the schema version actually presented
+    # to this call.  An input field that merely claims an earlier migration may
+    # be useful provenance, but must not switch off current-schema invariants.
+    _validate_current_result(
+        result,
+        migrated_legacy=version < RESULT_SCHEMA_VERSION,
+    )
     return result
+
+
+def _migrate_uncounted_analysis_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Derive the ANALYSIS summary counts a pre-v6 result did not carry.
+
+    The counts are a lossless function of the trajectory that version 5 already
+    required, so this migration invents nothing.
+    """
+
+    migrated = dict(result)
+    trajectory = migrated.get("analysis_trajectory")
+    if not isinstance(trajectory, list):
+        trajectory = []
+    # These fields did not belong to the older schemas.  Always replace any
+    # colliding extension fields instead of trusting them as migration input.
+    migrated["analysis_selected_points"] = len(trajectory)
+    migrated["analysis_evaluated_points"] = sum(
+        isinstance(point, dict) and point.get("analysis_status") == "evaluated"
+        for point in trajectory
+    )
+    return migrated
 
 
 def _migrate_agent_mode_to_egress(result: Dict[str, Any]) -> Dict[str, Any]:
@@ -326,12 +359,13 @@ def _mark_migrated_failure(result: Dict[str, Any], failure: str) -> Dict[str, An
     return result
 
 
-def _validate_current_result(result: Dict[str, Any]) -> None:
+def _validate_current_result(
+    result: Dict[str, Any], *, migrated_legacy: bool = False
+) -> None:
     _validate_agent_system(result)
     status = result.get("status")
     if status not in _VALID_STATUSES:
         raise ResultSchemaError(f"invalid result status: {status!r}")
-    migrated_legacy = "migrated_from_result_schema_version" in result
     analysis_complete = result.get("analysis_complete")
     analysis_status = result.get("analysis_status")
     analysis_failure = result.get("analysis_failure")
@@ -344,6 +378,7 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
         raise ResultSchemaError("analysis_trajectory must be an array")
     if isinstance(analysis_trajectory, list):
         _validate_analysis_trajectory(analysis_trajectory)
+        _validate_analysis_summary_counts(result, analysis_trajectory)
     if not migrated_legacy:
         if analysis_status not in {None, "pending", "complete", "incomplete"}:
             raise ResultSchemaError("invalid ANALYSIS lifecycle status")
@@ -516,8 +551,32 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
             raise ResultSchemaError("a failed finalized result requires failed TEST")
 
 
+def _validate_analysis_summary_counts(
+    result: Dict[str, Any], trajectory: list[Dict[str, Any]]
+) -> None:
+    """Bind v6 summary fields even when the report originated in an old schema."""
+
+    selected = result.get("analysis_selected_points")
+    evaluated = result.get("analysis_evaluated_points")
+    for name, value in (
+        ("analysis_selected_points", selected),
+        ("analysis_evaluated_points", evaluated),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ResultSchemaError(f"{name} must be a non-negative integer")
+    if selected != len(trajectory):
+        raise ResultSchemaError(
+            "analysis_selected_points must count the ANALYSIS trajectory"
+        )
+    measured = sum(point["analysis_status"] == "evaluated" for point in trajectory)
+    if evaluated != measured:
+        raise ResultSchemaError(
+            "analysis_evaluated_points must count evaluated trajectory points"
+        )
+
+
 def _validate_analysis_trajectory(trajectory: list[Any]) -> None:
-    """Validate the auditable postmortem measurement attached to result v5."""
+    """Validate the auditable postmortem measurement attached to result v6."""
 
     commit_indices = []
     for point in trajectory:

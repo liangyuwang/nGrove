@@ -2,6 +2,7 @@ import math
 import unittest
 
 from autotrain_bench.results import (
+    UNCOUNTED_ANALYSIS_RESULT_SCHEMA_VERSION,
     AGENT_MODE_RESULT_SCHEMA_VERSION,
     POSTMORTEM_RESULT_SCHEMA_VERSION,
     PRE_ANALYSIS_RESULT_SCHEMA_VERSION,
@@ -71,6 +72,19 @@ def _finalized(*, schema_version=RESULT_SCHEMA_VERSION, **overrides):
         "test_status": "evaluated",
     }
     payload.update(overrides)
+    # Derive the summary counts from whatever trajectory the test ended up with,
+    # so a test that varies the trajectory does not also have to restate them.
+    # A test that wants an inconsistent summary overrides them explicitly.
+    trajectory = payload.get("analysis_trajectory")
+    if isinstance(trajectory, list):
+        payload.setdefault("analysis_selected_points", len(trajectory))
+        payload.setdefault(
+            "analysis_evaluated_points",
+            sum(
+                isinstance(point, dict) and point.get("analysis_status") == "evaluated"
+                for point in trajectory
+            ),
+        )
     return payload
 
 
@@ -128,6 +142,8 @@ class ResultMetricTests(unittest.TestCase):
                 "analysis_failure": None,
                 "analysis_identity_verified": None,
                 "analysis_trajectory": [],
+                "analysis_selected_points": 0,
+                "analysis_evaluated_points": 0,
                 "candidate_commits": [_candidate_commit()],
                 "incumbent_declarations": [_incumbent_declaration()],
                 "test_status": "pending",
@@ -194,6 +210,8 @@ class ResultMetricTests(unittest.TestCase):
                 "analysis_failure": None,
                 "analysis_identity_verified": None,
                 "analysis_trajectory": [],
+                "analysis_selected_points": 0,
+                "analysis_evaluated_points": 0,
                 "candidate_commits": [_candidate_commit()],
                 "incumbent_declarations": [_incumbent_declaration()],
                 "test_status": "pending",
@@ -217,6 +235,8 @@ class ResultMetricTests(unittest.TestCase):
                 "analysis_failure": None,
                 "analysis_identity_verified": True,
                 "analysis_trajectory": [_analysis_point()],
+                "analysis_selected_points": 1,
+                "analysis_evaluated_points": 1,
                 "candidate_commits": [_candidate_commit()],
                 "incumbent_declarations": [_incumbent_declaration()],
                 "test_status": "evaluated",
@@ -372,6 +392,8 @@ class ResultMetricTests(unittest.TestCase):
                 "analysis_failure": None,
                 "analysis_identity_verified": None,
                 "analysis_trajectory": [],
+                "analysis_selected_points": 0,
+                "analysis_evaluated_points": 0,
                 "candidate_commits": [_candidate_commit()],
                 "incumbent_declarations": [_incumbent_declaration()],
                 "test_status": "evaluated",
@@ -404,6 +426,8 @@ class ResultMetricTests(unittest.TestCase):
                     "analysis_failure": None,
                     "analysis_identity_verified": None,
                     "analysis_trajectory": [],
+                    "analysis_selected_points": 0,
+                    "analysis_evaluated_points": 0,
                     "candidate_commits": [_candidate_commit()],
                     "incumbent_declarations": [_incumbent_declaration()],
                     "test_status": "failed",
@@ -489,6 +513,8 @@ class ResultMetricTests(unittest.TestCase):
                 "analysis_failure": None,
                 "analysis_identity_verified": True,
                 "analysis_trajectory": [_analysis_point()],
+                "analysis_selected_points": 1,
+                "analysis_evaluated_points": 1,
                 "candidate_commits": [_candidate_commit()],
                 "incumbent_declarations": [_incumbent_declaration()],
                 "test_status": "evaluated",
@@ -559,6 +585,68 @@ class ResultMetricTests(unittest.TestCase):
                     "failure": None,
                 }
             )
+
+    def test_analysis_counts_must_agree_with_the_trajectory_they_summarize(self):
+        """A summary that disagrees with its detail would defeat the counts."""
+
+        with self.assertRaisesRegex(ResultSchemaError, "analysis_selected_points"):
+            normalize_result_report(_finalized(analysis_selected_points=7))
+        with self.assertRaisesRegex(ResultSchemaError, "analysis_evaluated_points"):
+            normalize_result_report(_finalized(analysis_evaluated_points=0))
+
+    def test_a_complete_pass_with_a_failed_point_is_visible_in_the_summary(self):
+        """`complete` means the pass finished, not that every point measured."""
+
+        failed = _analysis_point()
+        failed.update(
+            analysis_status="failed",
+            analysis_nll=None,
+            analysis_perplexity=None,
+            analysis_error="evaluation_failed",
+        )
+        report = normalize_result_report(
+            _finalized(analysis_trajectory=[failed], test_status="evaluated")
+        )
+
+        self.assertEqual(report["analysis_status"], "complete")
+        self.assertEqual(report["analysis_selected_points"], 1)
+        self.assertEqual(report["analysis_evaluated_points"], 0)
+
+    def test_a_v5_result_gains_counts_derived_from_its_own_trajectory(self):
+        legacy = _finalized(schema_version=UNCOUNTED_ANALYSIS_RESULT_SCHEMA_VERSION)
+        legacy.pop("analysis_selected_points")
+        legacy.pop("analysis_evaluated_points")
+
+        report = normalize_result_report(legacy)
+
+        self.assertEqual(report["result_schema_version"], RESULT_SCHEMA_VERSION)
+        self.assertEqual(
+            report["migrated_from_result_schema_version"],
+            UNCOUNTED_ANALYSIS_RESULT_SCHEMA_VERSION,
+        )
+        self.assertEqual(report["analysis_selected_points"], 1)
+        self.assertEqual(report["analysis_evaluated_points"], 1)
+
+    def test_v5_migration_overwrites_colliding_analysis_count_extensions(self):
+        legacy = _finalized(schema_version=UNCOUNTED_ANALYSIS_RESULT_SCHEMA_VERSION)
+        legacy["analysis_selected_points"] = 999
+        legacy["analysis_evaluated_points"] = 998
+
+        report = normalize_result_report(legacy)
+
+        self.assertEqual(report["analysis_selected_points"], 1)
+        self.assertEqual(report["analysis_evaluated_points"], 1)
+
+    def test_migration_marker_cannot_bypass_v6_validation(self):
+        payload = _finalized(
+            analysis_status="invalid",
+            migrated_from_result_schema_version=(
+                UNCOUNTED_ANALYSIS_RESULT_SCHEMA_VERSION
+            ),
+        )
+
+        with self.assertRaisesRegex(ResultSchemaError, "ANALYSIS lifecycle status"):
+            normalize_result_report(payload)
 
 
 if __name__ == "__main__":

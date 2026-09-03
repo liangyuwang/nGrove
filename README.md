@@ -388,7 +388,7 @@ autotrain-bench report \
   --episode /path/to/autotrain-bench-runs/episodes/<episode-id>
 ```
 
-New episode states declare `result_schema_version: 5`. Reporting an older state
+New episode states declare `result_schema_version: 6`. Reporting an older state
 performs a read-only migration. An unversioned v1 state receives the v2
 outcome fields: a completed result with a valid TEST NLL receives
 `outcome: "success"` and a derived `test_perplexity`, while an unscored
@@ -403,8 +403,10 @@ never relabels an old Agent-visible VAL trajectory as postmortem ANALYSIS.
 An existing v4 postmortem result remains readable, but migration explicitly
 reports that its complete ordered incumbent-declaration history is unavailable
 rather than reconstructing that history from an Agent log or a final boolean.
+A v5 result gains its ANALYSIS summary counts by deriving them from the
+trajectory it already carried, so migration invents nothing.
 
-In v5, `outcome: "success"` requires a finalized episode, a non-empty final
+In v6, `outcome: "success"` requires a finalized episode, a non-empty final
 Candidate ID, and both consistent TEST metrics. A failed outcome requires a
 failure reason and keeps both TEST metrics `null`. A null outcome is allowed
 only before a result exists (`created`, `active`, or the transient `closed`
@@ -420,9 +422,16 @@ missing. A boundary or teardown failure discovered during ANALYSIS is still
 recorded as deployment-integrity evidence and makes the run non-compliant and
 ineligible, but it does not erase an already completed TEST measurement.
 
+`complete` means the ANALYSIS pass finished and gave every selected Candidate a
+disposition, not that every point produced a metric. A result therefore also
+carries `analysis_selected_points` and `analysis_evaluated_points`, so a reader
+of the summary fields alone can see a complete pass that still has gaps without
+walking the trajectory. The counts are validated against the trajectory they
+summarize, so the summary cannot drift from its own detail.
+
 `state.json` is the authoritative result commit point. Immediately before that
 atomic commit, the Supervisor appends a non-terminal
-`RESULT_PUBLICATION_PREPARED` audit record. A finalized v5 state created by the
+`RESULT_PUBLICATION_PREPARED` audit record. A finalized v6 state created by the
 current implementation includes `result_publication`, which binds the result
 to that record's publication ID and sequence number. An unreferenced prepared
 record documents an interrupted attempt and is not a terminal result. Older

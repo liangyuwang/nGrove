@@ -654,6 +654,8 @@ class Supervisor:
                 "result_visibility": config.analysis_result_visibility,
             },
             "analysis_trajectory": [],
+            "analysis_selected_points": 0,
+            "analysis_evaluated_points": 0,
             "test_status": None,
             "test_nll": None,
             "test_perplexity": None,
@@ -1076,6 +1078,12 @@ class Supervisor:
                     "analysis_identity_verified"
                 ]
                 status["analysis_trajectory"] = list(self.state["analysis_trajectory"])
+                status["analysis_selected_points"] = self.state[
+                    "analysis_selected_points"
+                ]
+                status["analysis_evaluated_points"] = self.state[
+                    "analysis_evaluated_points"
+                ]
                 status["final_candidate_id"] = self.state["final_candidate_id"]
                 status["test_status"] = self.state["test_status"]
                 status["test_nll"] = self.state["test_nll"]
@@ -2029,6 +2037,22 @@ class Supervisor:
         self._save_state()
         return True
 
+    def _store_analysis_trajectory(self) -> list[Dict[str, Any]]:
+        """Write the trajectory and the summary counts that describe it.
+
+        The counts exist so a reader of the summary fields alone can see that a
+        `complete` ANALYSIS pass still has gaps.  They are derived here, in one
+        place, so they cannot drift from the trajectory.
+        """
+
+        trajectory = self._analysis_trajectory()
+        self.state["analysis_trajectory"] = trajectory
+        self.state["analysis_selected_points"] = len(trajectory)
+        self.state["analysis_evaluated_points"] = sum(
+            point["analysis_status"] == "evaluated" for point in trajectory
+        )
+        return trajectory
+
     def _analysis_trajectory(self) -> list[Dict[str, Any]]:
         declaration_events: Dict[str, list[int]] = {}
         for declaration in self.state["incumbent_declarations"]:
@@ -2068,7 +2092,7 @@ class Supervisor:
         self.state["analysis_complete"] = False
         self.state["analysis_status"] = "incomplete"
         self.state["analysis_failure"] = code
-        self.state["analysis_trajectory"] = self._analysis_trajectory()
+        self._store_analysis_trajectory()
         event: Dict[str, Any] = {"code": code}
         if private_detail is not None:
             event["message"] = private_detail
@@ -2277,7 +2301,7 @@ class Supervisor:
                         nll=nll,
                         perplexity=perplexity,
                     )
-                self.state["analysis_trajectory"] = self._analysis_trajectory()
+                self._store_analysis_trajectory()
                 self._save_state()
         finally:
             self.state["timing"]["analysis_evaluation_seconds"] += max(
@@ -2293,16 +2317,16 @@ class Supervisor:
             )
             return
 
-        self.state["analysis_trajectory"] = self._analysis_trajectory()
+        self._store_analysis_trajectory()
         self.state["analysis_complete"] = True
         self.state["analysis_status"] = "complete"
         self.state["analysis_failure"] = None
         self._event(
             "ANALYSIS_COMPLETED",
             candidates=len(candidate_ids),
-            failed=sum(
-                item["analysis_status"] != "evaluated"
-                for item in self.state["analysis_trajectory"]
+            failed=(
+                self.state["analysis_selected_points"]
+                - self.state["analysis_evaluated_points"]
             ),
         )
         self._save_state()

@@ -342,12 +342,14 @@ Status: implemented in the development schemas.
   is rejected until teardown and Agent-control cleanup are confirmed.
 - The final Agent-declared incumbent is scored on TEST first. The TEST decision
   is persisted before selected historical Candidates are attempted on ANALYSIS.
-- Result schema v5 records the frozen Candidate inventory, ordered incumbent
-  declarations, ANALYSIS trajectory, and explicit analysis disposition. Every
-  trajectory point is bound back to its commit and declaration event evidence.
-  Read-only migration preserves old VAL evidence as legacy evidence and never
-  calls it ANALYSIS; v4 postmortem results remain readable with an explicit
-  limitation instead of an invented declaration history.
+- Result schema v6 records the frozen Candidate inventory, ordered incumbent
+  declarations, ANALYSIS trajectory, explicit analysis disposition, and
+  trajectory-derived selected/evaluated point counts. Every trajectory point is
+  bound back to its commit and declaration event evidence. Read-only migration
+  preserves old VAL evidence as legacy evidence and never calls it ANALYSIS; v4
+  postmortem results remain readable with an explicit limitation instead of an
+  invented declaration history, while v5 counts are derived without inventing
+  new measurement evidence.
 - Ordinary ANALYSIS incompleteness never erases TEST or gates leaderboard
   eligibility. Unconfirmed post-TEST evaluation teardown retains TEST but is
   recorded independently as a deployment-integrity violation, making the run
@@ -374,7 +376,7 @@ External result: not fired. The tested Agent could be sandboxed, but its
 inference channel could not be mediated by the registered Gateway. A different
 participant with a compliant inference path is needed before redesigning C1.
 
-Result schema version 5 still pins `agent_system` to the bundled v0 runner
+Result schema version 6 still pins `agent_system` to the bundled v0 runner
 vocabulary, so this phase also owns that structure. `_validate_agent_system()`
 in `autotrain_bench/results.py` rejects a `runner` outside `AGENT_RUNNERS` and
 keys its "a host runner declares no egress policy" rule on the literal
