@@ -75,8 +75,8 @@ budget, isolation, comparison, or eligibility. Device selection, scheduler
 requests, cgroups, filesystem quotas, and other enforcement mechanisms remain
 Worker-owned.
 
-This paragraph states the target contract, not a claim that version 4 already
-has an allocation receipt. Version 4 passes requested `TrainingResources` into
+This paragraph states the target contract, not a claim that version 5 already
+has an allocation receipt. Version 5 passes requested `TrainingResources` into
 Worker operations and records deployment inventory, but `start_lease()` returns
 no normalized effective-allocation evidence. That gap is deferred to C4 and
 must remain explicit for formal evaluation.
@@ -89,9 +89,10 @@ The v0 support statement is:
 
 - The bundled `autotrain-bench prepare` and `autotrain-bench start` commands
   are a single-host local Docker reference composition.
-- `autotrain_bench.worker_protocol` version 4 is a synchronous in-process
-  Python contract. Its `Path` values are local deployment handles, not a
-  serializable remote wire format.
+- `autotrain_bench.worker_protocol` version 5 is a synchronous in-process
+  Python contract. Its remaining TRAIN/workspace/Candidate/output `Path` values
+  are local deployment handles, not a serializable remote wire format. Hidden
+  dataset requests and resolutions are path-free.
 - The bundled Agent-facing control transport is a local file mailbox. Mailbox
   filesystem operations and their operating-system support are transport
   properties, not benchmark semantics.
@@ -313,7 +314,8 @@ The external Operator obtains the allocation and stages the repository and
 artifacts. The Worker consumes that authorized environment; Core does not call
 `ssh`, `sbatch`, `srun`, or `apptainer`.
 
-The prototype deliberately retained the local/shared-filesystem `Path` contract:
+The prototype deliberately retained the then-current local/shared-filesystem
+`Path` contract:
 
 - TRAIN, workspace, Lease output, Candidate snapshots, hidden datasets, and
   evaluation output are materialized on the shared filesystem;
@@ -330,6 +332,12 @@ evidence, resource-allocation evidence, non-blocking Worker operations, and a
 Worker-owned Candidate/Evaluator channel mechanism. It also supplied negative
 evidence: shared paths were sufficient, so remote `ArtifactRef` work remains
 deferred. No scheduler or runtime mechanism is promoted into Core.
+
+That external run predates Worker Protocol v5. Its evidence still validates the
+thin-Core boundary, but its old conformance result cannot certify the new
+path-free hidden-data resolution contract. The out-of-tree Worker must implement
+`resolve_hidden_dataset()` and rerun the matching conformance suite before a new
+deployment claim is made.
 
 ## Postmortem hidden evaluation migration
 
@@ -354,10 +362,13 @@ Status: implemented in the development schemas.
   eligibility. Unconfirmed post-TEST evaluation teardown retains TEST but is
   recorded independently as a deployment-integrity violation, making the run
   non-compliant and ineligible.
-- Worker Protocol v4 expresses a transport-neutral Candidate application
-  contract. The task evaluator exports `evaluate(..., predict, ...)`; the
-  bundled Docker Worker supplies its HTTP adapter, while external Workers may
-  supply another isolated mechanism.
+- Worker Protocol v5 expresses a transport-neutral Candidate application
+  contract and a Worker-owned hidden-data resolution seam. Core supplies only a
+  logical split name and release-frozen expected digest; the Worker returns an
+  effective digest plus opaque resolution ID before Candidate execution. The
+  task evaluator exports `evaluate(..., predict, ...)`; the bundled Docker
+  Worker supplies its HTTP adapter and a private local-path resolver, while
+  external Workers may supply other isolated mechanisms.
 
 ## Phase C: add only demonstrated semantic capabilities
 
@@ -426,7 +437,7 @@ identity needed by Core's comparison and eligibility checks. The schema must
 remain property-extensible; it must not turn one platform's CPU, accelerator,
 topology, cgroup, or storage vocabulary into a universal Core checklist.
 
-Worker Protocol v4 has no such receipt: `start_lease()` returns `None`.
+Worker Protocol v5 has no such receipt: `start_lease()` returns `None`.
 
 External result: fired. Requested resources, scheduler allocation,
 workload-visible resources, and the enforcing layer differed. The future schema
@@ -450,7 +461,8 @@ inside Core.
 
 Phase A documentation and a behavior-preserving Phase B refactor did not change
 the then-current protocol. The postmortem hidden-evaluation contract advanced
-Worker Protocol to version 4.
+Worker Protocol to version 4; Worker-owned, path-free hidden-data resolution
+advanced it to version 5.
 
 A new protocol revision is required when an implementation must change a
 required method, argument, return value, ordering guarantee, or failure

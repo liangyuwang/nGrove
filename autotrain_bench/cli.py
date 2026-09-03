@@ -418,7 +418,15 @@ def command_start(args: argparse.Namespace) -> int:
         if missing_environment:
             names = ", ".join(missing_environment)
             raise ConfigError(f"agent environment variable is not set: {names}")
-        reference_runtime = DockerRuntime()
+        # Local file locations are private composition inputs for the bundled
+        # Worker.  They never cross the semantic Core/Worker protocol, and may
+        # remain absent until post-research evaluation begins.
+        reference_runtime = DockerRuntime(
+            hidden_datasets={
+                "analysis": config.analysis_path,
+                "test": config.test_path,
+            }
+        )
         reference_runtime.prepare(
             config,
             agent=agent,

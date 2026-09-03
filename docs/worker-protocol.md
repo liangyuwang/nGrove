@@ -44,7 +44,7 @@ Platform packages own:
 - site-specific security hardening.
 
 Platform packages are distributed separately.  Examples of possible package
-names are `autotrain-worker-docker`, `autotrain-worker-orix`, and
+names are `autotrain-worker-docker`, `autotrain-worker-apptainer`, and
 `autotrain-worker-kubernetes`; these names are examples, not core backends.
 Core must never grow platform selection branches or import their SDKs.
 
@@ -92,6 +92,11 @@ Mechanisms may be included as evidence, but requirements never name a platform
 mechanism.  For example, Core requires `training_network_isolation`; it does
 not require a particular network command or policy object.
 
+Evaluation additionally requires `hidden_dataset_identity_verification`. This
+means the Worker verifies the effective hidden bytes before Candidate startup
+and binds the subsequent evaluation to that resolution. It does not require
+Core to read those bytes or prescribe where they came from.
+
 Three independent checks govern formal eligibility:
 
 ```text
@@ -104,12 +109,12 @@ Passing conformance does not certify a user-controlled deployment.  Likewise,
 an organizer-controlled deployment is not eligible when required technical
 capabilities are missing.  Missing or insufficient capabilities are recorded
 explicitly and never trigger a fallback. A receipt is conformant only for the
-suite version associated with the active Worker Protocol; a passing v2 receipt
-cannot certify a v4 Worker boundary.
+suite version associated with the active Worker Protocol; a passing v4 receipt
+cannot certify a v5 Worker boundary.
 
 ## Research and evaluation roles
 
-Worker Protocol v4 models ResearchWorker and EvaluationWorker as separate
+Worker Protocol v5 models ResearchWorker and EvaluationWorker as separate
 interfaces because their trust domains differ:
 
 - ResearchWorker sees TRAIN, the Agent workspace, and training outputs, but
@@ -121,22 +126,26 @@ interfaces because their trust domains differ:
 The Python protocol enforces that separation in its argument types.
 `ResearchWorker.start_lease` receives a `ResearchTaskSpec` containing only the
 task identity, training image, TRAIN path, and generated public helper API.
-`EvaluationWorker` receives an
-`EvaluationTaskSpec` with no dataset paths plus exactly one `HiddenDatasetRef`
-selected by the Supervisor after research sealing. A complete `TaskConfig`
-never crosses either role boundary.
+`EvaluationWorker` receives an `EvaluationTaskSpec` with no dataset paths. Once
+the Supervisor has confirmed research sealing and teardown, it sends a
+`HiddenDatasetRequest` containing only the logical split name and an optional
+release-frozen expected SHA-256 digest. The Worker privately resolves that
+request and returns a `ResolvedHiddenDataset` containing the effective digest
+and an opaque resolution ID. Core validates the receipt before passing the
+opaque resolution back for Candidate evaluation. A complete `TaskConfig` never
+crosses either role boundary.
 
-Version 4 is a breaking interface revision in the current unreleased
+Version 5 is a breaking interface revision in the current unreleased
 development snapshot; it does not imply a package release version. Older
 Workers are rejected rather than adapted implicitly. External Worker packages
-must accept `ResearchTaskSpec`, evaluate `HiddenDatasetRef("test", ...)` and
-`HiddenDatasetRef("analysis", ...)` only after sealing and independently of call
-order, and preserve the precise prefix/target/artifact visibility fields in
-`CandidateChannelRequirements` without assuming a particular transport.
+must implement path-free hidden-data resolution, accept TEST before ANALYSIS,
+bind evaluation to the resolved identity, and preserve the precise
+prefix/target/artifact visibility fields in `CandidateChannelRequirements`
+without assuming a particular transport.
 
 A local development Worker may implement both roles in one process. A future
 formal deployment may place them on separate services connected only through
-an immutable artifact reference. The current version 4 Python interface does
+an immutable artifact reference. The current version 5 Python interface does
 not yet define that remote artifact transport.
 
 Worker operation failures and teardown failures have different episode
@@ -155,6 +164,19 @@ acknowledgement. A Worker must retain enough private state for
 `terminate_lease(episode_id, lease_id)` to be safely retried in that case. The
 Coordinator persists only that semantic Lease ID; container, scheduler, or
 other platform handles remain Worker-owned.
+
+`resolve_hidden_dataset()` has the same trusted failure discipline. A
+`HiddenDatasetResolutionFailure` means resolution failed and the Worker has no
+unconfirmed materialization boundary. An unexpected exception means Worker
+state is unknown and is treated as deployment-integrity evidence. Resolution
+must verify the effective bytes against the request before untrusted Candidate
+code starts. A successful resolution may place bytes in trusted Worker-private
+storage, but it must not leave an unaccounted Candidate/Evaluator workload;
+per-evaluation mounts and untrusted workloads remain owned by
+`evaluate_candidate()` and its teardown guarantee. A digest mismatch returns no
+metric. Paths, source URLs, credentials, mount handles, and cache identifiers
+remain Worker-private; only the opaque resolution ID and content digest cross
+the protocol.
 
 The same ownership rule applies to evaluation: `evaluate_candidate()` must not
 return a metric until its isolated Candidate/Evaluator boundary has been torn
@@ -197,12 +219,14 @@ does not gate the TEST outcome or leaderboard eligibility; separate deployment
 integrity evidence still fails closed if an evaluation boundary cannot be
 confirmed. A failed hidden-data resolution cannot reopen research.
 
-The local `Path` inside `HiddenDatasetRef` is a shared-filesystem deployment
-handle, not permission to materialize the data before sealing. A stronger
-deployment may keep the bytes physically absent, mount organizer storage only
-into the Evaluation Worker, or decrypt with credentials unavailable to the
-research trust domain. Core defines the ordering and frozen identity; the
-Worker defines the materialization mechanism.
+Hidden-data resolution is path-free at the protocol boundary. A deployment may
+use an already isolated organizer store, keep the bytes physically absent until
+the call, mount storage only into the Evaluation Worker, or decrypt with
+credentials unavailable to the research trust domain. The bundled local Worker
+receives its private name-to-path mapping from the CLI composition root; those
+paths are not fields of `HiddenDatasetRequest` or `ResolvedHiddenDataset`. Core
+defines the ordering and frozen identity; the Worker defines and attests the
+materialization mechanism.
 
 ## Candidate channel
 
@@ -223,19 +247,22 @@ release-owned Candidate ABI.
 
 ## Current migration stage
 
-The phase-one interface is an in-process Python protocol.  The Supervisor uses
+The phase-one interface is an in-process Python protocol. The Supervisor uses
 semantic lease operations (`start_lease`, `exec_lease`, `lease_state`, and
-`terminate_lease`) and semantic evaluation (`evaluate_candidate`).  It neither
-stores container identifiers nor asks how those effects are implemented.
+`terminate_lease`), Worker-owned hidden resolution (`resolve_hidden_dataset`),
+and semantic evaluation (`evaluate_candidate`). It neither stores container
+identifiers nor asks how those effects are implemented.
 
 Its `Path` arguments are local deployment handles. They assume that the Worker
 implementation can access or materialize the Coordinator-named TRAIN,
-workspace, Lease output, Candidate, hidden dataset, public API, and evaluation
-locations. They must not be treated as a stable serializable remote protocol.
-A shared-filesystem Worker can implement version 4 directly; a topology without
-shared paths needs future artifact-reference and materialization semantics.
+workspace, Lease output, Candidate, public API, and evaluation locations. They
+must not be treated as a stable serializable remote protocol. Hidden datasets
+are the exception: their semantic request and resolution contain no `Path`.
+A shared-filesystem Worker can implement version 5 directly; a topology without
+shared Candidate or workspace paths still needs future artifact-reference and
+materialization semantics.
 
-Version 4 also passes the requested `TrainingResources` to Worker operations
+Version 5 also passes the requested `TrainingResources` to Worker operations
 but does not define a normalized effective-allocation receipt;
 `start_lease()` returns `None`. Environment inventory is useful diagnostic
 metadata, not proof that every release-normative resource property was granted

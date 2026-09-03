@@ -76,12 +76,14 @@ sandbox without adding platform branches to Core.
 
 The repository now contains an executable, single-host Docker prototype of the benchmark protocol. It is intended to validate episode lifecycle, Training Lease accounting, hidden evaluation, and the agent-facing control surface before the first official benchmark instance is selected.
 
-The current development snapshot uses Worker Protocol v4 but does not carry a
-release package version yet. Protocol v4 is a breaking Worker API revision:
-external Workers must preserve the post-seal `HiddenDatasetRef` role boundary,
-accept TEST before ANALYSIS, and use the precise prefix/target/artifact
-visibility fields in the transport-neutral `CandidateChannelRequirements`
-contract. The Python package itself remains `0.0.0` while unreleased.
+The current development snapshot uses Worker Protocol v5 but does not carry a
+release package version yet. Protocol v5 is a breaking Worker API revision:
+external Evaluation Workers must resolve a path-free `HiddenDatasetRequest`
+after research sealing, return a content-identity-bearing
+`ResolvedHiddenDataset`, accept TEST before ANALYSIS, and use the precise
+prefix/target/artifact visibility fields in the transport-neutral
+`CandidateChannelRequirements` contract. The Python package itself remains
+`0.0.0` while unreleased.
 
 Docker is the bundled v0 compatibility implementation, not a general platform
 abstraction. The benchmark Supervisor now depends on the semantic
@@ -100,11 +102,12 @@ being hidden behind application-level mailbox limits.
 
 The bundled `autotrain-bench prepare` and `autotrain-bench start` commands are
 the composition root for that local Docker implementation; they are not a
-generic backend loader. Worker Protocol v4 is currently a synchronous,
-in-process Python contract whose `Path` values are local deployment handles,
-not a remote wire format. An external Worker package uses its own trusted
-launcher to compose Core with its deployment rather than adding a platform
-branch to this CLI.
+generic backend loader. Worker Protocol v5 is currently a synchronous,
+in-process Python contract. Its remaining `Path` values for TRAIN, workspaces,
+Candidate artifacts, and output directories are local deployment handles, not
+a remote wire format. Hidden-data requests and resolution receipts contain no
+path. An external Worker package uses its own trusted launcher to compose Core
+with its deployment rather than adding a platform branch to this CLI.
 
 The Agent-facing file mailbox is separate from the Worker Protocol. It is the
 local reference transport for Agent requests to the Coordinator; its
@@ -624,6 +627,12 @@ protocol. Core fixes the information-flow and isolation requirements; the Worker
 chooses the channel mechanism. The bundled Docker Worker uses a private HTTP/TCP
 network, but that mechanism is not part of the benchmark contract.
 
+Core requests a hidden split by logical name and, for a verified release, its
+expected SHA-256 identity. The Evaluation Worker privately maps that request to
+its organizer-controlled source and returns an opaque resolution plus the
+effective digest before Candidate execution. Paths, URLs, credentials, mounts,
+and cache handles never enter the semantic request or receipt.
+
 The bundled smoke/reference data is prepared in advance on the trusted host
 filesystem and withheld by sandbox visibility: it is never mounted into the
 Agent or Research Worker. That is a weaker but valid local deployment than late
@@ -631,6 +640,13 @@ download, decryption, or mount after `research_sealed`. Deployments that can kee
 the bytes physically absent from the host trust domain until evaluation provide
 stronger defense in depth; Core requires the visibility boundary and frozen
 identity, not one materialization mechanism.
+
+Task schema v2 still retains `paths.analysis` and `paths.test` as compatibility
+inputs for the bundled local CLI. The Supervisor neither reads them nor sends
+them through Worker Protocol v5. An external launcher supplies its Evaluation
+Worker's private source mapping independently; the configured local paths may
+remain absent for that deployment. Replacing these compatibility fields in a
+future task schema is separate from the now path-free Worker boundary.
 
 ---
 

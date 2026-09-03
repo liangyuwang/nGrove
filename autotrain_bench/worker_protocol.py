@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from .config import TaskConfig, TrainingResources
 
 
-WORKER_PROTOCOL_VERSION = 4
+WORKER_PROTOCOL_VERSION = 5
 WORKER_CONFORMANCE_SUITE_VERSION = f"worker-v{WORKER_PROTOCOL_VERSION}"
 
 
@@ -37,6 +37,10 @@ class WorkerFailure(RuntimeError):
 
 class WorkerTeardownFailure(WorkerFailure):
     """A Worker could not confirm teardown of an isolated workload boundary."""
+
+
+class HiddenDatasetResolutionFailure(WorkerFailure):
+    """An Evaluation Worker could not resolve an authorized hidden dataset."""
 
 
 class EnforcementLevel(str, Enum):
@@ -193,21 +197,72 @@ class EvaluationTaskSpec:
         )
 
 
-@dataclass(frozen=True)
-class HiddenDatasetRef:
-    """One organizer-selected hidden dataset visible only after research seal.
+def _validate_sha256(value: str, field: str) -> None:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ValueError(f"{field} must be a lowercase SHA-256 digest")
 
-    ``path`` remains a version 4 local/shared-filesystem deployment handle. It
-    is not required to exist while the Agent or Research Worker can still act;
-    the Evaluation Worker may materialize it immediately before evaluation.
+
+@dataclass(frozen=True)
+class HiddenDatasetRequest:
+    """Release-owned identity requested after research sealing.
+
+    No path, URL, credential, mount, cache, or scheduler handle crosses the
+    Core/Worker boundary.  The Evaluation Worker privately maps ``task_id``
+    from :class:`EvaluationTaskSpec` plus ``name`` to its deployment source.
     """
 
     name: str
-    path: Path
+    expected_sha256: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.name not in {"analysis", "test"}:
             raise ValueError("hidden dataset name must be 'analysis' or 'test'")
+        if self.expected_sha256 is not None:
+            _validate_sha256(
+                self.expected_sha256,
+                "hidden dataset expected_sha256",
+            )
+
+
+@dataclass(frozen=True)
+class ResolvedHiddenDataset:
+    """Worker-owned resolved input with an opaque, non-platform handle."""
+
+    name: str
+    sha256: str
+    resolution_id: str
+
+    def __post_init__(self) -> None:
+        if self.name not in {"analysis", "test"}:
+            raise ValueError("resolved hidden dataset has an invalid name")
+        _validate_sha256(self.sha256, "resolved hidden dataset sha256")
+        if (
+            not isinstance(self.resolution_id, str)
+            or not self.resolution_id
+            or len(self.resolution_id) > 128
+            or any(
+                character
+                not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-"
+                for character in self.resolution_id
+            )
+        ):
+            raise ValueError(
+                "hidden dataset resolution_id must be an opaque identifier"
+            )
+
+
+class HiddenDatasetIdentityMismatch(HiddenDatasetResolutionFailure):
+    """A Worker resolved bytes that do not match the frozen release identity."""
+
+    def __init__(self, receipt: ResolvedHiddenDataset) -> None:
+        if not isinstance(receipt, ResolvedHiddenDataset):
+            raise TypeError("identity mismatch requires a resolved hidden dataset")
+        super().__init__("hidden dataset identity mismatch")
+        self.receipt = receipt
 
 
 @dataclass(frozen=True)
@@ -330,6 +385,7 @@ GPU_DEVICE_ISOLATION = "gpu_device_isolation"
 TRAINING_DATA_READ_ONLY = "training_data_read_only"
 TRAINING_NETWORK_ISOLATION = "training_network_isolation"
 HIDDEN_DATASET_ISOLATION = "hidden_dataset_isolation"
+HIDDEN_DATASET_IDENTITY_VERIFICATION = "hidden_dataset_identity_verification"
 CANDIDATE_EVALUATOR_CHANNEL_ISOLATION = "candidate_evaluator_channel_isolation"
 DEADLINE_TERMINATION = "deadline_termination"
 IMMUTABLE_CANDIDATE_ARTIFACT = "immutable_candidate_artifact"
@@ -351,6 +407,7 @@ EVALUATION_REQUIREMENTS: Tuple[CapabilityRequirement, ...] = tuple(
     for name in (
         IMMUTABLE_WORKLOAD_IDENTITY,
         HIDDEN_DATASET_ISOLATION,
+        HIDDEN_DATASET_IDENTITY_VERIFICATION,
         CANDIDATE_EVALUATOR_CHANNEL_ISOLATION,
     )
 )
@@ -435,6 +492,14 @@ class EvaluationWorker(Protocol):
 
     def describe_capabilities(self) -> WorkerDescriptor: ...
 
+    def resolve_hidden_dataset(
+        self,
+        *,
+        episode_id: str,
+        task: EvaluationTaskSpec,
+        hidden_dataset: HiddenDatasetRequest,
+    ) -> ResolvedHiddenDataset: ...
+
     def evaluate_candidate(
         self,
         *,
@@ -442,7 +507,7 @@ class EvaluationWorker(Protocol):
         task: EvaluationTaskSpec,
         resources: "TrainingResources",
         candidate_dir: Path,
-        hidden_dataset: HiddenDatasetRef,
+        hidden_dataset: ResolvedHiddenDataset,
         output_dir: Path,
         timeout_seconds: Optional[float] = None,
     ) -> float: ...

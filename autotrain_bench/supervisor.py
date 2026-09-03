@@ -51,10 +51,13 @@ from .worker_protocol import (
     EvaluationWorker,
     EnforcementLevel,
     EvaluationTaskSpec,
-    HiddenDatasetRef,
+    HiddenDatasetIdentityMismatch,
+    HiddenDatasetRequest,
+    HiddenDatasetResolutionFailure,
     LeaseState,
     ResearchTaskSpec,
     ResearchWorker,
+    ResolvedHiddenDataset,
     WorkerFailure,
     WorkerTeardownFailure,
     assess_worker,
@@ -1965,55 +1968,88 @@ class Supervisor:
         self._save_state()
         return self.public_status()
 
-    def _record_hidden_dataset_identity(
-        self, name: str, path: Path, *, primary: bool
-    ) -> bool:
-        """Resolve one hidden handle without letting diagnostics erase TEST."""
+    def _hidden_dataset_request(self, name: str) -> HiddenDatasetRequest:
+        field = f"{name}_sha256"
+        expected = (
+            self.release_verification.artifact_sha256[field]
+            if self.release_verification is not None
+            else None
+        )
+        return HiddenDatasetRequest(name, expected)
 
-        failure_code: Optional[str] = None
-        private_detail: Optional[str] = None
-        try:
-            digest = _sha256_file(path)
-        except OSError as exc:
-            digest = None
-            failure_code = "hidden_dataset_resolution_failure"
-            private_detail = str(exc)
-            self._event(
-                "HIDDEN_DATASET_RESOLUTION_FAILED",
-                dataset=name,
-                exception_type=type(exc).__name__,
-                message=str(exc),
-            )
-        if digest is None and failure_code is None:
-            failure_code = "hidden_dataset_unavailable"
-            self._event(
-                "HIDDEN_DATASET_RESOLUTION_FAILED",
-                dataset=name,
-                code="dataset_unavailable",
-            )
-        if failure_code is not None:
-            if primary:
-                self.infrastructure_failed(
-                    failure_code,
+    def _hidden_dataset_resolution_failed(
+        self,
+        name: str,
+        *,
+        primary: bool,
+        code: str,
+        private_detail: Optional[str] = None,
+        teardown_code: Optional[str] = None,
+    ) -> None:
+        event: Dict[str, Any] = {"dataset": name, "code": code}
+        if private_detail is not None:
+            event["message"] = private_detail
+        self._event("HIDDEN_DATASET_RESOLUTION_FAILED", **event)
+        if primary:
+            self.state["test_status"] = "failed"
+            if teardown_code is not None:
+                self.deployment_teardown_failed(
+                    teardown_code,
                     private_detail=private_detail,
                 )
             else:
-                self.state["analysis_identity_verified"] = False
-                self._mark_analysis_incomplete(
-                    failure_code,
-                    private_detail=private_detail,
-                )
+                self.infrastructure_failed(code, private_detail=private_detail)
+        else:
+            self.state["analysis_identity_verified"] = False
+            self._mark_analysis_incomplete(
+                code,
+                private_detail=private_detail,
+                teardown_code=teardown_code,
+            )
+
+    def _record_hidden_dataset_resolution(
+        self,
+        request: HiddenDatasetRequest,
+        resolved: Any,
+        *,
+        primary: bool,
+    ) -> bool:
+        """Validate Worker evidence without learning its private data location."""
+
+        if not isinstance(resolved, ResolvedHiddenDataset):
+            self._hidden_dataset_resolution_failed(
+                request.name,
+                primary=primary,
+                code="hidden_dataset_receipt_invalid",
+                private_detail=(
+                    "Evaluation Worker returned "
+                    f"{type(resolved).__name__}, expected ResolvedHiddenDataset"
+                ),
+            )
+            return False
+        if resolved.name != request.name:
+            self._hidden_dataset_resolution_failed(
+                request.name,
+                primary=primary,
+                code="hidden_dataset_receipt_invalid",
+                private_detail=(
+                    "Evaluation Worker resolved "
+                    f"{resolved.name!r} for {request.name!r}"
+                ),
+            )
             return False
 
-        field = f"{name}_sha256"
-        self.state["artifact_identities"]["hidden_evaluation"][field] = digest
-        receipt = self.release_verification
-        if receipt is not None and receipt.artifact_sha256[field] != digest:
+        field = f"{request.name}_sha256"
+        identities = self.state["artifact_identities"]["hidden_evaluation"]
+        previously_resolved = identities[field]
+        identities[field] = resolved.sha256
+        expected = request.expected_sha256 or previously_resolved
+        if expected is not None and expected != resolved.sha256:
             self._event(
                 "HIDDEN_DATASET_IDENTITY_MISMATCH",
-                dataset=name,
-                expected_sha256=receipt.artifact_sha256[field],
-                actual_sha256=digest,
+                dataset=request.name,
+                expected_sha256=expected,
+                actual_sha256=resolved.sha256,
             )
             if primary:
                 violation = f"formal_release_verification_artifact_mismatch:{field}"
@@ -2026,16 +2062,65 @@ class Supervisor:
                 self._mark_analysis_incomplete("hidden_dataset_identity_mismatch")
             return False
 
-        if name == "test":
+        if request.name == "test":
             violation = "formal_test_evaluation_pending"
             if violation in self.state["leaderboard_eligibility_violations"]:
                 self.state["leaderboard_eligibility_violations"].remove(violation)
             self._refresh_leaderboard_eligibility()
-        elif receipt is not None:
+        elif request.expected_sha256 is not None:
             self.state["analysis_identity_verified"] = True
-        self._event("HIDDEN_DATASET_RESOLVED", dataset=name, sha256=digest)
+        if previously_resolved is None:
+            self._event(
+                "HIDDEN_DATASET_RESOLVED",
+                dataset=request.name,
+                sha256=resolved.sha256,
+            )
         self._save_state()
         return True
+
+    def _resolve_hidden_dataset(
+        self,
+        request: HiddenDatasetRequest,
+        *,
+        primary: bool,
+    ) -> Optional[ResolvedHiddenDataset]:
+        try:
+            resolved = self.evaluation_worker.resolve_hidden_dataset(
+                episode_id=self.state["episode_id"],
+                task=self.evaluation_task,
+                hidden_dataset=request,
+            )
+        except HiddenDatasetIdentityMismatch as exc:
+            self._record_hidden_dataset_resolution(
+                request,
+                exc.receipt,
+                primary=primary,
+            )
+            return None
+        except HiddenDatasetResolutionFailure as exc:
+            self._hidden_dataset_resolution_failed(
+                request.name,
+                primary=primary,
+                code="hidden_dataset_resolution_failure",
+                private_detail=str(exc),
+            )
+            return None
+        except Exception as exc:
+            self._hidden_dataset_resolution_failed(
+                request.name,
+                primary=primary,
+                code="hidden_dataset_resolution_infrastructure_failure",
+                private_detail=f"{type(exc).__name__}: {exc}",
+                teardown_code="evaluation_worker_state_unknown",
+            )
+            return None
+        if not self._record_hidden_dataset_resolution(
+            request,
+            resolved,
+            primary=primary,
+        ):
+            return None
+        return resolved
 
     def _store_analysis_trajectory(self) -> list[Dict[str, Any]]:
         """Write the trajectory and the summary counts that describe it.
@@ -2111,28 +2196,41 @@ class Supervisor:
         if candidate_id is None:
             self._stage_failed_test("no_candidate")
             return
-        if not self._record_hidden_dataset_identity(
-            "test", self.config.test_path, primary=True
-        ):
-            return
 
         digest = candidate_id.split(":", 1)[1]
         evaluation_started = self.monotonic()
+        request = self._hidden_dataset_request("test")
+        resolved: Optional[ResolvedHiddenDataset] = None
         test_nll: Optional[float] = None
         test_failure: Optional[str] = None
         test_infrastructure_failure: Optional[str] = None
         test_teardown_failure: Optional[str] = None
         try:
-            test_nll = validated_nll(
-                self.evaluation_worker.evaluate_candidate(
-                    episode_id=self.state["episode_id"],
-                    task=self.evaluation_task,
-                    resources=self.resources,
-                    candidate_dir=self.candidates_dir / digest,
-                    hidden_dataset=HiddenDatasetRef("test", self.config.test_path),
-                    output_dir=self.evaluations_dir / "test" / digest,
-                    timeout_seconds=float(self.config.evaluator_timeout_seconds),
+            resolved = self._resolve_hidden_dataset(request, primary=True)
+            if resolved is not None:
+                test_nll = validated_nll(
+                    self.evaluation_worker.evaluate_candidate(
+                        episode_id=self.state["episode_id"],
+                        task=self.evaluation_task,
+                        resources=self.resources,
+                        candidate_dir=self.candidates_dir / digest,
+                        hidden_dataset=resolved,
+                        output_dir=self.evaluations_dir / "test" / digest,
+                        timeout_seconds=float(self.config.evaluator_timeout_seconds),
+                    )
                 )
+        except HiddenDatasetIdentityMismatch as exc:
+            self._record_hidden_dataset_resolution(
+                request,
+                exc.receipt,
+                primary=True,
+            )
+        except HiddenDatasetResolutionFailure as exc:
+            self._hidden_dataset_resolution_failed(
+                "test",
+                primary=True,
+                code="hidden_dataset_resolution_failure",
+                private_detail=str(exc),
             )
         except WorkerTeardownFailure as exc:
             test_teardown_failure = str(exc)
@@ -2168,6 +2266,9 @@ class Supervisor:
                 0.0, self.monotonic() - evaluation_started
             )
 
+        if resolved is None or self.state["status"] != "closed":
+            self._save_state()
+            return
         if test_teardown_failure is not None:
             self.state["test_status"] = "failed"
             self.deployment_teardown_failed(
@@ -2216,15 +2317,14 @@ class Supervisor:
         """Attempt diagnostics without invalidating a staged TEST decision."""
 
         candidate_ids = list(self.state["candidates"])
-        if candidate_ids and not self._record_hidden_dataset_identity(
-            "analysis", self.config.analysis_path, primary=False
-        ):
-            return
-
         analysis_started = self.monotonic()
+        request = self._hidden_dataset_request("analysis")
+        resolved: Optional[ResolvedHiddenDataset] = None
         incomplete: Optional[tuple[str, Optional[str], Optional[str]]] = None
         try:
-            for candidate_id in candidate_ids:
+            if candidate_ids:
+                resolved = self._resolve_hidden_dataset(request, primary=False)
+            for candidate_id in candidate_ids if resolved is not None else []:
                 metadata = self.state["candidates"][candidate_id]
                 if metadata["analysis_status"] in {"evaluated", "failed"}:
                     continue
@@ -2236,9 +2336,7 @@ class Supervisor:
                             task=self.evaluation_task,
                             resources=self.resources,
                             candidate_dir=self.candidates_dir / digest,
-                            hidden_dataset=HiddenDatasetRef(
-                                "analysis", self.config.analysis_path
-                            ),
+                            hidden_dataset=resolved,
                             output_dir=self.evaluations_dir / "analysis" / digest,
                             timeout_seconds=float(
                                 self.config.evaluator_timeout_seconds
@@ -2246,6 +2344,21 @@ class Supervisor:
                         )
                     )
                     perplexity = perplexity_from_nll(nll)
+                except HiddenDatasetIdentityMismatch as exc:
+                    self._record_hidden_dataset_resolution(
+                        request,
+                        exc.receipt,
+                        primary=False,
+                    )
+                    break
+                except HiddenDatasetResolutionFailure as exc:
+                    self._hidden_dataset_resolution_failed(
+                        "analysis",
+                        primary=False,
+                        code="hidden_dataset_resolution_failure",
+                        private_detail=str(exc),
+                    )
+                    break
                 except WorkerTeardownFailure as exc:
                     metadata["analysis_status"] = "infrastructure_failure"
                     metadata["analysis_error"] = "worker_teardown_failure"
@@ -2308,6 +2421,12 @@ class Supervisor:
                 0.0, self.monotonic() - analysis_started
             )
 
+        if candidate_ids and resolved is None:
+            self._save_state()
+            return
+        if self.state["analysis_status"] == "incomplete":
+            self._save_state()
+            return
         if incomplete is not None:
             code, private_detail, teardown_code = incomplete
             self._mark_analysis_incomplete(

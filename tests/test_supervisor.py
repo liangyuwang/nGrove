@@ -42,12 +42,17 @@ from autotrain_bench.supervisor import (
 from autotrain_bench.worker_protocol import (
     BASELINE_REQUIREMENTS,
     GPU_DEVICE_ISOLATION,
+    HIDDEN_DATASET_IDENTITY_VERIFICATION,
     HIDDEN_DATASET_ISOLATION,
     Capability,
     CommandResult,
     ConformanceReceipt,
     EnforcementLevel,
+    HiddenDatasetIdentityMismatch,
+    HiddenDatasetRequest,
+    HiddenDatasetResolutionFailure,
     LeaseState,
+    ResolvedHiddenDataset,
     TrustLevel,
     WORKER_CONFORMANCE_SUITE_VERSION,
     WorkerDescriptor,
@@ -91,6 +96,13 @@ class FakeWorker:
         self.roles = ("research", "evaluation")
         self.research_tasks = []
         self.hidden_datasets = []
+        self.hidden_dataset_requests = []
+        self.hidden_dataset_digests = {
+            name: hashlib.sha256(f"{name}-dataset".encode()).hexdigest()
+            for name in ("analysis", "test")
+        }
+        self.hidden_dataset_resolution_failures = {}
+        self.hidden_dataset_resolution_hook = None
         # Simulates benchmark-owned preparation inside start_lease: queue wait,
         # image materialization, workload startup.
         self.start_lease_delay = 0.0
@@ -161,6 +173,32 @@ class FakeWorker:
     def terminate_lease(self, *, episode_id, lease_id):
         self.running.discard((episode_id, lease_id))
 
+    def resolve_hidden_dataset(
+        self,
+        *,
+        episode_id,
+        task,
+        hidden_dataset,
+    ):
+        del task
+        self.hidden_dataset_requests.append(hidden_dataset)
+        if self.hidden_dataset_resolution_hook is not None:
+            self.hidden_dataset_resolution_hook(hidden_dataset)
+        failure = self.hidden_dataset_resolution_failures.get(hidden_dataset.name)
+        if failure is not None:
+            raise HiddenDatasetResolutionFailure(failure)
+        resolved = ResolvedHiddenDataset(
+            hidden_dataset.name,
+            self.hidden_dataset_digests[hidden_dataset.name],
+            f"{episode_id}:{hidden_dataset.name}:{len(self.hidden_dataset_requests)}",
+        )
+        if (
+            hidden_dataset.expected_sha256 is not None
+            and hidden_dataset.expected_sha256 != resolved.sha256
+        ):
+            raise HiddenDatasetIdentityMismatch(resolved)
+        return resolved
+
     def evaluate_candidate(
         self,
         *,
@@ -217,6 +255,12 @@ class SupervisorTests(unittest.TestCase):
         self.resources = TrainingResources()
         self.workspace = workspace
         self.worker = FakeWorker()
+        self.worker.hidden_dataset_digests = {
+            "analysis": hashlib.sha256(
+                self.config.analysis_path.read_bytes()
+            ).hexdigest(),
+            "test": hashlib.sha256(self.config.test_path.read_bytes()).hexdigest(),
+        }
         self.clock = FakeClock()
         self.episode = root / "episode"
 
@@ -416,6 +460,16 @@ class SupervisorTests(unittest.TestCase):
 
         self.assertTrue(final["leaderboard_eligible"])
         self.assertEqual(final["leaderboard_eligibility_violations"], [])
+        self.assertEqual(
+            [
+                (request.name, request.expected_sha256)
+                for request in self.worker.hidden_dataset_requests
+            ],
+            [
+                ("test", artifacts["test_sha256"]),
+                ("analysis", artifacts["analysis_sha256"]),
+            ],
+        )
 
     def test_agent_execution_identity_must_match_the_selected_image(self):
         evidence = replace(
@@ -546,11 +600,15 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(smoke.returncode, 0, smoke.stderr)
         self.assertIn("lease-start", smoke.stdout)
         self.assertEqual(
-            [(item.name, item.path) for item in self.worker.hidden_datasets],
-            [
-                ("test", self.config.test_path),
-                ("analysis", self.config.analysis_path),
-            ],
+            [item.name for item in self.worker.hidden_dataset_requests],
+            ["test", "analysis"],
+        )
+        self.assertTrue(
+            all(
+                not hasattr(item, "path")
+                for item in self.worker.hidden_dataset_requests
+                + self.worker.hidden_datasets
+            )
         )
 
     def test_track_b_interactive_lease_commit_and_finish(self):
@@ -665,6 +723,10 @@ class SupervisorTests(unittest.TestCase):
         )
         self.assertLess(
             types.index("AGENT_CONTROL_CLEANED"),
+            types.index("HIDDEN_DATASET_RESOLVED"),
+        )
+        self.assertLess(
+            types.index("HIDDEN_DATASET_RESOLVED"),
             types.index("TEST_EVALUATED"),
         )
         self.assertLess(
@@ -703,20 +765,127 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(self.worker.evaluations, [])
         with self.assertRaisesRegex(RuntimeError, "termination must precede"):
             supervisor.evaluate_postmortem()
+        self.assertEqual(self.worker.hidden_dataset_requests, [])
 
         supervisor.record_agent_execution(exit_code=0, termination_reason="exited")
         self.assertTrue(supervisor.cleanup_agent_control())
-        hidden.mkdir()
-        config.analysis_path.write_text('{"sequences":[[0,1]]}', encoding="utf-8")
-        config.test_path.write_text('{"sequences":[[0,2]]}', encoding="utf-8")
+
+        def materialize(request):
+            hidden.mkdir(exist_ok=True)
+            path = hidden / f"{request.name}.json"
+            token = 1 if request.name == "analysis" else 2
+            path.write_text(
+                json.dumps({"sequences": [[0, token]]}),
+                encoding="utf-8",
+            )
+            self.worker.hidden_dataset_digests[request.name] = hashlib.sha256(
+                path.read_bytes()
+            ).hexdigest()
+
+        self.worker.hidden_dataset_resolution_hook = materialize
 
         final = supervisor.evaluate_postmortem()
 
         self.assertEqual(final["status"], "finalized")
         self.assertEqual(self.worker.evaluations, ["test", "analysis"])
+        self.assertTrue(config.analysis_path.is_file())
+        self.assertTrue(config.test_path.is_file())
         identities = supervisor.state["artifact_identities"]["hidden_evaluation"]
         self.assertEqual(set(identities), {"analysis_sha256", "test_sha256"})
         self.assertTrue(all(identities.values()))
+
+    def test_test_dataset_identity_mismatch_fails_before_candidate_evaluation(self):
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+        committed = supervisor.commit_lease("/output/candidate")
+        supervisor.declare_incumbent(committed["candidate_id"])
+        supervisor.finish()
+        supervisor.record_agent_execution(exit_code=0, termination_reason="exited")
+        self.assertTrue(supervisor.cleanup_agent_control())
+
+        with patch.object(
+            supervisor,
+            "_hidden_dataset_request",
+            return_value=HiddenDatasetRequest("test", "a" * 64),
+        ):
+            final = supervisor.evaluate_postmortem()
+
+        self.assertEqual(final["status"], "infrastructure_failure")
+        self.assertEqual(final["failure"], "hidden_dataset_identity_mismatch")
+        self.assertEqual(self.worker.evaluations, [])
+        events = supervisor.events_path.read_text(encoding="utf-8")
+        self.assertIn("HIDDEN_DATASET_IDENTITY_MISMATCH", events)
+
+    def test_test_resolution_failure_exposes_only_a_stable_code(self):
+        private_detail = "/organizer/private/test-download.log"
+        self.worker.hidden_dataset_resolution_failures["test"] = private_detail
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+        committed = supervisor.commit_lease("/output/candidate")
+        supervisor.declare_incumbent(committed["candidate_id"])
+        supervisor.finish()
+
+        final = self.finalize_after_agent_stop(supervisor)
+
+        self.assertEqual(final["status"], "infrastructure_failure")
+        self.assertEqual(final["failure"], "hidden_dataset_resolution_failure")
+        self.assertNotIn(private_detail, json.dumps(final))
+        self.assertIn(
+            private_detail,
+            supervisor.events_path.read_text(encoding="utf-8"),
+        )
+        self.assertEqual(self.worker.evaluations, [])
+
+    def test_invalid_hidden_dataset_receipt_is_infrastructure_failure(self):
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+        committed = supervisor.commit_lease("/output/candidate")
+        supervisor.declare_incumbent(committed["candidate_id"])
+        supervisor.finish()
+        supervisor.record_agent_execution(exit_code=0, termination_reason="exited")
+        self.assertTrue(supervisor.cleanup_agent_control())
+
+        with patch.object(
+            self.worker,
+            "resolve_hidden_dataset",
+            return_value={"path": "/organizer/private/test.json"},
+        ):
+            final = supervisor.evaluate_postmortem()
+
+        self.assertEqual(final["status"], "infrastructure_failure")
+        self.assertEqual(final["failure"], "hidden_dataset_receipt_invalid")
+        self.assertNotIn("/organizer/private", json.dumps(final))
+        self.assertEqual(self.worker.evaluations, [])
+
+    def test_unexpected_resolver_failure_marks_worker_state_unknown(self):
+        private_detail = "/organizer/private/mount-helper.log"
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+        committed = supervisor.commit_lease("/output/candidate")
+        supervisor.declare_incumbent(committed["candidate_id"])
+        supervisor.finish()
+        supervisor.record_agent_execution(exit_code=0, termination_reason="exited")
+        self.assertTrue(supervisor.cleanup_agent_control())
+
+        with patch.object(
+            self.worker,
+            "resolve_hidden_dataset",
+            side_effect=RuntimeError(private_detail),
+        ):
+            final = supervisor.evaluate_postmortem()
+
+        self.assertEqual(final["status"], "infrastructure_failure")
+        self.assertEqual(final["failure"], "evaluation_worker_state_unknown")
+        self.assertEqual(
+            final["deployment_teardown_failures"],
+            ["evaluation_worker_state_unknown"],
+        )
+        self.assertNotIn(private_detail, json.dumps(final))
+        self.assertIn(
+            private_detail,
+            supervisor.events_path.read_text(encoding="utf-8"),
+        )
+        self.assertEqual(self.worker.evaluations, [])
 
     def test_finish_without_an_incumbent_is_a_failed_experiment(self):
         supervisor = self.supervisor()
@@ -1316,6 +1485,19 @@ class SupervisorTests(unittest.TestCase):
             supervisor.state["policy_violations"],
         )
 
+    def test_hidden_dataset_identity_verification_is_a_required_capability(self):
+        self.worker.capability_overrides[HIDDEN_DATASET_IDENTITY_VERIFICATION] = (
+            Capability(EnforcementLevel.UNVERIFIED)
+        )
+
+        supervisor = self.supervisor()
+
+        self.assertIn(
+            "evaluation_worker_capability_insufficient:"
+            "hidden_dataset_identity_verification",
+            supervisor.state["policy_violations"],
+        )
+
     def test_worker_descriptor_must_declare_its_assigned_roles(self):
         self.worker.roles = ("research",)
         supervisor = self.supervisor()
@@ -1624,9 +1806,11 @@ class SupervisorTests(unittest.TestCase):
 
     def test_missing_analysis_is_diagnostic_and_does_not_erase_test(self):
         missing_analysis = self.episode.parent / "not-materialized-analysis.json"
+        private_detail = "private organizer source is unavailable"
         supervisor = self.supervisor(
             config=replace(self.config, analysis_path=missing_analysis).validate()
         )
+        self.worker.hidden_dataset_resolution_failures["analysis"] = private_detail
         supervisor.start_lease()
         committed = supervisor.commit_lease("/output/candidate")
         supervisor.declare_incumbent(committed["candidate_id"])
@@ -1639,10 +1823,15 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(final["test_status"], "evaluated")
         self.assertEqual(final["test_nll"], 1.5)
         self.assertEqual(final["analysis_status"], "incomplete")
-        self.assertEqual(final["analysis_failure"], "hidden_dataset_unavailable")
+        self.assertEqual(final["analysis_failure"], "hidden_dataset_resolution_failure")
         self.assertFalse(final["analysis_identity_verified"])
         self.assertEqual(final["deployment_teardown_failures"], [])
         self.assertEqual(self.worker.evaluations, ["test"])
+        self.assertNotIn(private_detail, json.dumps(final))
+        self.assertIn(
+            private_detail,
+            supervisor.events_path.read_text(encoding="utf-8"),
+        )
 
     def test_analysis_worker_teardown_failure_preserves_test_measurement(self):
         supervisor = self.supervisor()

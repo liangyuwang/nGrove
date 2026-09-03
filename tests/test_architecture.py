@@ -1,6 +1,12 @@
 import ast
 import unittest
+from dataclasses import fields
 from pathlib import Path
+
+from autotrain_bench.worker_protocol import (
+    HiddenDatasetRequest,
+    ResolvedHiddenDataset,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,6 +54,21 @@ class ArchitectureBoundaryTests(unittest.TestCase):
                     node.name for node in tree.body if isinstance(node, ast.FunctionDef)
                 }
                 self.assertIn("evaluate", functions)
+
+    def test_hidden_dataset_protocol_contains_no_deployment_location(self):
+        for value_type in (HiddenDatasetRequest, ResolvedHiddenDataset):
+            with self.subTest(value_type=value_type.__name__):
+                names = {field.name for field in fields(value_type)}
+                self.assertTrue(
+                    names.isdisjoint(
+                        {"path", "url", "credential", "mount", "cache_path"}
+                    )
+                )
+        supervisor_source = (ROOT / "autotrain_bench" / "supervisor.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("config.analysis_path", supervisor_source)
+        self.assertNotIn("config.test_path", supervisor_source)
 
 
 if __name__ == "__main__":

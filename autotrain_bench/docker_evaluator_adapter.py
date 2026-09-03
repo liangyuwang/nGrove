@@ -3,7 +3,7 @@
 The Candidate application protocol is release-owned.  This transport is not:
 an external Worker may provide a Unix socket, proxy, shared-memory RPC, or any
 other channel that preserves the same ``predict(prefixes) -> logits`` contract
-and the isolation requirements in Worker Protocol v4.
+and the isolation requirements in Worker Protocol v5.
 """
 
 from __future__ import annotations

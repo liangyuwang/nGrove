@@ -1,6 +1,7 @@
-import os
+import hashlib
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -26,6 +27,10 @@ from autotrain_bench.runtime import DockerRuntime, RuntimeFailure
 from autotrain_bench.worker_protocol import (
     DEADLINE_TERMINATION,
     EnforcementLevel,
+    EvaluationTaskSpec,
+    HiddenDatasetIdentityMismatch,
+    HiddenDatasetRequest,
+    HiddenDatasetResolutionFailure,
     ResearchTaskSpec,
     TrustLevel,
     WorkerTeardownFailure,
@@ -46,8 +51,12 @@ def publish_agent_api(public_task: Path) -> None:
 
 
 class CapturingDockerRuntime(DockerRuntime):
-    def __init__(self, *, monotonic=None):
-        super().__init__(docker_binary="docker", monotonic=monotonic)
+    def __init__(self, *, monotonic=None, hidden_datasets=None):
+        super().__init__(
+            docker_binary="docker",
+            monotonic=monotonic,
+            hidden_datasets=hidden_datasets,
+        )
         self.calls = []
         self.call_kwargs = []
 
@@ -66,6 +75,84 @@ class RuntimeBoundaryTests(unittest.TestCase):
             descriptor.capabilities[DEADLINE_TERMINATION].level,
             EnforcementLevel.BEST_EFFORT,
         )
+
+    def test_hidden_dataset_source_is_resolved_only_when_requested(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "private" / "test.json"
+            runtime = CapturingDockerRuntime(hidden_datasets={"test": source})
+            request = HiddenDatasetRequest("test")
+            task = EvaluationTaskSpec.from_task(TaskConfig.load(TASK))
+
+            self.assertFalse(source.exists())
+            with self.assertRaises(HiddenDatasetResolutionFailure):
+                runtime.resolve_hidden_dataset(
+                    episode_id="episode-1",
+                    task=task,
+                    hidden_dataset=request,
+                )
+
+            source.parent.mkdir()
+            source.write_text('{"sequences":[[0,1]]}', encoding="utf-8")
+            resolved = runtime.resolve_hidden_dataset(
+                episode_id="episode-1",
+                task=task,
+                hidden_dataset=request,
+            )
+
+            self.assertEqual(
+                resolved.sha256,
+                hashlib.sha256(source.read_bytes()).hexdigest(),
+            )
+            self.assertFalse(hasattr(resolved, "path"))
+
+    def test_resolved_hidden_dataset_cannot_change_before_candidate_start(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "test.json"
+            source.write_text('{"sequences":[[0,1]]}', encoding="utf-8")
+            runtime = CapturingDockerRuntime(hidden_datasets={"test": source})
+            task = EvaluationTaskSpec.from_task(TaskConfig.load(TASK))
+            resolved = runtime.resolve_hidden_dataset(
+                episode_id="episode-1",
+                task=task,
+                hidden_dataset=HiddenDatasetRequest("test"),
+            )
+            source.write_text('{"sequences":[[0,2]]}', encoding="utf-8")
+
+            with self.assertRaises(HiddenDatasetIdentityMismatch):
+                runtime.evaluate_candidate(
+                    episode_id="episode-1",
+                    task=task,
+                    resources=TrainingResources(),
+                    candidate_dir=TASK.parent / "agent",
+                    hidden_dataset=resolved,
+                    output_dir=Path(directory) / "output",
+                )
+
+            self.assertEqual(runtime.calls, [])
+
+    def test_hidden_dataset_resolution_is_bound_to_one_episode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "test.json"
+            source.write_text('{"sequences":[[0,1]]}', encoding="utf-8")
+            runtime = CapturingDockerRuntime(hidden_datasets={"test": source})
+            task = EvaluationTaskSpec.from_task(TaskConfig.load(TASK))
+            resolved = runtime.resolve_hidden_dataset(
+                episode_id="episode-1",
+                task=task,
+                hidden_dataset=HiddenDatasetRequest("test"),
+            )
+
+            with self.assertRaises(HiddenDatasetResolutionFailure):
+                runtime.evaluate_candidate(
+                    episode_id="episode-2",
+                    task=task,
+                    resources=TrainingResources(),
+                    candidate_dir=TASK.parent / "agent",
+                    hidden_dataset=resolved,
+                    output_dir=Path(directory) / "output",
+                )
+
+            self.assertEqual(runtime.calls, [])
 
     def test_stop_container_requires_confirmed_absence(self):
         runtime = DockerRuntime(docker_binary="docker")

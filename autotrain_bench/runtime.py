@@ -7,6 +7,7 @@ single host where the supervisor is started.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -16,7 +17,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .config import AgentConfig, TaskConfig, TrainingResources
 from .host_agent import HostAgentProcess, start_host_agent_process
@@ -25,6 +26,7 @@ from .worker_protocol import (
     CANDIDATE_EVALUATOR_CHANNEL_ISOLATION,
     DEADLINE_TERMINATION,
     GPU_DEVICE_ISOLATION,
+    HIDDEN_DATASET_IDENTITY_VERIFICATION,
     HIDDEN_DATASET_ISOLATION,
     IMMUTABLE_CANDIDATE_ARTIFACT,
     IMMUTABLE_WORKLOAD_IDENTITY,
@@ -34,8 +36,11 @@ from .worker_protocol import (
     CommandResult,
     EnforcementLevel,
     EvaluationTaskSpec,
-    HiddenDatasetRef,
+    HiddenDatasetIdentityMismatch,
+    HiddenDatasetRequest,
+    HiddenDatasetResolutionFailure,
     LeaseState,
+    ResolvedHiddenDataset,
     ResearchTaskSpec,
     TrustLevel,
     WorkerDescriptor,
@@ -50,6 +55,14 @@ RuntimeFailure = WorkerFailure
 ExecResult = CommandResult
 MAX_RUNTIME_STREAM_BYTES = 1024 * 1024
 _TRUNCATION_MARKER = b"\n[output truncated by AutoTrain-Bench]\n"
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _decode_timeout_output(value: Any) -> str:
@@ -117,9 +130,19 @@ class DockerRuntime:
         docker_binary: Optional[str] = None,
         *,
         monotonic: Optional[Callable[[], float]] = None,
+        hidden_datasets: Optional[Mapping[str, Path]] = None,
     ) -> None:
         self.docker = docker_binary or shutil.which("docker") or ""
         self.monotonic = monotonic or time.monotonic
+        self._hidden_datasets: Dict[str, Path] = {}
+        for name, path in (hidden_datasets or {}).items():
+            # Validate the semantic key now, but deliberately do not require
+            # the private source to exist before post-research evaluation.
+            HiddenDatasetRequest(name)
+            self._hidden_datasets[name] = Path(path).expanduser().resolve()
+        self._resolved_hidden_datasets: Dict[
+            tuple[str, str], tuple[str, ResolvedHiddenDataset, Path]
+        ] = {}
         self._worker_leases: Dict[tuple, str] = {}
         self._pending_evaluations: Dict[tuple, Tuple[str, str, str]] = {}
 
@@ -144,6 +167,9 @@ class DockerRuntime:
                 ),
                 HIDDEN_DATASET_ISOLATION: Capability(
                     enforced, "separate candidate and evaluator workloads"
+                ),
+                HIDDEN_DATASET_IDENTITY_VERIFICATION: Capability(
+                    enforced, "SHA-256 verified before Candidate startup"
                 ),
                 CANDIDATE_EVALUATOR_CHANNEL_ISOLATION: Capability(
                     enforced, "episode-private evaluation channel"
@@ -971,14 +997,79 @@ class DockerRuntime:
         if split not in {"analysis", "test"}:
             raise RuntimeFailure(f"invalid evaluator split: {split}")
         data_path = config.analysis_path if split == "analysis" else config.test_path
-        return self._run_isolated_evaluator(
+        task = EvaluationTaskSpec.from_task(config)
+        request = HiddenDatasetRequest(split)
+        resolved = self._resolve_hidden_dataset_path(
+            "local-preview",
+            task.task_id,
+            request,
+            data_path,
+        )
+        return self.evaluate_candidate(
             episode_id="local-preview",
-            task=EvaluationTaskSpec.from_task(config),
+            task=task,
             resources=resources,
             candidate_dir=candidate_dir,
-            hidden_dataset=HiddenDatasetRef(split, data_path),
+            hidden_dataset=resolved,
             output_dir=output_dir,
             timeout_seconds=timeout_seconds,
+        )
+
+    def _resolve_hidden_dataset_path(
+        self,
+        episode_id: str,
+        task_id: str,
+        request: HiddenDatasetRequest,
+        data_path: Path,
+    ) -> ResolvedHiddenDataset:
+        """Verify and retain one private deployment source behind an opaque ID."""
+
+        if not isinstance(request, HiddenDatasetRequest):
+            raise TypeError("hidden_dataset must be a HiddenDatasetRequest")
+        try:
+            if not data_path.is_file():
+                raise FileNotFoundError(data_path)
+            digest = _sha256_file(data_path)
+        except OSError as exc:
+            raise HiddenDatasetResolutionFailure(
+                f"failed to resolve hidden dataset {request.name}: {exc}"
+            ) from exc
+        resolved = ResolvedHiddenDataset(
+            request.name,
+            digest,
+            uuid.uuid4().hex,
+        )
+        if request.expected_sha256 is not None and digest != request.expected_sha256:
+            raise HiddenDatasetIdentityMismatch(resolved)
+        self._resolved_hidden_datasets[(episode_id, resolved.resolution_id)] = (
+            task_id,
+            resolved,
+            data_path,
+        )
+        return resolved
+
+    def resolve_hidden_dataset(
+        self,
+        *,
+        episode_id: str,
+        task: EvaluationTaskSpec,
+        hidden_dataset: HiddenDatasetRequest,
+    ) -> ResolvedHiddenDataset:
+        """Resolve the local reference source only when Core requests it."""
+
+        if not isinstance(hidden_dataset, HiddenDatasetRequest):
+            raise TypeError("hidden_dataset must be a HiddenDatasetRequest")
+        data_path = self._hidden_datasets.get(hidden_dataset.name)
+        if data_path is None:
+            raise HiddenDatasetResolutionFailure(
+                "no local hidden dataset source is configured for "
+                f"{hidden_dataset.name}"
+            )
+        return self._resolve_hidden_dataset_path(
+            episode_id,
+            task.task_id,
+            hidden_dataset,
+            data_path,
         )
 
     def _run_isolated_evaluator(
@@ -988,17 +1079,18 @@ class DockerRuntime:
         task: EvaluationTaskSpec,
         resources: TrainingResources,
         candidate_dir: Path,
-        hidden_dataset: HiddenDatasetRef,
+        split: str,
+        data_path: Path,
         output_dir: Path,
         timeout_seconds: Optional[float] = None,
     ) -> float:
         resources.validate()
-        split = hidden_dataset.name
+        if split not in {"analysis", "test"}:
+            raise RuntimeFailure(f"invalid evaluator split: {split}")
         if task.backend != "isolated_candidate":
             raise RuntimeFailure(f"unsupported evaluator backend: {task.backend}")
         if task.candidate_channel.protocol != "next_token_logits_v1":
             raise RuntimeFailure("unsupported Candidate application protocol")
-        data_path = hidden_dataset.path
         if not data_path.is_file():
             raise RuntimeFailure(f"hidden evaluator split is not a file: {data_path}")
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -1216,18 +1308,47 @@ class DockerRuntime:
         task: EvaluationTaskSpec,
         resources: TrainingResources,
         candidate_dir: Path,
-        hidden_dataset: HiddenDatasetRef,
+        hidden_dataset: ResolvedHiddenDataset,
         output_dir: Path,
         timeout_seconds: Optional[float] = None,
     ) -> float:
         """Map the semantic evaluation operation to the reference runtime."""
 
+        if not isinstance(hidden_dataset, ResolvedHiddenDataset):
+            raise TypeError("hidden_dataset must be a ResolvedHiddenDataset")
+        resolution = self._resolved_hidden_datasets.get(
+            (episode_id, hidden_dataset.resolution_id)
+        )
+        if resolution is None:
+            raise HiddenDatasetResolutionFailure(
+                "hidden dataset resolution is unavailable for this episode"
+            )
+        expected_task_id, expected_resolution, data_path = resolution
+        if task.task_id != expected_task_id or hidden_dataset != expected_resolution:
+            raise HiddenDatasetResolutionFailure(
+                "hidden dataset resolution evidence does not match the opaque ID"
+            )
+        try:
+            actual_digest = _sha256_file(data_path)
+        except OSError as exc:
+            raise HiddenDatasetResolutionFailure(
+                f"resolved hidden dataset became unavailable: {exc}"
+            ) from exc
+        if actual_digest != hidden_dataset.sha256:
+            raise HiddenDatasetIdentityMismatch(
+                ResolvedHiddenDataset(
+                    hidden_dataset.name,
+                    actual_digest,
+                    hidden_dataset.resolution_id,
+                )
+            )
         return self._run_isolated_evaluator(
             episode_id=episode_id,
             task=task,
             resources=resources,
             candidate_dir=candidate_dir,
-            hidden_dataset=hidden_dataset,
+            split=hidden_dataset.name,
+            data_path=data_path,
             output_dir=output_dir,
             timeout_seconds=timeout_seconds,
         )

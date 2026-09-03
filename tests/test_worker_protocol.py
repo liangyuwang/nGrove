@@ -10,6 +10,9 @@ from autotrain_bench.worker_protocol import (
     CommandResult,
     ConformanceReceipt,
     EnforcementLevel,
+    HiddenDatasetIdentityMismatch,
+    HiddenDatasetRequest,
+    ResolvedHiddenDataset,
     TrustLevel,
     WORKER_CONFORMANCE_SUITE_VERSION,
     WorkerDescriptor,
@@ -51,6 +54,32 @@ class WorkerProtocolTests(unittest.TestCase):
             CommandResult(0, b"bytes", "")
         with self.assertRaisesRegex(TypeError, "timed_out"):
             CommandResult(0, "", "", timed_out=1)
+
+    def test_hidden_dataset_request_contains_identity_but_no_location(self):
+        request = HiddenDatasetRequest("test", "a" * 64)
+
+        self.assertEqual(request.name, "test")
+        self.assertEqual(request.expected_sha256, "a" * 64)
+        self.assertFalse(hasattr(request, "path"))
+        self.assertFalse(hasattr(request, "url"))
+
+    def test_hidden_dataset_contract_rejects_invalid_identities(self):
+        with self.assertRaisesRegex(ValueError, "name"):
+            HiddenDatasetRequest("val")
+        with self.assertRaisesRegex(ValueError, "SHA-256"):
+            HiddenDatasetRequest("test", "not-a-digest")
+        with self.assertRaisesRegex(ValueError, "resolution_id"):
+            ResolvedHiddenDataset("test", "a" * 64, "")
+        with self.assertRaisesRegex(ValueError, "opaque identifier"):
+            ResolvedHiddenDataset("test", "a" * 64, "/private/test.json")
+
+    def test_identity_mismatch_carries_only_a_semantic_resolution(self):
+        resolved = ResolvedHiddenDataset("analysis", "b" * 64, "opaque-1")
+
+        mismatch = HiddenDatasetIdentityMismatch(resolved)
+
+        self.assertIs(mismatch.receipt, resolved)
+        self.assertNotIn("/", str(mismatch))
 
     def test_capabilities_are_separate_from_deployment_trust(self):
         assessment = assess_worker(
@@ -106,7 +135,7 @@ class WorkerProtocolTests(unittest.TestCase):
 
     def test_descriptor_manifest_contains_no_platform_schema(self):
         manifest = descriptor().public_manifest()
-        self.assertEqual(manifest["protocol_version"], 4)
+        self.assertEqual(manifest["protocol_version"], 5)
         self.assertEqual(manifest["roles"], ["research", "evaluation"])
         serialized = json.dumps(manifest).lower()
         self.assertNotIn("docker", serialized)
@@ -117,7 +146,7 @@ class WorkerProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "protocol version"):
             WorkerDescriptor(
                 worker_id="future-worker",
-                protocol_version=5,
+                protocol_version=6,
                 trust_level=TrustLevel.DEVELOPMENT,
                 roles=("research",),
                 capabilities={},
