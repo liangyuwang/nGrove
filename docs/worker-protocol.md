@@ -105,11 +105,11 @@ an organizer-controlled deployment is not eligible when required technical
 capabilities are missing.  Missing or insufficient capabilities are recorded
 explicitly and never trigger a fallback. A receipt is conformant only for the
 suite version associated with the active Worker Protocol; a passing v2 receipt
-cannot certify a v3 Worker boundary.
+cannot certify a v4 Worker boundary.
 
 ## Research and evaluation roles
 
-Worker Protocol v3 models ResearchWorker and EvaluationWorker as separate
+Worker Protocol v4 models ResearchWorker and EvaluationWorker as separate
 interfaces because their trust domains differ:
 
 - ResearchWorker sees TRAIN, the Agent workspace, and training outputs, but
@@ -126,17 +126,17 @@ task identity, training image, TRAIN path, and generated public helper API.
 selected by the Supervisor after research sealing. A complete `TaskConfig`
 never crosses either role boundary.
 
-Version 3 is a breaking interface revision in the current unreleased
+Version 4 is a breaking interface revision in the current unreleased
 development snapshot; it does not imply a package release version. Older
 Workers are rejected rather than adapted implicitly. External Worker packages
-must accept `ResearchTaskSpec`, evaluate `HiddenDatasetRef("analysis", ...)` and
-`HiddenDatasetRef("test", ...)` only after sealing, and preserve the
-`CandidateChannelRequirements` application semantics without assuming a
-particular transport.
+must accept `ResearchTaskSpec`, evaluate `HiddenDatasetRef("test", ...)` and
+`HiddenDatasetRef("analysis", ...)` only after sealing and independently of call
+order, and preserve the precise prefix/target/artifact visibility fields in
+`CandidateChannelRequirements` without assuming a particular transport.
 
 A local development Worker may implement both roles in one process. A future
 formal deployment may place them on separate services connected only through
-an immutable artifact reference. The current version 3 Python interface does
+an immutable artifact reference. The current version 4 Python interface does
 not yet define that remote artifact transport.
 
 Worker operation failures and teardown failures have different episode
@@ -144,9 +144,12 @@ semantics. `WorkerFailure` reports an operation that did not produce a usable
 result and may be returned only after the Worker has confirmed that the failed
 operation left no unaccounted workload boundary. `WorkerTeardownFailure`
 reports that termination or removal remains unconfirmed. The latter is always
-an infrastructure failure: evaluation must not continue and the Coordinator
-records a stable teardown code while retaining deployment-specific details only
-in its trusted event stream. In particular, `start_lease()` may fail after the
+deployment-integrity evidence: further evaluation must not continue and the
+Coordinator records a stable teardown code while retaining deployment-specific
+details only in its trusted event stream. Before TEST it terminates the episode;
+during optional post-TEST ANALYSIS it retains the completed TEST measurement but
+marks the run non-compliant and leaderboard-ineligible. In particular,
+`start_lease()` may fail after the
 platform has created a workload but before the caller receives an
 acknowledgement. A Worker must retain enough private state for
 `terminate_lease(episode_id, lease_id)` to be safely retried in that case. The
@@ -172,7 +175,7 @@ ineligible.
 A non-Docker Worker may consume the OCI artifact directly. If it executes a
 derived SIF, VM image, or platform artifact, the mapping must be reproducible,
 identified, recorded, and accepted by the organizer. A Worker may not silently
-replace the workload environment. Version 3 does not yet define the normalized
+replace the workload environment. Version 4 does not yet define the normalized
 resolution receipt needed to make such a translated workload formally
 eligible.
 
@@ -188,8 +191,11 @@ evaluation. It then requires confirmed Agent termination, no active or pending
 Research Lease, successful Agent-control cleanup, and no unresolved deployment
 teardown failure. Only then may it invoke the Evaluation Worker. ANALYSIS scores
 the release-selected frozen Candidate history and never changes the incumbent;
-TEST scores only the final Agent-declared incumbent. A failed hidden-data
-resolution cannot reopen research.
+TEST scores only the final Agent-declared incumbent. TEST runs first and its
+decision is persisted before diagnostic ANALYSIS begins. ANALYSIS completeness
+does not gate the TEST outcome or leaderboard eligibility; separate deployment
+integrity evidence still fails closed if an evaluation boundary cannot be
+confirmed. A failed hidden-data resolution cannot reopen research.
 
 The local `Path` inside `HiddenDatasetRef` is a shared-filesystem deployment
 handle, not permission to materialize the data before sealing. A stronger
@@ -201,10 +207,12 @@ Worker defines the materialization mechanism.
 ## Candidate channel
 
 `CandidateChannelRequirements` fixes the release-owned application protocol and
-security properties: no hidden data enters the Candidate, Candidate egress is
-denied, only the allowed request/response semantics cross the boundary, and
-teardown is confirmed before a metric returns. It deliberately contains no URL,
-port, socket path, network name, or scheduler handle.
+security properties. The Candidate receives only the authorized token prefix
+needed by `next_token_logits_v1`; it never receives the hidden dataset artifact,
+the current target token, future tokens, or egress. Only the allowed
+request/response semantics cross the boundary, and teardown is confirmed before
+a metric returns. The requirements deliberately contain no URL, port, socket
+path, network name, or scheduler handle.
 
 Task evaluator modules export `evaluate(data_path, vocab_size, predict,
 batch_size=...)`. The `predict` callable is the deployment seam. The bundled
@@ -224,10 +232,10 @@ Its `Path` arguments are local deployment handles. They assume that the Worker
 implementation can access or materialize the Coordinator-named TRAIN,
 workspace, Lease output, Candidate, hidden dataset, public API, and evaluation
 locations. They must not be treated as a stable serializable remote protocol.
-A shared-filesystem Worker can implement version 3 directly; a topology without
+A shared-filesystem Worker can implement version 4 directly; a topology without
 shared paths needs future artifact-reference and materialization semantics.
 
-Version 3 also passes the requested `TrainingResources` to Worker operations
+Version 4 also passes the requested `TrainingResources` to Worker operations
 but does not define a normalized effective-allocation receipt;
 `start_lease()` returns `None`. Environment inventory is useful diagnostic
 metadata, not proof that every release-normative resource property was granted

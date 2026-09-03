@@ -192,7 +192,7 @@ def _run_cleanup_steps(steps: Sequence[CleanupStep]) -> List[CleanupFailure]:
 def _report_cleanup_failures(
     supervisor: Supervisor, failures: Sequence[CleanupFailure]
 ) -> None:
-    """Prevent result publication after any required deployment cleanup fails."""
+    """Persist deployment-integrity failures independently of metric outcome."""
 
     if not failures:
         return
@@ -822,7 +822,26 @@ def command_start(args: argparse.Namespace) -> int:
         # Worker deployment may materialize ANALYSIS/TEST at this point; Core
         # neither downloads hidden data nor selects a platform mechanism.
         if supervisor.state["status"] == "closed":
-            supervisor.evaluate_postmortem()
+            postmortem_error: Optional[BaseException] = None
+            try:
+                supervisor.evaluate_postmortem()
+            except BaseException as exc:
+                postmortem_error = exc
+            evaluation_cleanup_failures = _run_cleanup_steps(
+                [
+                    (
+                        "evaluation_worker_teardown_failure",
+                        reference_runtime.teardown_pending_evaluations,
+                    )
+                ]
+            )
+            try:
+                _report_cleanup_failures(supervisor, evaluation_cleanup_failures)
+            except BaseException as exc:
+                if postmortem_error is None:
+                    postmortem_error = exc
+            if postmortem_error is not None:
+                raise postmortem_error
 
     _print(supervisor.public_status())
     return _episode_exit_code(supervisor.state)

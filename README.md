@@ -76,10 +76,12 @@ sandbox without adding platform branches to Core.
 
 The repository now contains an executable, single-host Docker prototype of the benchmark protocol. It is intended to validate episode lifecycle, Training Lease accounting, hidden evaluation, and the agent-facing control surface before the first official benchmark instance is selected.
 
-The current development snapshot uses Worker Protocol v3 but does not carry a
-release package version yet. Protocol v3 is a breaking Worker API revision:
-external Workers must migrate to the post-seal `HiddenDatasetRef` evaluation
-surface and the transport-neutral `CandidateChannelRequirements` contract.
+The current development snapshot uses Worker Protocol v4 but does not carry a
+release package version yet. Protocol v4 is a breaking Worker API revision:
+external Workers must preserve the post-seal `HiddenDatasetRef` role boundary,
+accept TEST before ANALYSIS, and use the precise prefix/target/artifact
+visibility fields in the transport-neutral `CandidateChannelRequirements`
+contract. The Python package itself remains `0.0.0` while unreleased.
 
 Docker is the bundled v0 compatibility implementation, not a general platform
 abstraction. The benchmark Supervisor now depends on the semantic
@@ -98,7 +100,7 @@ being hidden behind application-level mailbox limits.
 
 The bundled `autotrain-bench prepare` and `autotrain-bench start` commands are
 the composition root for that local Docker implementation; they are not a
-generic backend loader. Worker Protocol v3 is currently a synchronous,
+generic backend loader. Worker Protocol v4 is currently a synchronous,
 in-process Python contract whose `Path` values are local deployment handles,
 not a remote wire format. An external Worker package uses its own trusted
 launcher to compose Core with its deployment rather than adding a platform
@@ -386,7 +388,7 @@ autotrain-bench report \
   --episode /path/to/autotrain-bench-runs/episodes/<episode-id>
 ```
 
-New episode states declare `result_schema_version: 4`. Reporting an older state
+New episode states declare `result_schema_version: 5`. Reporting an older state
 performs a read-only migration. An unversioned v1 state receives the v2
 outcome fields: a completed result with a valid TEST NLL receives
 `outcome: "success"` and a derived `test_perplexity`, while an unscored
@@ -398,22 +400,29 @@ one schema version always identifies one structure. A migrated report records
 never rewritten, and unknown future result-schema versions are rejected rather
 than guessed. Legacy VAL fields remain explicitly labelled legacy; reporting
 never relabels an old Agent-visible VAL trajectory as postmortem ANALYSIS.
+An existing v4 postmortem result remains readable, but migration explicitly
+reports that its complete ordered incumbent-declaration history is unavailable
+rather than reconstructing that history from an Agent log or a final boolean.
 
-In v4, `outcome: "success"` requires a finalized episode, a non-empty final
+In v5, `outcome: "success"` requires a finalized episode, a non-empty final
 Candidate ID, and both consistent TEST metrics. A failed outcome requires a
 failure reason and keeps both TEST metrics `null`. A null outcome is allowed
 only before a result exists (`created`, `active`, or the transient `closed`
-state while postmortem ANALYSIS, TEST, and trusted finalization are running),
+state while postmortem TEST, ANALYSIS, and trusted finalization are running),
 and may not carry TEST metrics or a failure reason. Research is first sealed
 irreversibly. Hidden evaluation begins only after the Agent and Research Worker
-have stopped and Agent-control cleanup has completed. ANALYSIS scores the frozen
-Candidate history without returning feedback; TEST scores only the frozen final
-incumbent. A cleanup failure therefore produces a failure terminal directly,
-never a success that is later rewritten.
+have stopped and Agent-control cleanup has completed. TEST first scores only the
+frozen final incumbent and its decision is persisted before ANALYSIS begins.
+ANALYSIS then scores the frozen Candidate history without returning feedback.
+Its `complete`/`incomplete` disposition is independent of the TEST outcome and
+never gates leaderboard eligibility merely because diagnostic points are
+missing. A boundary or teardown failure discovered during ANALYSIS is still
+recorded as deployment-integrity evidence and makes the run non-compliant and
+ineligible, but it does not erase an already completed TEST measurement.
 
 `state.json` is the authoritative result commit point. Immediately before that
 atomic commit, the Supervisor appends a non-terminal
-`RESULT_PUBLICATION_PREPARED` audit record. A finalized v4 state created by the
+`RESULT_PUBLICATION_PREPARED` audit record. A finalized v5 state created by the
 current implementation includes `result_publication`, which binds the result
 to that record's publication ID and sequence number. An unreferenced prepared
 record documents an interrupted attempt and is not a terminal result. Older
@@ -447,8 +456,8 @@ task reveal
 → research sealed permanently
 → Agent and Research Worker stop confirmed
 → Agent-control cleanup
-→ historical Candidates scored on hidden ANALYSIS
 → final incumbent scored once on hidden TEST
+→ historical Candidates scored on hidden ANALYSIS when available
 → one final result
 ```
 
@@ -606,6 +615,14 @@ protocol. Core fixes the information-flow and isolation requirements; the Worker
 chooses the channel mechanism. The bundled Docker Worker uses a private HTTP/TCP
 network, but that mechanism is not part of the benchmark contract.
 
+The bundled smoke/reference data is prepared in advance on the trusted host
+filesystem and withheld by sandbox visibility: it is never mounted into the
+Agent or Research Worker. That is a weaker but valid local deployment than late
+download, decryption, or mount after `research_sealed`. Deployments that can keep
+the bytes physically absent from the host trust domain until evaluation provide
+stronger defense in depth; Core requires the visibility boundary and frozen
+identity, not one materialization mechanism.
+
 ---
 
 # The Benchmark Task
@@ -639,6 +656,14 @@ problem**. The Agent may reserve some permitted TRAIN data, devise another
 permitted validation method, or perform no validation at all. AutoTrain-Bench
 neither requires a holdout nor prescribes a replacement for organizer-owned VAL.
 
+This choice deliberately measures validation and incumbent selection as part of
+the autonomous research system. It also raises the variance of the final TEST
+score: systems may reserve different amounts of TRAIN, use estimators with
+different noise, or select the wrong incumbent despite similar underlying
+capability. Comparisons intended to resolve small differences should therefore
+predeclare repeated episodes and report uncertainty rather than treating one
+episode as a noiseless ranking.
+
 ---
 
 ## ANALYSIS
@@ -646,8 +671,11 @@ neither requires a holdout nor prescribes a replacement for organizer-owned VAL.
 ANALYSIS is an organizer-owned hidden **postmortem measurement**, not a research
 feedback channel. After research is irreversibly sealed, the Evaluation Worker
 scores the release-selected frozen Candidate inventory on the same ANALYSIS data
-and metric. This produces a comparable within-episode quality trajectory without
-letting the Agent adapt to an official oracle.
+and metric. This produces an auditable trace of the **submitted Candidate
+inventory** without letting the Agent adapt to an official oracle. The values
+are comparable for like-for-like commits under one release; the trajectory is
+not a direct observation of latent research progress because Candidate commit
+and incumbent-declaration strategies are themselves Agent choices.
 
 ANALYSIS is never returned through Agent control, never selects an incumbent,
 and never replaces TEST as the primary score. A release freezes its Candidate
@@ -674,8 +702,11 @@ Neither ANALYSIS nor TEST is computed during autonomous research.
 
 Instead, the benchmark first permanently terminates the research episode and freezes the relevant artifacts.
 
-Only then does the official evaluator run ANALYSIS on the frozen history and
-TEST once on the final Agent-declared incumbent.
+Only then does the official evaluator run TEST once on the final Agent-declared
+incumbent, durably stage that primary decision, and attempt ANALYSIS on the
+frozen history. Missing diagnostic points do not erase TEST or determine
+leaderboard eligibility. A compromised or unconfirmed evaluation boundary is
+still reported independently as a deployment-integrity failure.
 
 Therefore:
 
@@ -1224,28 +1255,45 @@ most recently committed candidate; that decision belongs to the Agent.
 
 Each incumbent declaration records:
 
-* a strictly ordered Supervisor event sequence and episode-relative time;
+* a strictly ordered Supervisor event sequence, trusted wall-clock timestamp,
+  and episode-relative time;
 * the Candidate artifact hash and previous incumbent;
 * the Candidate's source Leases;
 * the number of Leases consumed at declaration time.
 
+The public task manifest also exposes a fixed Core safety limit on declaration
+events. This bounds untrusted control-plane growth without making declaration
+frequency a hidden rule; the limit is far above the release's Candidate cap.
+
 The append-only Supervisor event stream is the authoritative incumbent history.
-Agent and inference traces may be correlated with its episode-relative times to
-help explain a decision, but those traces are diagnostic: they may be partial or
-truncated and do not determine declaration order. The research seal separately
-freezes the final declared incumbent used for TEST.
+Every Candidate commit and declaration carries the same timestamp as its
+referenced Supervisor event. Trusted inference-gateway records—and Agent runner
+records when that adapter emits timestamps—can therefore be correlated with
+the declaration's event sequence, episode-relative time, and timestamp to
+explain a decision. Untimestamped or truncated Agent logs permit only coarser
+ordering and cumulative-token analysis. All such traces remain diagnostic and
+do not determine declaration order or Candidate identity. The result itself
+persists the complete ordered
+declaration history and binds each ANALYSIS point to its Candidate-commit and
+declaration event sequences. The research seal separately freezes the final
+declared incumbent used for TEST.
 
 TEST remains unavailable.
 
 After the episode is permanently sealed, the evaluator evaluates the final
-declared incumbent once on TEST. Historical committed Candidates are evaluated
-on ANALYSIS under the release-frozen selection rule, so one episode produces a
-postmortem quality trajectory but never a TEST trajectory. Scaling studies may
-compare trajectories and final TEST results only when their complete comparison
-keys match.
+declared incumbent once on TEST. Historical committed Candidates are then
+evaluated on ANALYSIS under the release-frozen selection rule, so one episode
+produces a submitted-Candidate quality trajectory but never a TEST trajectory.
+From the ordered declaration history, an analyst can derive a fixed
+research-time or fixed-Lease curve by selecting the most recently declared
+incumbent at each predeclared checkpoint and joining it to that Candidate's
+ANALYSIS score. This makes checkpoint coverage independent of how frequently an
+Agent redeclares an incumbent; it does not invent quality observations for work
+the Agent never committed. Scaling studies may compare such derived curves and
+final TEST results only when their complete comparison keys match.
 
-The ANALYSIS trajectory can reveal behavior that a final scalar cannot, without
-providing an official signal while the Agent can still act.
+The submitted-Candidate ANALYSIS trace can reveal behavior that a final scalar
+cannot, without providing an official signal while the Agent can still act.
 
 For example:
 
@@ -1383,15 +1431,16 @@ The AutoTrain environment may:
 * analyze returned logs;
 * store research state.
 
-It may request and interact with a Training Container only through the Supervisor-controlled lease interface.
+It may request and interact with a sandboxed Training workload only through the
+Supervisor-controlled Lease interface.
 
 The Training Environment:
 
-* executes in an already-allocated local Docker environment;
+* executes in an already allocated, Worker-enforced sandbox;
 * shares the Agent workspace during an active lease;
 * permits repeated interactive commands inside that lease;
-* has no Docker socket, public network, ANALYSIS, or TEST access;
-* is forcibly terminated by the host Supervisor at lease expiry.
+* has no privileged deployment control, public network, ANALYSIS, or TEST access;
+* is forcibly terminated by the Worker at Lease expiry even if Core disconnects.
 
 The trusted Eval Environment receives only the selected hidden dataset. A separate
 read-only Candidate Environment receives only the immutable Candidate artifact;
@@ -1451,7 +1500,8 @@ Examples include:
 * deadlocks;
 * invalid checkpoints.
 
-In Track B, a lease is consumed as soon as its Training Container starts successfully, even if participant-controlled code later fails.
+In Track B, a Lease is consumed as soon as the Worker confirms that its Training
+workload started successfully, even if participant-controlled code later fails.
 
 Benchmark infrastructure failures are excluded and may be rerun.
 
@@ -1463,6 +1513,13 @@ An episode with no declared incumbent, a failed TEST evaluation, an invalid TEST
 metric, or an unrepresentable perplexity is finalized with `outcome: "failed"`;
 both `test_nll` and `test_perplexity` remain `null`. Infrastructure failures are
 also failed episodes, but remain separately classified for retry policy.
+
+Post-TEST ANALYSIS is diagnostic. Ordinary point failures or incomplete
+ANALYSIS retain the TEST outcome and are reported through `analysis_status`,
+`analysis_failure`, and per-point status. ANALYSIS completeness is never a
+leaderboard-eligibility requirement. If the failure also shows that an
+Evaluation Worker boundary or teardown is unconfirmed, the TEST measurement is
+retained while policy compliance and leaderboard eligibility fail closed.
 
 ---
 

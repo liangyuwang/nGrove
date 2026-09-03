@@ -8,18 +8,20 @@ from typing import Any, Dict
 from .config import AGENT_EGRESS_POLICIES, AGENT_RUNNERS
 
 
-RESULT_SCHEMA_VERSION = 4
+RESULT_SCHEMA_VERSION = 5
 LEGACY_RESULT_SCHEMA_VERSION = 1
 # Version 2 recorded the Agent egress policy as ``agent_system.mode`` with the
 # value ``"sandboxed"``.  Version 3 renames that field to ``agent_system.egress``
 # with the value ``"denied"`` so a schema version identifies one structure.
 AGENT_MODE_RESULT_SCHEMA_VERSION = 2
 PRE_ANALYSIS_RESULT_SCHEMA_VERSION = 3
+POSTMORTEM_RESULT_SCHEMA_VERSION = 4
 _SUPPORTED_INPUT_SCHEMA_VERSIONS = frozenset(
     {
         LEGACY_RESULT_SCHEMA_VERSION,
         AGENT_MODE_RESULT_SCHEMA_VERSION,
         PRE_ANALYSIS_RESULT_SCHEMA_VERSION,
+        POSTMORTEM_RESULT_SCHEMA_VERSION,
         RESULT_SCHEMA_VERSION,
     }
 )
@@ -95,8 +97,10 @@ def normalize_result_report(payload: Any) -> Dict[str, Any]:
         result = dict(payload)
     if version < PRE_ANALYSIS_RESULT_SCHEMA_VERSION:
         result = _migrate_agent_mode_to_egress(result)
-    if version < RESULT_SCHEMA_VERSION:
+    if version < POSTMORTEM_RESULT_SCHEMA_VERSION:
         result = _migrate_pre_analysis_result(result)
+    if version < RESULT_SCHEMA_VERSION:
+        result = _migrate_v4_analysis_result(result)
         result["result_schema_version"] = RESULT_SCHEMA_VERSION
         result["migrated_from_result_schema_version"] = version
     result.setdefault("deployment_teardown_failures", [])
@@ -134,8 +138,18 @@ def _migrate_pre_analysis_result(result: Dict[str, Any]) -> Dict[str, Any]:
     }
     migrated.setdefault("research_sealed_at", None)
     migrated.setdefault("analysis_complete", False)
+    migrated.setdefault("analysis_status", "legacy_not_run")
+    migrated.setdefault("analysis_failure", None)
+    migrated.setdefault("analysis_identity_verified", None)
     migrated.setdefault("analysis_trajectory", [])
     migrated.setdefault("candidate_commits", [])
+    migrated.setdefault("incumbent_declarations", [])
+    if migrated.get("outcome") == "success":
+        migrated.setdefault("test_status", "evaluated")
+    elif migrated.get("status") in _FAILED_OUTCOME_STATUSES:
+        migrated.setdefault("test_status", "failed")
+    else:
+        migrated.setdefault("test_status", None)
 
     candidates = migrated.get("candidates")
     if isinstance(candidates, dict):
@@ -184,6 +198,51 @@ def _migrate_pre_analysis_result(result: Dict[str, Any]) -> Dict[str, Any]:
             {"analysis_sha256": None, "test_sha256": test_digest},
         )
         migrated["artifact_identities"] = migrated_artifacts
+    return migrated
+
+
+def _migrate_v4_analysis_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Add v5 lifecycle axes without inventing missing declaration history."""
+
+    migrated = dict(result)
+    analysis_complete = migrated.get("analysis_complete")
+    status = migrated.get("status")
+    if analysis_complete is True:
+        analysis_status = "complete"
+    elif status in {"closed", "finalized"}:
+        analysis_status = "incomplete" if status == "finalized" else "pending"
+    else:
+        analysis_status = None
+    migrated.setdefault("analysis_status", analysis_status)
+    migrated.setdefault(
+        "analysis_failure",
+        "legacy_analysis_incomplete" if analysis_status == "incomplete" else None,
+    )
+    migrated.setdefault("analysis_identity_verified", None)
+    migrated.setdefault("incumbent_declarations", [])
+    if migrated.get("outcome") == "success":
+        migrated.setdefault("test_status", "evaluated")
+    elif status == "finalized":
+        migrated.setdefault("test_status", "failed")
+    elif status == "closed":
+        migrated.setdefault("test_status", "pending")
+    else:
+        migrated.setdefault("test_status", None)
+
+    trajectory = migrated.get("analysis_trajectory")
+    if isinstance(trajectory, list):
+        migrated_trajectory = []
+        for point in trajectory:
+            if not isinstance(point, dict):
+                migrated_trajectory.append(point)
+                continue
+            item = dict(point)
+            item.setdefault("declaration_event_seqs", [])
+            migrated_trajectory.append(item)
+        migrated["analysis_trajectory"] = migrated_trajectory
+    migrated.setdefault(
+        "migration_limitations", ["incumbent_declaration_history_unavailable"]
+    )
     return migrated
 
 
@@ -274,6 +333,9 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
         raise ResultSchemaError(f"invalid result status: {status!r}")
     migrated_legacy = "migrated_from_result_schema_version" in result
     analysis_complete = result.get("analysis_complete")
+    analysis_status = result.get("analysis_status")
+    analysis_failure = result.get("analysis_failure")
+    analysis_identity_verified = result.get("analysis_identity_verified")
     analysis_trajectory = result.get("analysis_trajectory")
     research_sealed_at = result.get("research_sealed_at")
     if analysis_complete is not None and not isinstance(analysis_complete, bool):
@@ -283,6 +345,25 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
     if isinstance(analysis_trajectory, list):
         _validate_analysis_trajectory(analysis_trajectory)
     if not migrated_legacy:
+        if analysis_status not in {None, "pending", "complete", "incomplete"}:
+            raise ResultSchemaError("invalid ANALYSIS lifecycle status")
+        if analysis_status == "complete" and analysis_complete is not True:
+            raise ResultSchemaError("complete ANALYSIS requires analysis_complete")
+        if analysis_status == "incomplete":
+            if analysis_complete is not False:
+                raise ResultSchemaError("incomplete ANALYSIS cannot be complete")
+            if not isinstance(analysis_failure, str) or not analysis_failure.strip():
+                raise ResultSchemaError("incomplete ANALYSIS requires a failure code")
+        elif analysis_failure is not None:
+            raise ResultSchemaError(
+                "only incomplete ANALYSIS may contain a failure code"
+            )
+        if analysis_identity_verified is not None and not isinstance(
+            analysis_identity_verified, bool
+        ):
+            raise ResultSchemaError(
+                "analysis_identity_verified must be null or boolean"
+            )
         if not isinstance(analysis_trajectory, list):
             raise ResultSchemaError(
                 "current results require an ANALYSIS trajectory array"
@@ -291,10 +372,33 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
             not isinstance(research_sealed_at, str) or not research_sealed_at.strip()
         ):
             raise ResultSchemaError("sealed research requires research_sealed_at")
-        if status == "finalized" and analysis_complete is not True:
+        if status == "finalized" and analysis_status not in {
+            "complete",
+            "incomplete",
+        }:
             raise ResultSchemaError(
-                "a finalized result requires completed postmortem ANALYSIS"
+                "a finalized result requires a postmortem ANALYSIS disposition"
             )
+        test_status = result.get("test_status")
+        if test_status not in {None, "pending", "evaluated", "failed"}:
+            raise ResultSchemaError("invalid TEST lifecycle status")
+        candidate_commits = result.get("candidate_commits")
+        incumbent_declarations = result.get("incumbent_declarations")
+        if not isinstance(candidate_commits, list):
+            raise ResultSchemaError("current results require candidate_commits")
+        if not isinstance(incumbent_declarations, list):
+            raise ResultSchemaError("current results require incumbent_declarations")
+        _validate_candidate_commits(candidate_commits)
+        _validate_incumbent_declarations(
+            incumbent_declarations,
+            candidate_commits,
+        )
+        _validate_analysis_binding(
+            analysis_trajectory,
+            candidate_commits,
+            incumbent_declarations,
+            require_complete=status == "finalized",
+        )
     candidate_id = result.get("final_candidate_id")
     if candidate_id is not None and (
         not isinstance(candidate_id, str) or not candidate_id.strip()
@@ -373,6 +477,8 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
             raise ResultSchemaError("test_perplexity does not equal exp(test_nll)")
         if result.get("failure") is not None:
             raise ResultSchemaError("a successful result may not contain a failure")
+        if not migrated_legacy and result.get("test_status") != "evaluated":
+            raise ResultSchemaError("a successful result requires evaluated TEST")
         if not migrated_legacy and not any(
             point["candidate_id"] == candidate_id for point in analysis_trajectory
         ):
@@ -402,10 +508,16 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
         failure = result.get("failure")
         if not isinstance(failure, str) or not failure.strip():
             raise ResultSchemaError("a failed result must contain a failure reason")
+        if (
+            not migrated_legacy
+            and status == "finalized"
+            and result.get("test_status") != "failed"
+        ):
+            raise ResultSchemaError("a failed finalized result requires failed TEST")
 
 
 def _validate_analysis_trajectory(trajectory: list[Any]) -> None:
-    """Validate the auditable postmortem measurement attached to result v4."""
+    """Validate the auditable postmortem measurement attached to result v5."""
 
     commit_indices = []
     for point in trajectory:
@@ -437,6 +549,14 @@ def _validate_analysis_trajectory(trajectory: list[Any]) -> None:
             raise ResultSchemaError(
                 "ANALYSIS trajectory declared_incumbent must be a boolean"
             )
+        declaration_event_seqs = point.get("declaration_event_seqs")
+        if not isinstance(declaration_event_seqs, list) or any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 1
+            for value in declaration_event_seqs
+        ):
+            raise ResultSchemaError(
+                "ANALYSIS trajectory declaration_event_seqs must be positive integers"
+            )
         status = point.get("analysis_status")
         if status == "evaluated":
             try:
@@ -455,26 +575,192 @@ def _validate_analysis_trajectory(trajectory: list[Any]) -> None:
                 raise ResultSchemaError(
                     "an evaluated ANALYSIS point may not contain an error"
                 )
-        elif status == "failed":
+        elif status in {"failed", "infrastructure_failure", "not_run"}:
             if (
                 point.get("analysis_nll") is not None
                 or point.get("analysis_perplexity") is not None
             ):
                 raise ResultSchemaError(
-                    "a failed ANALYSIS point may not contain metrics"
+                    "an unmeasured ANALYSIS point may not contain metrics"
                 )
             error = point.get("analysis_error")
             if not isinstance(error, str) or not error.strip():
                 raise ResultSchemaError(
-                    "a failed ANALYSIS point requires a stable error code"
+                    "an unmeasured ANALYSIS point requires a stable error code"
                 )
         else:
-            raise ResultSchemaError(
-                "ANALYSIS trajectory status must be 'evaluated' or 'failed'"
-            )
+            raise ResultSchemaError("invalid ANALYSIS trajectory status")
         commit_indices.append(point["commit_index"])
 
     if commit_indices != list(range(1, len(commit_indices) + 1)):
         raise ResultSchemaError(
             "ANALYSIS trajectory commit_index values must be contiguous and ordered"
         )
+
+
+def _validate_candidate_commits(commits: list[Any]) -> None:
+    indices = []
+    event_sequences = []
+    for commit in commits:
+        if not isinstance(commit, dict):
+            raise ResultSchemaError("candidate commits must be objects")
+        for field in ("candidate_id", "source_lease"):
+            if not isinstance(commit.get(field), str) or not commit[field].strip():
+                raise ResultSchemaError(f"candidate commit {field} must be a string")
+        if (
+            not isinstance(commit.get("timestamp"), str)
+            or not commit["timestamp"].strip()
+        ):
+            raise ResultSchemaError("candidate commit timestamp must be a string")
+        for field in ("commit_index", "event_seq"):
+            value = commit.get(field)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ResultSchemaError(
+                    f"candidate commit {field} must be a positive integer"
+                )
+        elapsed = commit.get("elapsed_seconds")
+        if (
+            isinstance(elapsed, bool)
+            or not isinstance(elapsed, (int, float))
+            or not math.isfinite(float(elapsed))
+            or elapsed < 0
+        ):
+            raise ResultSchemaError(
+                "candidate commit elapsed_seconds must be finite and non-negative"
+            )
+        indices.append(commit["commit_index"])
+        event_sequences.append(commit["event_seq"])
+    if indices != list(range(1, len(commits) + 1)):
+        raise ResultSchemaError("candidate commit indices must be contiguous")
+    if event_sequences != sorted(set(event_sequences)):
+        raise ResultSchemaError("candidate commit event sequences must be ordered")
+
+
+def _validate_incumbent_declarations(
+    declarations: list[Any], commits: list[Dict[str, Any]]
+) -> None:
+    committed = {commit["candidate_id"] for commit in commits}
+    expected_previous = None
+    event_sequences = []
+    for expected_index, declaration in enumerate(declarations, start=1):
+        if not isinstance(declaration, dict):
+            raise ResultSchemaError("incumbent declarations must be objects")
+        if declaration.get("declaration_index") != expected_index:
+            raise ResultSchemaError("incumbent declaration indices must be contiguous")
+        event_seq = declaration.get("event_seq")
+        if (
+            isinstance(event_seq, bool)
+            or not isinstance(event_seq, int)
+            or event_seq < 1
+        ):
+            raise ResultSchemaError(
+                "incumbent declaration event_seq must be a positive integer"
+            )
+        candidate_id = declaration.get("candidate_id")
+        if candidate_id not in committed:
+            raise ResultSchemaError(
+                "incumbent declaration must reference a committed Candidate"
+            )
+        if (
+            not isinstance(declaration.get("timestamp"), str)
+            or not declaration["timestamp"].strip()
+        ):
+            raise ResultSchemaError("incumbent declaration timestamp must be a string")
+        if declaration.get("previous_candidate_id") != expected_previous:
+            raise ResultSchemaError("incumbent declaration history is not chained")
+        source_leases = declaration.get("source_leases")
+        if (
+            not isinstance(source_leases, list)
+            or not source_leases
+            or any(
+                not isinstance(lease_id, str) or not lease_id
+                for lease_id in source_leases
+            )
+        ):
+            raise ResultSchemaError(
+                "incumbent declaration source_leases must be a non-empty string array"
+            )
+        expected_source_leases = []
+        for commit in commits:
+            if (
+                commit["candidate_id"] == candidate_id
+                and commit["event_seq"] < event_seq
+                and commit["source_lease"] not in expected_source_leases
+            ):
+                expected_source_leases.append(commit["source_lease"])
+        if source_leases != expected_source_leases:
+            raise ResultSchemaError(
+                "incumbent declaration source Leases do not match prior commits"
+            )
+        leases_used = declaration.get("leases_used")
+        if (
+            isinstance(leases_used, bool)
+            or not isinstance(leases_used, int)
+            or leases_used < 0
+        ):
+            raise ResultSchemaError(
+                "incumbent declaration leases_used must be non-negative"
+            )
+        elapsed = declaration.get("elapsed_seconds")
+        if (
+            isinstance(elapsed, bool)
+            or not isinstance(elapsed, (int, float))
+            or not math.isfinite(float(elapsed))
+            or elapsed < 0
+        ):
+            raise ResultSchemaError(
+                "incumbent declaration elapsed_seconds must be finite and non-negative"
+            )
+        expected_previous = candidate_id
+        event_sequences.append(event_seq)
+    if event_sequences != sorted(set(event_sequences)):
+        raise ResultSchemaError("incumbent declaration events must be ordered")
+    commit_event_sequences = [commit["event_seq"] for commit in commits]
+    if len(set(event_sequences + commit_event_sequences)) != len(
+        event_sequences + commit_event_sequences
+    ):
+        raise ResultSchemaError(
+            "Candidate and incumbent event sequences must be unique"
+        )
+
+
+def _validate_analysis_binding(
+    trajectory: list[Dict[str, Any]],
+    commits: list[Dict[str, Any]],
+    declarations: list[Dict[str, Any]],
+    *,
+    require_complete: bool,
+) -> None:
+    if require_complete and len(trajectory) != len(commits):
+        raise ResultSchemaError(
+            "a finalized ANALYSIS trajectory must cover every Candidate commit"
+        )
+    if len(trajectory) > len(commits):
+        raise ResultSchemaError("ANALYSIS trajectory exceeds Candidate inventory")
+    declarations_by_candidate: Dict[str, list[int]] = {}
+    for declaration in declarations:
+        declarations_by_candidate.setdefault(declaration["candidate_id"], []).append(
+            declaration["event_seq"]
+        )
+    for point, commit in zip(trajectory, commits):
+        for field in (
+            "commit_index",
+            "event_seq",
+            "candidate_id",
+            "source_lease",
+            "timestamp",
+            "elapsed_seconds",
+        ):
+            if point.get(field) != commit.get(field):
+                raise ResultSchemaError(
+                    f"ANALYSIS trajectory is not bound to candidate commit {field}"
+                )
+        expected_events = declarations_by_candidate.get(commit["candidate_id"], [])
+        if point.get("declaration_event_seqs") != expected_events:
+            raise ResultSchemaError(
+                "ANALYSIS trajectory declaration evidence does not match history"
+            )
+        if point.get("declared_incumbent") != bool(expected_events):
+            raise ResultSchemaError(
+                "ANALYSIS trajectory incumbent flag does not match history"
+            )

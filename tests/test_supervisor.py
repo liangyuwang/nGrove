@@ -34,6 +34,7 @@ from autotrain_bench.local_agent_execution import describe_local_agent_execution
 from autotrain_bench.results import RESULT_SCHEMA_VERSION
 from autotrain_bench.supervisor import (
     MAX_COMMAND_STREAM_BYTES,
+    MAX_INCUMBENT_DECLARATIONS,
     ProtocolError,
     Supervisor,
     _core_identity,
@@ -78,7 +79,9 @@ class FakeWorker:
         self.evaluation_timeouts = []
         self.evaluation_hook = None
         self.evaluation_failure = None
+        self.evaluation_failures = {}
         self.evaluation_exception = None
+        self.evaluation_exceptions = {}
         self.analysis_nlls = []
         self.test_nll = 1.5
         self.capability_overrides = {}
@@ -176,8 +179,12 @@ class FakeWorker:
         self.evaluation_timeouts.append(timeout_seconds)
         if self.evaluation_exception is not None:
             raise self.evaluation_exception
+        if split in self.evaluation_exceptions:
+            raise self.evaluation_exceptions[split]
         if self.evaluation_hook is not None:
             self.evaluation_hook(split, timeout_seconds)
+        if split in self.evaluation_failures:
+            raise WorkerFailure(self.evaluation_failures[split])
         if self.evaluation_failure is not None:
             raise WorkerFailure(self.evaluation_failure)
         if split == "analysis" and self.analysis_nlls:
@@ -394,7 +401,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertFalse(supervisor.state["leaderboard_eligible"])
         self.assertEqual(
             supervisor.state["leaderboard_eligibility_violations"],
-            ["formal_hidden_evaluation_pending"],
+            ["formal_test_evaluation_pending"],
         )
         public_task = json.loads(
             supervisor.public_task_path.read_text(encoding="utf-8")
@@ -540,7 +547,10 @@ class SupervisorTests(unittest.TestCase):
         self.assertIn("lease-start", smoke.stdout)
         self.assertEqual(
             [(item.name, item.path) for item in self.worker.hidden_datasets],
-            [("analysis", self.config.analysis_path), ("test", self.config.test_path)],
+            [
+                ("test", self.config.test_path),
+                ("analysis", self.config.analysis_path),
+            ],
         )
 
     def test_track_b_interactive_lease_commit_and_finish(self):
@@ -586,6 +596,9 @@ class SupervisorTests(unittest.TestCase):
             "participant_snapshot",
         )
         self.assertEqual(public_task["agent_environment"]["control"], "file_mailbox")
+        self.assertEqual(
+            public_task["incumbent_declaration_limit"], MAX_INCUMBENT_DECLARATIONS
+        )
         self.assertEqual(
             public_task["training_environment"]["resources"]["nvidia_gpu_count"],
             0,
@@ -634,7 +647,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertAlmostEqual(final["test_perplexity"], math.exp(1.5))
         self.assertIsNone(final["failure"])
         self.assertTrue(final["agent_finish_observed"])
-        self.assertEqual(self.worker.evaluations, ["analysis", "test"])
+        self.assertEqual(self.worker.evaluations, ["test", "analysis"])
         with self.assertRaises(ProtocolError):
             supervisor.start_lease()
 
@@ -652,13 +665,13 @@ class SupervisorTests(unittest.TestCase):
         )
         self.assertLess(
             types.index("AGENT_CONTROL_CLEANED"),
-            types.index("ANALYSIS_EVALUATED"),
-        )
-        self.assertLess(
-            types.index("ANALYSIS_EVALUATED"), types.index("TEST_EVALUATED")
-        )
-        self.assertLess(
             types.index("TEST_EVALUATED"),
+        )
+        self.assertLess(
+            types.index("TEST_EVALUATED"), types.index("ANALYSIS_EVALUATED")
+        )
+        self.assertLess(
+            types.index("ANALYSIS_EVALUATED"),
             types.index("RESULT_PUBLICATION_PREPARED"),
         )
         self.assertEqual(types.count("RESULT_PUBLICATION_PREPARED"), 1)
@@ -700,7 +713,7 @@ class SupervisorTests(unittest.TestCase):
         final = supervisor.evaluate_postmortem()
 
         self.assertEqual(final["status"], "finalized")
-        self.assertEqual(self.worker.evaluations, ["analysis", "test"])
+        self.assertEqual(self.worker.evaluations, ["test", "analysis"])
         identities = supervisor.state["artifact_identities"]["hidden_evaluation"]
         self.assertEqual(set(identities), {"analysis_sha256", "test_sha256"})
         self.assertTrue(all(identities.values()))
@@ -1591,7 +1604,7 @@ class SupervisorTests(unittest.TestCase):
 
     def test_analysis_failures_expose_only_a_fixed_error_code(self):
         supervisor = self.supervisor()
-        self.worker.evaluation_failure = "hidden input_ids: [0, 1, 2]"
+        self.worker.evaluation_failures["analysis"] = "hidden input_ids: [0, 1, 2]"
         supervisor.start_lease()
 
         committed = supervisor.commit_lease("/output/candidate")
@@ -1609,22 +1622,52 @@ class SupervisorTests(unittest.TestCase):
         self.assertNotIn("input_ids", public)
         self.assertNotIn("input_ids", events)
 
-    def test_analysis_worker_teardown_failure_terminates_the_episode(self):
+    def test_missing_analysis_is_diagnostic_and_does_not_erase_test(self):
+        missing_analysis = self.episode.parent / "not-materialized-analysis.json"
+        supervisor = self.supervisor(
+            config=replace(self.config, analysis_path=missing_analysis).validate()
+        )
+        supervisor.start_lease()
+        committed = supervisor.commit_lease("/output/candidate")
+        supervisor.declare_incumbent(committed["candidate_id"])
+        supervisor.finish()
+
+        final = self.finalize_after_agent_stop(supervisor)
+
+        self.assertEqual(final["status"], "finalized")
+        self.assertEqual(final["outcome"], "success")
+        self.assertEqual(final["test_status"], "evaluated")
+        self.assertEqual(final["test_nll"], 1.5)
+        self.assertEqual(final["analysis_status"], "incomplete")
+        self.assertEqual(final["analysis_failure"], "hidden_dataset_unavailable")
+        self.assertFalse(final["analysis_identity_verified"])
+        self.assertEqual(final["deployment_teardown_failures"], [])
+        self.assertEqual(self.worker.evaluations, ["test"])
+
+    def test_analysis_worker_teardown_failure_preserves_test_measurement(self):
         supervisor = self.supervisor()
         private_detail = "/organizer/private/evaluation-network.log"
-        self.worker.evaluation_exception = WorkerTeardownFailure(private_detail)
+        self.worker.evaluation_exceptions["analysis"] = WorkerTeardownFailure(
+            private_detail
+        )
         supervisor.start_lease()
 
         committed = supervisor.commit_lease("/output/candidate")
         supervisor.declare_incumbent(committed["candidate_id"])
         supervisor.finish()
         public = self.finalize_after_agent_stop(supervisor)
-        self.assertEqual(public["status"], "infrastructure_failure")
-        self.assertEqual(public["failure"], "evaluation_worker_teardown_failure")
+        self.assertEqual(public["status"], "finalized")
+        self.assertEqual(public["outcome"], "success")
+        self.assertEqual(public["test_status"], "evaluated")
+        self.assertEqual(public["test_nll"], 1.5)
+        self.assertEqual(public["analysis_status"], "incomplete")
+        self.assertEqual(public["analysis_failure"], "analysis_worker_teardown_failure")
         self.assertEqual(
             public["deployment_teardown_failures"],
             ["evaluation_worker_teardown_failure"],
         )
+        self.assertFalse(supervisor.state["policy_compliant"])
+        self.assertFalse(supervisor.state["leaderboard_eligible"])
         self.assertNotIn(private_detail, json.dumps(public))
         self.assertIn(
             private_detail,
@@ -1635,25 +1678,24 @@ class SupervisorTests(unittest.TestCase):
         supervisor = self.supervisor()
         supervisor.start_lease()
 
-        def fail_after_evaluation_time(**kwargs):
-            del kwargs
-            self.clock.advance(3)
-            raise WorkerTeardownFailure("private evaluator teardown detail")
+        def fail_after_evaluation_time(split, timeout_seconds):
+            del timeout_seconds
+            if split == "analysis":
+                self.clock.advance(3)
+                raise WorkerTeardownFailure("private evaluator teardown detail")
 
         committed = supervisor.commit_lease("/output/candidate")
         supervisor.declare_incumbent(committed["candidate_id"])
         supervisor.finish()
         supervisor.record_agent_execution(exit_code=0, termination_reason="exited")
         self.assertTrue(supervisor.cleanup_agent_control())
-        with patch.object(
-            self.worker,
-            "evaluate_candidate",
-            side_effect=fail_after_evaluation_time,
-        ):
-            supervisor.evaluate_postmortem()
+        self.worker.evaluation_hook = fail_after_evaluation_time
+        supervisor.evaluate_postmortem()
 
         persisted = json.loads(supervisor.state_path.read_text(encoding="utf-8"))
         self.assertEqual(persisted["timing"]["analysis_evaluation_seconds"], 3.0)
+        self.assertEqual(persisted["test_status"], "evaluated")
+        self.assertEqual(persisted["analysis_status"], "incomplete")
 
     def test_track_a_deadline_uses_only_agent_declared_incumbent(self):
         config = replace(self.config, track_a_total_seconds=100)
@@ -1733,6 +1775,44 @@ class SupervisorTests(unittest.TestCase):
             [event["elapsed_seconds"] for event in declarations],
             sorted(event["elapsed_seconds"] for event in declarations),
         )
+        self.assertTrue(all("timestamp" in event for event in declarations))
+        self.assertEqual(
+            [item["event_seq"] for item in supervisor.state["incumbent_declarations"]],
+            [event["seq"] for event in declarations],
+        )
+
+        supervisor.finish()
+        final = self.finalize_after_agent_stop(supervisor)
+        self.assertEqual(
+            [item["candidate_id"] for item in final["incumbent_declarations"]],
+            [first["candidate_id"], second["candidate_id"], first["candidate_id"]],
+        )
+        self.assertEqual(
+            [item["candidate_id"] for item in final["analysis_trajectory"]],
+            [item["candidate_id"] for item in final["candidate_commits"]],
+        )
+        declarations_by_candidate = {
+            first["candidate_id"]: [declarations[0]["seq"], declarations[2]["seq"]],
+            second["candidate_id"]: [declarations[1]["seq"]],
+        }
+        for point in final["analysis_trajectory"]:
+            self.assertEqual(
+                point["declaration_event_seqs"],
+                declarations_by_candidate[point["candidate_id"]],
+            )
+
+    def test_incumbent_declaration_history_has_a_public_safety_bound(self):
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+        candidate = supervisor.commit_lease("/output/candidate")
+        supervisor.state["incumbent_declaration_limit"] = 1
+        supervisor.declare_incumbent(candidate["candidate_id"])
+
+        with self.assertRaises(ProtocolError) as rejected:
+            supervisor.declare_incumbent(candidate["candidate_id"])
+
+        self.assertEqual(rejected.exception.code, "incumbent_declaration_limit_reached")
+        self.assertEqual(len(supervisor.state["incumbent_declarations"]), 1)
 
     def test_agent_mailbox_exposes_only_public_status(self):
         supervisor = self.supervisor()

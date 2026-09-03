@@ -6,6 +6,7 @@ from autotrain_bench.worker_protocol import (
     IMMUTABLE_WORKLOAD_IDENTITY,
     Capability,
     CapabilityRequirement,
+    CandidateChannelRequirements,
     CommandResult,
     ConformanceReceipt,
     EnforcementLevel,
@@ -32,6 +33,17 @@ def descriptor(*, trust=TrustLevel.DEVELOPMENT, conformance=None, overrides=None
 
 
 class WorkerProtocolTests(unittest.TestCase):
+    def test_candidate_channel_describes_prefix_visibility_precisely(self):
+        manifest = CandidateChannelRequirements(
+            protocol="next_token_logits_v1"
+        ).public_manifest()
+
+        self.assertEqual(manifest["request_content"], "token_prefixes")
+        self.assertEqual(manifest["hidden_artifact_visibility"], "denied")
+        self.assertEqual(manifest["current_target_visibility"], "denied")
+        self.assertEqual(manifest["future_token_visibility"], "denied")
+        self.assertEqual(manifest["candidate_egress"], "denied")
+
     def test_command_result_types_are_strict(self):
         with self.assertRaisesRegex(TypeError, "exit_code"):
             CommandResult(True, "", "")
@@ -94,7 +106,7 @@ class WorkerProtocolTests(unittest.TestCase):
 
     def test_descriptor_manifest_contains_no_platform_schema(self):
         manifest = descriptor().public_manifest()
-        self.assertEqual(manifest["protocol_version"], 3)
+        self.assertEqual(manifest["protocol_version"], 4)
         self.assertEqual(manifest["roles"], ["research", "evaluation"])
         serialized = json.dumps(manifest).lower()
         self.assertNotIn("docker", serialized)
@@ -105,7 +117,7 @@ class WorkerProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "protocol version"):
             WorkerDescriptor(
                 worker_id="future-worker",
-                protocol_version=4,
+                protocol_version=5,
                 trust_level=TrustLevel.DEVELOPMENT,
                 roles=("research",),
                 capabilities={},

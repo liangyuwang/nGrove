@@ -75,8 +75,8 @@ budget, isolation, comparison, or eligibility. Device selection, scheduler
 requests, cgroups, filesystem quotas, and other enforcement mechanisms remain
 Worker-owned.
 
-This paragraph states the target contract, not a claim that version 3 already
-has an allocation receipt. Version 3 passes requested `TrainingResources` into
+This paragraph states the target contract, not a claim that version 4 already
+has an allocation receipt. Version 4 passes requested `TrainingResources` into
 Worker operations and records deployment inventory, but `start_lease()` returns
 no normalized effective-allocation evidence. That gap is deferred to C4 and
 must remain explicit for formal evaluation.
@@ -89,7 +89,7 @@ The v0 support statement is:
 
 - The bundled `autotrain-bench prepare` and `autotrain-bench start` commands
   are a single-host local Docker reference composition.
-- `autotrain_bench.worker_protocol` version 3 is a synchronous in-process
+- `autotrain_bench.worker_protocol` version 4 is a synchronous in-process
   Python contract. Its `Path` values are local deployment handles, not a
   serializable remote wire format.
 - The bundled Agent-facing control transport is a local file mailbox. Mailbox
@@ -114,7 +114,7 @@ The v0 support statement is:
   define site storage policy. The bundled launcher records this limitation and
   therefore does not claim policy compliance.
 - After the v0 Worker stops a Lease, the Coordinator validates, copies, hashes,
-  and atomically stores the Candidate from a shared path. Version 3 has no
+  and atomically stores the Candidate from a shared path. Version 4 has no
   Worker-side capture operation or remote `ArtifactRef`.
 
 Phase A originally changed documentation only. The later postmortem-evaluation
@@ -253,7 +253,7 @@ Every effectful boundary follows one failure model:
 | Local Agent, Gateway, or network start | Register the deterministic local name for cleanup | Keep it registered until confirmed removal | Attempt every independent cleanup and record a stable teardown code |
 | Local isolated evaluation | Register Candidate, Evaluator, and network handles inside the Worker | Remove all three before returning the metric | Retain Worker-private handles and retry them from the local deployment composition |
 | Candidate snapshot | Use an episode-private staging directory | Atomically install the content-addressed snapshot | Remove staging before propagating the infrastructure failure |
-| Terminal result publication | Keep postmortem ANALYSIS/TEST staged and `outcome: null`; append a non-terminal publication-prepared record | Atomically replace authoritative `state.json` with a reference to that prepared record | Leave the prepared record orphaned, keep audit sequence numbers monotonic, and fail the command closed |
+| Terminal result publication | Persist the primary TEST decision before diagnostic ANALYSIS; keep public `outcome: null` until ANALYSIS has a complete/incomplete disposition; append a non-terminal publication-prepared record | Atomically replace authoritative `state.json` with a reference to that prepared record | Retain TEST across diagnostic failures, record deployment integrity separately, leave any interrupted preparation orphaned, and keep audit sequence numbers monotonic |
 
 Additional invariants enforced before every state write are:
 
@@ -263,8 +263,9 @@ Additional invariants enforced before every state write are:
 - a finalized result has no active or pending Worker Lease and has completed
   Agent termination and control cleanup, and references its audit preparation
   record;
-- a finalized result has completed postmortem ANALYSIS, and ANALYSIS never
-  changes the Agent-declared incumbent;
+- a finalized result has an explicit complete or incomplete postmortem ANALYSIS
+  disposition, and ANALYSIS never changes the Agent-declared incumbent or gates
+  eligibility merely because diagnostic points are missing;
 - failed outcomes never retain TEST metrics;
 - platform resource handles never enter Core state.
 
@@ -339,12 +340,19 @@ Status: implemented in the development schemas.
   release-frozen Candidate limit, selection rule, and result-visibility policy.
 - Research is durably sealed before Agent/Research teardown; hidden evaluation
   is rejected until teardown and Agent-control cleanup are confirmed.
-- Every selected historical Candidate is scored on ANALYSIS after sealing; the
-  final Agent-declared incumbent alone is scored on TEST.
-- Result schema v4 records the frozen Candidate inventory, ANALYSIS trajectory,
-  and analysis completeness. Read-only migration preserves old VAL evidence as
-  legacy evidence and never calls it ANALYSIS.
-- Worker Protocol v3 expresses a transport-neutral Candidate application
+- The final Agent-declared incumbent is scored on TEST first. The TEST decision
+  is persisted before selected historical Candidates are attempted on ANALYSIS.
+- Result schema v5 records the frozen Candidate inventory, ordered incumbent
+  declarations, ANALYSIS trajectory, and explicit analysis disposition. Every
+  trajectory point is bound back to its commit and declaration event evidence.
+  Read-only migration preserves old VAL evidence as legacy evidence and never
+  calls it ANALYSIS; v4 postmortem results remain readable with an explicit
+  limitation instead of an invented declaration history.
+- Ordinary ANALYSIS incompleteness never erases TEST or gates leaderboard
+  eligibility. Unconfirmed post-TEST evaluation teardown retains TEST but is
+  recorded independently as a deployment-integrity violation, making the run
+  non-compliant and ineligible.
+- Worker Protocol v4 expresses a transport-neutral Candidate application
   contract. The task evaluator exports `evaluate(..., predict, ...)`; the
   bundled Docker Worker supplies its HTTP adapter, while external Workers may
   supply another isolated mechanism.
@@ -366,7 +374,7 @@ External result: not fired. The tested Agent could be sandboxed, but its
 inference channel could not be mediated by the registered Gateway. A different
 participant with a compliant inference path is needed before redesigning C1.
 
-Result schema version 4 still pins `agent_system` to the bundled v0 runner
+Result schema version 5 still pins `agent_system` to the bundled v0 runner
 vocabulary, so this phase also owns that structure. `_validate_agent_system()`
 in `autotrain_bench/results.py` rejects a `runner` outside `AGENT_RUNNERS` and
 keys its "a host runner declares no egress policy" rule on the literal
@@ -416,7 +424,7 @@ identity needed by Core's comparison and eligibility checks. The schema must
 remain property-extensible; it must not turn one platform's CPU, accelerator,
 topology, cgroup, or storage vocabulary into a universal Core checklist.
 
-Worker Protocol v3 has no such receipt: `start_lease()` returns `None`.
+Worker Protocol v4 has no such receipt: `start_lease()` returns `None`.
 
 External result: fired. Requested resources, scheduler allocation,
 workload-visible resources, and the enforcing layer differed. The future schema
@@ -440,7 +448,7 @@ inside Core.
 
 Phase A documentation and a behavior-preserving Phase B refactor did not change
 the then-current protocol. The postmortem hidden-evaluation contract advanced
-Worker Protocol to version 3.
+Worker Protocol to version 4.
 
 A new protocol revision is required when an implementation must change a
 required method, argument, return value, ordering guarantee, or failure

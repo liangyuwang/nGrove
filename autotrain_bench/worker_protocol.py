@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from .config import TaskConfig, TrainingResources
 
 
-WORKER_PROTOCOL_VERSION = 3
+WORKER_PROTOCOL_VERSION = 4
 WORKER_CONFORMANCE_SUITE_VERSION = f"worker-v{WORKER_PROTOCOL_VERSION}"
 
 
@@ -124,14 +124,23 @@ class CandidateChannelRequirements:
     """Release-owned application semantics, not a transport selection."""
 
     protocol: str
-    hidden_data_to_candidate: bool = False
+    request_content: str = "token_prefixes"
+    hidden_artifact_visible: bool = False
+    current_target_visible: bool = False
+    future_tokens_visible: bool = False
     candidate_egress_allowed: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.protocol, str) or not self.protocol.strip():
             raise ValueError("Candidate channel protocol must not be empty")
-        if self.hidden_data_to_candidate is not False:
-            raise ValueError("Candidate channel may not expose hidden data")
+        if self.request_content != "token_prefixes":
+            raise ValueError("Candidate channel must carry token prefixes")
+        if self.hidden_artifact_visible is not False:
+            raise ValueError("Candidate channel may not expose the hidden artifact")
+        if self.current_target_visible is not False:
+            raise ValueError("Candidate channel may not expose the current target")
+        if self.future_tokens_visible is not False:
+            raise ValueError("Candidate channel may not expose future tokens")
         if self.candidate_egress_allowed is not False:
             raise ValueError("Candidate channel may not grant Candidate egress")
 
@@ -139,7 +148,10 @@ class CandidateChannelRequirements:
         return {
             "protocol": self.protocol,
             "mechanism": "worker_defined",
-            "hidden_data_to_candidate": "forbidden",
+            "request_content": self.request_content,
+            "hidden_artifact_visibility": "denied",
+            "current_target_visibility": "denied",
+            "future_token_visibility": "denied",
             "candidate_egress": "denied",
         }
 
@@ -185,7 +197,7 @@ class EvaluationTaskSpec:
 class HiddenDatasetRef:
     """One organizer-selected hidden dataset visible only after research seal.
 
-    ``path`` remains a version 3 local/shared-filesystem deployment handle. It
+    ``path`` remains a version 4 local/shared-filesystem deployment handle. It
     is not required to exist while the Agent or Research Worker can still act;
     the Evaluation Worker may materialize it immediately before evaluation.
     """

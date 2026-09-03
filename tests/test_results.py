@@ -3,6 +3,7 @@ import unittest
 
 from autotrain_bench.results import (
     AGENT_MODE_RESULT_SCHEMA_VERSION,
+    POSTMORTEM_RESULT_SCHEMA_VERSION,
     PRE_ANALYSIS_RESULT_SCHEMA_VERSION,
     RESULT_SCHEMA_VERSION,
     ResultSchemaError,
@@ -12,14 +13,35 @@ from autotrain_bench.results import (
 )
 
 
-def _analysis_point(candidate_id="sha256:candidate"):
+def _candidate_commit(candidate_id="sha256:candidate"):
     return {
         "commit_index": 1,
         "event_seq": 1,
         "candidate_id": candidate_id,
         "source_lease": "lease-0001",
+        "timestamp": "2026-01-01T00:00:01+00:00",
         "elapsed_seconds": 1.0,
+    }
+
+
+def _incumbent_declaration(candidate_id="sha256:candidate"):
+    return {
+        "declaration_index": 1,
+        "event_seq": 2,
+        "candidate_id": candidate_id,
+        "previous_candidate_id": None,
+        "source_leases": ["lease-0001"],
+        "leases_used": 1,
+        "timestamp": "2026-01-01T00:00:01+00:00",
+        "elapsed_seconds": 1.0,
+    }
+
+
+def _analysis_point(candidate_id="sha256:candidate"):
+    return {
+        **_candidate_commit(candidate_id),
         "declared_incumbent": True,
+        "declaration_event_seqs": [2],
         "analysis_status": "evaluated",
         "analysis_nll": 0.0,
         "analysis_perplexity": 1.0,
@@ -40,7 +62,13 @@ def _finalized(*, schema_version=RESULT_SCHEMA_VERSION, **overrides):
         "failure": None,
         "research_sealed_at": "2026-01-01T00:00:00+00:00",
         "analysis_complete": True,
+        "analysis_status": "complete",
+        "analysis_failure": None,
+        "analysis_identity_verified": True,
         "analysis_trajectory": [_analysis_point()],
+        "candidate_commits": [_candidate_commit()],
+        "incumbent_declarations": [_incumbent_declaration()],
+        "test_status": "evaluated",
     }
     payload.update(overrides)
     return payload
@@ -96,7 +124,13 @@ class ResultMetricTests(unittest.TestCase):
                 "failure": None,
                 "research_sealed_at": "2026-01-01T00:00:00+00:00",
                 "analysis_complete": False,
+                "analysis_status": "pending",
+                "analysis_failure": None,
+                "analysis_identity_verified": None,
                 "analysis_trajectory": [],
+                "candidate_commits": [_candidate_commit()],
+                "incumbent_declarations": [_incumbent_declaration()],
+                "test_status": "pending",
             },
             "success_with_active_lease": {
                 "status": "finalized",
@@ -156,7 +190,13 @@ class ResultMetricTests(unittest.TestCase):
                 "failure": None,
                 "research_sealed_at": "2026-01-01T00:00:00+00:00",
                 "analysis_complete": False,
+                "analysis_status": "pending",
+                "analysis_failure": None,
+                "analysis_identity_verified": None,
                 "analysis_trajectory": [],
+                "candidate_commits": [_candidate_commit()],
+                "incumbent_declarations": [_incumbent_declaration()],
+                "test_status": "pending",
             }
         )
         self.assertIsNone(report["outcome"])
@@ -173,7 +213,13 @@ class ResultMetricTests(unittest.TestCase):
                 "failure": None,
                 "research_sealed_at": "2026-01-01T00:00:00+00:00",
                 "analysis_complete": True,
+                "analysis_status": "complete",
+                "analysis_failure": None,
+                "analysis_identity_verified": True,
                 "analysis_trajectory": [_analysis_point()],
+                "candidate_commits": [_candidate_commit()],
+                "incumbent_declarations": [_incumbent_declaration()],
+                "test_status": "evaluated",
                 "result_publication": {
                     "publication_id": "publication",
                     "prepared_event_seq": 7,
@@ -190,10 +236,51 @@ class ResultMetricTests(unittest.TestCase):
         with self.assertRaisesRegex(ResultSchemaError, "ANALYSIS perplexity"):
             normalize_result_report(_finalized(analysis_trajectory=[malformed]))
 
+    def test_successful_test_may_retain_incomplete_analysis_diagnostics(self):
+        point = _analysis_point()
+        point.update(
+            analysis_status="infrastructure_failure",
+            analysis_nll=None,
+            analysis_perplexity=None,
+            analysis_error="worker_teardown_failure",
+        )
+
+        report = normalize_result_report(
+            _finalized(
+                analysis_complete=False,
+                analysis_status="incomplete",
+                analysis_failure="analysis_worker_teardown_failure",
+                analysis_identity_verified=True,
+                analysis_trajectory=[point],
+                deployment_teardown_failures=["evaluation_worker_teardown_failure"],
+            )
+        )
+
+        self.assertEqual(report["outcome"], "success")
+        self.assertEqual(report["analysis_status"], "incomplete")
+
+    def test_analysis_trajectory_is_bound_to_candidate_commit_inventory(self):
+        tampered = _analysis_point()
+        tampered["elapsed_seconds"] = 2.0
+
+        with self.assertRaisesRegex(ResultSchemaError, "bound to candidate commit"):
+            normalize_result_report(_finalized(analysis_trajectory=[tampered]))
+
+    def test_analysis_trajectory_is_bound_to_incumbent_declarations(self):
+        tampered = _analysis_point()
+        tampered["declaration_event_seqs"] = []
+
+        with self.assertRaisesRegex(ResultSchemaError, "declaration evidence"):
+            normalize_result_report(_finalized(analysis_trajectory=[tampered]))
+
     def test_final_candidate_must_be_in_the_analysis_trajectory(self):
         with self.assertRaisesRegex(ResultSchemaError, "final Candidate"):
             normalize_result_report(
-                _finalized(analysis_trajectory=[_analysis_point("sha256:other")])
+                _finalized(
+                    analysis_trajectory=[_analysis_point("sha256:other")],
+                    candidate_commits=[_candidate_commit("sha256:other")],
+                    incumbent_declarations=[_incumbent_declaration("sha256:other")],
+                )
             )
 
     def test_older_v2_finalized_result_without_publication_remains_readable(self):
@@ -241,6 +328,34 @@ class ResultMetricTests(unittest.TestCase):
         self.assertTrue(report["legacy_semantics"]["organizer_validation_feedback"])
         self.assertEqual(report["timing"]["legacy_validation_evaluation_seconds"], 2.0)
 
+    def test_v4_postmortem_result_remains_readable_without_invented_history(self):
+        payload = _finalized(schema_version=POSTMORTEM_RESULT_SCHEMA_VERSION)
+        for field in (
+            "analysis_status",
+            "analysis_failure",
+            "analysis_identity_verified",
+            "incumbent_declarations",
+            "test_status",
+        ):
+            payload.pop(field, None)
+        for point in payload["analysis_trajectory"]:
+            point.pop("declaration_event_seqs", None)
+
+        report = normalize_result_report(payload)
+
+        self.assertEqual(report["result_schema_version"], RESULT_SCHEMA_VERSION)
+        self.assertEqual(
+            report["migrated_from_result_schema_version"],
+            POSTMORTEM_RESULT_SCHEMA_VERSION,
+        )
+        self.assertEqual(report["analysis_status"], "complete")
+        self.assertEqual(report["test_status"], "evaluated")
+        self.assertEqual(report["incumbent_declarations"], [])
+        self.assertEqual(
+            report["migration_limitations"],
+            ["incumbent_declaration_history_unavailable"],
+        )
+
     def test_private_staged_result_is_not_part_of_a_report(self):
         report = normalize_result_report(
             {
@@ -253,7 +368,13 @@ class ResultMetricTests(unittest.TestCase):
                 "failure": None,
                 "research_sealed_at": "2026-01-01T00:00:00+00:00",
                 "analysis_complete": False,
+                "analysis_status": "pending",
+                "analysis_failure": None,
+                "analysis_identity_verified": None,
                 "analysis_trajectory": [],
+                "candidate_commits": [_candidate_commit()],
+                "incumbent_declarations": [_incumbent_declaration()],
+                "test_status": "evaluated",
                 "pending_result": {
                     "outcome": "success",
                     "test_nll": 1.0,
@@ -279,7 +400,13 @@ class ResultMetricTests(unittest.TestCase):
                     "failure": "legacy_unscored_result",
                     "research_sealed_at": "2026-01-01T00:00:00+00:00",
                     "analysis_complete": False,
+                    "analysis_status": "pending",
+                    "analysis_failure": None,
+                    "analysis_identity_verified": None,
                     "analysis_trajectory": [],
+                    "candidate_commits": [_candidate_commit()],
+                    "incumbent_declarations": [_incumbent_declaration()],
+                    "test_status": "failed",
                 }
             )
 
@@ -358,7 +485,13 @@ class ResultMetricTests(unittest.TestCase):
                 "agent_system": {"runner": "container", "egress": "denied"},
                 "research_sealed_at": "2026-01-01T00:00:00+00:00",
                 "analysis_complete": True,
+                "analysis_status": "complete",
+                "analysis_failure": None,
+                "analysis_identity_verified": True,
                 "analysis_trajectory": [_analysis_point()],
+                "candidate_commits": [_candidate_commit()],
+                "incumbent_declarations": [_incumbent_declaration()],
+                "test_status": "evaluated",
             }
         )
 
