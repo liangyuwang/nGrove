@@ -328,6 +328,18 @@ configuration.
 Possible result: a semantic Agent execution descriptor or receipt assessed
 independently from its runtime mechanism.
 
+Result schema version 3 pins `agent_system` to the bundled v0 runner
+vocabulary, so this phase also owns that structure. `_validate_agent_system()`
+in `autotrain_bench/results.py` rejects a `runner` outside `AGENT_RUNNERS` and
+keys its "a host runner declares no egress policy" rule on the literal
+`host_cli`; `AgentConfig.network` derives `host_managed` from the same literal.
+Those checks are correct while Core owns a closed runner set, but a result
+recording an unregistered runner would become unreadable rather than merely
+unverified. This phase must re-express the `agent_system` invariants over
+semantic fields instead of mechanism names, which changes the persisted
+structure and therefore requires a result schema revision with a read-only
+migration.
+
 ### C2. Remote immutable artifacts
 
 Trigger: the Coordinator and a Worker cannot safely share a `Path`, or the
