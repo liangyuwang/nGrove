@@ -1132,6 +1132,65 @@ class RuntimeBoundaryTests(unittest.TestCase):
                     )
             self.assertEqual(runtime.calls, [])
 
+    def test_host_accelerators_are_recorded_even_when_none_were_requested(self):
+        """A profile declaring no accelerator must still leave a trace.
+
+        A site whose scheduler refuses a zero-accelerator allocation runs a
+        `cpu-local` profile on a GPU node. Recording an empty list there would
+        assert the host had none, which is indistinguishable from never having
+        looked.
+        """
+
+        inventory = subprocess.CompletedProcess(
+            ["nvidia-smi"],
+            0,
+            "NVIDIA H200, GPU-abc, 550.54.15, 143771\n",
+            "",
+        )
+        runtime = CapturingDockerRuntime()
+        with patch("autotrain_bench.runtime.shutil.which", return_value="nvidia-smi"):
+            with patch(
+                "autotrain_bench.runtime.subprocess.run", return_value=inventory
+            ):
+                manifest = runtime.environment_manifest(
+                    TaskConfig.load(TASK), resources=TrainingResources()
+                )
+
+        self.assertEqual(manifest["gpu_inventory"], "inspected")
+        self.assertEqual([gpu["name"] for gpu in manifest["gpus"]], ["NVIDIA H200"])
+        self.assertEqual(manifest["training_resources"]["nvidia_gpu_count"], 0)
+
+    def test_an_uninspectable_host_is_not_reported_as_having_no_accelerator(self):
+        runtime = CapturingDockerRuntime()
+        with patch("autotrain_bench.runtime.shutil.which", return_value=None):
+            manifest = runtime.environment_manifest(
+                TaskConfig.load(TASK), resources=TrainingResources()
+            )
+
+        self.assertEqual(manifest["gpu_inventory"], "unavailable")
+        self.assertEqual(manifest["gpus"], [])
+
+    def test_a_failing_inventory_query_only_raises_when_accelerators_were_requested(
+        self,
+    ):
+        failure = subprocess.CompletedProcess(["nvidia-smi"], 9, "", "driver error")
+        runtime = CapturingDockerRuntime()
+
+        with patch("autotrain_bench.runtime.shutil.which", return_value="nvidia-smi"):
+            with patch("autotrain_bench.runtime.subprocess.run", return_value=failure):
+                manifest = runtime.environment_manifest(
+                    TaskConfig.load(TASK), resources=TrainingResources()
+                )
+        self.assertEqual(manifest["gpu_inventory"], "unavailable")
+
+        with patch("autotrain_bench.runtime.shutil.which", return_value="nvidia-smi"):
+            with patch("autotrain_bench.runtime.subprocess.run", return_value=failure):
+                with self.assertRaisesRegex(RuntimeFailure, "driver error"):
+                    runtime.environment_manifest(
+                        TaskConfig.load(TASK),
+                        resources=TrainingResources(nvidia_gpu_count=1),
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()

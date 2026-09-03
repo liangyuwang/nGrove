@@ -349,11 +349,19 @@ class DockerRuntime:
             resolved_resources.validate()
         else:
             resolved_resources.validate_for(config)
+        # `README.md` promises that the discovered runtime inventory is recorded
+        # alongside the requested resources, so inspect the host whenever that is
+        # possible rather than only when accelerators were requested.  Recording
+        # an empty list for an uninspected host would claim the machine had no
+        # accelerator, which is how a profile declaring `accelerator: null` can
+        # occupy one without leaving a trace in the result.
+        requested_gpus = resolved_resources.nvidia_gpu_count
+        nvidia_smi = shutil.which("nvidia-smi")
+        if requested_gpus and not nvidia_smi:  # guarded by validate_hardware
+            raise RuntimeFailure("nvidia-smi disappeared after hardware validation")
         gpus: List[Dict[str, str]] = []
-        if resolved_resources.nvidia_gpu_count:
-            nvidia_smi = shutil.which("nvidia-smi")
-            if not nvidia_smi:  # guarded by validate_hardware
-                raise RuntimeFailure("nvidia-smi disappeared after hardware validation")
+        gpu_inventory = "unavailable"
+        if nvidia_smi:
             result = subprocess.run(
                 [
                     nvidia_smi,
@@ -365,24 +373,34 @@ class DockerRuntime:
                 text=True,
             )
             if result.returncode != 0:
-                raise RuntimeFailure(result.stderr.strip() or "nvidia-smi failed")
-            for line in result.stdout.splitlines():
-                fields = [field.strip() for field in line.split(",")]
-                if len(fields) != 4:
-                    raise RuntimeFailure("nvidia-smi returned malformed GPU metadata")
-                gpus.append(
-                    {
-                        "name": fields[0],
-                        "uuid": fields[1],
-                        "driver_version": fields[2],
-                        "memory_mib": fields[3],
-                    }
-                )
+                # A failure still matters when accelerators were requested,
+                # because validate_hardware already depended on this tool.
+                if requested_gpus:
+                    raise RuntimeFailure(result.stderr.strip() or "nvidia-smi failed")
+            else:
+                gpu_inventory = "inspected"
+                for line in result.stdout.splitlines():
+                    fields = [field.strip() for field in line.split(",")]
+                    if len(fields) != 4:
+                        raise RuntimeFailure(
+                            "nvidia-smi returned malformed GPU metadata"
+                        )
+                    gpus.append(
+                        {
+                            "name": fields[0],
+                            "uuid": fields[1],
+                            "driver_version": fields[2],
+                            "memory_mib": fields[3],
+                        }
+                    )
         manifest = {
             "docker_server_version": docker_version,
             "docker_resources": docker_resources,
             "images": images,
+            # `gpus` is authoritative only when `gpu_inventory` is "inspected".
+            # An empty list under "unavailable" means unknown, not none.
             "gpus": gpus,
+            "gpu_inventory": gpu_inventory,
         }
         if resources is not None:
             manifest["training_resources"] = resolved_resources.public_manifest()
