@@ -12,6 +12,7 @@ import json
 import math
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 import threading
@@ -34,6 +35,7 @@ from .worker_protocol import (
     TRAINING_DATA_READ_ONLY,
     TRAINING_NETWORK_ISOLATION,
     Capability,
+    CandidateEvaluationResult,
     CommandResult,
     EnforcementLevel,
     EvaluationTaskSpec,
@@ -71,6 +73,32 @@ def _sha256_file(path: Path) -> str:
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _hidden_bundle_sha256(path: Path) -> str:
+    """Hash the exact target-free/target artifact pair for one hidden split."""
+
+    expected = ("contexts.json", "targets.json")
+    if path.is_symlink() or not path.is_dir():
+        raise OSError("hidden dataset must be a directory")
+    entries = {entry.name: entry for entry in path.iterdir()}
+    if set(entries) != set(expected):
+        raise OSError("hidden dataset must contain only contexts.json and targets.json")
+    digest = hashlib.sha256()
+    digest.update(b"autotrain-bench-hidden-bundle-v1\0")
+    for name in expected:
+        item = entries[name]
+        metadata = item.lstat()
+        if not stat.S_ISREG(metadata.st_mode):
+            raise OSError(f"hidden dataset entry is not a regular file: {name}")
+        encoded_name = name.encode("utf-8")
+        digest.update(len(encoded_name).to_bytes(8, "big"))
+        digest.update(encoded_name)
+        digest.update(metadata.st_size.to_bytes(8, "big"))
+        with item.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
     return digest.hexdigest()
 
 
@@ -157,7 +185,7 @@ class DockerRuntime:
             tuple[str, str], tuple[ResolvedWorkload, str]
         ] = {}
         self._worker_leases: Dict[tuple, str] = {}
-        self._pending_evaluations: Dict[tuple, Tuple[str, str, str]] = {}
+        self._pending_evaluations: Dict[tuple, Tuple[str, str]] = {}
 
     def describe_capabilities(self) -> WorkerDescriptor:
         """Describe the bundled development Worker without certifying its host."""
@@ -185,7 +213,7 @@ class DockerRuntime:
                     enforced, "SHA-256 verified before Candidate startup"
                 ),
                 CANDIDATE_EVALUATOR_CHANNEL_ISOLATION: Capability(
-                    enforced, "episode-private evaluation channel"
+                    enforced, "target-free read-only input and isolated output mounts"
                 ),
                 DEADLINE_TERMINATION: Capability(
                     EnforcementLevel.BEST_EFFORT,
@@ -1252,7 +1280,7 @@ class DockerRuntime:
         split: str,
         output_dir: Path,
         timeout_seconds: Optional[float] = None,
-    ) -> float:
+    ) -> CandidateEvaluationResult:
         resources.validate_for(config)
         if split not in {"analysis", "test"}:
             raise RuntimeFailure(f"invalid evaluator split: {split}")
@@ -1320,7 +1348,7 @@ class DockerRuntime:
         data_path: Path,
         timeout_seconds: float,
     ) -> ResolvedHiddenDataset:
-        """Materialize one immutable private snapshot behind an opaque ID."""
+        """Materialize one two-part private snapshot behind an opaque ID."""
 
         if not isinstance(request, HiddenDatasetRequest):
             raise TypeError("hidden_dataset must be a HiddenDatasetRequest")
@@ -1343,35 +1371,55 @@ class DockerRuntime:
         snapshot = self._hidden_snapshot_root / f"{resolution_id}.snapshot"
         staged = self._hidden_snapshot_root / f".{resolution_id}.tmp"
         digest = hashlib.sha256()
+        digest.update(b"autotrain-bench-hidden-bundle-v1\0")
         try:
-            if not data_path.is_file():
-                raise FileNotFoundError(data_path)
-            with data_path.open("rb") as source, staged.open("xb") as destination:
-                while True:
-                    if self.monotonic() >= deadline:
-                        raise HiddenDatasetResolutionFailure(
-                            "hidden dataset resolution deadline reached"
-                        )
-                    chunk = source.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    destination.write(chunk)
-                    digest.update(chunk)
-                destination.flush()
-                os.fsync(destination.fileno())
-            staged.chmod(0o400)
+            if data_path.is_symlink() or not data_path.is_dir():
+                raise OSError("hidden dataset must be a directory")
+            source_entries = {entry.name: entry for entry in data_path.iterdir()}
+            expected_names = ("contexts.json", "targets.json")
+            if set(source_entries) != set(expected_names):
+                raise OSError(
+                    "hidden dataset must contain only contexts.json and targets.json"
+                )
+            staged.mkdir(mode=0o700)
+            for name in expected_names:
+                source_path = source_entries[name]
+                metadata = source_path.lstat()
+                if not stat.S_ISREG(metadata.st_mode):
+                    raise OSError(f"hidden dataset entry is not a regular file: {name}")
+                destination_path = staged / name
+                encoded_name = name.encode("utf-8")
+                digest.update(len(encoded_name).to_bytes(8, "big"))
+                digest.update(encoded_name)
+                digest.update(metadata.st_size.to_bytes(8, "big"))
+                with source_path.open("rb") as source, destination_path.open(
+                    "xb"
+                ) as destination:
+                    while True:
+                        if self.monotonic() >= deadline:
+                            raise HiddenDatasetResolutionFailure(
+                                "hidden dataset resolution deadline reached"
+                            )
+                        chunk = source.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        destination.write(chunk)
+                        digest.update(chunk)
+                    destination.flush()
+                    os.fsync(destination.fileno())
+                destination_path.chmod(0o400)
             os.replace(staged, snapshot)
             if self.monotonic() >= deadline:
                 raise HiddenDatasetResolutionFailure(
                     "hidden dataset resolution deadline reached"
                 )
         except HiddenDatasetResolutionFailure:
-            staged.unlink(missing_ok=True)
-            snapshot.unlink(missing_ok=True)
+            shutil.rmtree(staged, ignore_errors=True)
+            shutil.rmtree(snapshot, ignore_errors=True)
             raise
         except OSError as exc:
-            staged.unlink(missing_ok=True)
-            snapshot.unlink(missing_ok=True)
+            shutil.rmtree(staged, ignore_errors=True)
+            shutil.rmtree(snapshot, ignore_errors=True)
             raise HiddenDatasetResolutionFailure(
                 f"failed to resolve hidden dataset {request.name}: {exc}"
             ) from exc
@@ -1385,7 +1433,7 @@ class DockerRuntime:
             request.expected_sha256 is not None
             and digest_hex != request.expected_sha256
         ):
-            snapshot.unlink(missing_ok=True)
+            shutil.rmtree(snapshot, ignore_errors=True)
             raise HiddenDatasetIdentityMismatch(resolved)
         self._resolved_hidden_datasets[(episode_id, resolved.resolution_id)] = (
             task_id,
@@ -1453,36 +1501,50 @@ class DockerRuntime:
         candidate_image: str,
         evaluator_image: str,
         timeout_seconds: Optional[float] = None,
-    ) -> float:
+    ) -> CandidateEvaluationResult:
         resources.validate()
         if split not in {"analysis", "test"}:
             raise RuntimeFailure(f"invalid evaluator split: {split}")
         if task.backend != "isolated_candidate":
             raise RuntimeFailure(f"unsupported evaluator backend: {task.backend}")
-        if task.candidate_channel.protocol != "next_token_logits_v2":
+        if task.candidate_channel.protocol != "offline_next_token_logits_v3":
             raise RuntimeFailure("unsupported Candidate application protocol")
-        if not data_path.is_file():
-            raise RuntimeFailure(f"hidden evaluator split is not a file: {data_path}")
+        if not data_path.is_dir():
+            raise RuntimeFailure(
+                f"hidden evaluator split is not a directory: {data_path}"
+            )
+        contexts_path = data_path / "contexts.json"
+        targets_path = data_path / "targets.json"
+        if not contexts_path.is_file() or not targets_path.is_file():
+            raise RuntimeFailure("hidden evaluator split is incomplete")
         output_dir.mkdir(parents=True, exist_ok=True)
         result_path = output_dir / f"{split}.json"
+        validation_path = output_dir / f"{split}.validation.json"
         try:
             result_path.unlink(missing_ok=True)
+            validation_path.unlink(missing_ok=True)
         except OSError as exc:
             raise RuntimeFailure("failed to clear the prior evaluator result") from exc
         runtime_id = uuid.uuid4().hex[:12]
         candidate_name = f"atb-candidate-{runtime_id}"
         evaluator_name = f"atb-evaluator-{runtime_id}"
-        network_name = f"atb-evaluation-{runtime_id}"
         evaluation_key = (episode_id, runtime_id)
         candidate_api_dir = output_dir / ".candidate_api"
-        docker_evaluator_adapter = (
-            Path(__file__).resolve().parent / "docker_evaluator_adapter.py"
+        prediction_dir = output_dir / f"predictions-{runtime_id}"
+        try:
+            prediction_dir.mkdir()
+        except OSError as exc:
+            raise RuntimeFailure(
+                "failed to create Candidate prediction storage"
+            ) from exc
+        docker_scorer_adapter = (
+            Path(__file__).resolve().parent / "docker_scorer_adapter.py"
         )
         package = candidate_api_dir / "autotrain_bench"
         if not candidate_api_dir.exists():
             package.mkdir(parents=True)
             core_package = Path(__file__).resolve().parent
-            for filename in ("candidate_protocol.py", "candidate_server.py"):
+            for filename in ("candidate_protocol.py", "candidate_offline_runner.py"):
                 shutil.copy2(core_package / filename, package / filename)
                 (package / filename).chmod(0o444)
             (package / "__init__.py").write_text("", encoding="utf-8")
@@ -1496,9 +1558,7 @@ class DockerRuntime:
             "--name",
             candidate_name,
             "--network",
-            network_name,
-            "--network-alias",
-            "candidate",
+            "none",
             "--cap-drop",
             "ALL",
             "--security-opt",
@@ -1518,6 +1578,10 @@ class DockerRuntime:
             self._mount(candidate_dir, "/candidate", read_only=True),
             "--mount",
             self._mount(candidate_api_dir, "/opt/candidate-api", read_only=True),
+            "--mount",
+            self._mount(contexts_path, "/eval-input/contexts.json", read_only=True),
+            "--mount",
+            self._mount(prediction_dir, "/predictions", read_only=False),
             "--env",
             "HOME=/candidate-home",
             "--env",
@@ -1534,75 +1598,96 @@ class DockerRuntime:
                 candidate_image,
                 "python",
                 "-m",
-                "autotrain_bench.candidate_server",
+                "autotrain_bench.candidate_offline_runner",
                 "--candidate",
                 "/candidate",
+                "--contexts",
+                "/eval-input/contexts.json",
+                "--output",
+                "/predictions",
                 "--device",
                 task.device,
-                "--vocab-size",
-                str(task.vocab_size),
-                "--context-length",
-                str(task.context_length),
-                "--maximum-batch-size",
-                str(task.batch_size),
             ]
         )
-        evaluator_args: List[str] = [
-            "run",
-            "--rm",
-            "--name",
-            evaluator_name,
-            "--network",
-            network_name,
-            "--cap-drop",
-            "ALL",
-            "--security-opt",
-            "no-new-privileges:true",
-            "--pids-limit",
-            "256",
-            "--read-only",
-            "--tmpfs",
-            "/tmp:rw,nosuid,size=128m",
-            "--log-opt",
-            "max-size=10m",
-            "--log-opt",
-            "max-file=1",
-            "--mount",
-            self._mount(data_path, "/eval-data/split.json", read_only=True),
-            "--mount",
-            self._mount(
-                task.evaluator_entrypoint,
-                "/opt/evaluator.py",
-                read_only=True,
-            ),
-            "--mount",
-            self._mount(
-                docker_evaluator_adapter,
-                "/opt/docker-evaluator-adapter.py",
-                read_only=True,
-            ),
-            "--mount",
-            self._mount(output_dir, "/output", read_only=False),
-            "--env",
-            "PYTHONDONTWRITEBYTECODE=1",
-            evaluator_image,
-            "python",
-            "/opt/docker-evaluator-adapter.py",
-            "--evaluator",
-            "/opt/evaluator.py",
-            "--candidate-url",
-            "http://candidate:8766",
-            "--data",
-            "/eval-data/split.json",
-            "--output",
-            f"/output/{split}.json",
-            "--vocab-size",
-            str(task.vocab_size),
-            "--batch-size",
-            str(task.batch_size),
-            "--context-lengths",
-            *(str(length) for length in task.context_lengths),
-        ]
+
+        def scorer_args(mode: str) -> List[str]:
+            args = [
+                "run",
+                "--rm",
+                "--name",
+                evaluator_name,
+                "--network",
+                "none",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges:true",
+                "--pids-limit",
+                "256",
+                "--read-only",
+                "--tmpfs",
+                "/tmp:rw,nosuid,size=128m",
+                "--log-opt",
+                "max-size=10m",
+                "--log-opt",
+                "max-file=1",
+                "--mount",
+                self._mount(contexts_path, "/eval-data/contexts.json", read_only=True),
+                "--mount",
+                self._mount(targets_path, "/eval-data/targets.json", read_only=True),
+                "--mount",
+                self._mount(
+                    task.evaluator_entrypoint,
+                    "/opt/evaluator.py",
+                    read_only=True,
+                ),
+                "--mount",
+                self._mount(
+                    docker_scorer_adapter,
+                    "/opt/docker-scorer-adapter.py",
+                    read_only=True,
+                ),
+                "--mount",
+                self._mount(output_dir, "/output", read_only=False),
+            ]
+            if mode == "score":
+                args.extend(
+                    [
+                        "--mount",
+                        self._mount(prediction_dir, "/predictions", read_only=True),
+                    ]
+                )
+            args.extend(
+                [
+                    "--env",
+                    "PYTHONDONTWRITEBYTECODE=1",
+                    evaluator_image,
+                    "python",
+                    "/opt/docker-scorer-adapter.py",
+                    "--mode",
+                    mode,
+                    "--evaluator",
+                    "/opt/evaluator.py",
+                    "--contexts",
+                    "/eval-data/contexts.json",
+                    "--targets",
+                    "/eval-data/targets.json",
+                    "--output",
+                    (
+                        f"/output/{split}.validation.json"
+                        if mode == "validate"
+                        else f"/output/{split}.json"
+                    ),
+                    "--vocab-size",
+                    str(task.vocab_size),
+                    "--context-lengths",
+                    *(str(length) for length in task.context_lengths),
+                ]
+            )
+            if mode == "score":
+                args.extend(["--predictions", "/predictions"])
+            return args
+
         effective_timeout = float(task.timeout_seconds)
         if timeout_seconds is not None:
             if timeout_seconds <= 0:
@@ -1616,37 +1701,39 @@ class DockerRuntime:
                 raise RuntimeFailure("evaluation deadline reached")
             return remaining
 
-        self._pending_evaluations[evaluation_key] = (
-            candidate_name,
-            evaluator_name,
-            network_name,
-        )
+        self._pending_evaluations[evaluation_key] = (candidate_name, evaluator_name)
+        serving_seconds: Optional[float] = None
         try:
-            self.create_network(
-                network_name,
-                internal=True,
-                timeout_seconds=remaining_seconds(),
-            )
-            self._run(candidate_args, timeout=remaining_seconds())
             self._run(
-                evaluator_args,
+                scorer_args("validate"),
+                timeout=remaining_seconds(),
+            )
+            serving_started = self.monotonic()
+            self._run(candidate_args, timeout=remaining_seconds())
+            wait_result = self._run(
+                ["wait", candidate_name],
+                timeout=remaining_seconds(),
+            )
+            try:
+                candidate_exit_code = int(wait_result.stdout.strip())
+            except ValueError as exc:
+                raise RuntimeFailure(
+                    "Candidate process returned an invalid exit status"
+                ) from exc
+            if candidate_exit_code != 0:
+                raise RuntimeFailure(
+                    f"Candidate process exited with status {candidate_exit_code}"
+                )
+            serving_seconds = max(0.0, self.monotonic() - serving_started)
+            self._run(
+                scorer_args("score"),
                 timeout=remaining_seconds(),
             )
         except RuntimeFailure as exc:
-            # Candidate output may contain hidden evaluator inputs.  Preserve it
-            # only in the trusted episode directory and never include it in the
-            # exception that crosses the Agent-facing Supervisor API.
-            try:
-                candidate_logs = self.container_logs(
-                    candidate_name,
-                    timeout_seconds=remaining_seconds(),
-                ).strip()[-4000:]
-            except RuntimeFailure:
-                candidate_logs = "<candidate logs unavailable>"
             diagnostic_path = output_dir / f"{split}.failure.log"
             try:
                 diagnostic_path.write_text(
-                    f"Runtime failure: {exc}\nCandidate logs:\n{candidate_logs}\n",
+                    f"Runtime failure: {exc}\n",
                     encoding="utf-8",
                 )
                 diagnostic_path.chmod(0o600)
@@ -1659,7 +1746,23 @@ class DockerRuntime:
             self._teardown_evaluation(evaluation_key)
         try:
             payload = json.loads(result_path.read_text(encoding="utf-8"))
+            if set(payload) != {
+                "nll",
+                "examples",
+                "input_tokens",
+                "prediction_bytes",
+            }:
+                raise ValueError("unexpected scorer result fields")
             loss = validated_nll(payload["nll"])
+            if serving_seconds is None:
+                raise ValueError("serving duration is unavailable")
+            result = CandidateEvaluationResult(
+                nll=loss,
+                serving_seconds=serving_seconds,
+                examples=payload["examples"],
+                input_tokens=payload["input_tokens"],
+                prediction_bytes=payload["prediction_bytes"],
+            )
         except (
             FileNotFoundError,
             KeyError,
@@ -1671,7 +1774,7 @@ class DockerRuntime:
             raise RuntimeFailure(
                 "evaluator did not produce a valid NLL result"
             ) from exc
-        return loss
+        return result
 
     def evaluate_candidate(
         self,
@@ -1685,7 +1788,7 @@ class DockerRuntime:
         candidate_workload: ResolvedWorkload,
         evaluator_workload: ResolvedWorkload,
         timeout_seconds: Optional[float] = None,
-    ) -> float:
+    ) -> CandidateEvaluationResult:
         """Map the semantic evaluation operation to the reference runtime."""
 
         if not isinstance(hidden_dataset, ResolvedHiddenDataset):
@@ -1703,7 +1806,7 @@ class DockerRuntime:
                 "hidden dataset resolution evidence does not match the opaque ID"
             )
         try:
-            actual_digest = _sha256_file(data_path)
+            actual_digest = _hidden_bundle_sha256(data_path)
         except OSError as exc:
             raise HiddenDatasetResolutionFailure(
                 f"resolved hidden dataset became unavailable: {exc}"
@@ -1745,12 +1848,11 @@ class DockerRuntime:
         resources = self._pending_evaluations.get(evaluation_key)
         if resources is None:
             return
-        candidate_name, evaluator_name, network_name = resources
+        candidate_name, evaluator_name = resources
         _run_runtime_teardown_steps(
             [
                 ("candidate", lambda: self.stop_container(candidate_name)),
                 ("evaluator", lambda: self.stop_container(evaluator_name)),
-                ("evaluation network", lambda: self.remove_network(network_name)),
             ]
         )
         self._pending_evaluations.pop(evaluation_key, None)

@@ -35,6 +35,7 @@ from autotrain_bench.local_mailbox import (
 )
 from autotrain_bench.local_agent_execution import describe_local_agent_execution
 from autotrain_bench.results import RESULT_SCHEMA_VERSION
+from autotrain_bench.runtime import _hidden_bundle_sha256
 from autotrain_bench.supervisor import (
     MAX_COMMAND_STREAM_BYTES,
     MAX_INCUMBENT_DECLARATIONS,
@@ -49,6 +50,7 @@ from autotrain_bench.worker_protocol import (
     HIDDEN_DATASET_IDENTITY_VERIFICATION,
     HIDDEN_DATASET_ISOLATION,
     Capability,
+    CandidateEvaluationResult,
     CommandResult,
     ConformanceReceipt,
     EnforcementLevel,
@@ -322,8 +324,16 @@ class FakeWorker:
         if self.evaluation_failure is not None:
             raise WorkerFailure(self.evaluation_failure)
         if split == "analysis" and self.analysis_nlls:
-            return self.analysis_nlls.pop(0)
-        return 1.25 if split == "analysis" else self.test_nll
+            nll = self.analysis_nlls.pop(0)
+        else:
+            nll = 1.25 if split == "analysis" else self.test_nll
+        return CandidateEvaluationResult(
+            nll=nll,
+            serving_seconds=2.0,
+            examples=3,
+            input_tokens=6,
+            prediction_bytes=64,
+        )
 
 
 class SupervisorTests(unittest.TestCase):
@@ -335,8 +345,8 @@ class SupervisorTests(unittest.TestCase):
         candidate = workspace / "candidate"
         candidate.mkdir()
         (candidate / "candidate.py").write_text(
-            "def load(candidate_dir, device): return None\n"
-            "def next_token_logits(model, input_ids): return []\n",
+            "def run_offline(candidate_dir, contexts_path, output_dir, device): "
+            "return None\n",
             encoding="utf-8",
         )
         self.config = TaskConfig.load(TASK)
@@ -352,10 +362,8 @@ class SupervisorTests(unittest.TestCase):
         self.workspace = workspace
         self.worker = FakeWorker()
         self.worker.hidden_dataset_digests = {
-            "analysis": hashlib.sha256(
-                self.config.analysis_path.read_bytes()
-            ).hexdigest(),
-            "test": hashlib.sha256(self.config.test_path.read_bytes()).hexdigest(),
+            "analysis": _hidden_bundle_sha256(self.config.analysis_path),
+            "test": _hidden_bundle_sha256(self.config.test_path),
         }
         self.clock = FakeClock()
         self.episode = root / "episode"
@@ -536,10 +544,8 @@ class SupervisorTests(unittest.TestCase):
             "train_manifest_sha256": hashlib.sha256(
                 (config.train_dir / "manifest.json").read_bytes()
             ).hexdigest(),
-            "analysis_sha256": hashlib.sha256(
-                config.analysis_path.read_bytes()
-            ).hexdigest(),
-            "test_sha256": hashlib.sha256(config.test_path.read_bytes()).hexdigest(),
+            "analysis_sha256": _hidden_bundle_sha256(config.analysis_path),
+            "test_sha256": _hidden_bundle_sha256(config.test_path),
         }
         core_revision = "d" * 40
         receipt = ReleaseVerificationReceipt(
@@ -1049,6 +1055,21 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(final["outcome"], "success")
         self.assertEqual(final["test_nll"], 1.5)
         self.assertAlmostEqual(final["test_perplexity"], math.exp(1.5))
+        self.assertEqual(
+            final["test_serving_metrics"],
+            {
+                "wall_seconds": 2.0,
+                "examples": 3,
+                "input_tokens": 6,
+                "prediction_bytes": 64,
+                "examples_per_second": 1.5,
+                "input_tokens_per_second": 3.0,
+            },
+        )
+        self.assertEqual(
+            final["analysis_trajectory"][0]["analysis_serving_metrics"],
+            final["test_serving_metrics"],
+        )
         self.assertIsNone(final["failure"])
         self.assertTrue(final["agent_finish_observed"])
         self.assertEqual(self.worker.evaluations, ["test", "analysis"])
@@ -1098,8 +1119,8 @@ class SupervisorTests(unittest.TestCase):
         hidden = self.episode.parent / "late-hidden"
         config = replace(
             self.config,
-            analysis_path=hidden / "analysis.json",
-            test_path=hidden / "test.json",
+            analysis_path=hidden / "analysis",
+            test_path=hidden / "test",
         ).validate()
         supervisor = self.supervisor(config=config)
         supervisor.start_lease()
@@ -1117,16 +1138,19 @@ class SupervisorTests(unittest.TestCase):
         self.assertTrue(supervisor.cleanup_agent_control())
 
         def materialize(request):
-            hidden.mkdir(exist_ok=True)
-            path = hidden / f"{request.name}.json"
+            path = hidden / request.name
+            path.mkdir(parents=True)
             token = 1 if request.name == "analysis" else 2
-            path.write_text(
-                json.dumps({"sequences": [[0, token]]}),
+            (path / "contexts.json").write_text(
+                json.dumps({"contexts": [[0]]}),
                 encoding="utf-8",
             )
-            self.worker.hidden_dataset_digests[request.name] = hashlib.sha256(
-                path.read_bytes()
-            ).hexdigest()
+            (path / "targets.json").write_text(
+                json.dumps({"targets": [token]}), encoding="utf-8"
+            )
+            self.worker.hidden_dataset_digests[request.name] = _hidden_bundle_sha256(
+                path
+            )
 
         self.worker.hidden_dataset_resolution_hook = materialize
 
@@ -1136,8 +1160,11 @@ class SupervisorTests(unittest.TestCase):
 
         self.assertEqual(final["status"], "finalized")
         self.assertEqual(self.worker.evaluations, ["test", "analysis"])
-        self.assertTrue(config.analysis_path.is_file())
-        self.assertTrue(config.test_path.is_file())
+        self.assertTrue(config.analysis_path.is_dir())
+        self.assertTrue(config.test_path.is_dir())
+        for path in (config.analysis_path, config.test_path):
+            self.assertTrue((path / "contexts.json").is_file())
+            self.assertTrue((path / "targets.json").is_file())
         identities = supervisor.state["artifact_identities"]["hidden_evaluation"]
         self.assertEqual(set(identities), {"analysis_sha256", "test_sha256"})
         self.assertTrue(all(identities.values()))

@@ -1,15 +1,18 @@
+import hashlib
 import importlib.util
 import json
 import math
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 from autotrain_bench.candidate_protocol import (
+    CANDIDATE_PROTOCOL,
     CandidateProtocolError,
     load_candidate,
-    normalized_logits,
+    load_context_request,
+    validate_prediction_artifact,
+    write_prediction_artifact,
 )
 
 
@@ -20,233 +23,266 @@ if SPEC is None or SPEC.loader is None:  # pragma: no cover - repository invaria
     raise RuntimeError(f"cannot import evaluator at {EVALUATOR}")
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
-ADAPTER_PATH = ROOT / "autotrain_bench/docker_evaluator_adapter.py"
-ADAPTER_SPEC = importlib.util.spec_from_file_location(
-    "docker_evaluator_adapter", ADAPTER_PATH
-)
-if ADAPTER_SPEC is None or ADAPTER_SPEC.loader is None:  # pragma: no cover
-    raise RuntimeError(f"cannot import adapter at {ADAPTER_PATH}")
-ADAPTER = importlib.util.module_from_spec(ADAPTER_SPEC)
-ADAPTER_SPEC.loader.exec_module(ADAPTER)
 
 
 class IsolatedEvaluatorTests(unittest.TestCase):
     @staticmethod
-    def _write_examples(path, examples):
-        path.write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "candidate_protocol": "next_token_logits_v2",
-                    "examples": examples,
-                }
-            ),
+    def _write_split(root, contexts, targets, *, lengths=(1, 2, 3), vocab=10):
+        root.mkdir()
+        context_path = root / "contexts.json"
+        target_path = root / "targets.json"
+        context_payload = {
+            "schema_version": 2,
+            "candidate_protocol": CANDIDATE_PROTOCOL,
+            "dataset_id": "test-split",
+            "vocab_size": vocab,
+            "context_lengths": list(lengths),
+            "examples": contexts,
+        }
+        context_path.write_text(
+            json.dumps(context_payload, separators=(",", ":")) + "\n",
             encoding="utf-8",
         )
+        target_payload = {
+            "schema_version": 2,
+            "candidate_protocol": CANDIDATE_PROTOCOL,
+            "dataset_id": "test-split",
+            "contexts_sha256": hashlib.sha256(context_path.read_bytes()).hexdigest(),
+            "examples": targets,
+        }
+        target_path.write_text(
+            json.dumps(target_payload, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        return context_path, target_path
 
-    def test_each_context_is_scored_once_and_targets_are_never_sent(self):
+    @staticmethod
+    def _examples():
+        contexts = [
+            {"example_id": "one", "input_ids": [0]},
+            {"example_id": "two", "input_ids": [2, 3]},
+            {"example_id": "three", "input_ids": [4, 5, 6]},
+        ]
+        targets = [
+            {
+                "example_id": "one",
+                "target": 9,
+                "source_id": "doc-a",
+                "source_start": 0,
+                "source_end": 1,
+            },
+            {
+                "example_id": "two",
+                "target": 8,
+                "source_id": "doc-b",
+                "source_start": 0,
+                "source_end": 2,
+            },
+            {
+                "example_id": "three",
+                "target": 7,
+                "source_id": "doc-c",
+                "source_start": 0,
+                "source_end": 3,
+            },
+        ]
+        return contexts, targets
+
+    def test_target_free_contexts_are_scored_once_from_offline_logits(self):
         with tempfile.TemporaryDirectory() as directory:
-            data = Path(directory) / "data.json"
-            self._write_examples(
-                data,
-                [
-                    {
-                        "context": [0],
-                        "target": 9,
-                        "source_id": "doc-a",
-                        "source_start": 0,
-                        "source_end": 1,
-                    },
-                    {
-                        "context": [2, 3],
-                        "target": 8,
-                        "source_id": "doc-b",
-                        "source_start": 0,
-                        "source_end": 2,
-                    },
-                    {
-                        "context": [4, 5, 6],
-                        "target": 7,
-                        "source_id": "doc-c",
-                        "source_start": 0,
-                        "source_end": 3,
-                    },
-                    {
-                        "context": [1],
-                        "target": 9,
-                        "source_id": "doc-d",
-                        "source_start": 0,
-                        "source_end": 1,
-                    },
-                ],
+            root = Path(directory)
+            contexts, targets = self._examples()
+            context_path, target_path = self._write_split(
+                root / "split", contexts, targets
             )
-            calls = []
+            predictions = root / "predictions"
+            write_prediction_artifact(
+                predictions,
+                dataset_id="test-split",
+                logits=([0.0] * 10 for _ in contexts),
+                examples=len(contexts),
+                vocab_size=10,
+            )
 
-            def predict(contexts):
-                calls.append([list(context) for context in contexts])
-                return [[0.0] * 10 for _ in contexts]
-
-            loss = MODULE.evaluate(
-                data,
+            visible = load_context_request(context_path)
+            result = MODULE.evaluate(
+                context_path,
+                target_path,
+                predictions,
                 10,
-                predict,
-                batch_size=2,
                 context_lengths=(1, 2, 3),
             )
 
-            self.assertAlmostEqual(loss, math.log(10), places=7)
-            self.assertEqual(calls, [[[0], [1]], [[2, 3]], [[4, 5, 6]]])
-            for call in calls:
-                self.assertEqual(len({len(context) for context in call}), 1)
-            delivered_tokens = {
-                token for call in calls for context in call for token in context
-            }
-            self.assertTrue({7, 8, 9}.isdisjoint(delivered_tokens))
+            self.assertNotIn("target", json.dumps(visible))
+            self.assertAlmostEqual(result["nll"], math.log(10), places=7)
+            self.assertEqual(result["examples"], 3)
+            self.assertEqual(result["input_tokens"], 6)
+            self.assertGreater(result["prediction_bytes"], 3 * 10 * 4)
 
-    def test_legacy_progressive_sequence_dataset_is_rejected(self):
+    def test_legacy_combined_dataset_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
-            data = Path(directory) / "data.json"
-            data.write_text(
-                json.dumps({"sequences": [[0, 1, 2, 0], [2, 1, 0, 2]]}),
-                encoding="utf-8",
+            root = Path(directory)
+            contexts = root / "contexts.json"
+            targets = root / "targets.json"
+            contexts.write_text(
+                json.dumps({"sequences": [[0, 1, 2, 0]]}), encoding="utf-8"
             )
+            targets.write_text("{}", encoding="utf-8")
 
             with self.assertRaisesRegex(MODULE.EvaluationError, "schema"):
-                MODULE.evaluate(
-                    data,
-                    3,
-                    lambda contexts: [[0.0] * 3 for _ in contexts],
-                    batch_size=16,
-                    context_lengths=(1, 2, 3),
-                )
+                MODULE.validate_inputs(contexts, targets, 3, context_lengths=(1, 2, 3))
 
     def test_overlapping_source_spans_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
-            data = Path(directory) / "data.json"
-            self._write_examples(
-                data,
-                [
-                    {
-                        "context": [0, 1],
-                        "target": 2,
-                        "source_id": "same-document",
-                        "source_start": 0,
-                        "source_end": 2,
-                    },
-                    {
-                        "context": [1, 2],
-                        "target": 3,
-                        "source_id": "same-document",
-                        "source_start": 1,
-                        "source_end": 3,
-                    },
-                ],
+            contexts = [
+                {"example_id": "a", "input_ids": [0, 1]},
+                {"example_id": "b", "input_ids": [1, 2]},
+            ]
+            targets = [
+                {
+                    "example_id": "a",
+                    "target": 2,
+                    "source_id": "same",
+                    "source_start": 0,
+                    "source_end": 2,
+                },
+                {
+                    "example_id": "b",
+                    "target": 3,
+                    "source_id": "same",
+                    "source_start": 1,
+                    "source_end": 3,
+                },
+            ]
+            context_path, target_path = self._write_split(
+                Path(directory) / "split",
+                contexts,
+                targets,
+                lengths=(2,),
+                vocab=4,
             )
-
             with self.assertRaisesRegex(MODULE.EvaluationError, "overlap"):
-                MODULE.evaluate(
-                    data,
-                    4,
-                    lambda contexts: [[0.0] * 4 for _ in contexts],
-                    batch_size=2,
-                    context_lengths=(2,),
+                MODULE.validate_inputs(
+                    context_path, target_path, 4, context_lengths=(2,)
                 )
 
-    def test_every_release_declared_context_length_must_be_present(self):
+    def test_every_release_context_length_must_be_present(self):
         with tempfile.TemporaryDirectory() as directory:
-            data = Path(directory) / "data.json"
-            self._write_examples(
-                data,
+            context_path, target_path = self._write_split(
+                Path(directory) / "split",
+                [{"example_id": "a", "input_ids": [0]}],
                 [
                     {
-                        "context": [0],
+                        "example_id": "a",
                         "target": 1,
                         "source_id": "doc",
                         "source_start": 0,
                         "source_end": 1,
                     }
                 ],
+                lengths=(1, 2),
+                vocab=3,
             )
-
             with self.assertRaisesRegex(MODULE.EvaluationError, "cover"):
-                MODULE.evaluate(
-                    data,
-                    3,
-                    lambda contexts: [[0.0] * 3 for _ in contexts],
-                    batch_size=1,
-                    context_lengths=(1, 2),
+                MODULE.validate_inputs(
+                    context_path, target_path, 3, context_lengths=(1, 2)
                 )
 
-    def test_candidate_abi_is_batch_by_vocabulary(self):
+    def test_targets_are_bound_to_exact_context_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            contexts, targets = self._examples()
+            context_path, target_path = self._write_split(
+                Path(directory) / "split", contexts, targets
+            )
+            context_path.write_text(
+                context_path.read_text(encoding="utf-8") + " ", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(MODULE.EvaluationError, "bind"):
+                MODULE.validate_inputs(
+                    context_path, target_path, 10, context_lengths=(1, 2, 3)
+                )
+
+    def test_candidate_abi_owns_the_complete_offline_run(self):
         with tempfile.TemporaryDirectory() as directory:
             candidate = Path(directory)
             (candidate / "candidate.py").write_text(
-                "def load(candidate_dir, device): return {'device': device}\n"
-                "def next_token_logits(model, input_ids):\n"
-                "    return [[float(token == prefix[-1]) for token in range(3)] "
-                "for prefix in input_ids]\n",
+                "def run_offline(candidate_dir, contexts_path, output_dir, device):\n"
+                "    return (candidate_dir, contexts_path, output_dir, device)\n",
                 encoding="utf-8",
             )
-            module, model = load_candidate(candidate, "cpu")
-            logits = normalized_logits(module, model, [[0], [1, 2]], vocab_size=3)
-            self.assertEqual(logits, [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+            module = load_candidate(candidate)
+            self.assertTrue(callable(module.run_offline))
 
-    def test_legacy_sequence_logits_are_rejected(self):
-        class Candidate:
-            @staticmethod
-            def next_token_logits(model, input_ids):
-                del model
-                return [[[0.0, 0.0, 0.0] for _ in prefix] for prefix in input_ids]
+            (candidate / "candidate.py").write_text(
+                "def load(candidate_dir, device): return None\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(CandidateProtocolError, "run_offline"):
+                load_candidate(candidate)
 
-        with self.assertRaises(CandidateProtocolError):
-            normalized_logits(Candidate, None, [[0], [1, 2]], vocab_size=3)
+    def test_prediction_artifact_rejects_bad_shapes_and_values(self):
+        for row, message in (([0.0, 0.0], "vocabulary"), ([True] * 3, "finite")):
+            with self.subTest(row=row), tempfile.TemporaryDirectory() as directory:
+                with self.assertRaisesRegex(CandidateProtocolError, message):
+                    write_prediction_artifact(
+                        Path(directory) / "predictions",
+                        dataset_id="test-split",
+                        logits=[row],
+                        examples=1,
+                        vocab_size=3,
+                    )
 
-    def test_candidate_abi_rejects_boolean_and_string_logits(self):
-        for raw_logit in (True, "1.0"):
-            with self.subTest(raw_logit=raw_logit):
+    def test_target_free_validator_checks_raw_logit_size(self):
+        with tempfile.TemporaryDirectory() as directory:
+            predictions = Path(directory) / "predictions"
+            write_prediction_artifact(
+                predictions,
+                dataset_id="test-split",
+                logits=[[0.0, 0.0, 0.0]],
+                examples=1,
+                vocab_size=3,
+            )
+            self.assertGreater(
+                validate_prediction_artifact(
+                    predictions,
+                    dataset_id="test-split",
+                    examples=1,
+                    vocab_size=3,
+                ),
+                12,
+            )
+            with (predictions / "logits.f32").open("ab") as stream:
+                stream.write(b"x")
+            with self.assertRaisesRegex(CandidateProtocolError, "byte length"):
+                validate_prediction_artifact(
+                    predictions,
+                    dataset_id="test-split",
+                    examples=1,
+                    vocab_size=3,
+                )
 
-                class Candidate:
-                    @staticmethod
-                    def next_token_logits(model, input_ids):
-                        del model
-                        return [[raw_logit, 0.0, 0.0] for _ in input_ids]
+    def test_prediction_manifest_rejects_boolean_integer_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            predictions = Path(directory) / "predictions"
+            write_prediction_artifact(
+                predictions,
+                dataset_id="test-split",
+                logits=[[0.0, 0.0, 0.0]],
+                examples=1,
+                vocab_size=3,
+            )
+            manifest_path = predictions / "predictions.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["examples"] = True
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
-                with self.assertRaisesRegex(
-                    CandidateProtocolError, "logits must be numeric"
-                ):
-                    normalized_logits(Candidate, None, [[0]], vocab_size=3)
-
-    def test_evaluator_client_rejects_boolean_and_string_json_logits(self):
-        client = ADAPTER.HttpCandidateClient.__new__(ADAPTER.HttpCandidateClient)
-        client.base_url = "http://candidate"
-        client.vocab_size = 2
-        client.timeout_seconds = 1
-
-        class Response:
-            def __init__(self, encoded):
-                self.encoded = encoded
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, traceback):
-                del exc_type, exc, traceback
-
-            def read(self, maximum_bytes):
-                return self.encoded[:maximum_bytes]
-
-        for raw_logit in (True, "1.0"):
-            with self.subTest(raw_logit=raw_logit):
-                encoded = json.dumps({"logits": [[raw_logit, 0.0]]}).encode("utf-8")
-                with patch.object(
-                    ADAPTER.urllib.request,
-                    "urlopen",
-                    return_value=Response(encoded),
-                ):
-                    with self.assertRaisesRegex(
-                        ADAPTER.AdapterError, "logits must be numeric"
-                    ):
-                        client.predict([[0]])
+            with self.assertRaisesRegex(CandidateProtocolError, "manifest"):
+                validate_prediction_artifact(
+                    predictions,
+                    dataset_id="test-split",
+                    examples=1,
+                    vocab_size=3,
+                )
 
 
 if __name__ == "__main__":

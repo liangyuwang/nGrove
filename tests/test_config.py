@@ -45,14 +45,19 @@ class ConfigTests(unittest.TestCase):
         self.assertNotIn("official_val_queries_per_lease", public["budget"])
         self.assertEqual(public["validation"]["organizer_feedback"], "none")
         self.assertEqual(public["analysis"]["feedback"], "never_agent_visible")
-        self.assertEqual(config.evaluator_batch_size, 2)
         self.assertEqual(config.context_lengths, (1, 2, 3))
         self.assertEqual(config.evaluator_device, "cpu")
         self.assertEqual(config.evaluator_backend, "isolated_candidate")
         self.assertTrue(config.evaluator_policy_compliant)
         boundary = public["evaluation"]["candidate_boundary"]
-        self.assertEqual(boundary["hidden_data_mount"], "none")
-        self.assertEqual(boundary["channel_mechanism"], "worker_defined")
+        self.assertEqual(boundary["target_artifact_mount"], "none")
+        self.assertEqual(boundary["context_artifact_access"], "read_only")
+        self.assertEqual(
+            boundary["prediction_artifact_access"],
+            "candidate_read_write_isolated",
+        )
+        self.assertEqual(boundary["channel_mechanism"], "worker_materialized_files")
+        self.assertEqual(boundary["serving_timing"]["clock"], "trusted_monotonic_wall")
         limits = public["evaluation"]["candidate_artifact_limits"]
         self.assertEqual(limits, {"max_bytes": 1048576, "max_files": 100})
         self.assertEqual(
@@ -66,6 +71,10 @@ class ConfigTests(unittest.TestCase):
             },
         )
         self.assertEqual(public["evaluation"]["context_lengths"], [1, 2, 3])
+        self.assertEqual(
+            public["evaluation"]["serving_efficiency"]["status"],
+            "reported_not_ranked",
+        )
 
     def test_context_lengths_are_frozen_and_end_at_the_context_limit(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -189,8 +198,8 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             task = self._write_task(directory)
             payload = json.loads(task.read_text(encoding="utf-8"))
-            payload["paths"]["analysis"] = str(Path(directory) / "late/analysis.json")
-            payload["paths"]["test"] = str(Path(directory) / "late/test.json")
+            payload["paths"]["analysis"] = str(Path(directory) / "late/analysis")
+            payload["paths"]["test"] = str(Path(directory) / "late/test")
             task.write_text(json.dumps(payload), encoding="utf-8")
 
             config = TaskConfig.load(task)
@@ -295,16 +304,15 @@ class ConfigTests(unittest.TestCase):
         self.assertIsNotNone(inference)
         self.assertIsNone(inference.api_key_env)
 
-    def test_gpu_evaluator_settings_are_public_and_validated(self):
+    def test_gpu_evaluator_device_is_public_and_validated(self):
         with tempfile.TemporaryDirectory() as directory:
             task = self._write_task(directory)
             payload = json.loads(task.read_text(encoding="utf-8"))
-            payload["evaluation"]["batch_size"] = 64
             payload["evaluation"]["device"] = "cuda"
             task.write_text(json.dumps(payload), encoding="utf-8")
             config = TaskConfig.load(task)
             evaluation = config.public_manifest("A")["evaluation"]
-            self.assertEqual(evaluation["batch_size"], 64)
+            self.assertNotIn("batch_size", evaluation)
             self.assertEqual(evaluation["device"], "cuda")
 
             TrainingResources(nvidia_gpu_count=1).validate_for(config)

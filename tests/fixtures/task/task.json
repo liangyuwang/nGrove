@@ -1,12 +1,12 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "task_id": "test-byte-lm-v1",
   "task_kind": "development_smoke",
   "leaderboard_eligible": false,
   "paths": {
     "train": "train",
-    "analysis": "private/analysis.json",
-    "test": "private/test.json"
+    "analysis": "private/analysis",
+    "test": "private/test"
   },
   "images": {
     "training": "python@sha256:test-training",
@@ -16,7 +16,7 @@
   },
   "evaluation": {
     "backend": "isolated_candidate",
-    "candidate_protocol": "next_token_logits_v2",
+    "candidate_protocol": "offline_next_token_logits_v3",
     "entrypoint": "evaluator.py",
     "metric": "autoregressive_nll",
     "leaderboard_metric": {
@@ -29,7 +29,6 @@
     "vocab_size": 3,
     "context_length": 3,
     "context_lengths": [1, 2, 3],
-    "batch_size": 2,
     "device": "cpu",
     "max_candidate_bytes": 1048576,
     "max_candidate_files": 100,

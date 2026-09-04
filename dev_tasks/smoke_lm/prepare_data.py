@@ -35,14 +35,16 @@ SEQUENCE_TARGET_TOKENS = 128
 BOS_TOKEN_ID = 256
 EVAL_CONTEXT_LENGTHS = (8, 16, 32, 64, 128)
 EVAL_EXAMPLES = 512
-EVALUATION_DATASET_SCHEMA_VERSION = 1
-CANDIDATE_PROTOCOL = "next_token_logits_v2"
+EVALUATION_DATASET_SCHEMA_VERSION = 2
+CANDIDATE_PROTOCOL = "offline_next_token_logits_v3"
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 TRAIN_PATH = DATA_DIR / "train" / "train.json"
-ANALYSIS_PATH = DATA_DIR / "private" / "analysis.json"
-TEST_PATH = DATA_DIR / "private" / "test.json"
+ANALYSIS_PATH = DATA_DIR / "private" / "analysis"
+TEST_PATH = DATA_DIR / "private" / "test"
+CONTEXTS_FILENAME = "contexts.json"
+TARGETS_FILENAME = "targets.json"
 METADATA_PATH = DATA_DIR / "metadata.json"
 
 
@@ -192,6 +194,7 @@ class EvaluationCollector:
             context = [self.boundary_token_id, *tokens[start : end - 1]]
             self.examples.append(
                 {
+                    "example_id": f"example-{len(self.examples):08d}",
                     "context": context,
                     "target": tokens[end - 1],
                     "source_id": source_id,
@@ -203,13 +206,44 @@ class EvaluationCollector:
             self._next_length_index = (selected_index + 1) % len(self.context_lengths)
             start = end
 
-    def payload(self) -> Dict[str, object]:
+    def context_payload(self, dataset_id: str) -> Dict[str, object]:
         if not self.complete:
             raise RuntimeError("source sample did not fill hidden evaluation examples")
         return {
             "schema_version": EVALUATION_DATASET_SCHEMA_VERSION,
             "candidate_protocol": CANDIDATE_PROTOCOL,
-            "examples": list(self.examples),
+            "dataset_id": dataset_id,
+            "vocab_size": 257,
+            "context_lengths": list(self.context_lengths),
+            "examples": [
+                {
+                    "example_id": example["example_id"],
+                    "input_ids": example["context"],
+                }
+                for example in self.examples
+            ],
+        }
+
+    def target_payload(
+        self, dataset_id: str, contexts_sha256: str
+    ) -> Dict[str, object]:
+        if not self.complete:
+            raise RuntimeError("source sample did not fill hidden evaluation examples")
+        return {
+            "schema_version": EVALUATION_DATASET_SCHEMA_VERSION,
+            "candidate_protocol": CANDIDATE_PROTOCOL,
+            "dataset_id": dataset_id,
+            "contexts_sha256": contexts_sha256,
+            "examples": [
+                {
+                    "example_id": example["example_id"],
+                    "target": example["target"],
+                    "source_id": example["source_id"],
+                    "source_start": example["source_start"],
+                    "source_end": example["source_end"],
+                }
+                for example in self.examples
+            ],
         }
 
     def context_length_histogram(self) -> Dict[str, int]:
@@ -233,6 +267,38 @@ def _write_json(path: Path, payload: object, *, private: bool = False) -> None:
     )
     os.replace(str(temporary), str(path))
     path.chmod(0o600 if private else 0o644)
+
+
+def _write_evaluation_split(
+    path: Path, collector: EvaluationCollector, dataset_id: str
+) -> Dict[str, str]:
+    path.mkdir(parents=True, exist_ok=True)
+    unexpected = {entry.name for entry in path.iterdir()} - {
+        CONTEXTS_FILENAME,
+        TARGETS_FILENAME,
+    }
+    if unexpected:
+        raise RuntimeError(
+            "refusing to overwrite unexpected hidden split entries: "
+            + ", ".join(sorted(unexpected))
+        )
+    contexts_path = path / CONTEXTS_FILENAME
+    targets_path = path / TARGETS_FILENAME
+    _write_json(
+        contexts_path,
+        collector.context_payload(dataset_id),
+        private=True,
+    )
+    contexts_sha256 = _sha256_file(contexts_path)
+    _write_json(
+        targets_path,
+        collector.target_payload(dataset_id, contexts_sha256),
+        private=True,
+    )
+    return {
+        "contexts_sha256": contexts_sha256,
+        "targets_sha256": _sha256_file(targets_path),
+    }
 
 
 def _existing_data_is_valid() -> bool:
@@ -259,8 +325,14 @@ def _existing_data_is_valid() -> bool:
             return False
         artifacts: Dict[str, str] = metadata["artifact_sha256"]
         return all(
-            path.is_file() and _sha256_file(path) == artifacts[path.name]
-            for path in (TRAIN_PATH, ANALYSIS_PATH, TEST_PATH)
+            path.is_file() and _sha256_file(path) == artifacts[name]
+            for name, path in {
+                "train/train.json": TRAIN_PATH,
+                "private/analysis/contexts.json": ANALYSIS_PATH / CONTEXTS_FILENAME,
+                "private/analysis/targets.json": ANALYSIS_PATH / TARGETS_FILENAME,
+                "private/test/contexts.json": TEST_PATH / CONTEXTS_FILENAME,
+                "private/test/targets.json": TEST_PATH / TARGETS_FILENAME,
+            }.items()
         )
     except (FileNotFoundError, KeyError, TypeError, json.JSONDecodeError):
         return False
@@ -296,8 +368,16 @@ def prepare(*, force: bool = False) -> Dict[str, object]:
         test.add_document(f"tinystories:{index}", text.encode("utf-8"))
 
     _write_json(TRAIN_PATH, {"sequences": train_sequences})
-    _write_json(ANALYSIS_PATH, analysis.payload(), private=True)
-    _write_json(TEST_PATH, test.payload(), private=True)
+    analysis_artifacts = _write_evaluation_split(
+        ANALYSIS_PATH,
+        analysis,
+        "tinystories-byte-lm-smoke-v1:offline-v3",
+    )
+    test_artifacts = _write_evaluation_split(
+        TEST_PATH,
+        test,
+        "tinystories-byte-lm-smoke-v1:offline-v3",
+    )
 
     metadata: Dict[str, object] = {
         "source": {
@@ -340,8 +420,11 @@ def prepare(*, force: bool = False) -> Dict[str, object]:
             },
         },
         "artifact_sha256": {
-            path.name: _sha256_file(path)
-            for path in (TRAIN_PATH, ANALYSIS_PATH, TEST_PATH)
+            "train/train.json": _sha256_file(TRAIN_PATH),
+            "private/analysis/contexts.json": analysis_artifacts["contexts_sha256"],
+            "private/analysis/targets.json": analysis_artifacts["targets_sha256"],
+            "private/test/contexts.json": test_artifacts["contexts_sha256"],
+            "private/test/targets.json": test_artifacts["targets_sha256"],
         },
     }
     _write_json(METADATA_PATH, metadata)

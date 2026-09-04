@@ -13,7 +13,7 @@ from .worker_protocol import (
 )
 
 
-RESULT_SCHEMA_VERSION = 8
+RESULT_SCHEMA_VERSION = 9
 LEGACY_RESULT_SCHEMA_VERSION = 1
 # Version 2 recorded the Agent egress policy as ``agent_system.mode`` with the
 # value ``"sandboxed"``.  Version 3 renames that field to ``agent_system.egress``
@@ -26,6 +26,7 @@ POSTMORTEM_RESULT_SCHEMA_VERSION = 4
 UNCOUNTED_ANALYSIS_RESULT_SCHEMA_VERSION = 5
 PRE_WORKLOAD_RESOLUTION_RESULT_SCHEMA_VERSION = 6
 PRE_RESOURCE_ALLOCATION_RESULT_SCHEMA_VERSION = 7
+PRE_SERVING_EFFICIENCY_RESULT_SCHEMA_VERSION = 8
 _SUPPORTED_INPUT_SCHEMA_VERSIONS = frozenset(
     {
         LEGACY_RESULT_SCHEMA_VERSION,
@@ -35,6 +36,7 @@ _SUPPORTED_INPUT_SCHEMA_VERSIONS = frozenset(
         UNCOUNTED_ANALYSIS_RESULT_SCHEMA_VERSION,
         PRE_WORKLOAD_RESOLUTION_RESULT_SCHEMA_VERSION,
         PRE_RESOURCE_ALLOCATION_RESULT_SCHEMA_VERSION,
+        PRE_SERVING_EFFICIENCY_RESULT_SCHEMA_VERSION,
         RESULT_SCHEMA_VERSION,
     }
 )
@@ -94,6 +96,60 @@ def perplexity_from_nll(value: Any) -> float:
     return result
 
 
+def _validate_serving_metrics(value: Any, field: str) -> None:
+    if not isinstance(value, dict) or set(value) != {
+        "wall_seconds",
+        "examples",
+        "input_tokens",
+        "prediction_bytes",
+        "examples_per_second",
+        "input_tokens_per_second",
+    }:
+        raise ResultSchemaError(f"{field} must be a complete serving metrics object")
+    wall_seconds = value["wall_seconds"]
+    if isinstance(wall_seconds, bool) or not isinstance(wall_seconds, (int, float)):
+        raise ResultSchemaError(f"{field}.wall_seconds must be finite and positive")
+    try:
+        seconds = float(wall_seconds)
+    except OverflowError as exc:
+        raise ResultSchemaError(
+            f"{field}.wall_seconds must be finite and positive"
+        ) from exc
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ResultSchemaError(f"{field}.wall_seconds must be finite and positive")
+    for name in ("examples", "input_tokens", "prediction_bytes"):
+        count = value[name]
+        if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+            raise ResultSchemaError(f"{field}.{name} must be a positive integer")
+    for rate_name, count_name in (
+        ("examples_per_second", "examples"),
+        ("input_tokens_per_second", "input_tokens"),
+    ):
+        rate = value[rate_name]
+        if isinstance(rate, bool) or not isinstance(rate, (int, float)):
+            raise ResultSchemaError(f"{field}.{rate_name} must be finite and positive")
+        try:
+            normalized_rate = float(rate)
+        except OverflowError as exc:
+            raise ResultSchemaError(
+                f"{field}.{rate_name} must be finite and positive"
+            ) from exc
+        if not math.isfinite(normalized_rate) or normalized_rate <= 0:
+            raise ResultSchemaError(f"{field}.{rate_name} must be finite and positive")
+        try:
+            expected = value[count_name] / seconds
+        except OverflowError as exc:
+            raise ResultSchemaError(
+                f"{field}.{rate_name} cannot be represented"
+            ) from exc
+        if not math.isfinite(expected):
+            raise ResultSchemaError(f"{field}.{rate_name} cannot be represented")
+        if not math.isclose(normalized_rate, expected, rel_tol=1e-12):
+            raise ResultSchemaError(
+                f"{field}.{rate_name} does not match its count and wall time"
+            )
+
+
 def normalize_result_report(payload: Any) -> Dict[str, Any]:
     """Return a current report without mutating the persisted episode state."""
 
@@ -118,8 +174,10 @@ def normalize_result_report(payload: Any) -> Dict[str, Any]:
         result = _migrate_uncounted_analysis_result(result)
     if version < PRE_RESOURCE_ALLOCATION_RESULT_SCHEMA_VERSION:
         result = _migrate_pre_workload_resolution_result(result)
-    if version < RESULT_SCHEMA_VERSION:
+    if version < PRE_SERVING_EFFICIENCY_RESULT_SCHEMA_VERSION:
         result = _migrate_pre_resource_allocation_result(result)
+    if version < RESULT_SCHEMA_VERSION:
+        result = _migrate_pre_serving_efficiency_result(result)
         result["result_schema_version"] = RESULT_SCHEMA_VERSION
         result["migrated_from_result_schema_version"] = version
     result.setdefault("deployment_teardown_failures", [])
@@ -177,6 +235,38 @@ def _migrate_pre_resource_allocation_result(
     migrated = dict(result)
     migrated["resource_envelope"] = None
     migrated["resource_allocations"] = []
+    return migrated
+
+
+def _migrate_pre_serving_efficiency_result(
+    result: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Represent unavailable pre-v9 Candidate-serving evidence explicitly."""
+
+    migrated = dict(result)
+    migrated["test_serving_metrics"] = None
+    candidates = migrated.get("candidates")
+    if isinstance(candidates, dict):
+        migrated_candidates = {}
+        for candidate_id, metadata in candidates.items():
+            if isinstance(metadata, dict):
+                item = dict(metadata)
+                item["analysis_serving_metrics"] = None
+                migrated_candidates[candidate_id] = item
+            else:
+                migrated_candidates[candidate_id] = metadata
+        migrated["candidates"] = migrated_candidates
+    trajectory = migrated.get("analysis_trajectory")
+    if isinstance(trajectory, list):
+        migrated_trajectory = []
+        for point in trajectory:
+            if isinstance(point, dict):
+                item = dict(point)
+                item["analysis_serving_metrics"] = None
+                migrated_trajectory.append(item)
+            else:
+                migrated_trajectory.append(point)
+        migrated["analysis_trajectory"] = migrated_trajectory
     return migrated
 
 
@@ -649,12 +739,16 @@ def _validate_current_result(
     analysis_identity_verified = result.get("analysis_identity_verified")
     analysis_trajectory = result.get("analysis_trajectory")
     research_sealed_at = result.get("research_sealed_at")
+    test_serving_metrics = result.get("test_serving_metrics")
     if analysis_complete is not None and not isinstance(analysis_complete, bool):
         raise ResultSchemaError("analysis_complete must be null or boolean")
     if analysis_trajectory is not None and not isinstance(analysis_trajectory, list):
         raise ResultSchemaError("analysis_trajectory must be an array")
     if isinstance(analysis_trajectory, list):
-        _validate_analysis_trajectory(analysis_trajectory)
+        _validate_analysis_trajectory(
+            analysis_trajectory,
+            require_serving_metrics=not migrated_legacy,
+        )
         _validate_analysis_summary_counts(result, analysis_trajectory)
     if not migrated_legacy:
         if analysis_status not in {None, "pending", "complete", "incomplete"}:
@@ -766,6 +860,10 @@ def _validate_current_result(
             or result.get("test_perplexity") is not None
         ):
             raise ResultSchemaError("a pending result may not contain TEST metrics")
+        if test_serving_metrics is not None:
+            raise ResultSchemaError(
+                "a pending result may not contain TEST serving metrics"
+            )
         if result.get("failure") is not None:
             raise ResultSchemaError("a pending result may not contain a failure")
         if status in {"created", "active"} and candidate_id is not None:
@@ -791,6 +889,17 @@ def _validate_current_result(
             raise ResultSchemaError("a successful result may not contain a failure")
         if not migrated_legacy and result.get("test_status") != "evaluated":
             raise ResultSchemaError("a successful result requires evaluated TEST")
+        if migrated_legacy:
+            if test_serving_metrics is not None:
+                _validate_serving_metrics(
+                    test_serving_metrics,
+                    "test_serving_metrics",
+                )
+        else:
+            _validate_serving_metrics(
+                test_serving_metrics,
+                "test_serving_metrics",
+            )
         if not migrated_legacy and not any(
             point["candidate_id"] == candidate_id for point in analysis_trajectory
         ):
@@ -817,6 +926,10 @@ def _validate_current_result(
             or result.get("test_perplexity") is not None
         ):
             raise ResultSchemaError("a failed result may not contain TEST metrics")
+        if test_serving_metrics is not None:
+            raise ResultSchemaError(
+                "a failed result may not contain TEST serving metrics"
+            )
         failure = result.get("failure")
         if not isinstance(failure, str) or not failure.strip():
             raise ResultSchemaError("a failed result must contain a failure reason")
@@ -852,8 +965,10 @@ def _validate_analysis_summary_counts(
         )
 
 
-def _validate_analysis_trajectory(trajectory: list[Any]) -> None:
-    """Validate the auditable postmortem measurement attached to result v6."""
+def _validate_analysis_trajectory(
+    trajectory: list[Any], *, require_serving_metrics: bool
+) -> None:
+    """Validate the auditable postmortem measurement attached to a result."""
 
     commit_indices = []
     for point in trajectory:
@@ -911,6 +1026,16 @@ def _validate_analysis_trajectory(trajectory: list[Any]) -> None:
                 raise ResultSchemaError(
                     "an evaluated ANALYSIS point may not contain an error"
                 )
+            serving_metrics = point.get("analysis_serving_metrics")
+            if serving_metrics is not None:
+                _validate_serving_metrics(
+                    serving_metrics,
+                    "ANALYSIS trajectory analysis_serving_metrics",
+                )
+            elif require_serving_metrics:
+                raise ResultSchemaError(
+                    "an evaluated ANALYSIS point requires serving metrics"
+                )
         elif status in {"failed", "infrastructure_failure", "not_run"}:
             if (
                 point.get("analysis_nll") is not None
@@ -918,6 +1043,10 @@ def _validate_analysis_trajectory(trajectory: list[Any]) -> None:
             ):
                 raise ResultSchemaError(
                     "an unmeasured ANALYSIS point may not contain metrics"
+                )
+            if point.get("analysis_serving_metrics") is not None:
+                raise ResultSchemaError(
+                    "an unmeasured ANALYSIS point may not contain serving metrics"
                 )
             error = point.get("analysis_error")
             if not isinstance(error, str) or not error.strip():

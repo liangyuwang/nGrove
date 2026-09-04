@@ -187,10 +187,10 @@ class PretrainV1Tests(unittest.TestCase):
             private = root / "private"
             public.mkdir()
             private.mkdir()
-            analysis = private / "analysis.json"
-            test = private / "test.json"
-            analysis.write_text('{"examples":[]}', encoding="utf-8")
-            test.write_text('{"examples":[]}', encoding="utf-8")
+            analysis = private / "analysis"
+            test = private / "test"
+            analysis.mkdir()
+            test.mkdir()
             payload = json.loads(TASK.read_text(encoding="utf-8"))
             payload["paths"] = {
                 "train": str(public),
@@ -368,8 +368,9 @@ class PretrainV1Tests(unittest.TestCase):
                 ["train-1", "train-2"],
             )
             self.assertTrue((output / "public/tokenized/tokens-00000.bin").is_file())
-            self.assertTrue((output / "private/analysis.json").is_file())
-            self.assertTrue((output / "private/test.json").is_file())
+            for split in ("analysis", "test"):
+                self.assertTrue((output / f"private/{split}/contexts.json").is_file())
+                self.assertTrue((output / f"private/{split}/targets.json").is_file())
             self.assertEqual(manifest["raw_train"]["documents"], 2)
             self.assertEqual(manifest["tokenized_train"]["documents"], 2)
 

@@ -47,7 +47,7 @@ incumbent.
 | Track B | Three leases, at most 75 seconds each |
 | Evaluator measurement | Mean single-target next-token NLL |
 | Leaderboard-style score | Perplexity, `exp(mean_token_nll)`, lower is better |
-| Candidate protocol | `next_token_logits_v2` |
+| Candidate protocol | `offline_next_token_logits_v3` |
 
 The trusted evaluation path runs on CPU. A participant may train with any
 approach supported by the selected Training Environment and must export a
@@ -165,34 +165,40 @@ revealed later through a longer prefix or reused inside another context from
 the same source span. TEST perplexity is `exp(mean_token_nll)` over those
 single-target examples; it is not the legacy all-prefix corpus perplexity.
 
-`candidate.py` defines:
+`candidate.py` defines one offline entry point:
 
 ```python
-def load(candidate_dir, device): ...
-def next_token_logits(model, input_ids): ...  # [batch, vocabulary]
+def run_offline(candidate_dir, contexts_path, output_dir, device): ...
 ```
 
-Every logit must be a finite numeric value. Booleans and numeric strings are
-not part of the Candidate ABI and are rejected.
+`contexts_path` is a read-only JSON artifact containing example IDs and token
+contexts but no targets or split label. The serving system owns file reading, model loading,
+batching, ordering, and parallelism. It writes exactly `predictions.json` and
+`logits.f32` under `output_dir`; logits are finite row-major little-endian
+float32 vectors in request order, one `[vocabulary]` row per example. The
+public `autotrain_bench.candidate_protocol` helpers can read the request and
+write the output, but their use is optional.
 
 After research sealing and confirmed Agent/Research teardown, the bundled
-Docker Worker uses a fresh internal network for each ANALYSIS/TEST evaluation:
+Docker Worker runs three network-disabled steps for each ANALYSIS/TEST evaluation:
 
 ```text
-trusted Evaluator: one hidden dataset, no Candidate files
-untrusted Candidate: Candidate files, no hidden dataset, no public network
+trusted validation: contexts + targets
+untrusted Candidate: Candidate files + contexts, never targets
+trusted scoring: contexts + targets + read-only Candidate predictions
 ```
 
-Only same-length batches of single-target contexts and one
-`[batch, vocabulary]` logit matrix cross this boundary. No target feedback is
-ever sent, and the hidden dataset schema rejects overlapping source spans.
-The Candidate may retain previously seen, unlabeled contexts; the v2 contract
-does not reset its process or model between contexts.
-Candidate failures expose only a fixed error code to the Agent; raw logs remain
-private to the trusted episode directory. Both containers and the network are
-removed after every query.
+No target feedback is ever sent, and the hidden dataset schema rejects
+overlapping source spans. The Candidate sees all unlabeled contexts for the
+selected split at once and may schedule them jointly; the v3 contract does not
+prescribe batches or reset its process or model between examples.
+Candidate failures expose only a fixed error code to the Agent; bounded runtime
+diagnostics remain inside the trusted boundary. Each container is removed after
+the evaluation step.
 
-The HTTP/TCP network is only the bundled Docker adapter. The task-owned
-Evaluator exports an `evaluate(..., predict, context_lengths=...)` function;
-another Worker may provide a different isolated channel mechanism without
-changing the Candidate ABI or Core.
+Serving wall time covers the entire Candidate invocation: sandbox startup,
+Candidate import, model loading, context-file reading, participant-controlled
+scheduling/inference, prediction writing, flushing, and process exit. Trusted
+hidden-data materialization, validation, target joining, and scoring are
+excluded. Results record NLL/perplexity and raw serving efficiency separately;
+this development task does not yet combine them into one ranking score.

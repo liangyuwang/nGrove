@@ -47,6 +47,7 @@ from .worker_protocol import (
     GPU_DEVICE_ISOLATION,
     RESEARCH_REQUIREMENTS,
     CapabilityRequirement,
+    CandidateEvaluationResult,
     CommandResult,
     ConformanceReceipt,
     EvaluationWorker,
@@ -538,7 +539,7 @@ class Supervisor:
             eligibility_violations.append("agent_workload_identity_not_immutable")
         if not agent_execution.leaderboard_eligible:
             eligibility_violations.append("agent_execution_not_certified")
-        # Worker Protocol v10 covers Worker-owned training/Candidate/Evaluator
+        # Worker Protocol v11 covers Worker-owned training/Candidate/Evaluator
         # workloads. AgentExecutionEvidence v0 binds the Agent image itself but
         # has no trusted field for an inference Gateway workload. Fail closed
         # instead of treating the task's configured Gateway reference as proof
@@ -757,6 +758,7 @@ class Supervisor:
             "test_status": None,
             "test_nll": None,
             "test_perplexity": None,
+            "test_serving_metrics": None,
             "pending_result": None,
             "result_publication": None,
             "closure_reason": None,
@@ -1049,6 +1051,7 @@ class Supervisor:
         if outcome == "failed" and (
             self.state.get("test_nll") is not None
             or self.state.get("test_perplexity") is not None
+            or self.state.get("test_serving_metrics") is not None
         ):
             raise RuntimeError("a failed outcome cannot retain TEST metrics")
         if cleanup_complete is True and termination is None:
@@ -1189,6 +1192,7 @@ class Supervisor:
                 status["test_status"] = self.state["test_status"]
                 status["test_nll"] = self.state["test_nll"]
                 status["test_perplexity"] = self.state["test_perplexity"]
+                status["test_serving_metrics"] = self.state["test_serving_metrics"]
                 status["failure"] = self.state["failure"]
             return status
 
@@ -1247,7 +1251,7 @@ class Supervisor:
         """Resolve and accept one workload before passing it to an operation.
 
         The returned opaque handle is the only workload authorization accepted
-        by Worker Protocol v10 operations. Core records semantic evidence but
+        by Worker Protocol v11 operations. Core records semantic evidence but
         never learns the Worker's path, scheduler job, image cache, or runtime
         handle.
         """
@@ -2205,6 +2209,7 @@ class Supervisor:
                     "analysis_status": "pending",
                     "analysis_nll": None,
                     "analysis_perplexity": None,
+                    "analysis_serving_metrics": None,
                     "analysis_error": None,
                 }
                 self.state["candidates"][candidate_id] = metadata
@@ -2628,6 +2633,7 @@ class Supervisor:
                     "analysis_status": status,
                     "analysis_nll": metadata["analysis_nll"],
                     "analysis_perplexity": metadata["analysis_perplexity"],
+                    "analysis_serving_metrics": metadata["analysis_serving_metrics"],
                     "analysis_error": error,
                     "declared_incumbent": metadata["declared_incumbent"],
                     "declaration_event_seqs": list(
@@ -2686,6 +2692,7 @@ class Supervisor:
         candidate_workload: Optional[ResolvedWorkload] = None
         evaluator_workload: Optional[ResolvedWorkload] = None
         test_nll: Optional[float] = None
+        test_serving_metrics: Optional[Dict[str, Any]] = None
         test_failure: Optional[str] = None
         test_infrastructure_failure: Optional[str] = None
         test_infrastructure_failure_code = "test_evaluation_infrastructure_failure"
@@ -2705,7 +2712,7 @@ class Supervisor:
             if resolved is not None:
                 assert candidate_workload is not None
                 assert evaluator_workload is not None
-                raw_test_nll = self.evaluation_worker.evaluate_candidate(
+                evaluation_result = self.evaluation_worker.evaluate_candidate(
                     episode_id=self.state["episode_id"],
                     task=self.evaluation_task,
                     resources=self.resources,
@@ -2718,7 +2725,12 @@ class Supervisor:
                 )
                 if self.monotonic() >= evaluation_deadline:
                     raise WorkerFailure("TEST evaluation operation deadline reached")
-                test_nll = validated_nll(raw_test_nll)
+                if not isinstance(evaluation_result, CandidateEvaluationResult):
+                    raise WorkerFailure(
+                        "Evaluation Worker returned an invalid result type"
+                    )
+                test_nll = validated_nll(evaluation_result.nll)
+                test_serving_metrics = evaluation_result.serving_manifest()
         except HiddenDatasetIdentityMismatch as exc:
             self._record_hidden_dataset_mismatch(
                 request,
@@ -2791,7 +2803,7 @@ class Supervisor:
         if resolved is None or self.state["status"] != "closed":
             self._save_state()
             return
-        if test_failure is not None or test_nll is None:
+        if test_failure is not None or test_nll is None or test_serving_metrics is None:
             self._stage_failed_test(test_failure or "test_evaluation_failed")
             return
         try:
@@ -2811,6 +2823,7 @@ class Supervisor:
             "failure": None,
             "test_nll": test_nll,
             "test_perplexity": test_perplexity,
+            "test_serving_metrics": test_serving_metrics,
             "publication_id": uuid.uuid4().hex,
         }
         self._event(
@@ -2818,6 +2831,7 @@ class Supervisor:
             candidate_id=candidate_id,
             nll=test_nll,
             perplexity=test_perplexity,
+            serving=test_serving_metrics,
         )
         self._save_state()
 
@@ -2845,7 +2859,7 @@ class Supervisor:
                     self.config.evaluator_timeout_seconds
                 )
                 try:
-                    raw_nll = self.evaluation_worker.evaluate_candidate(
+                    evaluation_result = self.evaluation_worker.evaluate_candidate(
                         episode_id=self.state["episode_id"],
                         task=self.evaluation_task,
                         resources=self.resources,
@@ -2860,8 +2874,13 @@ class Supervisor:
                         raise WorkerFailure(
                             "ANALYSIS evaluation operation deadline reached"
                         )
-                    nll = validated_nll(raw_nll)
+                    if not isinstance(evaluation_result, CandidateEvaluationResult):
+                        raise WorkerFailure(
+                            "Evaluation Worker returned an invalid result type"
+                        )
+                    nll = validated_nll(evaluation_result.nll)
                     perplexity = perplexity_from_nll(nll)
+                    serving_metrics = evaluation_result.serving_manifest()
                 except HiddenDatasetIdentityMismatch as exc:
                     self._record_hidden_dataset_mismatch(
                         request,
@@ -2926,11 +2945,13 @@ class Supervisor:
                     metadata["analysis_status"] = "evaluated"
                     metadata["analysis_nll"] = nll
                     metadata["analysis_perplexity"] = perplexity
+                    metadata["analysis_serving_metrics"] = serving_metrics
                     self._event(
                         "ANALYSIS_EVALUATED",
                         candidate_id=candidate_id,
                         nll=nll,
                         perplexity=perplexity,
+                        serving=serving_metrics,
                     )
                 self._store_analysis_trajectory()
                 self._save_state()
@@ -3029,6 +3050,7 @@ class Supervisor:
             "failure": failure,
             "test_nll": None,
             "test_perplexity": None,
+            "test_serving_metrics": None,
             "publication_id": uuid.uuid4().hex,
         }
         self._save_state()
@@ -3087,6 +3109,7 @@ class Supervisor:
         self.state["failure"] = failure
         self.state["test_nll"] = pending["test_nll"]
         self.state["test_perplexity"] = pending["test_perplexity"]
+        self.state["test_serving_metrics"] = pending["test_serving_metrics"]
         self.state["pending_result"] = None
         self.state["result_publication"] = {
             "publication_id": publication_id,
@@ -3171,6 +3194,7 @@ class Supervisor:
             self.state["failure"] = code
             self.state["test_nll"] = None
             self.state["test_perplexity"] = None
+            self.state["test_serving_metrics"] = None
             self.state["pending_result"] = None
             event = {"code": code}
             if private_detail is not None:
@@ -3234,6 +3258,7 @@ class Supervisor:
         self.state["failure"] = "agent_control_policy_violation"
         self.state["test_nll"] = None
         self.state["test_perplexity"] = None
+        self.state["test_serving_metrics"] = None
         self.state["pending_result"] = None
         self._event("EPISODE_DNF", reason="agent_control_policy_violation")
         self._save_state()

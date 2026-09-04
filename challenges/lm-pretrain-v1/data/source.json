@@ -25,8 +25,8 @@
     "asset_fingerprint": "generated-by-prepare_data.py"
   },
   "hidden_evaluation": {
-    "candidate_protocol": "next_token_logits_v2",
-    "dataset_schema_version": 1,
+    "candidate_protocol": "offline_next_token_logits_v3",
+    "dataset_schema_version": 2,
     "preview_analysis_target_predictions": 2048,
     "preview_test_target_predictions": 2048,
     "context_lengths": [64, 128, 256, 512, 1024, 2048],

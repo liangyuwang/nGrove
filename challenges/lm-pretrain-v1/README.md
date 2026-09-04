@@ -24,8 +24,12 @@ data/generated/
 │   │   └── manifest.json
 │   └── manifest.json
 ├── private/                   mounted only in trusted Evaluator containers
-│   ├── analysis.json
-│   └── test.json
+│   ├── analysis/
+│   │   ├── contexts.json      Candidate-visible only during ANALYSIS serving
+│   │   └── targets.json       trusted scorer only
+│   └── test/
+│       ├── contexts.json      Candidate-visible only during TEST serving
+│       └── targets.json       trusted scorer only
 └── manifest.json
 ```
 
@@ -36,14 +40,19 @@ selected for preview ANALYSIS/TEST are not copied into the Agent-visible directo
 Evaluation always sends and scores GPT-2 vocabulary IDs.
 
 The local preview builder pre-stages ANALYSIS/TEST under the trusted task root,
-but neither path is mounted into the Agent or Research Worker. A formal Worker
-may instead fetch, mount, or decrypt the same release-frozen identities only
-after research sealing; Core does not prescribe that mechanism.
+but neither path is mounted into the Agent or Research Worker. After research
+sealing, the Evaluation Worker may materialize the frozen pair. It validates
+both files first, mounts only `contexts.json` read-only into the Candidate, and
+keeps `targets.json` inside trusted scoring. A formal Worker may instead fetch,
+mount, or decrypt the same release-frozen identity at that point; Core does not
+prescribe the storage mechanism.
 
 The Evaluator uses balanced, non-overlapping contexts of 64, 128, 256, 512,
 1,024, and 2,048 tokens. Each context contributes exactly one hidden next-token
-target. The Candidate receives each context once and never receives the target
-later through a longer prefix or another overlapping source window. The
+target. The Candidate receives the complete unlabeled context artifact, owns
+its serving schedule and batching, and writes one ordered logit vector per
+example. It never receives the target later through a longer prefix or another
+overlapping source window. The
 Evaluator preserves mean target NLL in the episode record. ANALYSIS produces a
 postmortem trajectory over frozen Candidates and is never Agent feedback. The
 primary leaderboard-style score is TEST perplexity, derived once as
@@ -51,6 +60,14 @@ primary leaderboard-style score is TEST perplexity, derived once as
 comparable with the former progressive all-prefix preview metric. A run without
 a successful finite TEST result has no NLL or perplexity score and is reported
 as a failed experiment.
+
+The result also records Candidate serving wall time, examples, input tokens,
+prediction bytes, and derived throughput. The clock includes Candidate sandbox
+startup, model loading, file I/O, scheduling, and inference, but excludes
+hidden-data materialization and trusted validation/scoring. This preview keeps
+performance and efficiency as separate axes; it does not yet define a combined
+ranking. Efficiency comparisons require the same hidden input identity and
+runtime profile.
 
 ## Prepare data
 

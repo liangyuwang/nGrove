@@ -34,8 +34,10 @@ SHARD_TOKENS = 100_000_000
 RAW_SHARD_DOCUMENTS = 100_000
 PREVIEW_EVAL_EXAMPLES = 2_048
 EVAL_CONTEXT_LENGTHS = (64, 128, 256, 512, 1_024, 2_048)
-EVALUATION_DATASET_SCHEMA_VERSION = 1
-CANDIDATE_PROTOCOL = "next_token_logits_v2"
+EVALUATION_DATASET_SCHEMA_VERSION = 2
+CANDIDATE_PROTOCOL = "offline_next_token_logits_v3"
+CONTEXTS_FILENAME = "contexts.json"
+TARGETS_FILENAME = "targets.json"
 SPLIT_BUCKETS = 4_096
 
 ROOT = Path(__file__).resolve().parent
@@ -331,6 +333,7 @@ class EvaluationCollector:
             end = start + length
             self.examples.append(
                 {
+                    "example_id": f"example-{len(self.examples):08d}",
                     "context": [self.boundary_token_id, *content[start : end - 1]],
                     "target": content[end - 1],
                     "source_id": source_id,
@@ -342,7 +345,7 @@ class EvaluationCollector:
             self._next_length_index = (selected_index + 1) % len(self.context_lengths)
             start = end
 
-    def payload(self) -> Dict[str, Any]:
+    def context_payload(self, dataset_id: str) -> Dict[str, Any]:
         if not self.complete:
             raise PreparationError(
                 "source sample did not fill hidden evaluation examples"
@@ -350,7 +353,38 @@ class EvaluationCollector:
         return {
             "schema_version": EVALUATION_DATASET_SCHEMA_VERSION,
             "candidate_protocol": CANDIDATE_PROTOCOL,
-            "examples": list(self.examples),
+            "dataset_id": dataset_id,
+            "vocab_size": VOCAB_SIZE,
+            "context_lengths": list(self.context_lengths),
+            "examples": [
+                {
+                    "example_id": example["example_id"],
+                    "input_ids": example["context"],
+                }
+                for example in self.examples
+            ],
+        }
+
+    def target_payload(self, dataset_id: str, contexts_sha256: str) -> Dict[str, Any]:
+        if not self.complete:
+            raise PreparationError(
+                "source sample did not fill hidden evaluation examples"
+            )
+        return {
+            "schema_version": EVALUATION_DATASET_SCHEMA_VERSION,
+            "candidate_protocol": CANDIDATE_PROTOCOL,
+            "dataset_id": dataset_id,
+            "contexts_sha256": contexts_sha256,
+            "examples": [
+                {
+                    "example_id": example["example_id"],
+                    "target": example["target"],
+                    "source_id": example["source_id"],
+                    "source_start": example["source_start"],
+                    "source_end": example["source_end"],
+                }
+                for example in self.examples
+            ],
         }
 
     def context_length_histogram(self) -> Dict[str, int]:
@@ -611,6 +645,28 @@ def _write_json(path: Path, payload: Any, *, private: bool = False) -> None:
     path.chmod(0o600 if private else 0o644)
 
 
+def _write_evaluation_split(
+    path: Path, collector: EvaluationCollector, dataset_id: str
+) -> Dict[str, str]:
+    contexts_path = path / CONTEXTS_FILENAME
+    targets_path = path / TARGETS_FILENAME
+    _write_json(
+        contexts_path,
+        collector.context_payload(dataset_id),
+        private=True,
+    )
+    contexts_sha256 = _sha256_file(contexts_path)
+    _write_json(
+        targets_path,
+        collector.target_payload(dataset_id, contexts_sha256),
+        private=True,
+    )
+    return {
+        "contexts_sha256": contexts_sha256,
+        "targets_sha256": _sha256_file(targets_path),
+    }
+
+
 def _package_version(name: str) -> str:
     try:
         return importlib_metadata.version(name)
@@ -761,15 +817,17 @@ def prepare(
         if not analysis.complete or not test.complete:
             raise PreparationError("source sample did not fill preview ANALYSIS/TEST")
 
-        _write_json(
-            private_dir / "analysis.json",
-            analysis.payload(),
-            private=True,
+        analysis_dir = private_dir / "analysis"
+        test_dir = private_dir / "test"
+        analysis_artifacts = _write_evaluation_split(
+            analysis_dir,
+            analysis,
+            "lm-pretrain-v1:preview:offline-v3",
         )
-        _write_json(
-            private_dir / "test.json",
-            test.payload(),
-            private=True,
+        test_artifacts = _write_evaluation_split(
+            test_dir,
+            test,
+            "lm-pretrain-v1:preview:offline-v3",
         )
         source_files = [
             {
@@ -836,8 +894,10 @@ def prepare(
                     analysis.context_length_histogram()
                 ),
                 "test_context_length_histogram": test.context_length_histogram(),
-                "analysis_sha256": _sha256_file(private_dir / "analysis.json"),
-                "test_sha256": _sha256_file(private_dir / "test.json"),
+                "analysis_contexts_sha256": analysis_artifacts["contexts_sha256"],
+                "analysis_targets_sha256": analysis_artifacts["targets_sha256"],
+                "test_contexts_sha256": test_artifacts["contexts_sha256"],
+                "test_targets_sha256": test_artifacts["targets_sha256"],
             },
             "builder": {
                 "id": BUILDER_ID,

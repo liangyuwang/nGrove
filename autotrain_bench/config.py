@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
 
+from .candidate_protocol import serving_timing_manifest
+
 
 class ConfigError(ValueError):
     """Raised when a task configuration is invalid."""
@@ -531,7 +533,6 @@ class TaskConfig:
     track_b_max_leases: int
     track_b_lease_seconds: int
     evaluator_timeout_seconds: int
-    evaluator_batch_size: int
     evaluator_device: str
     candidate_max_bytes: int
     candidate_max_files: int
@@ -614,9 +615,9 @@ class TaskConfig:
             # after research sealing. Loading a task must not require either
             # file to exist in the research execution environment.
             analysis_path=resolved_path(
-                "analysis", directory=False, require_exists=False
+                "analysis", directory=True, require_exists=False
             ),
-            test_path=resolved_path("test", directory=False, require_exists=False),
+            test_path=resolved_path("test", directory=True, require_exists=False),
             training_image=_string(images.get("training"), "images.training"),
             candidate_image=_string(images.get("candidate"), "images.candidate"),
             evaluator_image=_string(images.get("evaluator"), "images.evaluator"),
@@ -653,10 +654,6 @@ class TaskConfig:
                 evaluation.get("timeout_seconds", 120),
                 "evaluation.timeout_seconds",
             ),
-            evaluator_batch_size=_positive_int(
-                evaluation.get("batch_size", 1),
-                "evaluation.batch_size",
-            ),
             evaluator_device=_string(
                 evaluation.get("device", "cpu"),
                 "evaluation.device",
@@ -672,7 +669,7 @@ class TaskConfig:
             evaluator_backend=evaluator_backend(evaluation.get("backend")),
             evaluator_entrypoint=evaluator_entrypoint,
             candidate_protocol=_string(
-                evaluation.get("candidate_protocol", "next_token_logits_v2"),
+                evaluation.get("candidate_protocol", "offline_next_token_logits_v3"),
                 "evaluation.candidate_protocol",
             ),
             analysis_candidate_selection=_string(
@@ -693,8 +690,8 @@ class TaskConfig:
 
     def validate(self) -> "TaskConfig":
         """Validate the immutable task definition and its release classification."""
-        if self.schema_version != 3:
-            raise ConfigError("task schema_version must be 3")
+        if self.schema_version != 4:
+            raise ConfigError("task schema_version must be 4")
         task_kind(self.task_kind)
         if self.task_kind == "development_smoke" and self.leaderboard_eligible:
             raise ConfigError("development smoke tasks may not be leaderboard eligible")
@@ -711,10 +708,10 @@ class TaskConfig:
         if self.evaluator_device not in {"cpu", "cuda"}:
             raise ConfigError("evaluation.device must be 'cpu' or 'cuda'")
         evaluator_backend(self.evaluator_backend)
-        if self.candidate_protocol != "next_token_logits_v2":
+        if self.candidate_protocol != "offline_next_token_logits_v3":
             raise ConfigError(
                 "v0 only implements evaluation.candidate_protocol="
-                "'next_token_logits_v2'"
+                "'offline_next_token_logits_v3'"
             )
         if (
             not self.context_lengths
@@ -841,18 +838,33 @@ class TaskConfig:
                 "vocab_size": self.vocab_size,
                 "context_length": self.context_length,
                 "context_lengths": list(self.context_lengths),
-                "batch_size": self.evaluator_batch_size,
                 "device": self.evaluator_device,
+                "serving_efficiency": {
+                    "status": "reported_not_ranked",
+                    "wall_time_field": "wall_seconds",
+                    "wall_time_direction": "minimize",
+                    "derived_rate_fields": [
+                        "examples_per_second",
+                        "input_tokens_per_second",
+                    ],
+                    "comparison_requires": [
+                        "hidden_dataset_identity",
+                        "runtime_profile",
+                    ],
+                },
                 "candidate_artifact_limits": {
                     "max_bytes": self.candidate_max_bytes,
                     "max_files": self.candidate_max_files,
                 },
                 "policy_compliant": self.evaluator_policy_compliant,
                 "candidate_boundary": {
-                    "hidden_data_mount": "none",
-                    "channel_mechanism": "worker_defined",
+                    "target_artifact_mount": "none",
+                    "context_artifact_access": "read_only",
+                    "prediction_artifact_access": "candidate_read_write_isolated",
+                    "channel_mechanism": "worker_materialized_files",
                     "candidate_egress": "denied",
                     "protocol": self.candidate_protocol,
+                    "serving_timing": serving_timing_manifest(),
                 },
             },
             "budget": budget,

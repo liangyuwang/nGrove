@@ -8,6 +8,7 @@ from autotrain_bench.worker_protocol import (
     Capability,
     CapabilityRequirement,
     CandidateChannelRequirements,
+    CandidateEvaluationResult,
     CommandResult,
     ConformanceReceipt,
     EnforcementLevel,
@@ -292,17 +293,56 @@ class WorkerProtocolTests(unittest.TestCase):
 
     def test_candidate_channel_denies_target_feedback_and_reexposure(self):
         manifest = CandidateChannelRequirements(
-            protocol="next_token_logits_v2"
+            protocol="offline_next_token_logits_v3"
         ).public_manifest()
 
-        self.assertEqual(manifest["request_content"], "single_target_token_contexts")
+        self.assertEqual(manifest["mechanism"], "worker_materialized_files")
+        self.assertEqual(manifest["request_content"], "target_free_context_artifact")
         self.assertEqual(manifest["predictions_per_context"], 1)
-        self.assertEqual(manifest["hidden_artifact_visibility"], "denied")
+        self.assertEqual(manifest["context_artifact_access"], "read_only")
+        self.assertEqual(
+            manifest["prediction_artifact_access"],
+            "candidate_read_write_isolated",
+        )
+        self.assertEqual(manifest["candidate_scheduling"], "participant_controlled")
+        self.assertEqual(
+            manifest["serving_timing"]["start"],
+            "immediately_before_candidate_process_invocation",
+        )
+        self.assertIn("model_loading", manifest["serving_timing"]["includes"])
+        self.assertIn("metric_computation", manifest["serving_timing"]["excludes"])
+        self.assertEqual(manifest["target_artifact_visibility"], "denied")
         self.assertEqual(manifest["current_target_visibility"], "denied")
         self.assertEqual(manifest["future_token_visibility"], "denied")
         self.assertEqual(manifest["target_feedback_visibility"], "denied")
         self.assertEqual(manifest["cross_context_target_overlap"], "denied")
         self.assertEqual(manifest["candidate_egress"], "denied")
+
+    def test_candidate_evaluation_result_exposes_raw_efficiency_evidence(self):
+        result = CandidateEvaluationResult(
+            nll=1.25,
+            serving_seconds=2.0,
+            examples=4,
+            input_tokens=20,
+            prediction_bytes=128,
+        )
+
+        self.assertEqual(result.nll, 1.25)
+        self.assertEqual(
+            result.serving_manifest(),
+            {
+                "wall_seconds": 2.0,
+                "examples": 4,
+                "input_tokens": 20,
+                "prediction_bytes": 128,
+                "examples_per_second": 2.0,
+                "input_tokens_per_second": 10.0,
+            },
+        )
+        with self.assertRaisesRegex(ValueError, "serving_seconds"):
+            CandidateEvaluationResult(1.0, 0.0, 1, 1, 1)
+        with self.assertRaisesRegex(ValueError, "serving rates"):
+            CandidateEvaluationResult(1.0, 5e-324, 1, 1, 1)
 
     def test_command_result_types_are_strict(self):
         with self.assertRaisesRegex(TypeError, "exit_code"):
@@ -480,7 +520,7 @@ class WorkerProtocolTests(unittest.TestCase):
 
     def test_descriptor_manifest_contains_no_platform_schema(self):
         manifest = descriptor().public_manifest()
-        self.assertEqual(manifest["protocol_version"], 10)
+        self.assertEqual(manifest["protocol_version"], 11)
         self.assertEqual(manifest["roles"], ["research", "evaluation"])
         self.assertNotIn("conformance", manifest)
         serialized = json.dumps(manifest).lower()
@@ -492,7 +532,7 @@ class WorkerProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "protocol version"):
             WorkerDescriptor(
                 worker_id="future-worker",
-                protocol_version=11,
+                protocol_version=12,
                 trust_level=TrustLevel.DEVELOPMENT,
                 roles=("research",),
                 capabilities={},

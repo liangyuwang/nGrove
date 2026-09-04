@@ -87,7 +87,8 @@ class SmokeLmPreparationTests(unittest.TestCase):
             )
         )
         self.assertEqual(
-            collector.payload()["candidate_protocol"], "next_token_logits_v2"
+            collector.context_payload("smoke-test")["candidate_protocol"],
+            "offline_next_token_logits_v3",
         )
 
     def test_evaluation_requires_at_least_one_example_per_context_length(self):

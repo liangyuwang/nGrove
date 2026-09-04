@@ -26,11 +26,13 @@ from typing import (
     runtime_checkable,
 )
 
+from .candidate_protocol import serving_timing_manifest
+
 if TYPE_CHECKING:
     from .config import TaskConfig, TrainingResources
 
 
-WORKER_PROTOCOL_VERSION = 10
+WORKER_PROTOCOL_VERSION = 11
 WORKER_CONFORMANCE_SUITE_VERSION = f"worker-v{WORKER_PROTOCOL_VERSION}"
 CONFORMANCE_RECEIPT_VERSION = 1
 RESOURCE_ENVELOPE_SCHEMA_VERSION = 1
@@ -135,12 +137,15 @@ class ResearchTaskSpec:
 
 @dataclass(frozen=True)
 class CandidateChannelRequirements:
-    """Release-owned application semantics, not a transport selection."""
+    """Release-owned application and artifact semantics."""
 
     protocol: str
-    request_content: str = "single_target_token_contexts"
+    request_content: str = "target_free_context_artifact"
     predictions_per_context: int = 1
-    hidden_artifact_visible: bool = False
+    context_artifact_read_only: bool = True
+    prediction_artifact_isolated: bool = True
+    candidate_controls_scheduling: bool = True
+    target_artifact_visible: bool = False
     current_target_visible: bool = False
     future_tokens_visible: bool = False
     target_feedback_visible: bool = False
@@ -150,9 +155,9 @@ class CandidateChannelRequirements:
     def __post_init__(self) -> None:
         if not isinstance(self.protocol, str) or not self.protocol.strip():
             raise ValueError("Candidate channel protocol must not be empty")
-        if self.request_content != "single_target_token_contexts":
+        if self.request_content != "target_free_context_artifact":
             raise ValueError(
-                "Candidate channel must carry single-target token contexts"
+                "Candidate channel must carry a target-free context artifact"
             )
         if (
             isinstance(self.predictions_per_context, bool)
@@ -161,8 +166,14 @@ class CandidateChannelRequirements:
             raise ValueError(
                 "Candidate channel must request one prediction per context"
             )
-        if self.hidden_artifact_visible is not False:
-            raise ValueError("Candidate channel may not expose the hidden artifact")
+        if self.context_artifact_read_only is not True:
+            raise ValueError("Candidate context artifacts must be read-only")
+        if self.prediction_artifact_isolated is not True:
+            raise ValueError("Candidate prediction storage must be isolated")
+        if self.candidate_controls_scheduling is not True:
+            raise ValueError("Candidate must control its inference scheduling")
+        if self.target_artifact_visible is not False:
+            raise ValueError("Candidate channel may not expose the target artifact")
         if self.current_target_visible is not False:
             raise ValueError("Candidate channel may not expose the current target")
         if self.future_tokens_visible is not False:
@@ -179,15 +190,19 @@ class CandidateChannelRequirements:
     def public_manifest(self) -> Dict[str, Any]:
         return {
             "protocol": self.protocol,
-            "mechanism": "worker_defined",
+            "mechanism": "worker_materialized_files",
             "request_content": self.request_content,
             "predictions_per_context": self.predictions_per_context,
-            "hidden_artifact_visibility": "denied",
+            "context_artifact_access": "read_only",
+            "prediction_artifact_access": "candidate_read_write_isolated",
+            "candidate_scheduling": "participant_controlled",
+            "target_artifact_visibility": "denied",
             "current_target_visibility": "denied",
             "future_token_visibility": "denied",
             "target_feedback_visibility": "denied",
             "cross_context_target_overlap": "denied",
             "candidate_egress": "denied",
+            "serving_timing": serving_timing_manifest(),
         }
 
 
@@ -204,7 +219,6 @@ class EvaluationTaskSpec:
     vocab_size: int
     context_length: int
     context_lengths: Tuple[int, ...]
-    batch_size: int
     device: str
     timeout_seconds: int
     candidate_channel: CandidateChannelRequirements
@@ -221,13 +235,74 @@ class EvaluationTaskSpec:
             vocab_size=task.vocab_size,
             context_length=task.context_length,
             context_lengths=task.context_lengths,
-            batch_size=task.evaluator_batch_size,
             device=task.evaluator_device,
             timeout_seconds=task.evaluator_timeout_seconds,
             candidate_channel=CandidateChannelRequirements(
                 protocol=task.candidate_protocol
             ),
         )
+
+
+@dataclass(frozen=True)
+class CandidateEvaluationResult:
+    """Trusted performance and end-to-end serving evidence from one evaluation."""
+
+    nll: float
+    serving_seconds: float
+    examples: int
+    input_tokens: int
+    prediction_bytes: int
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("nll", self.nll),
+            ("serving_seconds", self.serving_seconds),
+        ):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(
+                    f"Candidate evaluation {name} must be finite and non-negative"
+                )
+            try:
+                normalized = float(value)
+            except OverflowError as exc:
+                raise ValueError(
+                    f"Candidate evaluation {name} must be finite and non-negative"
+                ) from exc
+            if not math.isfinite(normalized) or normalized < 0:
+                raise ValueError(
+                    f"Candidate evaluation {name} must be finite and non-negative"
+                )
+        if self.serving_seconds <= 0:
+            raise ValueError("Candidate evaluation serving_seconds must be positive")
+        for name, value in (
+            ("examples", self.examples),
+            ("input_tokens", self.input_tokens),
+            ("prediction_bytes", self.prediction_bytes),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(
+                    f"Candidate evaluation {name} must be a positive integer"
+                )
+        seconds = float(self.serving_seconds)
+        try:
+            rates = (self.examples / seconds, self.input_tokens / seconds)
+        except OverflowError as exc:
+            raise ValueError(
+                "Candidate evaluation serving rates must be finite"
+            ) from exc
+        if not all(math.isfinite(rate) for rate in rates):
+            raise ValueError("Candidate evaluation serving rates must be finite")
+
+    def serving_manifest(self) -> Dict[str, Any]:
+        seconds = float(self.serving_seconds)
+        return {
+            "wall_seconds": seconds,
+            "examples": self.examples,
+            "input_tokens": self.input_tokens,
+            "prediction_bytes": self.prediction_bytes,
+            "examples_per_second": self.examples / seconds,
+            "input_tokens_per_second": self.input_tokens / seconds,
+        }
 
 
 def _validate_sha256(value: str, field: str) -> None:
@@ -1300,7 +1375,7 @@ class EvaluationWorker(Protocol):
         candidate_workload: ResolvedWorkload,
         evaluator_workload: ResolvedWorkload,
         timeout_seconds: Optional[float] = None,
-    ) -> float: ...
+    ) -> CandidateEvaluationResult: ...
 
 
 @runtime_checkable

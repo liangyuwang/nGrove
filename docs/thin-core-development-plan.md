@@ -75,7 +75,7 @@ budget, isolation, comparison, or eligibility. Device selection, scheduler
 requests, cgroups, filesystem quotas, and other enforcement mechanisms remain
 Worker-owned.
 
-Worker Protocol v10 retains the v7 implementation of this contract for Training
+Worker Protocol v11 retains the v7 implementation of this contract for Training
 Lease admission.
 It retains `TrainingResources` only as a bundled v0 compatibility input while
 passing the release-owned, property-extensible `ResourceEnvelope` and requiring
@@ -90,7 +90,7 @@ The v0 support statement is:
 
 - The bundled `autotrain-bench prepare` and `autotrain-bench start` commands
   are a single-host local Docker reference composition.
-- `autotrain_bench.worker_protocol` version 10 is a synchronous in-process
+- `autotrain_bench.worker_protocol` version 11 is a synchronous in-process
   Python contract. Its remaining TRAIN/workspace/Candidate/output `Path` values
   are local deployment handles, not a serializable remote wire format. Hidden
   dataset requests and resolutions are path-free.
@@ -355,12 +355,18 @@ Status: implemented in the development schemas.
   with balanced, non-overlapping contexts that each contribute one permanently
   hidden next-token target. The release freezes the context-length set, and the
   Candidate receives no target feedback.
+- Task schema v4 and Worker Protocol v11 split each hidden dataset into a
+  Candidate-visible `contexts.json` and trusted-only `targets.json`, bind the
+  pair by identity, and give the Candidate complete control of offline serving
+  batching and scheduling. Result schema v9 records trusted serving wall time,
+  workload counts, prediction bytes, and derived throughput independently from
+  performance.
 - Research is durably sealed before Agent/Research teardown; hidden evaluation
   is rejected until teardown and Agent-control cleanup are confirmed.
 - The final Agent-declared incumbent is scored on TEST first. The TEST decision
   is persisted before selected historical Candidates are attempted on ANALYSIS.
-- Result schema v8 retains v7 workload-resolution evidence and adds the
-  release resource envelope plus per-Lease allocation receipts. It also records the frozen Candidate
+- Result schema v9 retains v8 workload/resource evidence and adds serving
+  measurements. It also records the frozen Candidate
   inventory, ordered incumbent declarations, ANALYSIS trajectory, explicit
   analysis disposition, and trajectory-derived selected/evaluated point
   counts. Every trajectory point is
@@ -375,13 +381,13 @@ Status: implemented in the development schemas.
   succeeds; teardown that remains unconfirmed blocks publication and becomes an
   infrastructure failure. Terminal publication happens only after all
   postmortem workload and private-materialization cleanup attempts finish.
-- Worker Protocol v10 retains the transport-neutral Candidate application
-  contract and a Worker-owned hidden-data resolution seam. Core supplies only a
+- Worker Protocol v11 defines a platform-neutral offline Candidate file
+  contract and retains a Worker-owned hidden-data resolution seam. Core supplies only a
   logical split name and release-frozen expected digest; the Worker returns an
   effective digest plus opaque resolution ID before Candidate execution. The
-  task evaluator exports `evaluate(..., predict, context_lengths=...)`; the bundled Docker
-  Worker supplies its HTTP adapter and a private local-path resolver, while
-  external Workers may supply other isolated mechanisms.
+  bundled Docker Worker supplies an offline filesystem adapter and a private
+  local-path resolver, while external Workers may supply other isolated
+  mechanisms that preserve the same artifact visibility and timing semantics.
 
 ## Phase C: add only demonstrated semantic capabilities
 
@@ -400,7 +406,7 @@ External result: not fired. The tested Agent could be sandboxed, but its
 inference channel could not be mediated by the registered Gateway. A different
 participant with a compliant inference path is needed before redesigning C1.
 
-Result schema version 8 still pins `agent_system` to the bundled v0 runner
+Result schema version 9 still pins `agent_system` to the bundled v0 runner
 vocabulary, so this phase also owns that structure. `_validate_agent_system()`
 in `autotrain_bench/results.py` rejects a `runner` outside `AGENT_RUNNERS` and
 keys its "a host runner declares no egress policy" rule on the literal
@@ -410,7 +416,7 @@ recording an unregistered runner would become unreadable rather than merely
 unverified. This phase must re-express the `agent_system` invariants over
 semantic fields instead of mechanism names, which changes the persisted
 structure and therefore requires a result schema revision with a read-only
-migration. Worker Protocol v10 resolves only Worker-owned training, Candidate,
+migration. Worker Protocol v11 resolves only Worker-owned training, Candidate,
 and Evaluator workloads. The v0 Agent evidence binds the Agent image but not a
 separate inference Gateway image, so formal runs using registered inference now
 fail closed with `inference_gateway_workload_evidence_missing` until C1 defines
@@ -526,7 +532,7 @@ Leases are independently normative.
 ### C5. Trusted conformance evidence
 
 Status: evidence boundary implemented in Worker Protocol v9 and retained by
-v10; complete formal conformance suite remains future organizer work.
+v11; complete formal conformance suite remains future organizer work.
 
 Trigger: the first in-repository resolution probe demonstrated that a partial
 black-box check could otherwise be mistaken for complete Worker conformance,
@@ -575,7 +581,9 @@ required workload and hidden-data resolution deadlines advanced the Worker
 Protocol to version 8 without changing the result schema; trusted,
 Worker-bound conformance evidence advanced it to version 9; the single-target,
 non-overlapping Candidate evaluation contract advanced it to version 10 and
-task schema version 3.
+task schema version 3; the offline split-artifact Candidate ABI and serving
+evidence advanced Worker Protocol to version 11, task schema to version 4, and
+result schema to version 9.
 
 A new protocol revision is required when an implementation must change a
 required method, argument, return value, ordering guarantee, or failure

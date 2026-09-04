@@ -6,6 +6,7 @@ from autotrain_bench.results import (
     AGENT_MODE_RESULT_SCHEMA_VERSION,
     POSTMORTEM_RESULT_SCHEMA_VERSION,
     PRE_RESOURCE_ALLOCATION_RESULT_SCHEMA_VERSION,
+    PRE_SERVING_EFFICIENCY_RESULT_SCHEMA_VERSION,
     PRE_WORKLOAD_RESOLUTION_RESULT_SCHEMA_VERSION,
     PRE_ANALYSIS_RESULT_SCHEMA_VERSION,
     RESULT_SCHEMA_VERSION,
@@ -48,7 +49,19 @@ def _analysis_point(candidate_id="sha256:candidate"):
         "analysis_status": "evaluated",
         "analysis_nll": 0.0,
         "analysis_perplexity": 1.0,
+        "analysis_serving_metrics": _serving_metrics(),
         "analysis_error": None,
+    }
+
+
+def _serving_metrics():
+    return {
+        "wall_seconds": 2.0,
+        "examples": 4,
+        "input_tokens": 20,
+        "prediction_bytes": 128,
+        "examples_per_second": 2.0,
+        "input_tokens_per_second": 10.0,
     }
 
 
@@ -139,6 +152,7 @@ def _finalized(*, schema_version=RESULT_SCHEMA_VERSION, **overrides):
         "final_candidate_id": "sha256:candidate",
         "test_nll": 0.0,
         "test_perplexity": 1.0,
+        "test_serving_metrics": _serving_metrics(),
         "failure": None,
         "research_sealed_at": "2026-01-01T00:00:00+00:00",
         "analysis_complete": True,
@@ -170,6 +184,21 @@ def _finalized(*, schema_version=RESULT_SCHEMA_VERSION, **overrides):
 
 
 class ResultMetricTests(unittest.TestCase):
+    def test_v8_migration_marks_serving_evidence_as_unavailable(self):
+        legacy = _finalized(schema_version=PRE_SERVING_EFFICIENCY_RESULT_SCHEMA_VERSION)
+        legacy.pop("test_serving_metrics")
+        legacy["analysis_trajectory"][0].pop("analysis_serving_metrics")
+
+        report = normalize_result_report(legacy)
+
+        self.assertEqual(report["result_schema_version"], RESULT_SCHEMA_VERSION)
+        self.assertEqual(
+            report["migrated_from_result_schema_version"],
+            PRE_SERVING_EFFICIENCY_RESULT_SCHEMA_VERSION,
+        )
+        self.assertIsNone(report["test_serving_metrics"])
+        self.assertIsNone(report["analysis_trajectory"][0]["analysis_serving_metrics"])
+
     def test_v7_migration_marks_resource_evidence_as_unavailable(self):
         legacy = _finalized(
             schema_version=PRE_RESOURCE_ALLOCATION_RESULT_SCHEMA_VERSION
@@ -220,6 +249,13 @@ class ResultMetricTests(unittest.TestCase):
         self.assertEqual(validated_nll(0), 0.0)
         self.assertAlmostEqual(perplexity_from_nll(1.5), math.exp(1.5))
 
+    def test_serving_rates_are_bound_to_counts_and_wall_time(self):
+        payload = _finalized()
+        payload["test_serving_metrics"]["examples_per_second"] = 999.0
+
+        with self.assertRaisesRegex(ResultSchemaError, "does not match"):
+            normalize_result_report(payload)
+
     def test_current_result_schema_rejects_inconsistent_states(self):
         invalid = {
             "terminal_without_outcome": {
@@ -255,6 +291,7 @@ class ResultMetricTests(unittest.TestCase):
                 "outcome": None,
                 "test_nll": 0.0,
                 "test_perplexity": 1.0,
+                "test_serving_metrics": _serving_metrics(),
                 "failure": None,
                 "research_sealed_at": "2026-01-01T00:00:00+00:00",
                 "analysis_complete": False,
@@ -276,6 +313,7 @@ class ResultMetricTests(unittest.TestCase):
                 "active_lease": {"lease_id": "lease-0001"},
                 "test_nll": 0.0,
                 "test_perplexity": 1.0,
+                "test_serving_metrics": _serving_metrics(),
                 "failure": None,
             },
             "success_with_pending_teardown": {
@@ -352,6 +390,7 @@ class ResultMetricTests(unittest.TestCase):
                 "final_candidate_id": "sha256:candidate",
                 "test_nll": 0.0,
                 "test_perplexity": 1.0,
+                "test_serving_metrics": _serving_metrics(),
                 "failure": None,
                 "research_sealed_at": "2026-01-01T00:00:00+00:00",
                 "analysis_complete": True,
@@ -387,6 +426,7 @@ class ResultMetricTests(unittest.TestCase):
             analysis_status="infrastructure_failure",
             analysis_nll=None,
             analysis_perplexity=None,
+            analysis_serving_metrics=None,
             analysis_error="worker_teardown_failure",
         )
 
@@ -635,6 +675,7 @@ class ResultMetricTests(unittest.TestCase):
                 "final_candidate_id": "sha256:candidate",
                 "test_nll": 0.0,
                 "test_perplexity": 1.0,
+                "test_serving_metrics": _serving_metrics(),
                 "failure": None,
                 "agent_system": {"runner": "container", "egress": "denied"},
                 "research_sealed_at": "2026-01-01T00:00:00+00:00",
@@ -733,6 +774,7 @@ class ResultMetricTests(unittest.TestCase):
             analysis_status="failed",
             analysis_nll=None,
             analysis_perplexity=None,
+            analysis_serving_metrics=None,
             analysis_error="evaluation_failed",
         )
         report = normalize_result_report(

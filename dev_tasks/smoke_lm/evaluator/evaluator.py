@@ -1,20 +1,37 @@
-"""Trusted single-target NLL evaluator for the AutoTrain-Bench Candidate ABI."""
+"""Trusted scorer for the offline AutoTrain-Bench Candidate ABI."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
-from numbers import Real
+import stat
+import sys
+from array import array
 from pathlib import Path
-from typing import Callable, Dict, List, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 
-DATASET_SCHEMA_VERSION = 1
-CANDIDATE_PROTOCOL = "next_token_logits_v2"
+DATASET_SCHEMA_VERSION = 2
+PREDICTION_SCHEMA_VERSION = 1
+CANDIDATE_PROTOCOL = "offline_next_token_logits_v3"
+LOGITS_FILENAME = "logits.f32"
+PREDICTIONS_FILENAME = "predictions.json"
 
 
 class EvaluationError(RuntimeError):
     pass
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        raise EvaluationError("evaluation artifact could not be read") from exc
+    return digest.hexdigest()
 
 
 def _context_lengths(value: Sequence[int]) -> Tuple[int, ...]:
@@ -35,54 +52,123 @@ def _context_lengths(value: Sequence[int]) -> Tuple[int, ...]:
     return result
 
 
-def _examples(
-    data_path: Path,
+def _json_object(path: Path, description: str) -> Dict[str, object]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError) as exc:
+        raise EvaluationError(f"{description} is invalid") from exc
+    if not isinstance(payload, dict):
+        raise EvaluationError(f"{description} must be an object")
+    return payload
+
+
+def _identifier(value: object, description: str) -> str:
+    if not isinstance(value, str) or not value or len(value) > 512 or "\0" in value:
+        raise EvaluationError(f"{description} is invalid")
+    return value
+
+
+def _load_dataset(
+    contexts_path: Path,
+    targets_path: Path,
     vocab_size: int,
     context_lengths: Sequence[int],
-) -> List[Tuple[List[int], int]]:
+) -> Tuple[Dict[str, object], List[int]]:
     allowed_lengths = _context_lengths(context_lengths)
-    try:
-        payload = json.loads(data_path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError) as exc:
-        raise EvaluationError("evaluation data is invalid") from exc
-    if not isinstance(payload, dict) or set(payload) != {
+    contexts = _json_object(contexts_path, "evaluation contexts")
+    targets = _json_object(targets_path, "evaluation targets")
+    if set(contexts) != {
         "schema_version",
         "candidate_protocol",
+        "dataset_id",
+        "vocab_size",
+        "context_lengths",
         "examples",
     }:
-        raise EvaluationError("evaluation data has an invalid schema")
-    if payload["schema_version"] != DATASET_SCHEMA_VERSION:
+        raise EvaluationError("evaluation contexts have an invalid schema")
+    if set(targets) != {
+        "schema_version",
+        "candidate_protocol",
+        "dataset_id",
+        "contexts_sha256",
+        "examples",
+    }:
+        raise EvaluationError("evaluation targets have an invalid schema")
+    if (
+        isinstance(contexts["schema_version"], bool)
+        or not isinstance(contexts["schema_version"], int)
+        or contexts["schema_version"] != DATASET_SCHEMA_VERSION
+        or isinstance(targets["schema_version"], bool)
+        or not isinstance(targets["schema_version"], int)
+        or targets["schema_version"] != DATASET_SCHEMA_VERSION
+    ):
         raise EvaluationError("evaluation data has an unsupported schema version")
-    if payload["candidate_protocol"] != CANDIDATE_PROTOCOL:
+    if (
+        contexts["candidate_protocol"] != CANDIDATE_PROTOCOL
+        or targets["candidate_protocol"] != CANDIDATE_PROTOCOL
+    ):
         raise EvaluationError("evaluation data uses a different Candidate protocol")
-    raw_examples = payload["examples"]
-    if not isinstance(raw_examples, list) or not raw_examples:
-        raise EvaluationError("evaluation data must contain non-empty examples")
+    dataset_id = _identifier(contexts["dataset_id"], "evaluation dataset_id")
+    if targets["dataset_id"] != dataset_id:
+        raise EvaluationError("evaluation context and target identities differ")
+    if (
+        isinstance(contexts["vocab_size"], bool)
+        or not isinstance(contexts["vocab_size"], int)
+        or contexts["vocab_size"] != vocab_size
+    ):
+        raise EvaluationError("evaluation vocabulary does not match the task")
+    if _context_lengths(contexts["context_lengths"]) != allowed_lengths:
+        raise EvaluationError("evaluation context lengths do not match the task")
+    contexts_sha256 = _sha256_file(contexts_path)
+    if targets["contexts_sha256"] != contexts_sha256:
+        raise EvaluationError("evaluation targets do not bind the context artifact")
 
-    result: List[Tuple[List[int], int]] = []
-    spans: Dict[str, List[Tuple[int, int]]] = {}
+    raw_contexts = contexts["examples"]
+    raw_targets = targets["examples"]
+    if (
+        not isinstance(raw_contexts, list)
+        or not raw_contexts
+        or not isinstance(raw_targets, list)
+        or len(raw_targets) != len(raw_contexts)
+    ):
+        raise EvaluationError("evaluation examples are missing or misaligned")
+
+    seen_ids = set()
     observed_lengths = set()
-    expected_fields = {
-        "context",
-        "target",
-        "source_id",
-        "source_start",
-        "source_end",
-    }
-    for example in raw_examples:
-        if not isinstance(example, dict) or set(example) != expected_fields:
-            raise EvaluationError("evaluation example has an invalid schema")
-        context = example["context"]
-        target = example["target"]
-        if not isinstance(context, list) or len(context) not in allowed_lengths:
+    histogram = {length: 0 for length in allowed_lengths}
+    protected_spans: Dict[str, List[Tuple[int, int]]] = {}
+    ordered_targets: List[int] = []
+    input_tokens = 0
+    for context_example, target_example in zip(raw_contexts, raw_targets):
+        if not isinstance(context_example, dict) or set(context_example) != {
+            "example_id",
+            "input_ids",
+        }:
+            raise EvaluationError("evaluation context example has an invalid schema")
+        if not isinstance(target_example, dict) or set(target_example) != {
+            "example_id",
+            "target",
+            "source_id",
+            "source_start",
+            "source_end",
+        }:
+            raise EvaluationError("evaluation target example has an invalid schema")
+        example_id = _identifier(context_example["example_id"], "example_id")
+        if target_example["example_id"] != example_id or example_id in seen_ids:
+            raise EvaluationError("evaluation example IDs are duplicated or misaligned")
+        seen_ids.add(example_id)
+
+        input_ids = context_example["input_ids"]
+        if not isinstance(input_ids, list) or len(input_ids) not in allowed_lengths:
             raise EvaluationError("evaluation context has an undeclared length")
         if not all(
             isinstance(token, int)
             and not isinstance(token, bool)
             and 0 <= token < vocab_size
-            for token in context
+            for token in input_ids
         ):
             raise EvaluationError("evaluation context token is outside the vocabulary")
+        target = target_example["target"]
         if (
             isinstance(target, bool)
             or not isinstance(target, int)
@@ -91,92 +177,156 @@ def _examples(
         ):
             raise EvaluationError("evaluation target is outside the fixed vocabulary")
 
-        source_id = example["source_id"]
-        source_start = example["source_start"]
-        source_end = example["source_end"]
-        if (
-            not isinstance(source_id, str)
-            or not source_id
-            or len(source_id) > 512
-            or "\0" in source_id
-        ):
-            raise EvaluationError("evaluation source_id is invalid")
+        source_id = _identifier(target_example["source_id"], "source_id")
+        source_start = target_example["source_start"]
+        source_end = target_example["source_end"]
         if (
             isinstance(source_start, bool)
             or not isinstance(source_start, int)
             or source_start < 0
             or isinstance(source_end, bool)
             or not isinstance(source_end, int)
-            or source_end - source_start != len(context)
+            or source_end - source_start != len(input_ids)
         ):
-            raise EvaluationError("evaluation source span is invalid")
-        spans.setdefault(source_id, []).append((source_start, source_end))
-        observed_lengths.add(len(context))
-        result.append((list(context), target))
+            raise EvaluationError("evaluation protected source span is invalid")
+        protected_spans.setdefault(source_id, []).append((source_start, source_end))
+        observed_lengths.add(len(input_ids))
+        histogram[len(input_ids)] += 1
+        input_tokens += len(input_ids)
+        ordered_targets.append(target)
 
     if observed_lengths != set(allowed_lengths):
         raise EvaluationError("evaluation data does not cover every context length")
-    for source_spans in spans.values():
+    for source_spans in protected_spans.values():
         previous_end = -1
         for start, end in sorted(source_spans):
             if start < previous_end:
-                raise EvaluationError("evaluation source spans overlap")
+                raise EvaluationError("evaluation protected source spans overlap")
             previous_end = end
-    return result
+
+    return (
+        {
+            "dataset_id": dataset_id,
+            "contexts_sha256": contexts_sha256,
+            "examples": len(raw_contexts),
+            "input_tokens": input_tokens,
+            "context_length_histogram": {
+                str(length): histogram[length] for length in allowed_lengths
+            },
+        },
+        ordered_targets,
+    )
+
+
+def validate_inputs(
+    contexts_path: Path,
+    targets_path: Path,
+    vocab_size: int,
+    *,
+    context_lengths: Sequence[int],
+) -> Dict[str, object]:
+    """Validate both artifacts before the target-free part reaches Candidate code."""
+
+    statistics, _targets = _load_dataset(
+        contexts_path, targets_path, vocab_size, context_lengths
+    )
+    return statistics
+
+
+def _prediction_paths(predictions_dir: Path) -> Tuple[Path, Path]:
+    try:
+        entries = {entry.name: entry for entry in predictions_dir.iterdir()}
+    except OSError as exc:
+        raise EvaluationError("Candidate prediction artifact is unavailable") from exc
+    if set(entries) != {PREDICTIONS_FILENAME, LOGITS_FILENAME}:
+        raise EvaluationError("Candidate prediction artifact has unexpected entries")
+    for entry in entries.values():
+        try:
+            metadata = entry.lstat()
+        except OSError as exc:
+            raise EvaluationError(
+                "Candidate prediction artifact is unavailable"
+            ) from exc
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise EvaluationError("Candidate prediction entries must be regular files")
+    return entries[PREDICTIONS_FILENAME], entries[LOGITS_FILENAME]
 
 
 def evaluate(
-    data_path: Path,
+    contexts_path: Path,
+    targets_path: Path,
+    predictions_dir: Path,
     vocab_size: int,
-    predict: Callable[[Sequence[Sequence[int]]], Sequence[Sequence[float]]],
     *,
-    batch_size: int,
     context_lengths: Sequence[int],
-) -> float:
-    """Score exactly one permanently hidden target for each context."""
+) -> Dict[str, object]:
+    """Score one permanently hidden target per context from an offline logit file."""
 
-    if (
-        isinstance(batch_size, bool)
-        or not isinstance(batch_size, int)
-        or batch_size <= 0
-    ):
-        raise EvaluationError("batch size must be positive")
-    normalized_lengths = _context_lengths(context_lengths)
-    examples = _examples(data_path, vocab_size, normalized_lengths)
-    buckets: Dict[int, List[Tuple[List[int], int]]] = {
-        length: [] for length in normalized_lengths
+    statistics, targets = _load_dataset(
+        contexts_path, targets_path, vocab_size, context_lengths
+    )
+    manifest_path, logits_path = _prediction_paths(predictions_dir)
+    manifest = _json_object(manifest_path, "Candidate prediction manifest")
+    expected_manifest = {
+        "schema_version": PREDICTION_SCHEMA_VERSION,
+        "candidate_protocol": CANDIDATE_PROTOCOL,
+        "dataset_id": statistics["dataset_id"],
+        "examples": statistics["examples"],
+        "vocab_size": vocab_size,
+        "dtype": "float32-le",
+        "logits_file": LOGITS_FILENAME,
     }
-    for context, target in examples:
-        buckets[len(context)].append((context, target))
+    if (
+        set(manifest) != set(expected_manifest)
+        or isinstance(manifest.get("schema_version"), bool)
+        or not isinstance(manifest.get("schema_version"), int)
+        or isinstance(manifest.get("examples"), bool)
+        or not isinstance(manifest.get("examples"), int)
+        or isinstance(manifest.get("vocab_size"), bool)
+        or not isinstance(manifest.get("vocab_size"), int)
+        or manifest != expected_manifest
+    ):
+        raise EvaluationError(
+            "Candidate prediction manifest does not match the request"
+        )
+
+    row_bytes = vocab_size * 4
+    expected_bytes = len(targets) * row_bytes
+    try:
+        actual_bytes = logits_path.stat().st_size
+    except OSError as exc:
+        raise EvaluationError("Candidate logits are unavailable") from exc
+    if actual_bytes != expected_bytes:
+        raise EvaluationError("Candidate logits have the wrong byte length")
+    if array("f").itemsize != 4:
+        raise EvaluationError("Evaluator platform lacks IEEE-754 float32 arrays")
 
     losses: List[float] = []
-    for length in buckets:
-        bucket = buckets[length]
-        for start in range(0, len(bucket), batch_size):
-            batch = bucket[start : start + batch_size]
-            contexts = [context for context, _target in batch]
-            targets = [target for _context, target in batch]
-            output = predict(contexts)
-            if len(output) != len(contexts):
-                raise EvaluationError("Candidate returned the wrong batch dimension")
-            for logits, target in zip(output, targets):
-                if len(logits) != vocab_size:
-                    raise EvaluationError(
-                        "Candidate returned the wrong vocabulary dimension"
-                    )
-                if any(
-                    isinstance(value, bool)
-                    or not isinstance(value, Real)
-                    or not math.isfinite(float(value))
-                    for value in logits
-                ):
-                    raise EvaluationError("Candidate logits must be finite numbers")
-                normalized = [float(value) for value in logits]
-                maximum = max(normalized)
+    try:
+        with logits_path.open("rb") as stream:
+            for target in targets:
+                encoded = stream.read(row_bytes)
+                if len(encoded) != row_bytes:
+                    raise EvaluationError("Candidate logits ended unexpectedly")
+                logits = array("f")
+                logits.frombytes(encoded)
+                if sys.byteorder != "little":
+                    logits.byteswap()
+                if any(not math.isfinite(value) for value in logits):
+                    raise EvaluationError("Candidate logits must be finite float32")
+                maximum = max(logits)
                 log_normalizer = maximum + math.log(
-                    math.fsum(math.exp(value - maximum) for value in normalized)
+                    math.fsum(math.exp(value - maximum) for value in logits)
                 )
-                losses.append(log_normalizer - normalized[target])
-    if not losses:
-        raise EvaluationError("evaluation data contains no prediction targets")
-    return math.fsum(losses) / len(losses)
+                losses.append(log_normalizer - logits[target])
+            if stream.read(1):
+                raise EvaluationError("Candidate logits contain trailing bytes")
+    except OSError as exc:
+        raise EvaluationError("Candidate logits could not be read") from exc
+
+    return {
+        "nll": math.fsum(losses) / len(losses),
+        "examples": statistics["examples"],
+        "input_tokens": statistics["input_tokens"],
+        "prediction_bytes": manifest_path.stat().st_size + actual_bytes,
+    }
