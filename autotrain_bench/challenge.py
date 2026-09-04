@@ -16,7 +16,12 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 from .config import ConfigError, TaskConfig, TrainingResources
-from .worker_protocol import WorkloadResolutionAcceptance
+from .worker_protocol import (
+    EnforcementLevel,
+    ResourceEnvelope,
+    ResourceRequirement,
+    WorkloadResolutionAcceptance,
+)
 
 
 RELEASE_STAGES = {"preview", "official"}
@@ -159,6 +164,7 @@ class RuntimeProfile:
     minimum_memory_mib: Optional[int]
     gpu_model_match: Optional[str]
     provisional: bool = False
+    resource_contract: Optional[ResourceEnvelope] = None
 
     @classmethod
     def load(cls, profile_id: str, value: Any) -> "RuntimeProfile":
@@ -178,6 +184,14 @@ class RuntimeProfile:
             raise ConfigError(f"{field}.host_count must be 1 in the v0 runtime")
         provisional = _boolean(raw.get("provisional", False), f"{field}.provisional")
         label = _string(raw.get("label", profile_id), f"{field}.label")
+        try:
+            resource_contract = (
+                ResourceEnvelope.from_manifest(raw["resource_contract"])
+                if "resource_contract" in raw
+                else None
+            )
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(f"{field}.resource_contract is invalid: {exc}") from exc
         if accelerator is None:
             return cls(
                 profile_id=profile_id,
@@ -189,6 +203,7 @@ class RuntimeProfile:
                 minimum_memory_mib=None,
                 gpu_model_match=None,
                 provisional=provisional,
+                resource_contract=resource_contract,
             )
         vendor = _string(
             accelerator.get("vendor"), f"{field}.accelerator.vendor"
@@ -217,6 +232,7 @@ class RuntimeProfile:
                 f"{field}.accelerator.model_match",
             ),
             provisional=provisional,
+            resource_contract=resource_contract,
         )
 
     def training_resources(self) -> TrainingResources:
@@ -225,6 +241,54 @@ class RuntimeProfile:
             required_gpu_model=self.gpu_model_match,
             minimum_gpu_memory_mib=self.minimum_memory_mib,
         ).validate()
+
+    def resource_envelope(
+        self,
+        *,
+        minimum_enforcement: EnforcementLevel,
+    ) -> ResourceEnvelope:
+        """Return the release contract without selecting an enforcement mechanism."""
+
+        if self.resource_contract is not None:
+            return self.resource_contract
+        requirements = [
+            ResourceRequirement(
+                "host.count",
+                "exact",
+                self.host_count,
+                minimum_enforcement,
+            ),
+            ResourceRequirement(
+                "accelerator.count",
+                "exact",
+                self.accelerator_count,
+                minimum_enforcement,
+            ),
+        ]
+        if self.accelerator_vendor is not None:
+            requirements.extend(
+                (
+                    ResourceRequirement(
+                        "accelerator.vendor",
+                        "exact",
+                        self.accelerator_vendor,
+                        minimum_enforcement,
+                    ),
+                    ResourceRequirement(
+                        "accelerator.model",
+                        "contains",
+                        self.gpu_model_match,
+                        minimum_enforcement,
+                    ),
+                    ResourceRequirement(
+                        "accelerator.memory_mib_per_device",
+                        "at_least",
+                        self.minimum_memory_mib,
+                        minimum_enforcement,
+                    ),
+                )
+            )
+        return ResourceEnvelope(requirements=tuple(requirements))
 
     def public_manifest(self) -> Dict[str, Any]:
         manifest = {
@@ -243,6 +307,8 @@ class RuntimeProfile:
                 "model_match": self.gpu_model_match,
             }
         )
+        if self.resource_contract is not None:
+            manifest["resource_contract"] = self.resource_contract.public_manifest()
         return manifest
 
 
@@ -351,6 +417,7 @@ class ResolvedChallengeRun:
     task: TaskConfig
     track: str
     resources: TrainingResources
+    resource_envelope: ResourceEnvelope
     comparison_key: ComparisonKey
     release_manifest: Dict[str, Any]
 
@@ -447,6 +514,21 @@ class ChallengeRelease:
                     "a leaderboard-eligible release may not contain provisional "
                     "configurations: " + ", ".join(details)
                 )
+            weak_resource_requirements = sorted(
+                f"{profile_id}:{requirement.name}"
+                for profile_id, profile in self.runtime_profiles.items()
+                for requirement in (
+                    profile.resource_contract.requirements
+                    if profile.resource_contract is not None
+                    else ()
+                )
+                if requirement.minimum_enforcement is not EnforcementLevel.ENFORCED
+            )
+            if weak_resource_requirements:
+                raise ConfigError(
+                    "a leaderboard-eligible release requires enforced normative "
+                    "resources: " + ", ".join(weak_resource_requirements)
+                )
         return self
 
     @property
@@ -492,6 +574,13 @@ class ChallengeRelease:
             raise ConfigError(f"unknown runtime profile: {runtime_profile_id}") from exc
         resolved_task = track_config.apply(task)
         resources = runtime_profile.training_resources().validate_for(resolved_task)
+        resource_envelope = runtime_profile.resource_envelope(
+            minimum_enforcement=(
+                EnforcementLevel.ENFORCED
+                if self.leaderboard_eligible
+                else EnforcementLevel.BEST_EFFORT
+            )
+        )
         comparison_key = ComparisonKey(
             challenge_id=self.challenge_id,
             track=track_config.track,
@@ -502,6 +591,7 @@ class ChallengeRelease:
             task=resolved_task,
             track=track_config.track,
             resources=resources,
+            resource_envelope=resource_envelope,
             comparison_key=comparison_key,
             release_manifest={
                 "challenge_id": self.challenge_id,
@@ -513,6 +603,7 @@ class ChallengeRelease:
                 "runtime_profile_id": runtime_profile.profile_id,
                 "track_config": track_config.public_manifest(),
                 "runtime_profile": runtime_profile.public_manifest(),
+                "resource_envelope": resource_envelope.public_manifest(),
             },
         )
 

@@ -76,14 +76,20 @@ sandbox without adding platform branches to Core.
 
 The repository now contains an executable, single-host Docker prototype of the benchmark protocol. It is intended to validate episode lifecycle, Training Lease accounting, hidden evaluation, and the agent-facing control surface before the first official benchmark instance is selected.
 
-The current development snapshot uses Worker Protocol v6 but does not carry a
-release package version yet. Protocol v6 is a breaking Worker API revision:
+The current development snapshot uses Worker Protocol v7 but does not carry a
+release package version yet. Protocol v7 is a breaking Worker API revision:
+every successful Training Lease startup returns operation-bound resource
+allocation evidence. The Release selects an extensible semantic resource
+envelope; the Worker separately reports allocator-visible, workload-visible,
+and enforcement evidence, and Core rejects a Lease whose evidence is missing,
+misbound, inconsistent, or weaker than the release requirement. Version 7
+retains the version 6 workload-resolution contract:
 Workers first resolve each Worker-owned release workload into immutable effective
 artifact evidence, and the resulting opaque authorization is bound to the
 Lease or evaluation operation that launches it. An unchanged digest-pinned OCI
 artifact is accepted by identity; a derived SIF, VM image, or other artifact
 must match an organizer-controlled acceptance in the trusted release receipt.
-Version 6 retains the version 5 hidden-data contract: external Evaluation
+Version 7 also retains the version 5 hidden-data contract: external Evaluation
 Workers must resolve a path-free `HiddenDatasetRequest` after research sealing,
 return a content-identity-bearing
 `ResolvedHiddenDataset`, accept TEST before ANALYSIS, and use the precise
@@ -108,7 +114,7 @@ being hidden behind application-level mailbox limits.
 
 The bundled `autotrain-bench prepare` and `autotrain-bench start` commands are
 the composition root for that local Docker implementation; they are not a
-generic backend loader. Worker Protocol v6 is currently a synchronous,
+generic backend loader. Worker Protocol v7 is currently a synchronous,
 in-process Python contract. Its remaining `Path` values for TRAIN, workspaces,
 Candidate artifacts, and output directories are local deployment handles, not
 a remote wire format. Hidden-data requests and resolution receipts contain no
@@ -152,8 +158,10 @@ been released yet.
 Hardware allocation is likewise not part of the task. Ad-hoc task episodes may
 explicitly expose resources with manual flags. Profile-bound development and
 challenge episodes instead select one of the release's finite named runtime
-profiles. In both cases the requested resources and discovered runtime
-inventory are recorded with the result.
+profiles. In both cases the semantic resource envelope is recorded. Every
+successful Training Lease also records a Worker receipt separating allocator
+observations, workload-visible values, and enforcement evidence. Inventory
+alone remains diagnostic metadata; it is not treated as proof of allocation.
 
 ## Quick start
 
@@ -397,7 +405,7 @@ autotrain-bench report \
   --episode /path/to/autotrain-bench-runs/episodes/<episode-id>
 ```
 
-New episode states declare `result_schema_version: 7`. Reporting an older state
+New episode states declare `result_schema_version: 8`. Reporting an older state
 performs a read-only migration. An unversioned v1 state receives the v2
 outcome fields: a completed result with a valid TEST NLL receives
 `outcome: "success"` and a derived `test_perplexity`, while an unscored
@@ -415,9 +423,11 @@ rather than reconstructing that history from an Agent log or a final boolean.
 A v5 result gains its ANALYSIS summary counts by deriving them from the
 trajectory it already carried, so migration invents nothing. A v6 result gains
 an explicit three-role workload-resolution structure whose values are `null`;
-the reader does not invent evidence that the older episode never recorded.
+the reader does not invent evidence that the older episode never recorded. A
+v7 result similarly gains `resource_envelope: null` and an empty allocation
+list rather than fabricated effective-resource evidence.
 
-In v7, `outcome: "success"` requires a finalized episode, a non-empty final
+In v8, `outcome: "success"` requires a finalized episode, a non-empty final
 Candidate ID, and both consistent TEST metrics. A failed outcome requires a
 failure reason and keeps both TEST metrics `null`. A null outcome is allowed
 only before a result exists (`created`, `active`, or the transient `closed`
@@ -442,7 +452,7 @@ summarize, so the summary cannot drift from its own detail.
 
 `state.json` is the authoritative result commit point. Immediately before that
 atomic commit, the Supervisor appends a non-terminal
-`RESULT_PUBLICATION_PREPARED` audit record. A finalized v6 state created by the
+`RESULT_PUBLICATION_PREPARED` audit record. A finalized v8 state created by the
 current implementation includes `result_publication`, which binds the result
 to that record's publication ID and sequence number. An unreferenced prepared
 record documents an interrupted attempt and is not a terminal result. Older
@@ -651,7 +661,7 @@ identity, not one materialization mechanism.
 
 Task schema v2 still retains `paths.analysis` and `paths.test` as compatibility
 inputs for the bundled local CLI. The Supervisor neither reads them nor sends
-them through Worker Protocol v6. An external launcher supplies its Evaluation
+them through Worker Protocol v7. An external launcher supplies its Evaluation
 Worker's private source mapping independently; the configured local paths may
 remain absent for that deployment. Replacing these compatibility fields in a
 future task schema is separate from the now path-free Worker boundary.
@@ -1915,8 +1925,10 @@ leaderboard infrastructure. Additional
 inference-provider adapters and isolation beyond the v0 Docker threat model
 also remain open design work.
 
-The v0 prototype is intentionally single-host and resource-allocation agnostic.
-Users obtain a Docker-capable environment before starting AutoTrain-Bench.
+The v0 prototype is intentionally single-host and never acquires machines or
+scheduler allocations. Users obtain a Docker-capable environment before
+starting AutoTrain-Bench; the Worker then reports what the Training workload
+actually received through the platform-neutral allocation receipt.
 
 ---
 

@@ -75,11 +75,11 @@ budget, isolation, comparison, or eligibility. Device selection, scheduler
 requests, cgroups, filesystem quotas, and other enforcement mechanisms remain
 Worker-owned.
 
-This paragraph states the target contract, not a claim that version 6 already
-has an allocation receipt. Version 6 passes requested `TrainingResources` into
-Worker operations and records deployment inventory, but `start_lease()` returns
-no normalized effective-allocation evidence. That gap is deferred to C4 and
-must remain explicit for formal evaluation.
+Worker Protocol v7 now implements this contract for Training Lease admission.
+It retains `TrainingResources` only as a bundled v0 compatibility input while
+passing the release-owned, property-extensible `ResourceEnvelope` and requiring
+an operation-bound allocation receipt. Resource vocabulary and enforcement
+mechanisms remain Worker/release-owned rather than becoming a Core checklist.
 
 ## Phase A: state the v0 boundary accurately
 
@@ -89,7 +89,7 @@ The v0 support statement is:
 
 - The bundled `autotrain-bench prepare` and `autotrain-bench start` commands
   are a single-host local Docker reference composition.
-- `autotrain_bench.worker_protocol` version 6 is a synchronous in-process
+- `autotrain_bench.worker_protocol` version 7 is a synchronous in-process
   Python contract. Its remaining TRAIN/workspace/Candidate/output `Path` values
   are local deployment handles, not a serializable remote wire format. Hidden
   dataset requests and resolutions are path-free.
@@ -333,12 +333,13 @@ Worker-owned Candidate/Evaluator channel mechanism. It also supplied negative
 evidence: shared paths were sufficient, so remote `ArtifactRef` work remains
 deferred. No scheduler or runtime mechanism is promoted into Core.
 
-That external run predates Worker Protocol v5 and v6. Its evidence still
+That external run predates Worker Protocol v5 through v7. Its evidence still
 validates the thin-Core boundary, but its old conformance result cannot certify
-the path-free hidden-data or workload-resolution contracts. The out-of-tree
-Worker must implement `resolve_hidden_dataset()` and `resolve_workload()`, bind
-the returned resolutions to execution, and rerun the matching conformance suite
-before a new deployment claim is made.
+the path-free hidden-data, workload-resolution, or resource-receipt contracts.
+The out-of-tree Worker must implement `resolve_hidden_dataset()` and
+`resolve_workload()`, bind the returned resolutions to execution, return a v7
+allocation receipt from `start_lease()`, and rerun the matching conformance
+suite before a new deployment claim is made.
 
 ## Postmortem hidden evaluation migration
 
@@ -351,7 +352,8 @@ Status: implemented in the development schemas.
   is rejected until teardown and Agent-control cleanup are confirmed.
 - The final Agent-declared incumbent is scored on TEST first. The TEST decision
   is persisted before selected historical Candidates are attempted on ANALYSIS.
-- Result schema v7 records workload-resolution evidence, the frozen Candidate
+- Result schema v8 retains v7 workload-resolution evidence and adds the
+  release resource envelope plus per-Lease allocation receipts. It also records the frozen Candidate
   inventory, ordered incumbent declarations, ANALYSIS trajectory, explicit
   analysis disposition, and trajectory-derived selected/evaluated point
   counts. Every trajectory point is
@@ -364,7 +366,7 @@ Status: implemented in the development schemas.
   eligibility. Unconfirmed post-TEST evaluation teardown retains TEST but is
   recorded independently as a deployment-integrity violation, making the run
   non-compliant and ineligible.
-- Worker Protocol v6 expresses a transport-neutral Candidate application
+- Worker Protocol v7 expresses a transport-neutral Candidate application
   contract and a Worker-owned hidden-data resolution seam. Core supplies only a
   logical split name and release-frozen expected digest; the Worker returns an
   effective digest plus opaque resolution ID before Candidate execution. The
@@ -389,7 +391,7 @@ External result: not fired. The tested Agent could be sandboxed, but its
 inference channel could not be mediated by the registered Gateway. A different
 participant with a compliant inference path is needed before redesigning C1.
 
-Result schema version 7 still pins `agent_system` to the bundled v0 runner
+Result schema version 8 still pins `agent_system` to the bundled v0 runner
 vocabulary, so this phase also owns that structure. `_validate_agent_system()`
 in `autotrain_bench/results.py` rejects a `runner` outside `AGENT_RUNNERS` and
 keys its "a host runner declares no egress policy" rule on the literal
@@ -399,7 +401,7 @@ recording an unregistered runner would become unreadable rather than merely
 unverified. This phase must re-express the `agent_system` invariants over
 semantic fields instead of mechanism names, which changes the persisted
 structure and therefore requires a result schema revision with a read-only
-migration. Worker Protocol v6 resolves only Worker-owned training, Candidate,
+migration. Worker Protocol v7 resolves only Worker-owned training, Candidate,
 and Evaluator workloads. The v0 Agent evidence binds the Agent image but not a
 separate inference Gateway image, so formal runs using registered inference now
 fail closed with `inference_gateway_workload_evidence_missing` until C1 defines
@@ -468,7 +470,8 @@ because the current unit and conformance tests pass:
    `WorkloadResolutionFailure`; only genuinely unknown resource state may use
    `WorkerTeardownFailure`. Tests must distinguish resolution failure from
    unconfirmed teardown.
-4. **Bound resolution liveness.** Worker Protocol v6 resolution calls are
+4. **Bound resolution liveness.** Worker Protocol v7 retains synchronous
+   resolution calls from v6; they
    synchronous and have no semantic deadline or cancellation operation. A slow
    hidden-data or workload resolver can therefore block the Coordinator and is
    not charged against the later evaluation timeout. Before claiming a bounded
@@ -485,6 +488,9 @@ operation ordering.
 
 ### C4. Resource allocation evidence
 
+Status: implemented in Worker Protocol v7 and result schema v8 for Training
+Lease admission.
+
 Trigger: a release makes one or more resource properties normative, but the
 Worker cannot return authenticated evidence that the effective allocation and
 enforcement matched those requested properties.
@@ -495,13 +501,30 @@ identity needed by Core's comparison and eligibility checks. The schema must
 remain property-extensible; it must not turn one platform's CPU, accelerator,
 topology, cgroup, or storage vocabulary into a universal Core checklist.
 
-Worker Protocol v6 has no such receipt: `start_lease()` returns `None`.
-
 External result: fired. Requested resources, scheduler allocation,
-workload-visible resources, and the enforcing layer differed. The future schema
-must distinguish those views and allow the trusted scheduler—not necessarily the
-sandbox runtime—to supply enforcement evidence. It must not encode one
-scheduler's vocabulary as the universal model.
+workload-visible resources, and the enforcing layer differed. Version 7 now
+distinguishes those views and allows a trusted allocator—not necessarily the
+sandbox runtime—to supply evidence. `ResourceEnvelope` contains only
+release-classified normative and observational property names. A versioned
+`ResourceAllocationReceipt` binds its request digest, episode, Lease, and
+Worker, records allocator-visible and workload-visible values separately, and
+names the enforcement level and authority. Core checks all observed views and
+fails closed, with compensating termination, before a mismatched allocation can
+become an active Lease.
+
+The schema fixes no CPU, accelerator, topology, scheduler, cgroup, or storage
+property list. The existing v0 NVIDIA flags generate a compatibility envelope;
+an explicit release `resource_contract` can use other semantic property names
+without a platform branch in Core. Authenticity still depends on the trusted
+Worker deployment and invocation channel. Remote cryptographic transport and
+deployment certification remain separate future work.
+
+The bundled Docker Worker reports count-based GPU selection as `best_effort`.
+That honestly satisfies current preview envelopes but not an `enforced` formal
+GPU envelope. Exact Docker GPU binding remains a reference-Worker issue rather
+than part of the C4 Core schema. Evaluation-operation allocation evidence is
+also deferred until a release demonstrates that resources outside Training
+Leases are independently normative.
 
 ### Other independently triggered work
 
@@ -521,7 +544,8 @@ Phase A documentation and a behavior-preserving Phase B refactor did not change
 the then-current protocol. The postmortem hidden-evaluation contract advanced
 Worker Protocol to version 4; Worker-owned, path-free hidden-data resolution
 advanced it to version 5; operation-bound workload resolution evidence advanced
-it to version 6 and result schema version 7.
+it to version 6 and result schema version 7; operation-bound Training Lease
+resource evidence advanced it to version 7 and result schema version 8.
 
 A new protocol revision is required when an implementation must change a
 required method, argument, return value, ordering guarantee, or failure

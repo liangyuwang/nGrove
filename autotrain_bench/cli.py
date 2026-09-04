@@ -38,6 +38,7 @@ from .local_agent_execution import describe_local_agent_execution
 from .results import normalize_result_report
 from .runtime import DockerRuntime, RuntimeFailure
 from .supervisor import Supervisor
+from .worker_protocol import EnforcementLevel, v0_resource_envelope
 
 
 CONTAINER_AGENT_DRAIN_SECONDS = 3.0
@@ -348,10 +349,15 @@ def command_start(args: argparse.Namespace) -> int:
             required_gpu_model=args.training_gpu_model,
             devices=args.training_devices,
         ).validate_for(config)
+        resource_envelope = v0_resource_envelope(
+            resources,
+            minimum_enforcement=EnforcementLevel.BEST_EFFORT,
+        )
     else:
         config = resolved_challenge.task
         track = resolved_challenge.track
         resources = resolved_challenge.resources
+        resource_envelope = resolved_challenge.resource_envelope
         comparison_key = resolved_challenge.comparison_key.public_manifest()
         challenge_release = resolved_challenge.release_manifest
     resolved_runner = agent_runner(args.agent_runner, "--agent-runner")
@@ -446,6 +452,7 @@ def command_start(args: argparse.Namespace) -> int:
         config=config,
         agent=agent,
         resources=resources,
+        resource_envelope=resource_envelope,
         track=track,
         episode_dir=episode_dir,
         agent_api_dir=agent_api_dir,

@@ -55,6 +55,9 @@ from autotrain_bench.worker_protocol import (
     HiddenDatasetRequest,
     HiddenDatasetResolutionFailure,
     LeaseState,
+    ResourceAllocationReceipt,
+    ResourceObservation,
+    ResourcePropertyEvidence,
     ResolvedHiddenDataset,
     TrustLevel,
     WORKER_CONFORMANCE_SUITE_VERSION,
@@ -65,6 +68,7 @@ from autotrain_bench.worker_protocol import (
     WorkerDescriptor,
     WorkerFailure,
     WorkerTeardownFailure,
+    v0_resource_envelope,
 )
 
 
@@ -115,6 +119,8 @@ class FakeWorker:
         self.workload_resolution_failures = {}
         self.workload_resolution_exception = None
         self.lease_workloads = []
+        self.resource_envelopes = []
+        self.resource_receipt_override = None
         self.evaluation_workloads = []
         # Simulates benchmark-owned preparation inside start_lease: queue wait,
         # image materialization, workload startup.
@@ -143,6 +149,7 @@ class FakeWorker:
         task,
         workspace,
         resources,
+        resource_envelope,
         lease_dir,
         workload,
     ):
@@ -150,6 +157,7 @@ class FakeWorker:
         if not isinstance(workload, ResolvedWorkload):
             raise AssertionError("Research Worker did not receive a workload binding")
         self.lease_workloads.append(workload)
+        self.resource_envelopes.append(resource_envelope)
         if self.start_lease_delay and self.clock is not None:
             self.clock.advance(self.start_lease_delay)
         if hasattr(task, "analysis_path") or hasattr(task, "test_path"):
@@ -170,6 +178,29 @@ class FakeWorker:
             output / "candidate.py",
         )
         self.running.add((episode_id, lease_id))
+        if self.resource_receipt_override is not None:
+            return self.resource_receipt_override
+        return ResourceAllocationReceipt(
+            episode_id=episode_id,
+            lease_id=lease_id,
+            worker_id="test-worker",
+            resource_request_sha256=resource_envelope.sha256,
+            properties=tuple(
+                ResourcePropertyEvidence(
+                    name=requirement.name,
+                    allocator_allocated=ResourceObservation(
+                        "observed",
+                        requirement.value,
+                        "test-allocator",
+                    ),
+                    workload_visible=ResourceObservation("not_applicable"),
+                    enforcement_level=EnforcementLevel.ENFORCED,
+                    enforcement_authority="test-worker",
+                )
+                for requirement in resource_envelope.requirements
+            ),
+            receipt_id=f"receipt:{lease_id}",
+        )
 
     def resolve_workload(self, *, episode_id, workload):
         if not isinstance(workload, WorkloadRequest):
@@ -459,6 +490,10 @@ class SupervisorTests(unittest.TestCase):
             "track_config": {"provisional": False},
             "runtime_profile": {"provisional": False},
         }
+        release["resource_envelope"] = v0_resource_envelope(
+            self.resources,
+            minimum_enforcement=EnforcementLevel.ENFORCED,
+        ).public_manifest()
         artifacts = {
             "challenge_manifest_sha256": release["challenge_manifest_sha256"],
             "task_manifest_sha256": release["task_manifest_sha256"],
@@ -508,6 +543,7 @@ class SupervisorTests(unittest.TestCase):
                 "workload_resolution_pending:training",
                 "workload_resolution_pending:candidate",
                 "workload_resolution_pending:evaluator",
+                "resource_allocation_pending",
             ],
         )
         public_task = json.loads(
@@ -1357,11 +1393,86 @@ class SupervisorTests(unittest.TestCase):
             persisted = json.loads(supervisor.state_path.read_text(encoding="utf-8"))
             self.assertEqual(persisted["lease_serial"], 1)
             self.assertEqual(persisted["pending_lease_teardowns"], [kwargs["lease_id"]])
-            original_start(**kwargs)
+            return original_start(**kwargs)
 
         with patch.object(self.worker, "start_lease", side_effect=observe_intent):
             supervisor.start_lease()
 
+        self.assertEqual(supervisor.state["pending_lease_teardowns"], [])
+
+    def test_accepted_resource_receipt_is_bound_to_the_active_lease(self):
+        supervisor = self.supervisor()
+
+        lease = supervisor.start_lease()
+
+        self.assertTrue(lease["resource_allocation_verified"])
+        active = supervisor.state["active_lease"]
+        allocation = supervisor.state["resource_allocations"][0]
+        self.assertTrue(allocation["accepted"])
+        self.assertEqual(
+            active["resource_allocation_receipt_id"],
+            allocation["receipt"]["receipt_id"],
+        )
+        self.assertEqual(
+            allocation["receipt"]["resource_request_sha256"],
+            supervisor.resource_envelope.sha256,
+        )
+
+    def test_resource_mismatch_revokes_the_started_workload_and_fails_closed(self):
+        supervisor = self.supervisor()
+        envelope = supervisor.resource_envelope
+        self.worker.resource_receipt_override = ResourceAllocationReceipt(
+            episode_id=supervisor.state["episode_id"],
+            lease_id="lease-0001",
+            worker_id="test-worker",
+            resource_request_sha256=envelope.sha256,
+            properties=tuple(
+                ResourcePropertyEvidence(
+                    name=requirement.name,
+                    allocator_allocated=ResourceObservation(
+                        "observed",
+                        2 if requirement.name == "host.count" else requirement.value,
+                        "test-allocator",
+                    ),
+                    workload_visible=ResourceObservation("not_applicable"),
+                    enforcement_level=EnforcementLevel.ENFORCED,
+                    enforcement_authority="test-worker",
+                )
+                for requirement in envelope.requirements
+            ),
+            receipt_id="mismatched-allocation",
+        )
+
+        with self.assertRaisesRegex(ProtocolError, "evidence was rejected"):
+            supervisor.start_lease()
+
+        self.assertEqual(supervisor.state["status"], "infrastructure_failure")
+        self.assertEqual(supervisor.state["failure"], "resource_allocation_mismatch")
+        self.assertEqual(supervisor.state["leases_used"], 0)
+        self.assertEqual(supervisor.state["pending_lease_teardowns"], [])
+        self.assertEqual(self.worker.running, set())
+        self.assertFalse(supervisor.state["resource_allocations"][0]["accepted"])
+
+    def test_resource_receipt_from_another_worker_is_rejected_and_revoked(self):
+        supervisor = self.supervisor()
+        envelope = supervisor.resource_envelope
+        self.worker.resource_receipt_override = ResourceAllocationReceipt(
+            episode_id=supervisor.state["episode_id"],
+            lease_id="lease-0001",
+            worker_id="different-worker",
+            resource_request_sha256=envelope.sha256,
+            properties=(),
+            receipt_id="wrong-worker-allocation",
+        )
+
+        with self.assertRaisesRegex(ProtocolError, "evidence was rejected"):
+            supervisor.start_lease()
+
+        self.assertEqual(
+            supervisor.state["failure"],
+            "resource_allocation_receipt_invalid",
+        )
+        self.assertEqual(self.worker.running, set())
         self.assertEqual(supervisor.state["pending_lease_teardowns"], [])
 
     def test_failed_lease_directory_cleanup_is_a_teardown_failure(self):

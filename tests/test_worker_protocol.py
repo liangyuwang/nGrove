@@ -12,6 +12,11 @@ from autotrain_bench.worker_protocol import (
     EnforcementLevel,
     HiddenDatasetIdentityMismatch,
     HiddenDatasetRequest,
+    ResourceAllocationReceipt,
+    ResourceEnvelope,
+    ResourceObservation,
+    ResourcePropertyEvidence,
+    ResourceRequirement,
     ResolvedHiddenDataset,
     ResolvedWorkload,
     TrustLevel,
@@ -19,6 +24,7 @@ from autotrain_bench.worker_protocol import (
     WorkloadResolutionAcceptance,
     WORKER_CONFORMANCE_SUITE_VERSION,
     WorkerDescriptor,
+    assess_resource_allocation,
     assess_worker,
 )
 
@@ -39,6 +45,150 @@ def descriptor(*, trust=TrustLevel.DEVELOPMENT, conformance=None, overrides=None
 
 
 class WorkerProtocolTests(unittest.TestCase):
+    def test_resource_receipt_is_property_extensible_and_operation_bound(self):
+        envelope = ResourceEnvelope(
+            requirements=(
+                ResourceRequirement(
+                    "site.scratch.capacity_bytes",
+                    "at_least",
+                    1024,
+                    EnforcementLevel.ENFORCED,
+                ),
+            ),
+            observational_properties=("site.fabric.class",),
+        )
+        receipt = ResourceAllocationReceipt(
+            episode_id="episode-1",
+            lease_id="lease-0001",
+            worker_id="site-worker",
+            resource_request_sha256=envelope.sha256,
+            properties=(
+                ResourcePropertyEvidence(
+                    name="site.scratch.capacity_bytes",
+                    allocator_allocated=ResourceObservation(
+                        "observed", 2048, "site-allocator"
+                    ),
+                    workload_visible=ResourceObservation("unavailable"),
+                    enforcement_level=EnforcementLevel.ENFORCED,
+                    enforcement_authority="site-storage-policy",
+                ),
+            ),
+            receipt_id="allocation-1",
+        )
+
+        assessment = assess_resource_allocation(
+            envelope,
+            receipt,
+            episode_id="episode-1",
+            lease_id="lease-0001",
+            worker_id="site-worker",
+        )
+
+        self.assertTrue(assessment.satisfied)
+        serialized = json.dumps(receipt.public_manifest()).lower()
+        for forbidden in ("path", "container_id", "job_id", "cgroup"):
+            self.assertNotIn(forbidden, serialized)
+        with self.assertRaisesRegex(ValueError, "different episode"):
+            assess_resource_allocation(
+                envelope,
+                receipt,
+                episode_id="episode-2",
+                lease_id="lease-0001",
+                worker_id="site-worker",
+            )
+
+    def test_resource_assessment_detects_view_disagreement_and_weak_enforcement(self):
+        envelope = ResourceEnvelope(
+            requirements=(
+                ResourceRequirement(
+                    "accelerator.count",
+                    "exact",
+                    4,
+                    EnforcementLevel.ENFORCED,
+                ),
+            )
+        )
+        receipt = ResourceAllocationReceipt(
+            episode_id="episode-1",
+            lease_id="lease-0001",
+            worker_id="site-worker",
+            resource_request_sha256=envelope.sha256,
+            properties=(
+                ResourcePropertyEvidence(
+                    name="accelerator.count",
+                    allocator_allocated=ResourceObservation("observed", 4, "allocator"),
+                    workload_visible=ResourceObservation("observed", 3, "sandbox"),
+                    enforcement_level=EnforcementLevel.BEST_EFFORT,
+                    enforcement_authority="allocator",
+                ),
+            ),
+            receipt_id="allocation-1",
+        )
+
+        assessment = assess_resource_allocation(
+            envelope,
+            receipt,
+            episode_id="episode-1",
+            lease_id="lease-0001",
+            worker_id="site-worker",
+        )
+
+        self.assertFalse(assessment.satisfied)
+        self.assertEqual(assessment.mismatched, ("accelerator.count",))
+        self.assertEqual(
+            assessment.insufficient_enforcement,
+            ("accelerator.count",),
+        )
+
+    def test_resource_schema_versions_and_exact_types_are_strict(self):
+        with self.assertRaisesRegex(ValueError, "schema version"):
+            ResourceEnvelope(requirements=(), schema_version=True)
+        with self.assertRaisesRegex(ValueError, "receipt version"):
+            ResourceAllocationReceipt(
+                episode_id="episode-1",
+                lease_id="lease-0001",
+                worker_id="site-worker",
+                resource_request_sha256="a" * 64,
+                properties=(),
+                receipt_id="allocation-1",
+                receipt_version=True,
+            )
+
+        envelope = ResourceEnvelope(
+            requirements=(
+                ResourceRequirement(
+                    "host.count", "exact", 1, EnforcementLevel.BEST_EFFORT
+                ),
+            )
+        )
+        receipt = ResourceAllocationReceipt(
+            episode_id="episode-1",
+            lease_id="lease-0001",
+            worker_id="site-worker",
+            resource_request_sha256=envelope.sha256,
+            properties=(
+                ResourcePropertyEvidence(
+                    name="host.count",
+                    allocator_allocated=ResourceObservation(
+                        "observed", True, "allocator"
+                    ),
+                    workload_visible=ResourceObservation("not_applicable"),
+                    enforcement_level=EnforcementLevel.ENFORCED,
+                    enforcement_authority="allocator",
+                ),
+            ),
+            receipt_id="allocation-1",
+        )
+
+        assessment = assess_resource_allocation(
+            envelope,
+            receipt,
+            episode_id="episode-1",
+            lease_id="lease-0001",
+            worker_id="site-worker",
+        )
+        self.assertEqual(assessment.mismatched, ("host.count",))
+
     def test_candidate_channel_describes_prefix_visibility_precisely(self):
         manifest = CandidateChannelRequirements(
             protocol="next_token_logits_v1"
@@ -179,7 +329,7 @@ class WorkerProtocolTests(unittest.TestCase):
 
     def test_descriptor_manifest_contains_no_platform_schema(self):
         manifest = descriptor().public_manifest()
-        self.assertEqual(manifest["protocol_version"], 6)
+        self.assertEqual(manifest["protocol_version"], 7)
         self.assertEqual(manifest["roles"], ["research", "evaluation"])
         serialized = json.dumps(manifest).lower()
         self.assertNotIn("docker", serialized)
@@ -190,7 +340,7 @@ class WorkerProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "protocol version"):
             WorkerDescriptor(
                 worker_id="future-worker",
-                protocol_version=7,
+                protocol_version=8,
                 trust_level=TrustLevel.DEVELOPMENT,
                 roles=("research",),
                 capabilities={},

@@ -40,6 +40,10 @@ from .worker_protocol import (
     HiddenDatasetRequest,
     HiddenDatasetResolutionFailure,
     LeaseState,
+    ResourceAllocationReceipt,
+    ResourceEnvelope,
+    ResourceObservation,
+    ResourcePropertyEvidence,
     ResolvedHiddenDataset,
     ResearchTaskSpec,
     TrustLevel,
@@ -49,6 +53,7 @@ from .worker_protocol import (
     WorkerDescriptor,
     WorkerFailure,
     WorkerTeardownFailure,
+    v0_resource_envelope,
 )
 
 
@@ -898,6 +903,110 @@ class DockerRuntime:
         runtime_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{episode_id}:{lease_id}").hex[:12]
         return f"atb-lease-{runtime_id}"
 
+    def _resource_allocation_receipt(
+        self,
+        *,
+        episode_id: str,
+        lease_id: str,
+        name: str,
+        resources: TrainingResources,
+        resource_envelope: ResourceEnvelope,
+    ) -> ResourceAllocationReceipt:
+        """Observe the local workload without making Docker the Core schema."""
+
+        gpu_names: Tuple[str, ...] = ()
+        gpu_memory: Tuple[int, ...] = ()
+        if resources.nvidia_gpu_count:
+            result = self._run(
+                [
+                    "exec",
+                    name,
+                    "nvidia-smi",
+                    "--query-gpu=name,memory.total",
+                    "--format=csv,noheader,nounits",
+                ],
+                timeout=20,
+            )
+            names = []
+            memory = []
+            for line in result.stdout.splitlines():
+                if not line.strip():
+                    continue
+                fields = [field.strip() for field in line.rsplit(",", 1)]
+                if len(fields) != 2:
+                    raise RuntimeFailure(
+                        "training workload returned malformed accelerator evidence"
+                    )
+                try:
+                    memory_mib = int(fields[1])
+                except ValueError as exc:
+                    raise RuntimeFailure(
+                        "training workload returned invalid accelerator memory evidence"
+                    ) from exc
+                names.append(fields[0])
+                memory.append(memory_mib)
+            gpu_names = tuple(names)
+            gpu_memory = tuple(memory)
+
+        actual = {
+            "host.count": 1,
+            "accelerator.count": len(gpu_names),
+            "accelerator.vendor": "nvidia" if gpu_names else None,
+            "accelerator.model": gpu_names,
+            "accelerator.memory_mib_per_device": gpu_memory,
+        }
+        properties = []
+        for requirement in resource_envelope.requirements:
+            value = actual.get(requirement.name)
+            if requirement.name not in actual:
+                properties.append(
+                    ResourcePropertyEvidence(
+                        name=requirement.name,
+                        allocator_allocated=ResourceObservation("unavailable"),
+                        workload_visible=ResourceObservation("unavailable"),
+                        enforcement_level=EnforcementLevel.UNSUPPORTED,
+                        enforcement_authority=None,
+                    )
+                )
+                continue
+            gpu_property = requirement.name.startswith("accelerator.")
+            # The v0 count-based device request observes what became visible,
+            # but cannot prove that a preselected physical device set was
+            # enforced. Keep that limitation in Worker evidence.
+            level = (
+                EnforcementLevel.BEST_EFFORT
+                if gpu_property and resources.nvidia_gpu_count
+                else EnforcementLevel.ENFORCED
+            )
+            properties.append(
+                ResourcePropertyEvidence(
+                    name=requirement.name,
+                    allocator_allocated=ResourceObservation("not_applicable"),
+                    workload_visible=ResourceObservation(
+                        "observed",
+                        value,
+                        "local-reference-worker",
+                    ),
+                    enforcement_level=level,
+                    enforcement_authority="local-reference-runtime",
+                )
+            )
+        receipt_id = (
+            "allocation:"
+            + uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"{episode_id}:{lease_id}:{resource_envelope.sha256}",
+            ).hex
+        )
+        return ResourceAllocationReceipt(
+            episode_id=episode_id,
+            lease_id=lease_id,
+            worker_id=self.describe_capabilities().worker_id,
+            resource_request_sha256=resource_envelope.sha256,
+            properties=tuple(properties),
+            receipt_id=receipt_id,
+        )
+
     def start_lease(
         self,
         *,
@@ -907,9 +1016,10 @@ class DockerRuntime:
         task: ResearchTaskSpec,
         workspace: Path,
         resources: TrainingResources,
+        resource_envelope: Optional[ResourceEnvelope] = None,
         lease_dir: Path,
         workload: ResolvedWorkload,
-    ) -> None:
+    ) -> ResourceAllocationReceipt:
         """Map the semantic lease operation to the local reference runtime."""
 
         del duration_seconds
@@ -917,6 +1027,10 @@ class DockerRuntime:
         if key in self._worker_leases:
             raise RuntimeFailure(f"lease already exists: {lease_id}")
         name = self._worker_lease_runtime_name(episode_id, lease_id)
+        resolved_envelope = resource_envelope or v0_resource_envelope(
+            resources,
+            minimum_enforcement=EnforcementLevel.BEST_EFFORT,
+        )
         workload_image = self._workload_reference(
             episode_id=episode_id,
             workload=workload,
@@ -932,6 +1046,13 @@ class DockerRuntime:
                 resources=resources,
                 lease_dir=lease_dir,
                 workload_image=workload_image,
+            )
+            return self._resource_allocation_receipt(
+                episode_id=episode_id,
+                lease_id=lease_id,
+                name=name,
+                resources=resources,
+                resource_envelope=resolved_envelope,
             )
         except Exception as start_exc:
             # ``docker run`` may create the named container before the client

@@ -36,6 +36,7 @@ from autotrain_bench.worker_protocol import (
     WorkloadResolutionFailure,
     TrustLevel,
     WorkerTeardownFailure,
+    v0_resource_envelope,
 )
 
 
@@ -84,6 +85,71 @@ class CapturingDockerRuntime(DockerRuntime):
 
 
 class RuntimeBoundaryTests(unittest.TestCase):
+    def test_local_gpu_receipt_reports_workload_visible_values_but_not_exact_binding(
+        self,
+    ):
+        class GpuRuntime(CapturingDockerRuntime):
+            def _run(self, args, **kwargs):
+                if args and args[0] == "exec" and "nvidia-smi" in args:
+                    self.calls.append(list(args))
+                    self.call_kwargs.append(dict(kwargs))
+                    return subprocess.CompletedProcess(
+                        args,
+                        0,
+                        "NVIDIA H100 80GB HBM3, 81559\n",
+                        "",
+                    )
+                return super()._run(args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            public_task = root / "task.json"
+            public_task.write_text("{}", encoding="utf-8")
+            publish_agent_api(public_task)
+            reference = "example/training@sha256:" + "a" * 64
+            task = replace(
+                ResearchTaskSpec.from_task(
+                    TaskConfig.load(TASK), public_task.parent / "agent_api"
+                ),
+                training_image=reference,
+            )
+            resources = TrainingResources(
+                nvidia_gpu_count=1,
+                required_gpu_model="H100",
+                minimum_gpu_memory_mib=80000,
+            )
+            envelope = v0_resource_envelope(
+                resources,
+                minimum_enforcement=EnforcementLevel.BEST_EFFORT,
+            )
+            runtime = GpuRuntime()
+            workload = runtime.resolve_workload(
+                episode_id="episode-1",
+                workload=WorkloadRequest("training", reference),
+            )
+
+            receipt = runtime.start_lease(
+                episode_id="episode-1",
+                lease_id="lease-0001",
+                duration_seconds=60,
+                task=task,
+                workspace=root,
+                resources=resources,
+                resource_envelope=envelope,
+                lease_dir=root / "lease",
+                workload=workload,
+            )
+
+            evidence = {item.name: item for item in receipt.properties}
+            self.assertEqual(
+                evidence["accelerator.model"].workload_visible.value,
+                ("NVIDIA H100 80GB HBM3",),
+            )
+            self.assertEqual(
+                evidence["accelerator.count"].enforcement_level,
+                EnforcementLevel.BEST_EFFORT,
+            )
+
     def test_local_reference_worker_is_explicitly_development_only(self):
         descriptor = DockerRuntime(docker_binary="docker").describe_capabilities()
         self.assertEqual(descriptor.trust_level, TrustLevel.DEVELOPMENT)
@@ -154,7 +220,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 )
             self.assertEqual(runtime.calls, [])
 
-            runtime.start_lease(
+            receipt = runtime.start_lease(
                 episode_id="episode-1",
                 lease_id="lease-0001",
                 duration_seconds=60,
@@ -168,6 +234,12 @@ class RuntimeBoundaryTests(unittest.TestCase):
             launch = next(call for call in runtime.calls if call[0] == "run")
             self.assertIn(reference, launch)
             self.assertNotIn(resolved.resolution_id, launch)
+            self.assertEqual(receipt.episode_id, "episode-1")
+            self.assertEqual(receipt.lease_id, "lease-0001")
+            self.assertEqual(
+                {item.name for item in receipt.properties},
+                {"host.count", "accelerator.count"},
+            )
 
     def test_mutable_preview_tag_is_frozen_to_image_id_before_launch(self):
         with tempfile.TemporaryDirectory() as directory:

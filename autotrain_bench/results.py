@@ -6,9 +6,14 @@ import math
 from typing import Any, Dict
 
 from .config import AGENT_EGRESS_POLICIES, AGENT_RUNNERS
+from .worker_protocol import (
+    ResourceAllocationReceipt,
+    ResourceEnvelope,
+    assess_resource_allocation,
+)
 
 
-RESULT_SCHEMA_VERSION = 7
+RESULT_SCHEMA_VERSION = 8
 LEGACY_RESULT_SCHEMA_VERSION = 1
 # Version 2 recorded the Agent egress policy as ``agent_system.mode`` with the
 # value ``"sandboxed"``.  Version 3 renames that field to ``agent_system.egress``
@@ -20,6 +25,7 @@ POSTMORTEM_RESULT_SCHEMA_VERSION = 4
 # of the summary fields alone could not see that a `complete` pass had gaps.
 UNCOUNTED_ANALYSIS_RESULT_SCHEMA_VERSION = 5
 PRE_WORKLOAD_RESOLUTION_RESULT_SCHEMA_VERSION = 6
+PRE_RESOURCE_ALLOCATION_RESULT_SCHEMA_VERSION = 7
 _SUPPORTED_INPUT_SCHEMA_VERSIONS = frozenset(
     {
         LEGACY_RESULT_SCHEMA_VERSION,
@@ -28,6 +34,7 @@ _SUPPORTED_INPUT_SCHEMA_VERSIONS = frozenset(
         POSTMORTEM_RESULT_SCHEMA_VERSION,
         UNCOUNTED_ANALYSIS_RESULT_SCHEMA_VERSION,
         PRE_WORKLOAD_RESOLUTION_RESULT_SCHEMA_VERSION,
+        PRE_RESOURCE_ALLOCATION_RESULT_SCHEMA_VERSION,
         RESULT_SCHEMA_VERSION,
     }
 )
@@ -109,8 +116,10 @@ def normalize_result_report(payload: Any) -> Dict[str, Any]:
         result = _migrate_v4_analysis_result(result)
     if version < PRE_WORKLOAD_RESOLUTION_RESULT_SCHEMA_VERSION:
         result = _migrate_uncounted_analysis_result(result)
-    if version < RESULT_SCHEMA_VERSION:
+    if version < PRE_RESOURCE_ALLOCATION_RESULT_SCHEMA_VERSION:
         result = _migrate_pre_workload_resolution_result(result)
+    if version < RESULT_SCHEMA_VERSION:
+        result = _migrate_pre_resource_allocation_result(result)
         result["result_schema_version"] = RESULT_SCHEMA_VERSION
         result["migrated_from_result_schema_version"] = version
     result.setdefault("deployment_teardown_failures", [])
@@ -157,6 +166,17 @@ def _migrate_pre_workload_resolution_result(
         "candidate": None,
         "evaluator": None,
     }
+    return migrated
+
+
+def _migrate_pre_resource_allocation_result(
+    result: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Represent absent pre-v8 resource evidence without manufacturing it."""
+
+    migrated = dict(result)
+    migrated["resource_envelope"] = None
+    migrated["resource_allocations"] = []
     return migrated
 
 
@@ -412,6 +432,120 @@ def _validate_workload_resolutions(
             )
 
 
+def _validate_resource_allocations(
+    result: Dict[str, Any],
+    *,
+    require_evidence: bool,
+) -> None:
+    envelope_value = result.get("resource_envelope")
+    allocations = result.get("resource_allocations")
+    if envelope_value is None and not require_evidence:
+        if allocations not in (None, []):
+            raise ResultSchemaError(
+                "legacy resource allocations require a resource envelope"
+            )
+        return
+    try:
+        envelope = ResourceEnvelope.from_manifest(envelope_value)
+    except (TypeError, ValueError) as exc:
+        raise ResultSchemaError(f"invalid resource envelope: {exc}") from exc
+    if not isinstance(allocations, list):
+        raise ResultSchemaError("resource_allocations must be an array")
+
+    episode_id = result.get("episode_id")
+    workers = result.get("workers")
+    research = workers.get("research") if isinstance(workers, dict) else None
+    worker_id = research.get("worker_id") if isinstance(research, dict) else None
+    accepted_receipts = []
+    seen_receipts = set()
+    seen_leases = set()
+    for record in allocations:
+        if not isinstance(record, dict) or set(record) != {
+            "receipt",
+            "assessment",
+            "accepted",
+        }:
+            raise ResultSchemaError(
+                "resource allocation records must contain receipt, assessment, and accepted"
+            )
+        try:
+            receipt = ResourceAllocationReceipt.from_manifest(record["receipt"])
+            assessment = assess_resource_allocation(
+                envelope,
+                receipt,
+                episode_id=episode_id,
+                lease_id=receipt.lease_id,
+                worker_id=worker_id,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ResultSchemaError(
+                f"invalid resource allocation receipt: {exc}"
+            ) from exc
+        if receipt.receipt_id in seen_receipts or receipt.lease_id in seen_leases:
+            raise ResultSchemaError("resource allocation receipts must be unique")
+        seen_receipts.add(receipt.receipt_id)
+        seen_leases.add(receipt.lease_id)
+        if record["assessment"] != assessment.public_manifest():
+            raise ResultSchemaError(
+                "resource allocation assessment does not match its evidence"
+            )
+        if not isinstance(record["accepted"], bool):
+            raise ResultSchemaError("resource allocation accepted must be boolean")
+        if record["accepted"] is not assessment.satisfied:
+            raise ResultSchemaError(
+                "resource allocation acceptance does not match its assessment"
+            )
+        if record["accepted"]:
+            accepted_receipts.append(receipt)
+
+    leases_used = result.get("leases_used", 0)
+    if (
+        isinstance(leases_used, bool)
+        or not isinstance(leases_used, int)
+        or leases_used < 0
+    ):
+        raise ResultSchemaError("leases_used must be a non-negative integer")
+    if require_evidence and len(accepted_receipts) != leases_used:
+        raise ResultSchemaError(
+            "accepted resource allocations must match the used Lease count"
+        )
+    if (
+        require_evidence
+        and result.get("outcome") == "success"
+        and len(accepted_receipts) != len(allocations)
+    ):
+        raise ResultSchemaError(
+            "a successful result cannot contain a rejected resource allocation"
+        )
+    active = result.get("active_lease")
+    if isinstance(active, dict):
+        receipt_id = active.get("resource_allocation_receipt_id")
+        if receipt_id not in {receipt.receipt_id for receipt in accepted_receipts}:
+            raise ResultSchemaError(
+                "an active Lease must reference its accepted resource allocation"
+            )
+    if result.get("leaderboard_eligible") is True:
+        if not accepted_receipts or len(accepted_receipts) != len(allocations):
+            raise ResultSchemaError(
+                "a leaderboard-eligible result requires accepted allocation evidence"
+            )
+        if any(
+            requirement.minimum_enforcement.value != "enforced"
+            for requirement in envelope.requirements
+        ):
+            raise ResultSchemaError(
+                "a leaderboard-eligible resource envelope must require enforcement"
+            )
+        challenge_release = result.get("challenge_release")
+        if (
+            not isinstance(challenge_release, dict)
+            or challenge_release.get("resource_envelope") != envelope.public_manifest()
+        ):
+            raise ResultSchemaError(
+                "leaderboard resource evidence must match the frozen release"
+            )
+
+
 def _validate_agent_system(result: Dict[str, Any]) -> None:
     """Pin the current ``agent_system`` structure to the current schema version."""
 
@@ -501,6 +635,10 @@ def _validate_current_result(
         require_evidence=not migrated_legacy,
         leaderboard_eligible=result.get("leaderboard_eligible") is True,
         release_verification=result.get("formal_release_verification"),
+    )
+    _validate_resource_allocations(
+        result,
+        require_evidence=not migrated_legacy,
     )
     status = result.get("status")
     if status not in _VALID_STATUSES:

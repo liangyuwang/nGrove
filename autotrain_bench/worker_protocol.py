@@ -8,6 +8,9 @@ separately distributed Worker packages.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import math
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -27,8 +30,10 @@ if TYPE_CHECKING:
     from .config import TaskConfig, TrainingResources
 
 
-WORKER_PROTOCOL_VERSION = 6
+WORKER_PROTOCOL_VERSION = 7
 WORKER_CONFORMANCE_SUITE_VERSION = f"worker-v{WORKER_PROTOCOL_VERSION}"
+RESOURCE_ENVELOPE_SCHEMA_VERSION = 1
+RESOURCE_ALLOCATION_RECEIPT_VERSION = 1
 
 
 class WorkerFailure(RuntimeError):
@@ -256,6 +261,558 @@ def _validate_opaque_id(value: str, field: str) -> None:
         )
     ):
         raise ValueError(f"{field} must be an opaque identifier")
+
+
+def _validate_resource_property_name(value: str, field: str) -> None:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 128
+        or not value[0].isalnum()
+        or any(
+            character not in "abcdefghijklmnopqrstuvwxyz0123456789._-"
+            for character in value
+        )
+    ):
+        raise ValueError(f"{field} must be a lowercase semantic property name")
+
+
+def _resource_scalar(value: Any, field: str) -> Any:
+    if value is None or isinstance(value, (str, bool)):
+        if isinstance(value, str) and (not value or len(value) > 2048 or "\0" in value):
+            raise ValueError(f"{field} contains an invalid string")
+        return value
+    if isinstance(value, int):
+        if value.bit_length() > 127:
+            raise ValueError(f"{field} integer is outside the supported range")
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"{field} must be finite")
+        return value
+    raise TypeError(f"{field} must be a JSON scalar")
+
+
+def _resource_value(value: Any, field: str) -> Any:
+    """Normalize one path-free resource value used by the semantic protocol."""
+
+    if isinstance(value, (tuple, list)):
+        if len(value) > 1024:
+            raise ValueError(f"{field} contains too many values")
+        return tuple(_resource_scalar(item, field) for item in value)
+    return _resource_scalar(value, field)
+
+
+def _resource_value_manifest(value: Any) -> Any:
+    if isinstance(value, tuple):
+        return [_resource_value_manifest(item) for item in value]
+    return value
+
+
+def _resource_values_equal(left: Any, right: Any) -> bool:
+    if isinstance(left, tuple) or isinstance(right, tuple):
+        return (
+            isinstance(left, tuple)
+            and isinstance(right, tuple)
+            and len(left) == len(right)
+            and all(
+                _resource_values_equal(left_item, right_item)
+                for left_item, right_item in zip(left, right)
+            )
+        )
+    if isinstance(left, bool) or isinstance(right, bool):
+        return isinstance(left, bool) and isinstance(right, bool) and left == right
+    if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+        return left == right
+    return type(left) is type(right) and left == right
+
+
+def _resource_relation_satisfied(relation: str, required: Any, actual: Any) -> bool:
+    values = actual if isinstance(actual, tuple) else (actual,)
+    if relation == "exact":
+        return _resource_values_equal(actual, required)
+    if relation == "at_least":
+        if isinstance(required, bool) or not isinstance(required, (int, float)):
+            return False
+        return bool(values) and all(
+            not isinstance(value, bool)
+            and isinstance(value, (int, float))
+            and value >= required
+            for value in values
+        )
+    if relation == "contains":
+        return bool(values) and all(
+            isinstance(value, str) and required in value for value in values
+        )
+    raise ValueError(f"unsupported resource relation: {relation}")
+
+
+@dataclass(frozen=True)
+class ResourceRequirement:
+    """One release-selected semantic property, independent of its mechanism."""
+
+    name: str
+    relation: str
+    value: Any
+    minimum_enforcement: EnforcementLevel = EnforcementLevel.ENFORCED
+
+    def __post_init__(self) -> None:
+        _validate_resource_property_name(self.name, "resource requirement name")
+        if self.relation not in {"exact", "at_least", "contains"}:
+            raise ValueError("resource relation must be exact, at_least, or contains")
+        normalized = _resource_value(self.value, "resource requirement value")
+        if self.relation == "at_least" and (
+            isinstance(normalized, bool) or not isinstance(normalized, (int, float))
+        ):
+            raise TypeError("at_least resource requirements must be numeric")
+        if self.relation == "contains" and not isinstance(normalized, str):
+            raise TypeError("contains resource requirements must be strings")
+        if not isinstance(self.minimum_enforcement, EnforcementLevel):
+            raise TypeError("minimum resource enforcement must be an EnforcementLevel")
+        if self.minimum_enforcement.rank < EnforcementLevel.BEST_EFFORT.rank:
+            raise ValueError(
+                "normative resources require at least best_effort enforcement"
+            )
+        object.__setattr__(self, "value", normalized)
+
+    def public_manifest(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "relation": self.relation,
+            "value": _resource_value_manifest(self.value),
+            "minimum_enforcement": self.minimum_enforcement.value,
+        }
+
+    @classmethod
+    def from_manifest(cls, value: Any) -> "ResourceRequirement":
+        if not isinstance(value, dict):
+            raise TypeError("resource requirement must be an object")
+        if set(value) != {"name", "relation", "value", "minimum_enforcement"}:
+            raise ValueError("resource requirement has unexpected fields")
+        try:
+            level = EnforcementLevel(value["minimum_enforcement"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid minimum resource enforcement") from exc
+        return cls(
+            name=value["name"],
+            relation=value["relation"],
+            value=value["value"],
+            minimum_enforcement=level,
+        )
+
+
+@dataclass(frozen=True)
+class ResourceEnvelope:
+    """Release-owned resource semantics requested for one operation.
+
+    Only properties named here become normative or observational. An absent
+    platform property is deliberately unspecified rather than silently fixed
+    by Core.
+    """
+
+    requirements: Tuple[ResourceRequirement, ...]
+    observational_properties: Tuple[str, ...] = ()
+    schema_version: int = RESOURCE_ENVELOPE_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.schema_version, bool)
+            or not isinstance(self.schema_version, int)
+            or self.schema_version != RESOURCE_ENVELOPE_SCHEMA_VERSION
+        ):
+            raise ValueError("unsupported resource envelope schema version")
+        if not isinstance(self.requirements, tuple) or any(
+            not isinstance(requirement, ResourceRequirement)
+            for requirement in self.requirements
+        ):
+            raise TypeError("resource requirements must be a tuple")
+        names = [requirement.name for requirement in self.requirements]
+        if len(set(names)) != len(names):
+            raise ValueError("normative resource properties must be unique")
+        if not isinstance(self.observational_properties, tuple):
+            raise TypeError("observational resource properties must be a tuple")
+        for name in self.observational_properties:
+            _validate_resource_property_name(name, "observational resource property")
+        if len(set(self.observational_properties)) != len(
+            self.observational_properties
+        ):
+            raise ValueError("observational resource properties must be unique")
+        if set(names).intersection(self.observational_properties):
+            raise ValueError("a resource property cannot have two classifications")
+
+    def public_manifest(self) -> Dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "normative": [
+                requirement.public_manifest()
+                for requirement in sorted(self.requirements, key=lambda item: item.name)
+            ],
+            "observational": sorted(self.observational_properties),
+        }
+
+    @property
+    def sha256(self) -> str:
+        encoded = json.dumps(
+            self.public_manifest(),
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @classmethod
+    def from_manifest(cls, value: Any) -> "ResourceEnvelope":
+        if not isinstance(value, dict):
+            raise TypeError("resource envelope must be an object")
+        if set(value) != {"schema_version", "normative", "observational"}:
+            raise ValueError("resource envelope has unexpected fields")
+        normative = value["normative"]
+        observational = value["observational"]
+        if not isinstance(normative, list) or not isinstance(observational, list):
+            raise TypeError("resource envelope property sets must be arrays")
+        return cls(
+            schema_version=value["schema_version"],
+            requirements=tuple(
+                ResourceRequirement.from_manifest(requirement)
+                for requirement in normative
+            ),
+            observational_properties=tuple(observational),
+        )
+
+
+def v0_resource_envelope(
+    resources: "TrainingResources",
+    *,
+    minimum_enforcement: EnforcementLevel,
+) -> ResourceEnvelope:
+    """Translate the bundled v0 launch flags into semantic resource properties.
+
+    This compatibility helper is deliberately not the universal resource
+    vocabulary. New releases can publish any properties through
+    :class:`ResourceEnvelope` without adding fields here.
+    """
+
+    resources.validate()
+    requirements = [
+        ResourceRequirement(
+            "host.count",
+            "exact",
+            1,
+            minimum_enforcement,
+        ),
+        ResourceRequirement(
+            "accelerator.count",
+            "exact",
+            resources.nvidia_gpu_count,
+            minimum_enforcement,
+        ),
+    ]
+    if resources.nvidia_gpu_count:
+        requirements.append(
+            ResourceRequirement(
+                "accelerator.vendor",
+                "exact",
+                "nvidia",
+                minimum_enforcement,
+            )
+        )
+        if resources.required_gpu_model is not None:
+            requirements.append(
+                ResourceRequirement(
+                    "accelerator.model",
+                    "contains",
+                    resources.required_gpu_model,
+                    minimum_enforcement,
+                )
+            )
+        if resources.minimum_gpu_memory_mib is not None:
+            requirements.append(
+                ResourceRequirement(
+                    "accelerator.memory_mib_per_device",
+                    "at_least",
+                    resources.minimum_gpu_memory_mib,
+                    minimum_enforcement,
+                )
+            )
+    return ResourceEnvelope(requirements=tuple(requirements))
+
+
+@dataclass(frozen=True)
+class ResourceObservation:
+    """One effective resource view supplied by an evidence authority."""
+
+    status: str
+    value: Any = None
+    authority: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.status not in {"observed", "unavailable", "not_applicable"}:
+            raise ValueError("resource observation has an invalid status")
+        if self.status == "observed":
+            normalized = _resource_value(self.value, "resource observation value")
+            if not isinstance(self.authority, str) or not self.authority.strip():
+                raise ValueError("observed resources require an evidence authority")
+            if len(self.authority) > 256 or "\0" in self.authority:
+                raise ValueError("resource evidence authority is invalid")
+            object.__setattr__(self, "value", normalized)
+        elif self.value is not None or self.authority is not None:
+            raise ValueError("an unavailable resource view cannot carry evidence")
+
+    def public_manifest(self) -> Dict[str, Any]:
+        return {
+            "status": self.status,
+            "value": _resource_value_manifest(self.value),
+            "authority": self.authority,
+        }
+
+    @classmethod
+    def from_manifest(cls, value: Any) -> "ResourceObservation":
+        if not isinstance(value, dict):
+            raise TypeError("resource observation must be an object")
+        if set(value) != {"status", "value", "authority"}:
+            raise ValueError("resource observation has unexpected fields")
+        return cls(
+            status=value["status"],
+            value=value["value"],
+            authority=value["authority"],
+        )
+
+
+@dataclass(frozen=True)
+class ResourcePropertyEvidence:
+    """Allocated, workload-visible, and enforced views of one property."""
+
+    name: str
+    allocator_allocated: ResourceObservation
+    workload_visible: ResourceObservation
+    enforcement_level: EnforcementLevel
+    enforcement_authority: Optional[str]
+
+    def __post_init__(self) -> None:
+        _validate_resource_property_name(self.name, "resource evidence name")
+        if not isinstance(
+            self.allocator_allocated, ResourceObservation
+        ) or not isinstance(self.workload_visible, ResourceObservation):
+            raise TypeError(
+                "resource evidence views must be ResourceObservation values"
+            )
+        if not isinstance(self.enforcement_level, EnforcementLevel):
+            raise TypeError("resource enforcement level must be an EnforcementLevel")
+        if self.enforcement_level is EnforcementLevel.UNSUPPORTED:
+            if self.enforcement_authority is not None:
+                raise ValueError("unsupported enforcement cannot name an authority")
+        elif (
+            not isinstance(self.enforcement_authority, str)
+            or not self.enforcement_authority.strip()
+            or len(self.enforcement_authority) > 256
+            or "\0" in self.enforcement_authority
+        ):
+            raise ValueError("resource enforcement requires an authority")
+
+    def public_manifest(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "allocator_allocated": self.allocator_allocated.public_manifest(),
+            "workload_visible": self.workload_visible.public_manifest(),
+            "enforcement_level": self.enforcement_level.value,
+            "enforcement_authority": self.enforcement_authority,
+        }
+
+    @classmethod
+    def from_manifest(cls, value: Any) -> "ResourcePropertyEvidence":
+        if not isinstance(value, dict):
+            raise TypeError("resource property evidence must be an object")
+        expected = {
+            "name",
+            "allocator_allocated",
+            "workload_visible",
+            "enforcement_level",
+            "enforcement_authority",
+        }
+        if set(value) != expected:
+            raise ValueError("resource property evidence has unexpected fields")
+        try:
+            level = EnforcementLevel(value["enforcement_level"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid resource enforcement level") from exc
+        return cls(
+            name=value["name"],
+            allocator_allocated=ResourceObservation.from_manifest(
+                value["allocator_allocated"]
+            ),
+            workload_visible=ResourceObservation.from_manifest(
+                value["workload_visible"]
+            ),
+            enforcement_level=level,
+            enforcement_authority=value["enforcement_authority"],
+        )
+
+
+@dataclass(frozen=True)
+class ResourceAllocationReceipt:
+    """Operation-bound Worker evidence for one effective allocation."""
+
+    episode_id: str
+    lease_id: str
+    worker_id: str
+    resource_request_sha256: str
+    properties: Tuple[ResourcePropertyEvidence, ...]
+    receipt_id: str
+    receipt_version: int = RESOURCE_ALLOCATION_RECEIPT_VERSION
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.receipt_version, bool)
+            or not isinstance(self.receipt_version, int)
+            or self.receipt_version != RESOURCE_ALLOCATION_RECEIPT_VERSION
+        ):
+            raise ValueError("unsupported resource allocation receipt version")
+        _validate_opaque_id(self.episode_id, "resource receipt episode_id")
+        _validate_opaque_id(self.lease_id, "resource receipt lease_id")
+        if (
+            not isinstance(self.worker_id, str)
+            or not self.worker_id.strip()
+            or len(self.worker_id) > 256
+            or "\0" in self.worker_id
+        ):
+            raise ValueError("resource receipt worker_id is invalid")
+        _validate_sha256(
+            self.resource_request_sha256,
+            "resource receipt request sha256",
+        )
+        _validate_opaque_id(self.receipt_id, "resource receipt_id")
+        if not isinstance(self.properties, tuple) or any(
+            not isinstance(item, ResourcePropertyEvidence) for item in self.properties
+        ):
+            raise TypeError("resource receipt properties must be a tuple")
+        names = [item.name for item in self.properties]
+        if len(set(names)) != len(names):
+            raise ValueError("resource receipt properties must be unique")
+
+    def public_manifest(self) -> Dict[str, Any]:
+        return {
+            "receipt_version": self.receipt_version,
+            "receipt_id": self.receipt_id,
+            "episode_id": self.episode_id,
+            "lease_id": self.lease_id,
+            "worker_id": self.worker_id,
+            "resource_request_sha256": self.resource_request_sha256,
+            "properties": [
+                item.public_manifest()
+                for item in sorted(self.properties, key=lambda value: value.name)
+            ],
+        }
+
+    @classmethod
+    def from_manifest(cls, value: Any) -> "ResourceAllocationReceipt":
+        if not isinstance(value, dict):
+            raise TypeError("resource allocation receipt must be an object")
+        expected = {
+            "receipt_version",
+            "receipt_id",
+            "episode_id",
+            "lease_id",
+            "worker_id",
+            "resource_request_sha256",
+            "properties",
+        }
+        if set(value) != expected:
+            raise ValueError("resource allocation receipt has unexpected fields")
+        properties = value["properties"]
+        if not isinstance(properties, list):
+            raise TypeError("resource allocation properties must be an array")
+        return cls(
+            receipt_version=value["receipt_version"],
+            receipt_id=value["receipt_id"],
+            episode_id=value["episode_id"],
+            lease_id=value["lease_id"],
+            worker_id=value["worker_id"],
+            resource_request_sha256=value["resource_request_sha256"],
+            properties=tuple(
+                ResourcePropertyEvidence.from_manifest(item) for item in properties
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class ResourceAllocationAssessment:
+    satisfied: bool
+    missing: Tuple[str, ...]
+    mismatched: Tuple[str, ...]
+    insufficient_enforcement: Tuple[str, ...]
+    unexpected: Tuple[str, ...]
+
+    def public_manifest(self) -> Dict[str, Any]:
+        return {
+            "satisfied": self.satisfied,
+            "missing_properties": list(self.missing),
+            "mismatched_properties": list(self.mismatched),
+            "insufficient_enforcement": list(self.insufficient_enforcement),
+            "unexpected_properties": list(self.unexpected),
+        }
+
+
+def assess_resource_allocation(
+    envelope: ResourceEnvelope,
+    receipt: ResourceAllocationReceipt,
+    *,
+    episode_id: str,
+    lease_id: str,
+    worker_id: str,
+) -> ResourceAllocationAssessment:
+    """Validate receipt binding, then compare every release-normative property."""
+
+    if not isinstance(envelope, ResourceEnvelope):
+        raise TypeError("resource envelope must be a ResourceEnvelope")
+    if not isinstance(receipt, ResourceAllocationReceipt):
+        raise TypeError("resource receipt must be a ResourceAllocationReceipt")
+    if receipt.episode_id != episode_id:
+        raise ValueError("resource receipt is bound to a different episode")
+    if receipt.lease_id != lease_id:
+        raise ValueError("resource receipt is bound to a different lease")
+    if receipt.worker_id != worker_id:
+        raise ValueError("resource receipt is bound to a different Worker")
+    if receipt.resource_request_sha256 != envelope.sha256:
+        raise ValueError("resource receipt is bound to a different request")
+
+    requirements = {item.name: item for item in envelope.requirements}
+    evidence = {item.name: item for item in receipt.properties}
+    allowed = set(requirements).union(envelope.observational_properties)
+    missing = sorted(set(requirements).difference(evidence))
+    unexpected = sorted(set(evidence).difference(allowed))
+    mismatched = []
+    insufficient = []
+    for name, requirement in requirements.items():
+        item = evidence.get(name)
+        if item is None:
+            continue
+        observed = [
+            view.value
+            for view in (item.allocator_allocated, item.workload_visible)
+            if view.status == "observed"
+        ]
+        if not observed or any(
+            not _resource_relation_satisfied(
+                requirement.relation,
+                requirement.value,
+                value,
+            )
+            for value in observed
+        ):
+            mismatched.append(name)
+        if item.enforcement_level.rank < requirement.minimum_enforcement.rank:
+            insufficient.append(name)
+    return ResourceAllocationAssessment(
+        satisfied=not missing
+        and not mismatched
+        and not insufficient
+        and not unexpected,
+        missing=tuple(missing),
+        mismatched=tuple(sorted(mismatched)),
+        insufficient_enforcement=tuple(sorted(insufficient)),
+        unexpected=tuple(unexpected),
+    )
 
 
 @dataclass(frozen=True)
@@ -609,9 +1166,10 @@ class ResearchWorker(Protocol):
         task: ResearchTaskSpec,
         workspace: Path,
         resources: "TrainingResources",
+        resource_envelope: ResourceEnvelope,
         lease_dir: Path,
         workload: ResolvedWorkload,
-    ) -> None: ...
+    ) -> ResourceAllocationReceipt: ...
 
     def exec_lease(
         self,

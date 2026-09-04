@@ -5,6 +5,7 @@ from autotrain_bench.results import (
     UNCOUNTED_ANALYSIS_RESULT_SCHEMA_VERSION,
     AGENT_MODE_RESULT_SCHEMA_VERSION,
     POSTMORTEM_RESULT_SCHEMA_VERSION,
+    PRE_RESOURCE_ALLOCATION_RESULT_SCHEMA_VERSION,
     PRE_WORKLOAD_RESOLUTION_RESULT_SCHEMA_VERSION,
     PRE_ANALYSIS_RESULT_SCHEMA_VERSION,
     RESULT_SCHEMA_VERSION,
@@ -67,6 +68,67 @@ def _workload_resolution(role, acceptance="canonical_identity"):
     }
 
 
+def _resource_fields():
+    envelope = {
+        "schema_version": 1,
+        "normative": [
+            {
+                "name": "host.count",
+                "relation": "exact",
+                "value": 1,
+                "minimum_enforcement": "best_effort",
+            }
+        ],
+        "observational": [],
+    }
+    receipt = {
+        "receipt_version": 1,
+        "receipt_id": "receipt:lease-0001",
+        "episode_id": "episode-1",
+        "lease_id": "lease-0001",
+        "worker_id": "research-worker",
+        "resource_request_sha256": (
+            "4faff5339f77c121b322f6c2017097cc11f91720eacbe8cc47844274da5b9dda"
+        ),
+        "properties": [
+            {
+                "name": "host.count",
+                "allocator_allocated": {
+                    "status": "observed",
+                    "value": 1,
+                    "authority": "test-allocator",
+                },
+                "workload_visible": {
+                    "status": "not_applicable",
+                    "value": None,
+                    "authority": None,
+                },
+                "enforcement_level": "enforced",
+                "enforcement_authority": "test-worker",
+            }
+        ],
+    }
+    return {
+        "episode_id": "episode-1",
+        "workers": {"research": {"worker_id": "research-worker"}},
+        "leases_used": 1,
+        "resource_envelope": envelope,
+        "resource_allocations": [
+            {
+                "receipt": receipt,
+                "assessment": {
+                    "satisfied": True,
+                    "missing_properties": [],
+                    "mismatched_properties": [],
+                    "insufficient_enforcement": [],
+                    "unexpected_properties": [],
+                },
+                "accepted": True,
+            }
+        ],
+    }
+
+
 def _finalized(*, schema_version=RESULT_SCHEMA_VERSION, **overrides):
     """A minimal valid finalized result, so each test varies only one thing."""
 
@@ -88,6 +150,7 @@ def _finalized(*, schema_version=RESULT_SCHEMA_VERSION, **overrides):
         "incumbent_declarations": [_incumbent_declaration()],
         "test_status": "evaluated",
         "workload_resolutions": _empty_workload_resolutions(),
+        **_resource_fields(),
     }
     payload.update(overrides)
     # Derive the summary counts from whatever trajectory the test ended up with,
@@ -107,6 +170,45 @@ def _finalized(*, schema_version=RESULT_SCHEMA_VERSION, **overrides):
 
 
 class ResultMetricTests(unittest.TestCase):
+    def test_v7_migration_marks_resource_evidence_as_unavailable(self):
+        legacy = _finalized(
+            schema_version=PRE_RESOURCE_ALLOCATION_RESULT_SCHEMA_VERSION
+        )
+        legacy.pop("resource_envelope")
+        legacy.pop("resource_allocations")
+
+        report = normalize_result_report(legacy)
+
+        self.assertEqual(report["result_schema_version"], RESULT_SCHEMA_VERSION)
+        self.assertEqual(
+            report["migrated_from_result_schema_version"],
+            PRE_RESOURCE_ALLOCATION_RESULT_SCHEMA_VERSION,
+        )
+        self.assertIsNone(report["resource_envelope"])
+        self.assertEqual(report["resource_allocations"], [])
+
+    def test_current_resource_receipt_cannot_be_replayed_for_another_request(self):
+        payload = _finalized()
+        payload["resource_allocations"][0]["receipt"]["resource_request_sha256"] = (
+            "a" * 64
+        )
+
+        with self.assertRaisesRegex(ResultSchemaError, "different request"):
+            normalize_result_report(payload)
+
+    def test_current_resource_views_cannot_disagree_with_a_stored_assessment(self):
+        payload = _finalized()
+        payload["resource_allocations"][0]["receipt"]["properties"][0][
+            "workload_visible"
+        ] = {
+            "status": "observed",
+            "value": 2,
+            "authority": "test-workload",
+        }
+
+        with self.assertRaisesRegex(ResultSchemaError, "assessment"):
+            normalize_result_report(payload)
+
     def test_nll_validation_does_not_coerce_non_numeric_json_values(self):
         invalid = (True, "1.25", None, float("nan"), float("inf"), -0.1, 10**1000)
         for value in invalid:
@@ -217,6 +319,7 @@ class ResultMetricTests(unittest.TestCase):
         report = normalize_result_report(
             {
                 "result_schema_version": RESULT_SCHEMA_VERSION,
+                **_resource_fields(),
                 "status": "closed",
                 "outcome": None,
                 "final_candidate_id": "sha256:candidate",
@@ -243,6 +346,7 @@ class ResultMetricTests(unittest.TestCase):
         report = normalize_result_report(
             {
                 "result_schema_version": RESULT_SCHEMA_VERSION,
+                **_resource_fields(),
                 "status": "finalized",
                 "outcome": "success",
                 "final_candidate_id": "sha256:candidate",
@@ -401,6 +505,7 @@ class ResultMetricTests(unittest.TestCase):
         report = normalize_result_report(
             {
                 "result_schema_version": RESULT_SCHEMA_VERSION,
+                **_resource_fields(),
                 "status": "closed",
                 "outcome": None,
                 "final_candidate_id": "sha256:candidate",
@@ -436,6 +541,7 @@ class ResultMetricTests(unittest.TestCase):
             normalize_result_report(
                 {
                     "result_schema_version": RESULT_SCHEMA_VERSION,
+                    **_resource_fields(),
                     "status": "closed",
                     "outcome": "failed",
                     "final_candidate_id": "sha256:candidate",
@@ -523,6 +629,7 @@ class ResultMetricTests(unittest.TestCase):
         report = normalize_result_report(
             {
                 "result_schema_version": RESULT_SCHEMA_VERSION,
+                **_resource_fields(),
                 "status": "finalized",
                 "outcome": "success",
                 "final_candidate_id": "sha256:candidate",

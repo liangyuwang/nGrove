@@ -90,6 +90,27 @@ class ChallengeReleaseTests(unittest.TestCase):
             self.assertEqual(resolved.resources.nvidia_gpu_count, 4)
             self.assertEqual(resolved.resources.required_gpu_model, "H100")
             self.assertEqual(resolved.resources.minimum_gpu_memory_mib, 80000)
+            resource_manifest = resolved.resource_envelope.public_manifest()
+            self.assertEqual(
+                [item["name"] for item in resource_manifest["normative"]],
+                [
+                    "accelerator.count",
+                    "accelerator.memory_mib_per_device",
+                    "accelerator.model",
+                    "accelerator.vendor",
+                    "host.count",
+                ],
+            )
+            self.assertTrue(
+                all(
+                    item["minimum_enforcement"] == "best_effort"
+                    for item in resource_manifest["normative"]
+                )
+            )
+            self.assertEqual(
+                resolved.release_manifest["resource_envelope"],
+                resource_manifest,
+            )
             self.assertEqual(
                 resolved.comparison_key.public_manifest(),
                 {
@@ -157,6 +178,39 @@ class ChallengeReleaseTests(unittest.TestCase):
             self.assertEqual(resolved.resources.nvidia_gpu_count, 0)
             self.assertIsNone(resolved.resources.required_gpu_model)
 
+    def test_runtime_profile_accepts_release_defined_resource_properties(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._write_release(directory)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            profile = payload["runtime_profiles"]["h100-80gb-x4"]
+            profile["resource_contract"] = {
+                "schema_version": 1,
+                "normative": [
+                    {
+                        "name": "site.scratch.capacity_bytes",
+                        "relation": "at_least",
+                        "value": 1000,
+                        "minimum_enforcement": "enforced",
+                    }
+                ],
+                "observational": ["site.fabric.class"],
+            }
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            release = ChallengeRelease.load(path)
+            resolved = release.resolve(
+                replace(
+                    TaskConfig.load(TASK), task_kind="benchmark_challenge"
+                ).validate(),
+                track_config_id="a-1h",
+                runtime_profile_id="h100-80gb-x4",
+            )
+
+            self.assertEqual(
+                resolved.resource_envelope.public_manifest(),
+                profile["resource_contract"],
+            )
+
     def test_release_rejects_unsupported_runtime_shapes(self):
         with tempfile.TemporaryDirectory() as directory:
             path = self._write_release(directory)
@@ -179,6 +233,33 @@ class ChallengeReleaseTests(unittest.TestCase):
             payload["release_stage"] = "official"
             path.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaisesRegex(ConfigError, "provisional"):
+                ChallengeRelease.load(path)
+
+    def test_leaderboard_release_requires_enforced_normative_resources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._write_release(directory)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["leaderboard_eligible"] = True
+            payload["release_stage"] = "official"
+            for value in payload["track_configs"].values():
+                value["provisional"] = False
+            for value in payload["runtime_profiles"].values():
+                value["provisional"] = False
+                value["resource_contract"] = {
+                    "schema_version": 1,
+                    "normative": [
+                        {
+                            "name": "host.count",
+                            "relation": "exact",
+                            "value": 1,
+                            "minimum_enforcement": "best_effort",
+                        }
+                    ],
+                    "observational": [],
+                }
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            with self.assertRaisesRegex(ConfigError, "enforced normative"):
                 ChallengeRelease.load(path)
 
     def test_formal_release_receipt_requires_every_trusted_artifact(self):

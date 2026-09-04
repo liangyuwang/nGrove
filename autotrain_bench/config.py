@@ -373,7 +373,11 @@ class AgentConfig:
 
 @dataclass(frozen=True)
 class TrainingResources:
-    """Trusted episode-time resource envelope requested from a Worker."""
+    """Bundled v0 launch inputs translated into a semantic ResourceEnvelope.
+
+    The fixed NVIDIA and device-path fields belong to the local reference
+    composition. They are not the extensibility surface for external Workers.
+    """
 
     nvidia_gpu_count: int = 0
     required_gpu_model: Optional[str] = None

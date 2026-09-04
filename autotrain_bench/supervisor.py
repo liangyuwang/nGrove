@@ -55,6 +55,7 @@ from .worker_protocol import (
     HiddenDatasetRequest,
     HiddenDatasetResolutionFailure,
     LeaseState,
+    ResourceEnvelope,
     ResearchTaskSpec,
     ResearchWorker,
     ResolvedHiddenDataset,
@@ -63,7 +64,9 @@ from .worker_protocol import (
     WorkloadResolutionFailure,
     WorkerFailure,
     WorkerTeardownFailure,
+    assess_resource_allocation,
     assess_worker,
+    v0_resource_envelope,
 )
 
 
@@ -242,6 +245,7 @@ class Supervisor:
         config: TaskConfig,
         agent: AgentConfig,
         resources: TrainingResources,
+        resource_envelope: Optional[ResourceEnvelope] = None,
         track: str,
         episode_dir: Path,
         agent_api_dir: Path,
@@ -286,6 +290,16 @@ class Supervisor:
             )
         self.agent_execution = agent_execution
         self.resources = resources.validate_for(config)
+        self.resource_envelope = resource_envelope or v0_resource_envelope(
+            self.resources,
+            minimum_enforcement=(
+                EnforcementLevel.ENFORCED
+                if config.leaderboard_eligible
+                else EnforcementLevel.BEST_EFFORT
+            ),
+        )
+        if not isinstance(self.resource_envelope, ResourceEnvelope):
+            raise TypeError("resource_envelope must be a ResourceEnvelope")
         self.track = normalized
         self.episode_dir = episode_dir.resolve()
         self.research_worker = research_worker
@@ -359,6 +373,7 @@ class Supervisor:
 
         research_descriptor = research_worker.describe_capabilities()
         evaluation_descriptor = evaluation_worker.describe_capabilities()
+        self.research_worker_id = research_descriptor.worker_id
         research_requirements = list(RESEARCH_REQUIREMENTS)
         evaluation_requirements = list(EVALUATION_REQUIREMENTS)
         if resources.nvidia_gpu_count:
@@ -476,6 +491,11 @@ class Supervisor:
                     or selected.get("provisional") is not False
                 ):
                     eligibility_violations.append(f"{field}_not_frozen")
+            release_resource_envelope = challenge_release.get("resource_envelope")
+            if release_resource_envelope is None:
+                eligibility_violations.append("resource_envelope_not_frozen")
+            elif release_resource_envelope != self.resource_envelope.public_manifest():
+                eligibility_violations.append("resource_envelope_mismatch")
             if isinstance(comparison_key, dict):
                 for release_field, comparison_field in (
                     ("track_config_id", "track_config"),
@@ -489,7 +509,7 @@ class Supervisor:
             eligibility_violations.append("agent_workload_identity_not_immutable")
         if not agent_execution.leaderboard_eligible:
             eligibility_violations.append("agent_execution_not_certified")
-        # Worker Protocol v6 covers Worker-owned training/Candidate/Evaluator
+        # Worker Protocol v7 covers Worker-owned training/Candidate/Evaluator
         # workloads. AgentExecutionEvidence v0 binds the Agent image itself but
         # has no trusted field for an inference Gateway workload. Fail closed
         # instead of treating the task's configured Gateway reference as proof
@@ -529,10 +549,16 @@ class Supervisor:
             # diagnostic axis and never gates an otherwise valid TEST result.
             eligibility_violations.append("formal_test_evaluation_pending")
         if config.leaderboard_eligible:
+            if any(
+                requirement.minimum_enforcement is not EnforcementLevel.ENFORCED
+                for requirement in self.resource_envelope.requirements
+            ):
+                eligibility_violations.append("resource_envelope_not_formal")
             eligibility_violations.extend(
                 f"workload_resolution_pending:{role}"
                 for role in ("training", "candidate", "evaluator")
             )
+            eligibility_violations.append("resource_allocation_pending")
 
         leaderboard_eligible = (
             config.leaderboard_eligible
@@ -583,6 +609,8 @@ class Supervisor:
                 "candidate": None,
                 "evaluator": None,
             },
+            "resource_envelope": self.resource_envelope.public_manifest(),
+            "resource_allocations": [],
             "policy_compliant": policy_compliant,
             "policy_violations": policy_violations,
             "workers": {
@@ -702,6 +730,9 @@ class Supervisor:
         )
         public_manifest["training_environment"]["resources"] = (
             resources.public_manifest()
+        )
+        public_manifest["training_environment"]["resource_envelope"] = (
+            self.resource_envelope.public_manifest()
         )
         public_manifest["policy"] = {
             "compliant": policy_compliant,
@@ -1168,7 +1199,7 @@ class Supervisor:
         """Resolve and accept one workload before passing it to an operation.
 
         The returned opaque handle is the only workload authorization accepted
-        by Worker Protocol v6 operations.  Core records semantic evidence but
+        by Worker Protocol v7 operations.  Core records semantic evidence but
         never learns the Worker's path, scheduler job, image cache, or runtime
         handle.
         """
@@ -1287,6 +1318,63 @@ class Supervisor:
         self._save_state()
         return resolved
 
+    def _reject_started_lease_allocation(
+        self,
+        *,
+        lease_id: str,
+        lease_dir: Path,
+        failure_code: str,
+        private_detail: str,
+    ) -> None:
+        """Revoke a workload whose allocation receipt cannot be accepted."""
+
+        try:
+            self.research_worker.terminate_lease(
+                episode_id=self.state["episode_id"],
+                lease_id=lease_id,
+            )
+        except Exception as exc:
+            teardown_exc = (
+                exc
+                if isinstance(exc, WorkerTeardownFailure)
+                else WorkerTeardownFailure(str(exc))
+            )
+            self._event(
+                "LEASE_INFRA_FAILURE",
+                lease_id=lease_id,
+                code="resource_allocation_revoke_failure",
+            )
+            self.deployment_teardown_failed(
+                "research_worker_teardown_failure",
+                private_detail=str(teardown_exc),
+            )
+            raise ProtocolError(
+                "infrastructure_failure",
+                "resource allocation rejection could not revoke the workload",
+            ) from exc
+
+        pending = self.state["pending_lease_teardowns"]
+        if lease_id in pending:
+            pending.remove(lease_id)
+        try:
+            shutil.rmtree(lease_dir)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            self.deployment_teardown_failed(
+                "research_lease_directory_cleanup_failure",
+                private_detail=str(exc),
+            )
+            raise ProtocolError(
+                "infrastructure_failure",
+                "resource allocation rejection cleanup failed",
+            ) from exc
+        self.infrastructure_failed(failure_code, private_detail=private_detail)
+        raise ProtocolError(
+            "infrastructure_failure",
+            "training resource allocation evidence was rejected",
+        )
+
     def start_lease(self, requested_seconds: Any = None) -> Dict[str, Any]:
         with self.lock:
             self._require_active()
@@ -1358,15 +1446,26 @@ class Supervisor:
             self.state["lease_serial"] = serial
             pending = self.state["pending_lease_teardowns"]
             pending.append(lease_id)
+            resource_pending = "resource_allocation_pending"
+            if (
+                self.config.leaderboard_eligible
+                and resource_pending
+                not in self.state["leaderboard_eligibility_violations"]
+            ):
+                self.state["leaderboard_eligibility_violations"].append(
+                    resource_pending
+                )
+                self._refresh_leaderboard_eligibility()
             self._save_state()
             try:
-                self.research_worker.start_lease(
+                allocation_receipt = self.research_worker.start_lease(
                     episode_id=self.state["episode_id"],
                     lease_id=lease_id,
                     duration_seconds=duration,
                     task=self.research_task,
                     workspace=self.agent.workspace,
                     resources=self.resources,
+                    resource_envelope=self.resource_envelope,
                     lease_dir=lease_dir,
                     workload=training_workload,
                 )
@@ -1392,6 +1491,11 @@ class Supervisor:
                     "worker_lease_startup", worker_call_started
                 )
                 pending.remove(lease_id)
+                if resource_pending in self.state["leaderboard_eligibility_violations"]:
+                    self.state["leaderboard_eligibility_violations"].remove(
+                        resource_pending
+                    )
+                    self._refresh_leaderboard_eligibility()
                 try:
                     shutil.rmtree(lease_dir)
                 except FileNotFoundError:
@@ -1416,6 +1520,54 @@ class Supervisor:
                     "infrastructure_failure", "training lease startup failed"
                 ) from exc
 
+            try:
+                assessment = assess_resource_allocation(
+                    self.resource_envelope,
+                    allocation_receipt,
+                    episode_id=self.state["episode_id"],
+                    lease_id=lease_id,
+                    worker_id=self.research_worker_id,
+                )
+            except (TypeError, ValueError) as exc:
+                self._record_benchmark_overhead(
+                    "worker_lease_startup", worker_call_started
+                )
+                self._reject_started_lease_allocation(
+                    lease_id=lease_id,
+                    lease_dir=lease_dir,
+                    failure_code="resource_allocation_receipt_invalid",
+                    private_detail=f"{type(exc).__name__}: {exc}",
+                )
+                raise AssertionError("unreachable")
+
+            allocation_record = {
+                "receipt": allocation_receipt.public_manifest(),
+                "assessment": assessment.public_manifest(),
+                "accepted": assessment.satisfied,
+            }
+            self.state["resource_allocations"].append(allocation_record)
+            self._event(
+                "RESOURCE_ALLOCATION_RECORDED",
+                lease_id=lease_id,
+                receipt_id=allocation_receipt.receipt_id,
+                resource_request_sha256=self.resource_envelope.sha256,
+                accepted=assessment.satisfied,
+            )
+            if not assessment.satisfied:
+                self._record_benchmark_overhead(
+                    "worker_lease_startup", worker_call_started
+                )
+                self._reject_started_lease_allocation(
+                    lease_id=lease_id,
+                    lease_dir=lease_dir,
+                    failure_code="resource_allocation_mismatch",
+                    private_detail=json.dumps(
+                        assessment.public_manifest(),
+                        sort_keys=True,
+                    ),
+                )
+                raise AssertionError("unreachable")
+
             self._record_benchmark_overhead("worker_lease_startup", worker_call_started)
             started = self.monotonic()
             if self.track == "A":
@@ -1429,8 +1581,14 @@ class Supervisor:
                 "deadline_monotonic": started + duration,
                 "duration_seconds": duration,
                 "exec_count": 0,
+                "resource_allocation_receipt_id": allocation_receipt.receipt_id,
             }
             pending.remove(lease_id)
+            if resource_pending in self.state["leaderboard_eligibility_violations"]:
+                self.state["leaderboard_eligibility_violations"].remove(
+                    resource_pending
+                )
+                self._refresh_leaderboard_eligibility()
             self.state["last_lease_id"] = lease_id
             self._event("LEASE_STARTED", lease_id=lease_id, duration_seconds=duration)
             self._save_state()
@@ -1438,6 +1596,7 @@ class Supervisor:
                 "lease_id": lease_id,
                 "duration_seconds": duration,
                 "leases_used": self.state["leases_used"],
+                "resource_allocation_verified": True,
             }
 
     def exec_lease(
