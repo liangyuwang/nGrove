@@ -1,10 +1,16 @@
 import math
 import unittest
 
+from autotrain_bench.artifact_identity import (
+    CANDIDATE_TREE_IDENTITY_ALGORITHM,
+    FILE_IDENTITY_ALGORITHM,
+    HIDDEN_BUNDLE_IDENTITY_ALGORITHM,
+)
 from autotrain_bench.results import (
     UNCOUNTED_ANALYSIS_RESULT_SCHEMA_VERSION,
     AGENT_MODE_RESULT_SCHEMA_VERSION,
     POSTMORTEM_RESULT_SCHEMA_VERSION,
+    PRE_HIDDEN_BUNDLE_IDENTITY_RESULT_SCHEMA_VERSION,
     PRE_RESOURCE_ALLOCATION_RESULT_SCHEMA_VERSION,
     PRE_SERVING_EFFICIENCY_RESULT_SCHEMA_VERSION,
     PRE_WORKLOAD_RESOLUTION_RESULT_SCHEMA_VERSION,
@@ -123,6 +129,11 @@ def _resource_fields():
     }
     return {
         "episode_id": "episode-1",
+        "artifact_identity_algorithms": {
+            "candidate_tree": CANDIDATE_TREE_IDENTITY_ALGORITHM,
+            "file": FILE_IDENTITY_ALGORITHM,
+            "hidden_evaluation": HIDDEN_BUNDLE_IDENTITY_ALGORITHM,
+        },
         "workers": {"research": {"worker_id": "research-worker"}},
         "leases_used": 1,
         "resource_envelope": envelope,
@@ -184,6 +195,21 @@ def _finalized(*, schema_version=RESULT_SCHEMA_VERSION, **overrides):
 
 
 class ResultMetricTests(unittest.TestCase):
+    def test_v9_migration_marks_hidden_bundle_algorithm_as_unavailable(self):
+        legacy = _finalized(
+            schema_version=PRE_HIDDEN_BUNDLE_IDENTITY_RESULT_SCHEMA_VERSION
+        )
+        legacy["artifact_identity_algorithms"].pop("hidden_evaluation")
+
+        report = normalize_result_report(legacy)
+
+        self.assertEqual(report["result_schema_version"], RESULT_SCHEMA_VERSION)
+        self.assertEqual(
+            report["migrated_from_result_schema_version"],
+            PRE_HIDDEN_BUNDLE_IDENTITY_RESULT_SCHEMA_VERSION,
+        )
+        self.assertIsNone(report["artifact_identity_algorithms"]["hidden_evaluation"])
+
     def test_v8_migration_marks_serving_evidence_as_unavailable(self):
         legacy = _finalized(schema_version=PRE_SERVING_EFFICIENCY_RESULT_SCHEMA_VERSION)
         legacy.pop("test_serving_metrics")
@@ -198,6 +224,13 @@ class ResultMetricTests(unittest.TestCase):
         )
         self.assertIsNone(report["test_serving_metrics"])
         self.assertIsNone(report["analysis_trajectory"][0]["analysis_serving_metrics"])
+
+    def test_current_result_rejects_a_different_hidden_bundle_algorithm(self):
+        payload = _finalized()
+        payload["artifact_identity_algorithms"]["hidden_evaluation"] = "sha256"
+
+        with self.assertRaisesRegex(ResultSchemaError, "active protocol"):
+            normalize_result_report(payload)
 
     def test_v7_migration_marks_resource_evidence_as_unavailable(self):
         legacy = _finalized(

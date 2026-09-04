@@ -75,7 +75,7 @@ budget, isolation, comparison, or eligibility. Device selection, scheduler
 requests, cgroups, filesystem quotas, and other enforcement mechanisms remain
 Worker-owned.
 
-Worker Protocol v11 retains the v7 implementation of this contract for Training
+Worker Protocol v12 retains the v7 implementation of this contract for Training
 Lease admission.
 It retains `TrainingResources` only as a bundled v0 compatibility input while
 passing the release-owned, property-extensible `ResourceEnvelope` and requiring
@@ -90,7 +90,7 @@ The v0 support statement is:
 
 - The bundled `autotrain-bench prepare` and `autotrain-bench start` commands
   are a single-host local Docker reference composition.
-- `autotrain_bench.worker_protocol` version 11 is a synchronous in-process
+- `autotrain_bench.worker_protocol` version 12 is a synchronous in-process
   Python contract. Its remaining TRAIN/workspace/Candidate/output `Path` values
   are local deployment handles, not a serializable remote wire format. Hidden
   dataset requests and resolutions are path-free.
@@ -361,6 +361,11 @@ Status: implemented in the development schemas.
   batching and scheduling. Result schema v9 records trusted serving wall time,
   workload counts, prediction bytes, and derived throughput independently from
   performance.
+- Worker Protocol v12 standardizes `hidden-bundle-v1` identity, requires hard
+  byte and entry quotas for untrusted prediction storage, and defines ephemeral
+  prediction cleanup after scoring or failure and confirmed teardown. Result
+  schema v10 records the hidden identity algorithm; v9 migration leaves it
+  `null` rather than inventing evidence.
 - Research is durably sealed before Agent/Research teardown; hidden evaluation
   is rejected until teardown and Agent-control cleanup are confirmed.
 - The final Agent-declared incumbent is scored on TEST first. The TEST decision
@@ -381,12 +386,13 @@ Status: implemented in the development schemas.
   succeeds; teardown that remains unconfirmed blocks publication and becomes an
   infrastructure failure. Terminal publication happens only after all
   postmortem workload and private-materialization cleanup attempts finish.
-- Worker Protocol v11 defines a platform-neutral offline Candidate file
-  contract and retains a Worker-owned hidden-data resolution seam. Core supplies only a
-  logical split name and release-frozen expected digest; the Worker returns an
-  effective digest plus opaque resolution ID before Candidate execution. The
-  bundled Docker Worker supplies an offline filesystem adapter and a private
-  local-path resolver, while external Workers may supply other isolated
+- Worker Protocol v12 defines a platform-neutral offline Candidate file
+  contract and retains a Worker-owned hidden-data resolution seam. Core supplies
+  only a logical split name, the normative identity algorithm, and a
+  release-frozen expected digest; the Worker returns the same algorithm, an
+  effective digest, and an opaque resolution ID before Candidate execution.
+  The bundled Docker Worker supplies an offline filesystem adapter and a
+  private local-path resolver, while external Workers may supply other isolated
   mechanisms that preserve the same artifact visibility and timing semantics.
 
 ## Phase C: add only demonstrated semantic capabilities
@@ -406,7 +412,7 @@ External result: not fired. The tested Agent could be sandboxed, but its
 inference channel could not be mediated by the registered Gateway. A different
 participant with a compliant inference path is needed before redesigning C1.
 
-Result schema version 9 still pins `agent_system` to the bundled v0 runner
+Result schema version 10 still pins `agent_system` to the bundled v0 runner
 vocabulary, so this phase also owns that structure. `_validate_agent_system()`
 in `autotrain_bench/results.py` rejects a `runner` outside `AGENT_RUNNERS` and
 keys its "a host runner declares no egress policy" rule on the literal
@@ -416,7 +422,7 @@ recording an unregistered runner would become unreadable rather than merely
 unverified. This phase must re-express the `agent_system` invariants over
 semantic fields instead of mechanism names, which changes the persisted
 structure and therefore requires a result schema revision with a read-only
-migration. Worker Protocol v11 resolves only Worker-owned training, Candidate,
+migration. Worker Protocol v12 resolves only Worker-owned training, Candidate,
 and Evaluator workloads. The v0 Agent evidence binds the Agent image but not a
 separate inference Gateway image, so formal runs using registered inference now
 fail closed with `inference_gateway_workload_evidence_missing` until C1 defines
@@ -532,7 +538,7 @@ Leases are independently normative.
 ### C5. Trusted conformance evidence
 
 Status: evidence boundary implemented in Worker Protocol v9 and retained by
-v11; complete formal conformance suite remains future organizer work.
+v12; complete formal conformance suite remains future organizer work.
 
 Trigger: the first in-repository resolution probe demonstrated that a partial
 black-box check could otherwise be mistaken for complete Worker conformance,
@@ -583,7 +589,9 @@ Worker-bound conformance evidence advanced it to version 9; the single-target,
 non-overlapping Candidate evaluation contract advanced it to version 10 and
 task schema version 3; the offline split-artifact Candidate ABI and serving
 evidence advanced Worker Protocol to version 11, task schema to version 4, and
-result schema to version 9.
+result schema to version 9; normative hidden-bundle identity plus prediction
+quota/lifecycle semantics advanced Worker Protocol to version 12 and result
+schema to version 10.
 
 A new protocol revision is required when an implementation must change a
 required method, argument, return value, ordering guarantee, or failure

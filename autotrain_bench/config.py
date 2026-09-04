@@ -9,7 +9,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
 
-from .candidate_protocol import serving_timing_manifest
+from .candidate_protocol import (
+    PREDICTION_ARTIFACT_RETENTION,
+    prediction_storage_manifest,
+    serving_timing_manifest,
+)
 
 
 class ConfigError(ValueError):
@@ -861,6 +865,8 @@ class TaskConfig:
                     "target_artifact_mount": "none",
                     "context_artifact_access": "read_only",
                     "prediction_artifact_access": "candidate_read_write_isolated",
+                    "prediction_storage": prediction_storage_manifest(),
+                    "prediction_artifact_retention": PREDICTION_ARTIFACT_RETENTION,
                     "channel_mechanism": "worker_materialized_files",
                     "candidate_egress": "denied",
                     "protocol": self.candidate_protocol,

@@ -5,6 +5,11 @@ from __future__ import annotations
 import math
 from typing import Any, Dict
 
+from .artifact_identity import (
+    CANDIDATE_TREE_IDENTITY_ALGORITHM,
+    FILE_IDENTITY_ALGORITHM,
+    HIDDEN_BUNDLE_IDENTITY_ALGORITHM,
+)
 from .config import AGENT_EGRESS_POLICIES, AGENT_RUNNERS
 from .worker_protocol import (
     ResourceAllocationReceipt,
@@ -13,7 +18,7 @@ from .worker_protocol import (
 )
 
 
-RESULT_SCHEMA_VERSION = 9
+RESULT_SCHEMA_VERSION = 10
 LEGACY_RESULT_SCHEMA_VERSION = 1
 # Version 2 recorded the Agent egress policy as ``agent_system.mode`` with the
 # value ``"sandboxed"``.  Version 3 renames that field to ``agent_system.egress``
@@ -27,6 +32,9 @@ UNCOUNTED_ANALYSIS_RESULT_SCHEMA_VERSION = 5
 PRE_WORKLOAD_RESOLUTION_RESULT_SCHEMA_VERSION = 6
 PRE_RESOURCE_ALLOCATION_RESULT_SCHEMA_VERSION = 7
 PRE_SERVING_EFFICIENCY_RESULT_SCHEMA_VERSION = 8
+# Version 9 added serving metrics but did not identify the directory-bundle
+# grammar used by analysis_sha256 and test_sha256.
+PRE_HIDDEN_BUNDLE_IDENTITY_RESULT_SCHEMA_VERSION = 9
 _SUPPORTED_INPUT_SCHEMA_VERSIONS = frozenset(
     {
         LEGACY_RESULT_SCHEMA_VERSION,
@@ -37,6 +45,7 @@ _SUPPORTED_INPUT_SCHEMA_VERSIONS = frozenset(
         PRE_WORKLOAD_RESOLUTION_RESULT_SCHEMA_VERSION,
         PRE_RESOURCE_ALLOCATION_RESULT_SCHEMA_VERSION,
         PRE_SERVING_EFFICIENCY_RESULT_SCHEMA_VERSION,
+        PRE_HIDDEN_BUNDLE_IDENTITY_RESULT_SCHEMA_VERSION,
         RESULT_SCHEMA_VERSION,
     }
 )
@@ -176,8 +185,10 @@ def normalize_result_report(payload: Any) -> Dict[str, Any]:
         result = _migrate_pre_workload_resolution_result(result)
     if version < PRE_SERVING_EFFICIENCY_RESULT_SCHEMA_VERSION:
         result = _migrate_pre_resource_allocation_result(result)
-    if version < RESULT_SCHEMA_VERSION:
+    if version < PRE_HIDDEN_BUNDLE_IDENTITY_RESULT_SCHEMA_VERSION:
         result = _migrate_pre_serving_efficiency_result(result)
+    if version < RESULT_SCHEMA_VERSION:
+        result = _migrate_pre_hidden_bundle_identity_result(result)
         result["result_schema_version"] = RESULT_SCHEMA_VERSION
         result["migrated_from_result_schema_version"] = version
     result.setdefault("deployment_teardown_failures", [])
@@ -268,6 +279,84 @@ def _migrate_pre_serving_efficiency_result(
                 migrated_trajectory.append(point)
         migrated["analysis_trajectory"] = migrated_trajectory
     return migrated
+
+
+def _migrate_pre_hidden_bundle_identity_result(
+    result: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Expose unavailable pre-v10 hidden-bundle algorithm evidence as null."""
+
+    migrated = dict(result)
+    algorithms = migrated.get("artifact_identity_algorithms")
+    migrated["artifact_identity_algorithms"] = {
+        "candidate_tree": (
+            algorithms.get("candidate_tree") if isinstance(algorithms, dict) else None
+        ),
+        "file": algorithms.get("file") if isinstance(algorithms, dict) else None,
+        "hidden_evaluation": None,
+    }
+    verification = migrated.get("formal_release_verification")
+    if isinstance(verification, dict):
+        migrated_verification = dict(verification)
+        migrated_verification["artifact_identity_algorithms"] = {
+            "file": None,
+            "hidden_evaluation": None,
+        }
+        migrated["formal_release_verification"] = migrated_verification
+    return migrated
+
+
+def _validate_artifact_identity_algorithms(
+    result: Dict[str, Any], *, require_evidence: bool
+) -> None:
+    expected = {
+        "candidate_tree": CANDIDATE_TREE_IDENTITY_ALGORITHM,
+        "file": FILE_IDENTITY_ALGORITHM,
+        "hidden_evaluation": HIDDEN_BUNDLE_IDENTITY_ALGORITHM,
+    }
+    algorithms = result.get("artifact_identity_algorithms")
+    if not isinstance(algorithms, dict) or set(algorithms) != set(expected):
+        raise ResultSchemaError(
+            "artifact_identity_algorithms must identify candidate_tree, file, "
+            "and hidden_evaluation"
+        )
+    if require_evidence:
+        if algorithms != expected:
+            raise ResultSchemaError(
+                "artifact identity algorithms do not match the active protocol"
+            )
+    elif any(
+        value is not None and value != expected[name]
+        for name, value in algorithms.items()
+    ):
+        raise ResultSchemaError("migrated artifact identity algorithm is invalid")
+
+    verification = result.get("formal_release_verification")
+    if verification is None:
+        return
+    if not isinstance(verification, dict):
+        raise ResultSchemaError("formal_release_verification must be an object")
+    receipt_algorithms = verification.get("artifact_identity_algorithms")
+    expected_receipt = {
+        "file": FILE_IDENTITY_ALGORITHM,
+        "hidden_evaluation": HIDDEN_BUNDLE_IDENTITY_ALGORITHM,
+    }
+    if not isinstance(receipt_algorithms, dict) or set(receipt_algorithms) != set(
+        expected_receipt
+    ):
+        raise ResultSchemaError(
+            "formal release verification must identify artifact algorithms"
+        )
+    if require_evidence:
+        if receipt_algorithms != expected_receipt:
+            raise ResultSchemaError(
+                "formal release artifact algorithms do not match the active protocol"
+            )
+    elif any(
+        value is not None and value != expected_receipt[name]
+        for name, value in receipt_algorithms.items()
+    ):
+        raise ResultSchemaError("migrated formal artifact algorithm is invalid")
 
 
 def _migrate_agent_mode_to_egress(result: Dict[str, Any]) -> Dict[str, Any]:
@@ -720,6 +809,10 @@ def _validate_current_result(
     result: Dict[str, Any], *, migrated_legacy: bool = False
 ) -> None:
     _validate_agent_system(result)
+    _validate_artifact_identity_algorithms(
+        result,
+        require_evidence=not migrated_legacy,
+    )
     _validate_workload_resolutions(
         result.get("workload_resolutions"),
         require_evidence=not migrated_legacy,

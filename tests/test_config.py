@@ -56,6 +56,11 @@ class ConfigTests(unittest.TestCase):
             boundary["prediction_artifact_access"],
             "candidate_read_write_isolated",
         )
+        self.assertEqual(boundary["prediction_storage"]["max_entries"], 2)
+        self.assertEqual(
+            boundary["prediction_artifact_retention"],
+            "ephemeral_until_evaluation_teardown",
+        )
         self.assertEqual(boundary["channel_mechanism"], "worker_materialized_files")
         self.assertEqual(boundary["serving_timing"]["clock"], "trusted_monotonic_wall")
         limits = public["evaluation"]["candidate_artifact_limits"]

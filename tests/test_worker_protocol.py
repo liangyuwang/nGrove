@@ -1,6 +1,12 @@
 import json
 import unittest
 
+from autotrain_bench.artifact_identity import HIDDEN_BUNDLE_IDENTITY_ALGORITHM
+from autotrain_bench.candidate_protocol import (
+    PREDICTION_ARTIFACT_RETENTION,
+    PREDICTION_MANIFEST_MAX_BYTES,
+    prediction_storage_limit,
+)
 from autotrain_bench.worker_protocol import (
     BASELINE_REQUIREMENTS,
     CONFORMANCE_RECEIPT_VERSION,
@@ -304,6 +310,19 @@ class WorkerProtocolTests(unittest.TestCase):
             manifest["prediction_artifact_access"],
             "candidate_read_write_isolated",
         )
+        self.assertEqual(
+            manifest["prediction_storage"]["hard_limit"],
+            "required_before_candidate_start",
+        )
+        self.assertEqual(manifest["prediction_storage"]["max_entries"], 2)
+        self.assertEqual(
+            manifest["prediction_storage"]["manifest_max_bytes"],
+            PREDICTION_MANIFEST_MAX_BYTES,
+        )
+        self.assertEqual(
+            manifest["prediction_artifact_retention"],
+            PREDICTION_ARTIFACT_RETENTION,
+        )
         self.assertEqual(manifest["candidate_scheduling"], "participant_controlled")
         self.assertEqual(
             manifest["serving_timing"]["start"],
@@ -317,6 +336,16 @@ class WorkerProtocolTests(unittest.TestCase):
         self.assertEqual(manifest["target_feedback_visibility"], "denied")
         self.assertEqual(manifest["cross_context_target_overlap"], "denied")
         self.assertEqual(manifest["candidate_egress"], "denied")
+        with self.assertRaisesRegex(ValueError, "hard limits"):
+            CandidateChannelRequirements(
+                protocol="offline_next_token_logits_v3",
+                prediction_storage_hard_limit_required=False,
+            )
+        with self.assertRaisesRegex(ValueError, "retention"):
+            CandidateChannelRequirements(
+                protocol="offline_next_token_logits_v3",
+                prediction_artifact_retention="retain",
+            )
 
     def test_candidate_evaluation_result_exposes_raw_efficiency_evidence(self):
         result = CandidateEvaluationResult(
@@ -344,6 +373,19 @@ class WorkerProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "serving rates"):
             CandidateEvaluationResult(1.0, 5e-324, 1, 1, 1)
 
+    def test_prediction_storage_limit_is_derived_from_the_request_shape(self):
+        self.assertEqual(
+            prediction_storage_limit(examples=2048, vocab_size=50257),
+            {
+                "max_bytes": 2048 * 50257 * 4 + PREDICTION_MANIFEST_MAX_BYTES,
+                "max_entries": 2,
+                "logits_bytes": 2048 * 50257 * 4,
+                "manifest_max_bytes": PREDICTION_MANIFEST_MAX_BYTES,
+            },
+        )
+        with self.assertRaisesRegex(ValueError, "positive integer"):
+            prediction_storage_limit(examples=True, vocab_size=3)
+
     def test_command_result_types_are_strict(self):
         with self.assertRaisesRegex(TypeError, "exit_code"):
             CommandResult(True, "", "")
@@ -357,6 +399,7 @@ class WorkerProtocolTests(unittest.TestCase):
 
         self.assertEqual(request.name, "test")
         self.assertEqual(request.expected_sha256, "a" * 64)
+        self.assertEqual(request.identity_algorithm, HIDDEN_BUNDLE_IDENTITY_ALGORITHM)
         self.assertFalse(hasattr(request, "path"))
         self.assertFalse(hasattr(request, "url"))
 
@@ -365,10 +408,14 @@ class WorkerProtocolTests(unittest.TestCase):
             HiddenDatasetRequest("val")
         with self.assertRaisesRegex(ValueError, "SHA-256"):
             HiddenDatasetRequest("test", "not-a-digest")
+        with self.assertRaisesRegex(ValueError, "identity algorithm"):
+            HiddenDatasetRequest("test", "a" * 64, "sha256")
         with self.assertRaisesRegex(ValueError, "resolution_id"):
             ResolvedHiddenDataset("test", "a" * 64, "")
         with self.assertRaisesRegex(ValueError, "opaque identifier"):
             ResolvedHiddenDataset("test", "a" * 64, "/private/test.json")
+        with self.assertRaisesRegex(ValueError, "identity algorithm"):
+            ResolvedHiddenDataset("test", "a" * 64, "opaque", "sha256")
 
     def test_identity_mismatch_carries_only_a_semantic_resolution(self):
         resolved = ResolvedHiddenDataset("analysis", "b" * 64, "opaque-1")
@@ -520,7 +567,7 @@ class WorkerProtocolTests(unittest.TestCase):
 
     def test_descriptor_manifest_contains_no_platform_schema(self):
         manifest = descriptor().public_manifest()
-        self.assertEqual(manifest["protocol_version"], 11)
+        self.assertEqual(manifest["protocol_version"], 12)
         self.assertEqual(manifest["roles"], ["research", "evaluation"])
         self.assertNotIn("conformance", manifest)
         serialized = json.dumps(manifest).lower()
@@ -532,7 +579,7 @@ class WorkerProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "protocol version"):
             WorkerDescriptor(
                 worker_id="future-worker",
-                protocol_version=12,
+                protocol_version=13,
                 trust_level=TrustLevel.DEVELOPMENT,
                 roles=("research",),
                 capabilities={},

@@ -19,6 +19,37 @@ PREDICTION_SCHEMA_VERSION = 1
 CANDIDATE_PROTOCOL = "offline_next_token_logits_v3"
 PREDICTIONS_FILENAME = "predictions.json"
 LOGITS_FILENAME = "logits.f32"
+PREDICTION_ARTIFACT_MAX_ENTRIES = 2
+PREDICTION_MANIFEST_MAX_BYTES = 64 * 1024
+PREDICTION_ARTIFACT_RETENTION = "ephemeral_until_evaluation_teardown"
+
+
+def prediction_storage_limit(*, examples: int, vocab_size: int) -> Dict[str, int]:
+    """Return the release-owned hard limits for one prediction workspace."""
+
+    for value, field in ((examples, "examples"), (vocab_size, "vocab_size")):
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f"prediction storage {field} must be a positive integer")
+    logits_bytes = examples * vocab_size * 4
+    return {
+        "max_bytes": logits_bytes + PREDICTION_MANIFEST_MAX_BYTES,
+        "max_entries": PREDICTION_ARTIFACT_MAX_ENTRIES,
+        "logits_bytes": logits_bytes,
+        "manifest_max_bytes": PREDICTION_MANIFEST_MAX_BYTES,
+    }
+
+
+def prediction_storage_manifest() -> Dict[str, Any]:
+    """Return the machine-readable release rule used to derive hard limits."""
+
+    return {
+        "hard_limit": "required_before_candidate_start",
+        "max_entries": PREDICTION_ARTIFACT_MAX_ENTRIES,
+        "logit_bytes": 4,
+        "logit_values": "examples*vocab_size",
+        "manifest_max_bytes": PREDICTION_MANIFEST_MAX_BYTES,
+        "max_bytes": "examples*vocab_size*4+manifest_max_bytes",
+    }
 
 
 def serving_timing_manifest() -> Dict[str, Any]:
@@ -227,6 +258,15 @@ def validate_prediction_artifact(
         metadata = entry.lstat()
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
             raise CandidateProtocolError("prediction entries must be regular files")
+    storage_limit = prediction_storage_limit(
+        examples=examples,
+        vocab_size=vocab_size,
+    )
+    if (
+        entries[PREDICTIONS_FILENAME].stat().st_size
+        > storage_limit["manifest_max_bytes"]
+    ):
+        raise CandidateProtocolError("prediction manifest exceeds its byte limit")
     try:
         manifest = json.loads(entries[PREDICTIONS_FILENAME].read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -252,7 +292,7 @@ def validate_prediction_artifact(
         or manifest != expected
     ):
         raise CandidateProtocolError("prediction manifest does not match the request")
-    expected_bytes = examples * vocab_size * 4
+    expected_bytes = storage_limit["logits_bytes"]
     if entries[LOGITS_FILENAME].stat().st_size != expected_bytes:
         raise CandidateProtocolError("prediction logits have the wrong byte length")
     if array("f").itemsize != 4:

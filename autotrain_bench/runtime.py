@@ -12,7 +12,6 @@ import json
 import math
 import os
 import shutil
-import stat
 import subprocess
 import tempfile
 import threading
@@ -21,11 +20,14 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from .artifact_identity import HIDDEN_BUNDLE_FILENAMES, hidden_bundle_sha256
 from .config import AgentConfig, TaskConfig, TrainingResources
 from .host_agent import HostAgentProcess, start_host_agent_process
 from .results import validated_nll
 from .worker_protocol import (
     CANDIDATE_EVALUATOR_CHANNEL_ISOLATION,
+    CANDIDATE_PREDICTION_ARTIFACT_LIFECYCLE,
+    CANDIDATE_PREDICTION_STORAGE_QUOTA,
     DEADLINE_TERMINATION,
     GPU_DEVICE_ISOLATION,
     HIDDEN_DATASET_IDENTITY_VERIFICATION,
@@ -73,32 +75,6 @@ def _sha256_file(path: Path) -> str:
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _hidden_bundle_sha256(path: Path) -> str:
-    """Hash the exact target-free/target artifact pair for one hidden split."""
-
-    expected = ("contexts.json", "targets.json")
-    if path.is_symlink() or not path.is_dir():
-        raise OSError("hidden dataset must be a directory")
-    entries = {entry.name: entry for entry in path.iterdir()}
-    if set(entries) != set(expected):
-        raise OSError("hidden dataset must contain only contexts.json and targets.json")
-    digest = hashlib.sha256()
-    digest.update(b"autotrain-bench-hidden-bundle-v1\0")
-    for name in expected:
-        item = entries[name]
-        metadata = item.lstat()
-        if not stat.S_ISREG(metadata.st_mode):
-            raise OSError(f"hidden dataset entry is not a regular file: {name}")
-        encoded_name = name.encode("utf-8")
-        digest.update(len(encoded_name).to_bytes(8, "big"))
-        digest.update(encoded_name)
-        digest.update(metadata.st_size.to_bytes(8, "big"))
-        with item.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
     return digest.hexdigest()
 
 
@@ -185,7 +161,7 @@ class DockerRuntime:
             tuple[str, str], tuple[ResolvedWorkload, str]
         ] = {}
         self._worker_leases: Dict[tuple, str] = {}
-        self._pending_evaluations: Dict[tuple, Tuple[str, str]] = {}
+        self._pending_evaluations: Dict[tuple, Tuple[str, str, Path]] = {}
 
     def describe_capabilities(self) -> WorkerDescriptor:
         """Describe the bundled development Worker without certifying its host."""
@@ -210,10 +186,19 @@ class DockerRuntime:
                     enforced, "separate candidate and evaluator workloads"
                 ),
                 HIDDEN_DATASET_IDENTITY_VERIFICATION: Capability(
-                    enforced, "SHA-256 verified before Candidate startup"
+                    enforced,
+                    "hidden-bundle-v1 SHA-256 verified before Candidate startup",
                 ),
                 CANDIDATE_EVALUATOR_CHANNEL_ISOLATION: Capability(
                     enforced, "target-free read-only input and isolated output mounts"
+                ),
+                CANDIDATE_PREDICTION_STORAGE_QUOTA: Capability(
+                    EnforcementLevel.UNSUPPORTED,
+                    "host bind mount has no hard byte or inode quota",
+                ),
+                CANDIDATE_PREDICTION_ARTIFACT_LIFECYCLE: Capability(
+                    enforced,
+                    "ephemeral removal after scoring and confirmed workload teardown",
                 ),
                 DEADLINE_TERMINATION: Capability(
                     EnforcementLevel.BEST_EFFORT,
@@ -1370,28 +1355,20 @@ class DockerRuntime:
                 ) from exc
         snapshot = self._hidden_snapshot_root / f"{resolution_id}.snapshot"
         staged = self._hidden_snapshot_root / f".{resolution_id}.tmp"
-        digest = hashlib.sha256()
-        digest.update(b"autotrain-bench-hidden-bundle-v1\0")
         try:
             if data_path.is_symlink() or not data_path.is_dir():
                 raise OSError("hidden dataset must be a directory")
             source_entries = {entry.name: entry for entry in data_path.iterdir()}
-            expected_names = ("contexts.json", "targets.json")
-            if set(source_entries) != set(expected_names):
+            if set(source_entries) != set(HIDDEN_BUNDLE_FILENAMES):
                 raise OSError(
                     "hidden dataset must contain only contexts.json and targets.json"
                 )
             staged.mkdir(mode=0o700)
-            for name in expected_names:
+            for name in HIDDEN_BUNDLE_FILENAMES:
                 source_path = source_entries[name]
-                metadata = source_path.lstat()
-                if not stat.S_ISREG(metadata.st_mode):
+                if source_path.is_symlink() or not source_path.is_file():
                     raise OSError(f"hidden dataset entry is not a regular file: {name}")
                 destination_path = staged / name
-                encoded_name = name.encode("utf-8")
-                digest.update(len(encoded_name).to_bytes(8, "big"))
-                digest.update(encoded_name)
-                digest.update(metadata.st_size.to_bytes(8, "big"))
                 with source_path.open("rb") as source, destination_path.open(
                     "xb"
                 ) as destination:
@@ -1404,10 +1381,10 @@ class DockerRuntime:
                         if not chunk:
                             break
                         destination.write(chunk)
-                        digest.update(chunk)
                     destination.flush()
                     os.fsync(destination.fileno())
                 destination_path.chmod(0o400)
+            digest_hex = hidden_bundle_sha256(staged)
             os.replace(staged, snapshot)
             if self.monotonic() >= deadline:
                 raise HiddenDatasetResolutionFailure(
@@ -1423,11 +1400,11 @@ class DockerRuntime:
             raise HiddenDatasetResolutionFailure(
                 f"failed to resolve hidden dataset {request.name}: {exc}"
             ) from exc
-        digest_hex = digest.hexdigest()
         resolved = ResolvedHiddenDataset(
             request.name,
             digest_hex,
             resolution_id,
+            request.identity_algorithm,
         )
         if (
             request.expected_sha256 is not None
@@ -1531,12 +1508,6 @@ class DockerRuntime:
         evaluation_key = (episode_id, runtime_id)
         candidate_api_dir = output_dir / ".candidate_api"
         prediction_dir = output_dir / f"predictions-{runtime_id}"
-        try:
-            prediction_dir.mkdir()
-        except OSError as exc:
-            raise RuntimeFailure(
-                "failed to create Candidate prediction storage"
-            ) from exc
         docker_scorer_adapter = (
             Path(__file__).resolve().parent / "docker_scorer_adapter.py"
         )
@@ -1701,7 +1672,17 @@ class DockerRuntime:
                 raise RuntimeFailure("evaluation deadline reached")
             return remaining
 
-        self._pending_evaluations[evaluation_key] = (candidate_name, evaluator_name)
+        try:
+            prediction_dir.mkdir()
+        except OSError as exc:
+            raise RuntimeFailure(
+                "failed to create Candidate prediction storage"
+            ) from exc
+        self._pending_evaluations[evaluation_key] = (
+            candidate_name,
+            evaluator_name,
+            prediction_dir,
+        )
         serving_seconds: Optional[float] = None
         try:
             self._run(
@@ -1806,7 +1787,7 @@ class DockerRuntime:
                 "hidden dataset resolution evidence does not match the opaque ID"
             )
         try:
-            actual_digest = _hidden_bundle_sha256(data_path)
+            actual_digest = hidden_bundle_sha256(data_path)
         except OSError as exc:
             raise HiddenDatasetResolutionFailure(
                 f"resolved hidden dataset became unavailable: {exc}"
@@ -1817,6 +1798,7 @@ class DockerRuntime:
                     hidden_dataset.name,
                     actual_digest,
                     hidden_dataset.resolution_id,
+                    hidden_dataset.identity_algorithm,
                 )
             )
         candidate_image = self._workload_reference(
@@ -1848,14 +1830,27 @@ class DockerRuntime:
         resources = self._pending_evaluations.get(evaluation_key)
         if resources is None:
             return
-        candidate_name, evaluator_name = resources
+        candidate_name, evaluator_name, prediction_dir = resources
         _run_runtime_teardown_steps(
             [
                 ("candidate", lambda: self.stop_container(candidate_name)),
                 ("evaluator", lambda: self.stop_container(evaluator_name)),
             ]
         )
+        try:
+            self._remove_prediction_artifact(prediction_dir)
+        except OSError as exc:
+            raise WorkerTeardownFailure(
+                f"prediction artifact cleanup failed: {exc}"
+            ) from exc
         self._pending_evaluations.pop(evaluation_key, None)
+
+    @staticmethod
+    def _remove_prediction_artifact(prediction_dir: Path) -> None:
+        if prediction_dir.is_symlink():
+            raise OSError("prediction artifact root became a symlink")
+        if prediction_dir.exists():
+            shutil.rmtree(prediction_dir)
 
     def teardown_pending_evaluations(self) -> None:
         """Retry every local evaluation cleanup whose result was uncertain."""

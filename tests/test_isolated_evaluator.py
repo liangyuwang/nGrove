@@ -8,6 +8,7 @@ from pathlib import Path
 
 from autotrain_bench.candidate_protocol import (
     CANDIDATE_PROTOCOL,
+    PREDICTION_MANIFEST_MAX_BYTES,
     CandidateProtocolError,
     load_candidate,
     load_context_request,
@@ -282,6 +283,41 @@ class IsolatedEvaluatorTests(unittest.TestCase):
                     dataset_id="test-split",
                     examples=1,
                     vocab_size=3,
+                )
+
+    def test_prediction_manifest_is_bounded_before_json_loading(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            contexts, targets = self._examples()
+            context_path, target_path = self._write_split(
+                root / "split", contexts, targets
+            )
+            predictions = root / "predictions"
+            write_prediction_artifact(
+                predictions,
+                dataset_id="test-split",
+                logits=([0.0] * 10 for _ in contexts),
+                examples=len(contexts),
+                vocab_size=10,
+            )
+            (predictions / "predictions.json").write_bytes(
+                b" " * (PREDICTION_MANIFEST_MAX_BYTES + 1)
+            )
+
+            with self.assertRaisesRegex(CandidateProtocolError, "byte limit"):
+                validate_prediction_artifact(
+                    predictions,
+                    dataset_id="test-split",
+                    examples=len(contexts),
+                    vocab_size=10,
+                )
+            with self.assertRaisesRegex(MODULE.EvaluationError, "byte limit"):
+                MODULE.evaluate(
+                    context_path,
+                    target_path,
+                    predictions,
+                    10,
+                    context_lengths=(1, 2, 3),
                 )
 
 

@@ -26,13 +26,18 @@ from typing import (
     runtime_checkable,
 )
 
-from .candidate_protocol import serving_timing_manifest
+from .artifact_identity import HIDDEN_BUNDLE_IDENTITY_ALGORITHM
+from .candidate_protocol import (
+    PREDICTION_ARTIFACT_RETENTION,
+    prediction_storage_manifest,
+    serving_timing_manifest,
+)
 
 if TYPE_CHECKING:
     from .config import TaskConfig, TrainingResources
 
 
-WORKER_PROTOCOL_VERSION = 11
+WORKER_PROTOCOL_VERSION = 12
 WORKER_CONFORMANCE_SUITE_VERSION = f"worker-v{WORKER_PROTOCOL_VERSION}"
 CONFORMANCE_RECEIPT_VERSION = 1
 RESOURCE_ENVELOPE_SCHEMA_VERSION = 1
@@ -144,6 +149,8 @@ class CandidateChannelRequirements:
     predictions_per_context: int = 1
     context_artifact_read_only: bool = True
     prediction_artifact_isolated: bool = True
+    prediction_storage_hard_limit_required: bool = True
+    prediction_artifact_retention: str = PREDICTION_ARTIFACT_RETENTION
     candidate_controls_scheduling: bool = True
     target_artifact_visible: bool = False
     current_target_visible: bool = False
@@ -170,6 +177,10 @@ class CandidateChannelRequirements:
             raise ValueError("Candidate context artifacts must be read-only")
         if self.prediction_artifact_isolated is not True:
             raise ValueError("Candidate prediction storage must be isolated")
+        if self.prediction_storage_hard_limit_required is not True:
+            raise ValueError("Candidate prediction storage must have hard limits")
+        if self.prediction_artifact_retention != PREDICTION_ARTIFACT_RETENTION:
+            raise ValueError("Candidate prediction retention must be release-owned")
         if self.candidate_controls_scheduling is not True:
             raise ValueError("Candidate must control its inference scheduling")
         if self.target_artifact_visible is not False:
@@ -195,6 +206,8 @@ class CandidateChannelRequirements:
             "predictions_per_context": self.predictions_per_context,
             "context_artifact_access": "read_only",
             "prediction_artifact_access": "candidate_read_write_isolated",
+            "prediction_storage": prediction_storage_manifest(),
+            "prediction_artifact_retention": self.prediction_artifact_retention,
             "candidate_scheduling": "participant_controlled",
             "target_artifact_visibility": "denied",
             "current_target_visibility": "denied",
@@ -1030,6 +1043,7 @@ class HiddenDatasetRequest:
 
     name: str
     expected_sha256: Optional[str] = None
+    identity_algorithm: str = HIDDEN_BUNDLE_IDENTITY_ALGORITHM
 
     def __post_init__(self) -> None:
         if self.name not in {"analysis", "test"}:
@@ -1039,6 +1053,8 @@ class HiddenDatasetRequest:
                 self.expected_sha256,
                 "hidden dataset expected_sha256",
             )
+        if self.identity_algorithm != HIDDEN_BUNDLE_IDENTITY_ALGORITHM:
+            raise ValueError("unsupported hidden dataset identity algorithm")
 
 
 @dataclass(frozen=True)
@@ -1048,6 +1064,7 @@ class ResolvedHiddenDataset:
     name: str
     sha256: str
     resolution_id: str
+    identity_algorithm: str = HIDDEN_BUNDLE_IDENTITY_ALGORITHM
 
     def __post_init__(self) -> None:
         if self.name not in {"analysis", "test"}:
@@ -1057,6 +1074,8 @@ class ResolvedHiddenDataset:
             self.resolution_id,
             "hidden dataset resolution_id",
         )
+        if self.identity_algorithm != HIDDEN_BUNDLE_IDENTITY_ALGORITHM:
+            raise ValueError("unsupported hidden dataset identity algorithm")
 
 
 class HiddenDatasetIdentityMismatch(HiddenDatasetResolutionFailure):
@@ -1224,6 +1243,8 @@ TRAINING_NETWORK_ISOLATION = "training_network_isolation"
 HIDDEN_DATASET_ISOLATION = "hidden_dataset_isolation"
 HIDDEN_DATASET_IDENTITY_VERIFICATION = "hidden_dataset_identity_verification"
 CANDIDATE_EVALUATOR_CHANNEL_ISOLATION = "candidate_evaluator_channel_isolation"
+CANDIDATE_PREDICTION_STORAGE_QUOTA = "candidate_prediction_storage_quota"
+CANDIDATE_PREDICTION_ARTIFACT_LIFECYCLE = "candidate_prediction_artifact_lifecycle"
 DEADLINE_TERMINATION = "deadline_termination"
 IMMUTABLE_CANDIDATE_ARTIFACT = "immutable_candidate_artifact"
 
@@ -1246,6 +1267,8 @@ EVALUATION_REQUIREMENTS: Tuple[CapabilityRequirement, ...] = tuple(
         HIDDEN_DATASET_ISOLATION,
         HIDDEN_DATASET_IDENTITY_VERIFICATION,
         CANDIDATE_EVALUATOR_CHANNEL_ISOLATION,
+        CANDIDATE_PREDICTION_STORAGE_QUOTA,
+        CANDIDATE_PREDICTION_ARTIFACT_LIFECYCLE,
     )
 )
 

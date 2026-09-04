@@ -24,6 +24,11 @@ from .agent_control import (
     ProtocolError,
 )
 from .agent_execution import AgentExecutionEvidence
+from .artifact_identity import (
+    CANDIDATE_TREE_IDENTITY_ALGORITHM,
+    FILE_IDENTITY_ALGORITHM,
+    HIDDEN_BUNDLE_IDENTITY_ALGORITHM,
+)
 from .challenge import (
     FORMAL_ARTIFACT_DIGEST_FIELDS,
     ReleaseVerificationReceipt,
@@ -348,6 +353,9 @@ class Supervisor:
                 release_id=verified_release.release_id,
                 core_revision=verified_release.core_revision,
                 artifact_sha256=dict(verified_release.artifact_sha256),
+                artifact_identity_algorithms=dict(
+                    verified_release.artifact_identity_algorithms
+                ),
                 workload_resolution_acceptance=dict(
                     verified_release.workload_resolution_acceptance
                 ),
@@ -539,7 +547,7 @@ class Supervisor:
             eligibility_violations.append("agent_workload_identity_not_immutable")
         if not agent_execution.leaderboard_eligible:
             eligibility_violations.append("agent_execution_not_certified")
-        # Worker Protocol v11 covers Worker-owned training/Candidate/Evaluator
+        # Worker Protocol v12 covers Worker-owned training/Candidate/Evaluator
         # workloads. AgentExecutionEvidence v0 binds the Agent image itself but
         # has no trusted field for an inference Gateway workload. Fail closed
         # instead of treating the task's configured Gateway reference as proof
@@ -635,8 +643,9 @@ class Supervisor:
                 },
             },
             "artifact_identity_algorithms": {
-                "candidate_tree": "autotrain-bench-tree-v2-sha256",
-                "file": "sha256",
+                "candidate_tree": CANDIDATE_TREE_IDENTITY_ALGORITHM,
+                "file": FILE_IDENTITY_ALGORITHM,
+                "hidden_evaluation": HIDDEN_BUNDLE_IDENTITY_ALGORITHM,
             },
             "workload_resolutions": {
                 "training": None,
@@ -1251,7 +1260,7 @@ class Supervisor:
         """Resolve and accept one workload before passing it to an operation.
 
         The returned opaque handle is the only workload authorization accepted
-        by Worker Protocol v11 operations. Core records semantic evidence but
+        by Worker Protocol v12 operations. Core records semantic evidence but
         never learns the Worker's path, scheduler job, image cache, or runtime
         handle.
         """
@@ -2462,6 +2471,18 @@ class Supervisor:
                 ),
             )
             return False
+        if resolved.identity_algorithm != request.identity_algorithm:
+            self._hidden_dataset_resolution_failed(
+                request.name,
+                primary=primary,
+                code="hidden_dataset_receipt_invalid",
+                private_detail=(
+                    "Evaluation Worker used hidden dataset identity algorithm "
+                    f"{resolved.identity_algorithm!r}, expected "
+                    f"{request.identity_algorithm!r}"
+                ),
+            )
+            return False
 
         field = f"{request.name}_sha256"
         identities = self.state["artifact_identities"]["hidden_evaluation"]
@@ -2498,6 +2519,7 @@ class Supervisor:
                 "HIDDEN_DATASET_RESOLVED",
                 dataset=request.name,
                 sha256=resolved.sha256,
+                identity_algorithm=resolved.identity_algorithm,
             )
         self._save_state()
         return True
@@ -2519,6 +2541,7 @@ class Supervisor:
         if (
             not isinstance(receipt, ResolvedHiddenDataset)
             or receipt.name != request.name
+            or receipt.identity_algorithm != request.identity_algorithm
             or expected is None
             or receipt.sha256 == expected
         ):

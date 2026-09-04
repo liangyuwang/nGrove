@@ -9,6 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+from autotrain_bench.artifact_identity import hidden_bundle_sha256
 from autotrain_bench.config import (
     AgentConfig,
     InferenceConfig,
@@ -22,8 +23,10 @@ from autotrain_bench.host_agent import (
     start_host_agent_process,
     summarize_host_agent_trace,
 )
-from autotrain_bench.runtime import DockerRuntime, RuntimeFailure, _hidden_bundle_sha256
+from autotrain_bench.runtime import DockerRuntime, RuntimeFailure
 from autotrain_bench.worker_protocol import (
+    CANDIDATE_PREDICTION_ARTIFACT_LIFECYCLE,
+    CANDIDATE_PREDICTION_STORAGE_QUOTA,
     DEADLINE_TERMINATION,
     CandidateEvaluationResult,
     EnforcementLevel,
@@ -174,6 +177,18 @@ class RuntimeBoundaryTests(unittest.TestCase):
             descriptor.capabilities[DEADLINE_TERMINATION].level,
             EnforcementLevel.BEST_EFFORT,
         )
+        self.assertEqual(
+            descriptor.capabilities[CANDIDATE_PREDICTION_STORAGE_QUOTA].level,
+            EnforcementLevel.UNSUPPORTED,
+        )
+        self.assertIn(
+            "no hard byte or inode quota",
+            descriptor.capabilities[CANDIDATE_PREDICTION_STORAGE_QUOTA].mechanism,
+        )
+        self.assertEqual(
+            descriptor.capabilities[CANDIDATE_PREDICTION_ARTIFACT_LIFECYCLE].level,
+            EnforcementLevel.ENFORCED,
+        )
 
     def test_hidden_dataset_source_is_resolved_only_when_requested(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -201,7 +216,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
 
             self.assertEqual(
                 resolved.sha256,
-                _hidden_bundle_sha256(source),
+                hidden_bundle_sha256(source),
             )
             self.assertFalse(hasattr(resolved, "path"))
 
@@ -379,7 +394,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             snapshot = runtime._resolved_hidden_datasets[
                 ("episode-1", resolved.resolution_id)
             ][2]
-            self.assertEqual(resolved.sha256, _hidden_bundle_sha256(snapshot))
+            self.assertEqual(resolved.sha256, hidden_bundle_sha256(snapshot))
 
             snapshot_root = runtime._hidden_snapshot_root
             self.assertIsNotNone(snapshot_root)
@@ -401,6 +416,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             runtime._pending_evaluations[("episode", "test", "candidate")] = (
                 "candidate",
                 "evaluator",
+                Path(directory) / "predictions",
             )
 
             with self.assertRaisesRegex(
@@ -1437,6 +1453,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 if "candidate_offline_runner" in " ".join(call)
             )
             self.assertNotIn("--rm", candidate)
+            self.assertEqual(list(output.glob("predictions-*")), [])
 
     def test_evaluator_teardown_attempts_every_isolated_resource(self):
         class FailingTeardownRuntime(CapturingDockerRuntime):
@@ -1462,22 +1479,53 @@ class RuntimeBoundaryTests(unittest.TestCase):
                     split="analysis",
                     output_dir=Path(directory) / "output",
                 )
+            self.assertEqual(runtime.teardown, ["candidate", "evaluator"])
+            self.assertEqual(len(runtime._pending_evaluations), 1)
+            prediction_dir = next(iter(runtime._pending_evaluations.values()))[2]
+            self.assertTrue(prediction_dir.exists())
 
-        self.assertEqual(runtime.teardown, ["candidate", "evaluator"])
-        self.assertEqual(len(runtime._pending_evaluations), 1)
+            runtime.stop_container = lambda name: runtime.teardown.append(
+                "retry-container"
+            )
+            runtime.teardown_pending_evaluations()
+            runtime.close_private_materializations()
 
-        runtime.stop_container = lambda name: runtime.teardown.append("retry-container")
-        runtime.teardown_pending_evaluations()
-        runtime.close_private_materializations()
+            self.assertFalse(prediction_dir.exists())
+            self.assertEqual(runtime._pending_evaluations, {})
+            self.assertEqual(
+                runtime.teardown[-2:],
+                [
+                    "retry-container",
+                    "retry-container",
+                ],
+            )
 
-        self.assertEqual(runtime._pending_evaluations, {})
-        self.assertEqual(
-            runtime.teardown[-2:],
-            [
-                "retry-container",
-                "retry-container",
-            ],
-        )
+    def test_prediction_cleanup_failure_remains_pending_teardown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = CapturingDockerRuntime()
+            prediction_dir = Path(directory) / "predictions"
+            prediction_dir.mkdir()
+            key = ("episode", "evaluation")
+            runtime._pending_evaluations[key] = (
+                "candidate",
+                "evaluator",
+                prediction_dir,
+            )
+
+            with patch.object(
+                runtime,
+                "_remove_prediction_artifact",
+                side_effect=OSError("storage unavailable"),
+            ), self.assertRaisesRegex(
+                WorkerTeardownFailure, "prediction artifact cleanup failed"
+            ):
+                runtime._teardown_evaluation(key)
+
+            self.assertIn(key, runtime._pending_evaluations)
+            self.assertTrue(prediction_dir.exists())
+            runtime._teardown_evaluation(key)
+            self.assertNotIn(key, runtime._pending_evaluations)
+            self.assertFalse(prediction_dir.exists())
 
     def test_evaluator_never_accepts_a_stale_result_file(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1497,6 +1545,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 )
 
             self.assertFalse(result.exists())
+            self.assertEqual(list(output.glob("predictions-*")), [])
 
     def test_candidate_logs_are_private_and_never_enter_runtime_error(self):
         class FailingRuntime(CapturingDockerRuntime):
@@ -1527,6 +1576,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             diagnostic = output / "analysis.failure.log"
             self.assertEqual(diagnostic.stat().st_mode & 0o777, 0o600)
             self.assertIn("hidden input_ids", diagnostic.read_text(encoding="utf-8"))
+            self.assertEqual(list(output.glob("predictions-*")), [])
 
     def test_evaluator_rejects_boolean_and_string_nll_values(self):
         for raw_nll in (True, "1.25"):

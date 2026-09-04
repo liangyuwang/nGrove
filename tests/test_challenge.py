@@ -6,6 +6,7 @@ from pathlib import Path
 
 from autotrain_bench.challenge import (
     FORMAL_ARTIFACT_DIGEST_FIELDS,
+    FORMAL_ARTIFACT_IDENTITY_ALGORITHMS,
     ChallengeRelease,
     ReleaseVerificationReceipt,
 )
@@ -387,13 +388,26 @@ class ChallengeReleaseTests(unittest.TestCase):
             release_id="test-byte-lm-v1",
             core_revision="b" * 40,
             artifact_sha256=digests,
+            artifact_identity_algorithms=FORMAL_ARTIFACT_IDENTITY_ALGORITHMS,
         )
         self.assertIs(receipt.validate(), receipt)
+        self.assertEqual(
+            receipt.private_manifest()["artifact_identity_algorithms"],
+            FORMAL_ARTIFACT_IDENTITY_ALGORITHMS,
+        )
 
         missing = dict(digests)
         missing.pop("test_sha256")
         with self.assertRaisesRegex(ConfigError, "test_sha256"):
             replace(receipt, artifact_sha256=missing).validate()
+        with self.assertRaisesRegex(ConfigError, "identity algorithms"):
+            replace(
+                receipt,
+                artifact_identity_algorithms={
+                    "file": "sha256",
+                    "hidden_evaluation": "sha256",
+                },
+            ).validate()
 
     def test_formal_release_receipt_binds_accepted_workload_transformation(self):
         acceptance = WorkloadResolutionAcceptance(
@@ -410,6 +424,7 @@ class ChallengeReleaseTests(unittest.TestCase):
             artifact_sha256={
                 field: "a" * 64 for field in FORMAL_ARTIFACT_DIGEST_FIELDS
             },
+            artifact_identity_algorithms=FORMAL_ARTIFACT_IDENTITY_ALGORITHMS,
             workload_resolution_acceptance={"training": acceptance},
         )
 

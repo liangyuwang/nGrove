@@ -67,7 +67,10 @@ startup, model loading, file I/O, scheduling, and inference, but excludes
 hidden-data materialization and trusted validation/scoring. This preview keeps
 performance and efficiency as separate axes; it does not yet define a combined
 ranking. Efficiency comparisons require the same hidden input identity and
-runtime profile.
+runtime profile. A conforming Worker hard-limits prediction storage to two
+entries and `examples * vocab_size * 4 + 65536` bytes, then removes it after
+scoring or failure and confirmed teardown. The bundled local Docker preview
+reports its host bind mount quota as unsupported.
 
 ## Prepare data
 

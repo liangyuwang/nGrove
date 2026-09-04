@@ -19,7 +19,12 @@ from autotrain_bench.agent_control import AgentControlStepResult
 from autotrain_bench.agent_api_bundle import publish_agent_api_bundle
 from autotrain_bench.challenge import (
     FORMAL_ARTIFACT_DIGEST_FIELDS,
+    FORMAL_ARTIFACT_IDENTITY_ALGORITHMS,
     ReleaseVerificationReceipt,
+)
+from autotrain_bench.artifact_identity import (
+    HIDDEN_BUNDLE_IDENTITY_ALGORITHM,
+    hidden_bundle_sha256,
 )
 from autotrain_bench.config import (
     AgentConfig,
@@ -35,7 +40,6 @@ from autotrain_bench.local_mailbox import (
 )
 from autotrain_bench.local_agent_execution import describe_local_agent_execution
 from autotrain_bench.results import RESULT_SCHEMA_VERSION
-from autotrain_bench.runtime import _hidden_bundle_sha256
 from autotrain_bench.supervisor import (
     MAX_COMMAND_STREAM_BYTES,
     MAX_INCUMBENT_DECLARATIONS,
@@ -45,6 +49,7 @@ from autotrain_bench.supervisor import (
 )
 from autotrain_bench.worker_protocol import (
     BASELINE_REQUIREMENTS,
+    CANDIDATE_PREDICTION_STORAGE_QUOTA,
     CONFORMANCE_RECEIPT_VERSION,
     GPU_DEVICE_ISOLATION,
     HIDDEN_DATASET_IDENTITY_VERIFICATION,
@@ -362,8 +367,8 @@ class SupervisorTests(unittest.TestCase):
         self.workspace = workspace
         self.worker = FakeWorker()
         self.worker.hidden_dataset_digests = {
-            "analysis": _hidden_bundle_sha256(self.config.analysis_path),
-            "test": _hidden_bundle_sha256(self.config.test_path),
+            "analysis": hidden_bundle_sha256(self.config.analysis_path),
+            "test": hidden_bundle_sha256(self.config.test_path),
         }
         self.clock = FakeClock()
         self.episode = root / "episode"
@@ -544,8 +549,8 @@ class SupervisorTests(unittest.TestCase):
             "train_manifest_sha256": hashlib.sha256(
                 (config.train_dir / "manifest.json").read_bytes()
             ).hexdigest(),
-            "analysis_sha256": _hidden_bundle_sha256(config.analysis_path),
-            "test_sha256": _hidden_bundle_sha256(config.test_path),
+            "analysis_sha256": hidden_bundle_sha256(config.analysis_path),
+            "test_sha256": hidden_bundle_sha256(config.test_path),
         }
         core_revision = "d" * 40
         receipt = ReleaseVerificationReceipt(
@@ -553,6 +558,7 @@ class SupervisorTests(unittest.TestCase):
             release_id="test-byte-lm-v1",
             core_revision=core_revision,
             artifact_sha256=artifacts,
+            artifact_identity_algorithms=FORMAL_ARTIFACT_IDENTITY_ALGORITHMS,
         )
         with patch(
             "autotrain_bench.supervisor._core_identity",
@@ -687,6 +693,7 @@ class SupervisorTests(unittest.TestCase):
             artifact_sha256={
                 field: "a" * 64 for field in FORMAL_ARTIFACT_DIGEST_FIELDS
             },
+            artifact_identity_algorithms=FORMAL_ARTIFACT_IDENTITY_ALGORITHMS,
             workload_resolution_acceptance={"training": acceptance},
         )
         supervisor = self.supervisor(config=config, release_verification=receipt)
@@ -1148,7 +1155,7 @@ class SupervisorTests(unittest.TestCase):
             (path / "targets.json").write_text(
                 json.dumps({"targets": [token]}), encoding="utf-8"
             )
-            self.worker.hidden_dataset_digests[request.name] = _hidden_bundle_sha256(
+            self.worker.hidden_dataset_digests[request.name] = hidden_bundle_sha256(
                 path
             )
 
@@ -1168,6 +1175,10 @@ class SupervisorTests(unittest.TestCase):
         identities = supervisor.state["artifact_identities"]["hidden_evaluation"]
         self.assertEqual(set(identities), {"analysis_sha256", "test_sha256"})
         self.assertTrue(all(identities.values()))
+        self.assertEqual(
+            supervisor.state["artifact_identity_algorithms"]["hidden_evaluation"],
+            HIDDEN_BUNDLE_IDENTITY_ALGORITHM,
+        )
 
     def test_postmortem_result_is_not_published_before_deployment_cleanup(self):
         supervisor = self.supervisor()
@@ -2038,6 +2049,19 @@ class SupervisorTests(unittest.TestCase):
         self.assertIn(
             "evaluation_worker_capability_insufficient:"
             "hidden_dataset_identity_verification",
+            supervisor.state["policy_violations"],
+        )
+
+    def test_prediction_storage_quota_is_a_required_capability(self):
+        self.worker.capability_overrides[CANDIDATE_PREDICTION_STORAGE_QUOTA] = (
+            Capability(EnforcementLevel.UNSUPPORTED, "unbounded bind mount")
+        )
+
+        supervisor = self.supervisor()
+
+        self.assertIn(
+            "evaluation_worker_capability_insufficient:"
+            "candidate_prediction_storage_quota",
             supervisor.state["policy_violations"],
         )
 

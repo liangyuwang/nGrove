@@ -179,6 +179,12 @@ float32 vectors in request order, one `[vocabulary]` row per example. The
 public `autotrain_bench.candidate_protocol` helpers can read the request and
 write the output, but their use is optional.
 
+A conforming Worker hard-limits this untrusted directory to two entries and
+`examples * vocab_size * 4 + 65536` bytes; the manifest itself is limited to
+65536 bytes. The bundled local Docker preview cannot enforce a hard quota on
+its host bind mount and reports that capability as unsupported rather than
+claiming formal compliance.
+
 After research sealing and confirmed Agent/Research teardown, the bundled
 Docker Worker runs three network-disabled steps for each ANALYSIS/TEST evaluation:
 
@@ -194,7 +200,9 @@ selected split at once and may schedule them jointly; the v3 contract does not
 prescribe batches or reset its process or model between examples.
 Candidate failures expose only a fixed error code to the Agent; bounded runtime
 diagnostics remain inside the trusted boundary. Each container is removed after
-the evaluation step.
+the evaluation step. Prediction files are ephemeral and are deleted after
+scoring or failure and confirmed teardown; an unconfirmed teardown retains
+them only for a cleanup retry.
 
 Serving wall time covers the entire Candidate invocation: sandbox startup,
 Candidate import, model loading, context-file reading, participant-controlled

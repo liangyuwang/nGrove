@@ -17,6 +17,7 @@ PREDICTION_SCHEMA_VERSION = 1
 CANDIDATE_PROTOCOL = "offline_next_token_logits_v3"
 LOGITS_FILENAME = "logits.f32"
 PREDICTIONS_FILENAME = "predictions.json"
+PREDICTION_MANIFEST_MAX_BYTES = 64 * 1024
 
 
 class EvaluationError(RuntimeError):
@@ -249,6 +250,8 @@ def _prediction_paths(predictions_dir: Path) -> Tuple[Path, Path]:
             ) from exc
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
             raise EvaluationError("Candidate prediction entries must be regular files")
+    if entries[PREDICTIONS_FILENAME].stat().st_size > PREDICTION_MANIFEST_MAX_BYTES:
+        raise EvaluationError("Candidate prediction manifest exceeds its byte limit")
     return entries[PREDICTIONS_FILENAME], entries[LOGITS_FILENAME]
 
 

@@ -96,6 +96,10 @@ Evaluation additionally requires `hidden_dataset_identity_verification`. This
 means the Worker verifies the effective hidden bytes before Candidate startup
 and binds the subsequent evaluation to that resolution. It does not require
 Core to read those bytes or prescribe where they came from.
+It also requires `candidate_prediction_storage_quota` and
+`candidate_prediction_artifact_lifecycle`: untrusted output storage must be
+hard-bounded during execution and then removed according to the release-owned
+ephemeral lifecycle.
 
 Three independent checks govern formal eligibility:
 
@@ -109,10 +113,10 @@ Passing conformance does not certify a user-controlled deployment.  Likewise,
 an organizer-controlled deployment is not eligible when required technical
 capabilities are missing.  Missing or insufficient capabilities are recorded
 explicitly and never trigger a fallback. A receipt is conformant only for the
-suite version associated with the active Worker Protocol; a passing v10 receipt
-cannot certify a v11 Worker boundary.
+suite version associated with the active Worker Protocol; a passing v11 receipt
+cannot certify a v12 Worker boundary.
 
-Worker Protocol v11 retains the v9 evidence direction. `WorkerDescriptor`
+Worker Protocol v12 retains the v9 evidence direction. `WorkerDescriptor`
 contains only Worker self-description and cannot carry conformance. The trusted
 Operator composition supplies `ConformanceReceipt` independently to the
 Coordinator. The receipt binds its schema and suite versions, the assessed
@@ -131,7 +135,7 @@ suite remains required before a formal deployment can receive one.
 
 ## Research and evaluation roles
 
-Worker Protocol v11 models ResearchWorker and EvaluationWorker as separate
+Worker Protocol v12 models ResearchWorker and EvaluationWorker as separate
 interfaces because their trust domains differ:
 
 - ResearchWorker sees TRAIN, the Agent workspace, and training outputs, but
@@ -145,9 +149,10 @@ The Python protocol enforces that separation in its argument types.
 task identity, training image, TRAIN path, and generated public helper API.
 `EvaluationWorker` receives an `EvaluationTaskSpec` with no dataset paths. Once
 the Supervisor has confirmed research sealing and teardown, it sends a
-`HiddenDatasetRequest` containing only the logical split name and an optional
-release-frozen expected SHA-256 digest. The Worker privately resolves that
-request and returns a `ResolvedHiddenDataset` containing the effective digest
+`HiddenDatasetRequest` containing only the logical split name, the active
+hidden-bundle identity algorithm, and an optional release-frozen expected
+SHA-256 digest. The Worker privately resolves that request and returns a
+`ResolvedHiddenDataset` containing the same algorithm, the effective digest,
 and an opaque resolution ID. Core validates the receipt before passing the
 opaque resolution back for Candidate evaluation. A complete `TaskConfig` never
 crosses either role boundary.
@@ -162,14 +167,15 @@ artifact is formally usable only when the evidence matches a
 `WorkloadResolutionAcceptance` supplied through the trusted organizer release
 receipt. Worker self-description is never organizer acceptance.
 
-Version 11 is a breaking interface revision in the current unreleased
+Version 12 is a breaking interface revision in the current unreleased
 development snapshot; it does not imply a package release version. Older
-Workers are rejected rather than adapted implicitly. Version 11 retains the v6
+Workers are rejected rather than adapted implicitly. Version 12 retains the v6
 workload-resolution rules, the v7 requirement that a successful `start_lease()`
 return a `ResourceAllocationReceipt`, and the v8 mandatory resolution
 deadlines, as well as the v9 trusted conformance input and v10 single-target
-semantics. It replaces the request-at-a-time Candidate channel with an offline,
-two-artifact file contract. External Worker
+semantics and the v11 offline two-artifact file contract. It standardizes
+hidden-bundle identity and adds required prediction-storage quota and lifecycle
+capabilities. External Worker
 packages must implement workload and hidden-data resolution, bind operations
 to resolved identities and resource requests, accept TEST before ANALYSIS, and
 preserve the precise context/target/artifact visibility fields in
@@ -178,7 +184,7 @@ particular storage or sandbox implementation.
 
 A local development Worker may implement both roles in one process. A future
 formal deployment may place them on separate services connected only through
-an immutable artifact reference. The current version 11 Python interface does
+an immutable artifact reference. The current version 12 Python interface does
 not yet define that remote artifact transport.
 
 Worker operation failures and teardown failures have different episode
@@ -211,7 +217,7 @@ per-evaluation mounts and untrusted workloads remain owned by
 `evaluate_candidate()` and its teardown guarantee. A digest mismatch returns no
 metric. Paths, source URLs, credentials, mount handles, and cache identifiers
 remain Worker-private; only the opaque resolution ID and content digest cross
-the protocol.
+the protocol together with the release-owned identity-algorithm identifier.
 
 Both `resolve_workload()` and `resolve_hidden_dataset()` receive a positive,
 finite `timeout_seconds`. A conforming Worker must stop resolution by that
@@ -222,7 +228,7 @@ are not additive timeout grants.
 
 ### Known liveness limit: cooperative deadlines
 
-Worker Protocol v11 is a synchronous, in-process Python interface. Its timeout
+Worker Protocol v12 is a synchronous, in-process Python interface. Its timeout
 arguments are semantic deadlines and a conformance requirement, but they are
 cooperative rather than a Core-side preemption mechanism. Core can reject a
 result returned after its deadline; while a call has not returned, however,
@@ -291,6 +297,25 @@ paths are not fields of `HiddenDatasetRequest` or `ResolvedHiddenDataset`. Core
 defines the ordering and frozen identity; the Worker defines and attests the
 materialization mechanism.
 
+`analysis_sha256` and `test_sha256` use the normative algorithm identifier
+`autotrain-bench-hidden-bundle-v1-sha256`. Its SHA-256 input is the following
+byte string, with no separators other than those shown:
+
+```text
+"autotrain-bench-hidden-bundle-v1\0"
+|| for name in ("contexts.json", "targets.json"):
+     u64be(len(utf8(name))) || utf8(name)
+     || u64be(len(file_bytes)) || file_bytes
+```
+
+The bundle directory must not be a symlink and must contain exactly those two
+regular files. Lengths are unsigned 64-bit big-endian integers. The shared
+`autotrain_bench.artifact_identity.hidden_bundle_sha256()` implementation is
+normative for Python Workers. The organizer release receipt declares
+`file: sha256` and
+`hidden_evaluation: autotrain-bench-hidden-bundle-v1-sha256`; result schema v10
+records the latter under `artifact_identity_algorithms.hidden_evaluation`.
+
 ## Candidate channel
 
 `CandidateChannelRequirements` fixes the release-owned application protocol and
@@ -313,6 +338,40 @@ score, or feedback crosses into Candidate execution. The requirements contain
 no URL, port, socket path, network name, or scheduler handle; the bundled
 Docker Worker implements the contract with isolated filesystem mounts and
 network-disabled processes.
+
+Prediction storage is an untrusted resource boundary, not merely a final shape
+check. Before Candidate startup, a conforming Worker must hard-limit the
+workspace to two entries and to at most:
+
+```text
+examples * vocab_size * 4 + 65536 bytes
+```
+
+The first term is the exact `logits.f32` size and `predictions.json` may occupy
+at most 65536 bytes. Both byte and entry/inode limits must prevent writes while
+the Candidate is running, including writes through open-but-unlinked files.
+The byte ceiling applies to participant-created file data; implementation-owned
+filesystem metadata may use separate bounded overhead. Post-exit validation or
+a polling watcher is not an enforcement mechanism. This semantic guarantee is
+reported as `candidate_prediction_storage_quota`. A Worker unable to enforce it
+reports an insufficient capability and cannot silently claim formal
+compliance.
+
+Prediction artifacts use the release-owned lifecycle
+`ephemeral_until_evaluation_teardown`. After scoring or failure, and only after
+confirmed Candidate/scorer teardown, the Worker deletes the prediction
+workspace. It must retain and register the workspace for cleanup retry if
+workload teardown is unconfirmed; it may not delete a path that untrusted code
+might still mutate. This guarantee is reported as
+`candidate_prediction_artifact_lifecycle`. A future release that retains
+predictions for audit must define a different lifecycle with an immutable
+identity, storage budget, and retention period.
+
+The bundled Docker Worker enforces the ephemeral lifecycle but its ordinary
+host bind mount has no hard byte or inode quota. It therefore reports
+`candidate_prediction_storage_quota: unsupported`; this is an explicit
+development limitation and makes the evaluation capability assessment
+insufficient for formal compliance.
 
 The v3 JSON shapes are exact (additional fields are rejected):
 
@@ -364,7 +423,8 @@ The output manifest is also exact:
 The target rows must align one-for-one with context rows and IDs. Each protected
 span has `source_end - source_start == len(input_ids)`, spans for one source may
 not overlap, every declared context length must occur, and `logits.f32` must be
-exactly `examples * vocab_size * 4` bytes.
+exactly `examples * vocab_size * 4` bytes. The trusted validator rejects an
+oversized manifest before parsing it.
 Candidate-visible dataset and example identifiers are opaque correlation keys;
 they must not encode whether the invocation is ANALYSIS or TEST or reveal
 trusted source metadata.
@@ -391,11 +451,11 @@ implementation can access or materialize the Coordinator-named TRAIN,
 workspace, Lease output, Candidate, public API, and evaluation locations. They
 must not be treated as a stable serializable remote protocol. Hidden datasets
 are the exception: their semantic request and resolution contain no `Path`.
-A shared-filesystem Worker can implement version 11 directly; a topology without
+A shared-filesystem Worker can implement version 12 directly; a topology without
 shared Candidate or workspace paths still needs future artifact-reference and
 materialization semantics.
 
-Version 11 retains the release-selected `ResourceEnvelope` passed into
+Version 12 retains the release-selected `ResourceEnvelope` passed into
 `start_lease()` in addition to the bundled v0 `TrainingResources` compatibility
 input. The
 envelope contains only properties that the release classifies as normative or
@@ -415,7 +475,7 @@ minimum enforcement level, missing and unexpected properties, and the operation
 bindings before admitting the Lease. A rejected receipt causes
 compensating Lease termination; the workload never becomes an active,
 budgeted Lease. Receipt authenticity comes from the trusted Worker deployment
-and its invocation channel—v11 does not pretend that an in-process Python object
+and its invocation channel—v12 does not pretend that an in-process Python object
 is a remote cryptographic transport.
 
 During the v0 manifest transition, an explicit `resource_contract` is the full
