@@ -404,8 +404,23 @@ class SupervisorTests(unittest.TestCase):
         supervisor.record_agent_execution(exit_code=0, termination_reason="exited")
         self.assertTrue(supervisor.cleanup_agent_control())
         if supervisor.state["status"] == "closed":
-            return supervisor.evaluate_postmortem()
+            supervisor.evaluate_postmortem()
+        if supervisor.state["status"] == "closed":
+            return supervisor.publish_postmortem_result()
         return supervisor.public_status()
+
+    def test_episode_protocol_id_is_independent_of_directory_name(self):
+        self.episode = self.episode.parent / "episode with spaces and é"
+        supervisor = self.supervisor()
+
+        self.assertRegex(supervisor.state["episode_id"], r"^episode:[0-9a-f]{32}$")
+        granted = supervisor.start_lease()
+
+        self.assertEqual(granted["lease_id"], "lease-0001")
+        self.assertEqual(
+            supervisor.state["resource_allocations"][0]["receipt"]["episode_id"],
+            supervisor.state["episode_id"],
+        )
 
     def test_existing_episode_state_is_rejected_before_mutation(self):
         self.episode.mkdir()
@@ -1101,7 +1116,9 @@ class SupervisorTests(unittest.TestCase):
 
         self.worker.hidden_dataset_resolution_hook = materialize
 
-        final = supervisor.evaluate_postmortem()
+        staged = supervisor.evaluate_postmortem()
+        self.assertEqual(staged["status"], "closed")
+        final = supervisor.publish_postmortem_result()
 
         self.assertEqual(final["status"], "finalized")
         self.assertEqual(self.worker.evaluations, ["test", "analysis"])
@@ -1110,6 +1127,28 @@ class SupervisorTests(unittest.TestCase):
         identities = supervisor.state["artifact_identities"]["hidden_evaluation"]
         self.assertEqual(set(identities), {"analysis_sha256", "test_sha256"})
         self.assertTrue(all(identities.values()))
+
+    def test_postmortem_result_is_not_published_before_deployment_cleanup(self):
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+        committed = supervisor.commit_lease("/output/candidate")
+        supervisor.declare_incumbent(committed["candidate_id"])
+        supervisor.finish()
+        supervisor.record_agent_execution(exit_code=0, termination_reason="exited")
+        self.assertTrue(supervisor.cleanup_agent_control())
+
+        staged = supervisor.evaluate_postmortem()
+
+        self.assertEqual(staged["status"], "closed")
+        self.assertIsNone(staged["outcome"])
+        self.assertIsNotNone(supervisor.state["pending_result"])
+
+        supervisor.deployment_teardown_failed(
+            "evaluation_private_storage_teardown_failure"
+        )
+
+        self.assertEqual(supervisor.state["status"], "infrastructure_failure")
+        self.assertIsNone(supervisor.state["result_publication"])
 
     def test_test_dataset_identity_mismatch_fails_before_candidate_evaluation(self):
         supervisor = self.supervisor()
@@ -2526,6 +2565,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(supervisor.state["status"], "closed")
         self.assertTrue(supervisor.cleanup_agent_control())
         supervisor.evaluate_postmortem()
+        supervisor.publish_postmortem_result()
         self.assertEqual(supervisor.state["status"], "finalized")
         self.assertEqual(supervisor.state["failure"], "no_candidate")
 
@@ -2545,6 +2585,7 @@ class SupervisorTests(unittest.TestCase):
 
         self.assertFalse(late_entry.exists())
         supervisor.evaluate_postmortem()
+        supervisor.publish_postmortem_result()
         self.assertEqual(supervisor.state["status"], "finalized")
         self.assertTrue(supervisor.state["agent_control"]["cleanup_complete"])
 
@@ -2834,13 +2875,14 @@ class SupervisorTests(unittest.TestCase):
                 raise OSError("simulated final state persistence failure")
             original_save()
 
+        supervisor.evaluate_postmortem()
         with patch.object(
             supervisor,
             "_save_state",
             side_effect=fail_first_publication_save,
         ):
             with self.assertRaisesRegex(OSError, "final state persistence"):
-                supervisor.evaluate_postmortem()
+                supervisor.publish_postmortem_result()
 
         self.assertEqual(supervisor.state["status"], "closed")
         self.assertIsNone(supervisor.state["outcome"])
@@ -2889,12 +2931,13 @@ class SupervisorTests(unittest.TestCase):
                 raise OSError("simulated final state persistence failure")
             original_save()
 
+        supervisor.evaluate_postmortem()
         with patch.object(supervisor, "_save_state", side_effect=fail_publication_save):
             with self.assertRaisesRegex(OSError, "final state persistence"):
-                supervisor.evaluate_postmortem()
+                supervisor.publish_postmortem_result()
 
         self.assertEqual(supervisor.state["status"], "closed")
-        supervisor.evaluate_postmortem()
+        supervisor.publish_postmortem_result()
         self.assertEqual(supervisor.state["status"], "finalized")
         self.assertEqual(supervisor.state["outcome"], "failed")
         events = [

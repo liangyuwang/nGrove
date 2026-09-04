@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from .config import TaskConfig, TrainingResources
 
 
-WORKER_PROTOCOL_VERSION = 7
+WORKER_PROTOCOL_VERSION = 8
 WORKER_CONFORMANCE_SUITE_VERSION = f"worker-v{WORKER_PROTOCOL_VERSION}"
 RESOURCE_ENVELOPE_SCHEMA_VERSION = 1
 RESOURCE_ALLOCATION_RECEIPT_VERSION = 1
@@ -340,6 +340,15 @@ def _resource_relation_satisfied(relation: str, required: Any, actual: Any) -> b
             and value >= required
             for value in values
         )
+    if relation == "at_most":
+        if isinstance(required, bool) or not isinstance(required, (int, float)):
+            return False
+        return bool(values) and all(
+            not isinstance(value, bool)
+            and isinstance(value, (int, float))
+            and value <= required
+            for value in values
+        )
     if relation == "contains":
         return bool(values) and all(
             isinstance(value, str) and required in value for value in values
@@ -358,13 +367,15 @@ class ResourceRequirement:
 
     def __post_init__(self) -> None:
         _validate_resource_property_name(self.name, "resource requirement name")
-        if self.relation not in {"exact", "at_least", "contains"}:
-            raise ValueError("resource relation must be exact, at_least, or contains")
+        if self.relation not in {"exact", "at_least", "at_most", "contains"}:
+            raise ValueError(
+                "resource relation must be exact, at_least, at_most, or contains"
+            )
         normalized = _resource_value(self.value, "resource requirement value")
-        if self.relation == "at_least" and (
+        if self.relation in {"at_least", "at_most"} and (
             isinstance(normalized, bool) or not isinstance(normalized, (int, float))
         ):
-            raise TypeError("at_least resource requirements must be numeric")
+            raise TypeError(f"{self.relation} resource requirements must be numeric")
         if self.relation == "contains" and not isinstance(normalized, str):
             raise TypeError("contains resource requirements must be strings")
         if not isinstance(self.minimum_enforcement, EnforcementLevel):
@@ -787,18 +798,22 @@ def assess_resource_allocation(
         item = evidence.get(name)
         if item is None:
             continue
-        observed = [
-            view.value
-            for view in (item.allocator_allocated, item.workload_visible)
-            if view.status == "observed"
-        ]
-        if not observed or any(
-            not _resource_relation_satisfied(
-                requirement.relation,
-                requirement.value,
-                value,
-            )
-            for value in observed
+        # Normative requirements describe the effective resource envelope seen
+        # by the workload.  Scheduler allocation remains distinct evidence: it
+        # is the fallback when the effective view cannot be observed, not a
+        # second value that must accidentally equal a sandbox limit.  A release
+        # that makes allocator capacity normative can name that semantic
+        # property explicitly and have the Worker leave its workload view
+        # unavailable.
+        observed = (
+            item.workload_visible
+            if item.workload_visible.status == "observed"
+            else item.allocator_allocated
+        )
+        if observed.status != "observed" or not _resource_relation_satisfied(
+            requirement.relation,
+            requirement.value,
+            observed.value,
         ):
             mismatched.append(name)
         if item.enforcement_level.rank < requirement.minimum_enforcement.rank:

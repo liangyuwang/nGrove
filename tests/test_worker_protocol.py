@@ -140,6 +140,91 @@ class WorkerProtocolTests(unittest.TestCase):
             ("accelerator.count",),
         )
 
+    def test_effective_workload_view_may_be_smaller_than_allocator_grant(self):
+        envelope = ResourceEnvelope(
+            requirements=(
+                ResourceRequirement(
+                    "accelerator.count",
+                    "exact",
+                    4,
+                    EnforcementLevel.ENFORCED,
+                ),
+            )
+        )
+        receipt = ResourceAllocationReceipt(
+            episode_id="episode-1",
+            lease_id="lease-0001",
+            worker_id="site-worker",
+            resource_request_sha256=envelope.sha256,
+            properties=(
+                ResourcePropertyEvidence(
+                    name="accelerator.count",
+                    allocator_allocated=ResourceObservation(
+                        "observed", 8, "whole-node-allocator"
+                    ),
+                    workload_visible=ResourceObservation(
+                        "observed", 4, "workload-sandbox"
+                    ),
+                    enforcement_level=EnforcementLevel.ENFORCED,
+                    enforcement_authority="workload-sandbox",
+                ),
+            ),
+            receipt_id="allocation-1",
+        )
+
+        assessment = assess_resource_allocation(
+            envelope,
+            receipt,
+            episode_id="episode-1",
+            lease_id="lease-0001",
+            worker_id="site-worker",
+        )
+
+        self.assertTrue(assessment.satisfied)
+        self.assertEqual(assessment.mismatched, ())
+
+    def test_resource_ceiling_uses_at_most_relation(self):
+        envelope = ResourceEnvelope(
+            requirements=(
+                ResourceRequirement(
+                    "memory.bytes",
+                    "at_most",
+                    1024,
+                    EnforcementLevel.ENFORCED,
+                ),
+            )
+        )
+
+        def assessment_for(value):
+            receipt = ResourceAllocationReceipt(
+                episode_id="episode-1",
+                lease_id="lease-0001",
+                worker_id="site-worker",
+                resource_request_sha256=envelope.sha256,
+                properties=(
+                    ResourcePropertyEvidence(
+                        name="memory.bytes",
+                        allocator_allocated=ResourceObservation("not_applicable"),
+                        workload_visible=ResourceObservation(
+                            "observed", value, "sandbox"
+                        ),
+                        enforcement_level=EnforcementLevel.ENFORCED,
+                        enforcement_authority="sandbox",
+                    ),
+                ),
+                receipt_id="allocation-1",
+            )
+            return assess_resource_allocation(
+                envelope,
+                receipt,
+                episode_id="episode-1",
+                lease_id="lease-0001",
+                worker_id="site-worker",
+            )
+
+        self.assertTrue(assessment_for(512).satisfied)
+        self.assertEqual(assessment_for(2048).mismatched, ("memory.bytes",))
+
     def test_resource_schema_versions_and_exact_types_are_strict(self):
         with self.assertRaisesRegex(ValueError, "schema version"):
             ResourceEnvelope(requirements=(), schema_version=True)
@@ -305,7 +390,7 @@ class WorkerProtocolTests(unittest.TestCase):
         assessment = assess_worker(
             descriptor(
                 trust=TrustLevel.CERTIFIED,
-                conformance=ConformanceReceipt("worker-v2", True),
+                conformance=ConformanceReceipt("worker-v7", True),
             ),
             BASELINE_REQUIREMENTS,
         )
@@ -329,7 +414,7 @@ class WorkerProtocolTests(unittest.TestCase):
 
     def test_descriptor_manifest_contains_no_platform_schema(self):
         manifest = descriptor().public_manifest()
-        self.assertEqual(manifest["protocol_version"], 7)
+        self.assertEqual(manifest["protocol_version"], 8)
         self.assertEqual(manifest["roles"], ["research", "evaluation"])
         serialized = json.dumps(manifest).lower()
         self.assertNotIn("docker", serialized)
@@ -340,7 +425,7 @@ class WorkerProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "protocol version"):
             WorkerDescriptor(
                 worker_id="future-worker",
-                protocol_version=8,
+                protocol_version=9,
                 trust_level=TrustLevel.DEVELOPMENT,
                 roles=("research",),
                 capabilities={},

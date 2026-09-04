@@ -76,23 +76,25 @@ sandbox without adding platform branches to Core.
 
 The repository now contains an executable, single-host Docker prototype of the benchmark protocol. It is intended to validate episode lifecycle, Training Lease accounting, hidden evaluation, and the agent-facing control surface before the first official benchmark instance is selected.
 
-The current development snapshot uses Worker Protocol v7 but does not carry a
-release package version yet. Protocol v7 is a breaking Worker API revision:
-every successful Training Lease startup returns operation-bound resource
-allocation evidence. The Release selects an extensible semantic resource
+The current development snapshot uses Worker Protocol v8 but does not carry a
+release package version yet. Protocol v7 introduced a breaking Worker API
+revision: every successful Training Lease startup returns operation-bound
+resource allocation evidence. The Release selects an extensible semantic resource
 envelope; the Worker separately reports allocator-visible, workload-visible,
 and enforcement evidence, and Core rejects a Lease whose evidence is missing,
 misbound, inconsistent, or weaker than the release requirement. Version 7
-retains the version 6 workload-resolution contract:
-Workers first resolve each Worker-owned release workload into immutable effective
-artifact evidence, and the resulting opaque authorization is bound to the
+retains the version 6 workload-resolution contract: Workers first resolve each
+Worker-owned release workload into immutable effective artifact evidence, and
+the resulting opaque authorization is bound to the
 Lease or evaluation operation that launches it. An unchanged digest-pinned OCI
 artifact is accepted by identity; a derived SIF, VM image, or other artifact
 must match an organizer-controlled acceptance in the trusted release receipt.
-Version 7 also retains the version 5 hidden-data contract: external Evaluation
-Workers must resolve a path-free `HiddenDatasetRequest` after research sealing,
-return a content-identity-bearing
-`ResolvedHiddenDataset`, accept TEST before ANALYSIS, and use the precise
+Version 8 retains those contracts and adds required, bounded resolution
+deadlines to the workload and hidden-data resolution calls. It also retains the
+version 5 hidden-data contract: external Evaluation Workers must resolve a
+path-free `HiddenDatasetRequest` after research sealing, return a
+content-identity-bearing `ResolvedHiddenDataset`, accept TEST before ANALYSIS,
+and use the precise
 prefix/target/artifact visibility fields in the transport-neutral
 `CandidateChannelRequirements` contract. The Python package itself remains
 `0.0.0` while unreleased.
@@ -114,11 +116,12 @@ being hidden behind application-level mailbox limits.
 
 The bundled `autotrain-bench prepare` and `autotrain-bench start` commands are
 the composition root for that local Docker implementation; they are not a
-generic backend loader. Worker Protocol v7 is currently a synchronous,
+generic backend loader. Worker Protocol v8 is currently a synchronous,
 in-process Python contract. Resolution calls receive explicit deadlines, and
 TEST workload/data resolution consumes the same operation budget as evaluation;
-the future asynchronous protocol is still needed to preempt a nonconforming or
-wedged in-process Worker. Its remaining `Path` values for TRAIN, workspaces,
+those deadlines are cooperative, so a future asynchronous operation/cancellation
+protocol is still needed to preempt a nonconforming or wedged in-process Worker.
+Its remaining `Path` values for TRAIN, workspaces,
 Candidate artifacts, and output directories are local deployment handles, not
 a remote wire format. Hidden-data requests and resolution receipts contain no
 path. An external Worker package uses its own trusted launcher to compose Core
@@ -664,7 +667,7 @@ identity, not one materialization mechanism.
 
 Task schema v2 still retains `paths.analysis` and `paths.test` as compatibility
 inputs for the bundled local CLI. The Supervisor neither reads them nor sends
-them through Worker Protocol v7. An external launcher supplies its Evaluation
+them through Worker Protocol v8. An external launcher supplies its Evaluation
 Worker's private source mapping independently; the configured local paths may
 remain absent for that deployment. Replacing these compatibility fields in a
 future task schema is separate from the now path-free Worker boundary.

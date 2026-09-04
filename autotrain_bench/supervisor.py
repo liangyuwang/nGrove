@@ -521,7 +521,7 @@ class Supervisor:
             eligibility_violations.append("agent_workload_identity_not_immutable")
         if not agent_execution.leaderboard_eligible:
             eligibility_violations.append("agent_execution_not_certified")
-        # Worker Protocol v7 covers Worker-owned training/Candidate/Evaluator
+        # Worker Protocol v8 covers Worker-owned training/Candidate/Evaluator
         # workloads. AgentExecutionEvidence v0 binds the Agent image itself but
         # has no trusted field for an inference Gateway workload. Fail closed
         # instead of treating the task's configured Gateway reference as proof
@@ -583,7 +583,11 @@ class Supervisor:
         self.state: Dict[str, Any] = {
             "protocol_version": AGENT_PROTOCOL_VERSION,
             "result_schema_version": RESULT_SCHEMA_VERSION,
-            "episode_id": self.episode_dir.name,
+            # A deployment path is not a semantic protocol identifier.  In
+            # particular, an operator-selected directory may contain spaces or
+            # Unicode that are valid on the host but invalid in opaque Worker
+            # receipt IDs.  Keep the protocol identity stable and path-free.
+            "episode_id": "episode:" + uuid.uuid4().hex,
             "task_id": config.task_id,
             "task_kind": config.task_kind,
             "leaderboard_eligible": leaderboard_eligible,
@@ -1216,7 +1220,7 @@ class Supervisor:
         """Resolve and accept one workload before passing it to an operation.
 
         The returned opaque handle is the only workload authorization accepted
-        by Worker Protocol v7 operations.  Core records semantic evidence but
+        by Worker Protocol v8 operations.  Core records semantic evidence but
         never learns the Worker's path, scheduler job, image cache, or runtime
         handle.
         """
@@ -2938,7 +2942,13 @@ class Supervisor:
         self._save_state()
 
     def evaluate_postmortem(self) -> Dict[str, Any]:
-        """Stage TEST first, then attempt independent postmortem diagnostics."""
+        """Stage TEST first, then attempt independent postmortem diagnostics.
+
+        This method deliberately does not publish a terminal result.  The
+        trusted composition layer must first finish Evaluation Worker and
+        private-materialization cleanup, record any teardown failures, and
+        then call :meth:`publish_postmortem_result`.
+        """
 
         with self.lock:
             if self.state["status"] != "closed":
@@ -2967,11 +2977,20 @@ class Supervisor:
             if self.state["analysis_status"] not in {"complete", "incomplete"}:
                 self._evaluate_analysis_for_postmortem()
 
-            if (
-                self.state["status"] == "closed"
-                and self.state.get("pending_result") is not None
-            ):
-                self._publish_staged_result()
+            return self.public_status()
+
+    def publish_postmortem_result(self) -> Dict[str, Any]:
+        """Publish one stable terminal result after deployment cleanup."""
+
+        with self.lock:
+            if self.state["status"] != "closed":
+                return self.public_status()
+            if self.state.get("pending_result") is None:
+                raise RuntimeError("postmortem TEST decision has not been staged")
+            if self.state.get("analysis_status") not in {"complete", "incomplete"}:
+                raise RuntimeError("postmortem ANALYSIS disposition is incomplete")
+            if self._publish_staged_result() is not True:
+                raise RuntimeError("postmortem result is not ready for publication")
             return self.public_status()
 
     def _stage_failed_test(self, failure: str) -> Dict[str, Any]:
@@ -2999,9 +3018,12 @@ class Supervisor:
         if self.state["agent_control"]["cleanup_complete"] is not True:
             return False
         # Pre-TEST teardown failures prevent TEST from starting.  A teardown
-        # failure discovered later while running optional ANALYSIS diagnostics
-        # does not erase an already persisted TEST decision; it is represented
-        # independently by policy/eligibility and teardown evidence.
+        # failure discovered while running optional ANALYSIS diagnostics does
+        # not erase an already persisted TEST decision; it is represented
+        # independently by policy/eligibility and teardown evidence.  The
+        # composition layer nevertheless calls this method only after all
+        # postmortem cleanup attempts have finished, so the published terminal
+        # state will not be revised by a later required cleanup step.
 
         outcome = pending["outcome"]
         failure = pending["failure"]

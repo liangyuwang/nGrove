@@ -870,6 +870,8 @@ def command_start(args: argparse.Namespace) -> int:
                 postmortem_error = exc
         if postmortem_error is not None:
             raise postmortem_error
+        if supervisor.state["status"] == "closed":
+            supervisor.publish_postmortem_result()
 
     _print(supervisor.public_status())
     return _episode_exit_code(supervisor.state)
