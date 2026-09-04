@@ -907,7 +907,7 @@ class DockerRuntime:
         workload_image: Optional[str] = None,
     ) -> None:
         public_helper = (
-            task.public_api_dir / "autotrain_bench" / "candidate_preflight.py"
+            task.public_api_dir / "autotrain_bench" / "candidate_protocol.py"
         )
         if not public_helper.is_file():
             raise RuntimeFailure(
@@ -959,8 +959,6 @@ class DockerRuntime:
             "AUTOTRAIN_TRAIN_DIR=/benchmark/train",
             "--env",
             "AUTOTRAIN_OUTPUT_DIR=/output",
-            "--env",
-            "AUTOTRAIN_SCRATCH_DIR=/scratch",
             "--workdir",
             "/workspace",
         ]

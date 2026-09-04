@@ -422,19 +422,6 @@ evaluation or change the incumbent. The Agent must explicitly call
 immediately. The Agent may choose whether and how to validate using permitted
 TRAIN information; Core supplies no validation recipe or official feedback.
 
-The optional `candidate_preflight` helper is a public ABI self-check inside a
-Training Lease. It defaults to 512 mixed synthetic contexts (`--examples` and
-`--seed` are configurable), invokes the offline entrypoint in a fresh process,
-and uses an artifact copy with read-only permission bits. Its output reports
-`public_abi_passed` and names both checked and unchecked conditions. It does not
-certify the Candidate image, sandbox mounts, resource limits, or hidden-input
-behavior. Copying and execution consume Lease resources. For the LM preview,
-`--examples 2048` exercises the declared preview workload size on public
-synthetic inputs. These examples are inference requests for checking the
-Candidate interface, not training samples or training steps; the helper does
-not compute a model-quality score. Passing this check does not guarantee a
-successful TEST.
-
 The submitted Agent command must be autonomous and non-interactive. Docker does
 not attach a user input stream after task reveal, so the user cannot continue
 steering the Agent during the episode. Each episode receives a private copy of
@@ -565,9 +552,8 @@ per context in request order; targets are never returned, and the hidden schema
 rejects overlapping protected source spans. Logits must be finite numeric
 values. The Agent-visible task manifest publishes every exact manifest field,
 its constant or request-derived source, and the rule that additional fields are
-forbidden; it also names the optional public reader and writer helpers. Public
-preflight failures identify the invalid field or field set. Hidden Candidate
-failures still return only fixed error codes to the Agent; private
+forbidden; it also names the optional public reader and writer helpers. Hidden
+Candidate failures still return only fixed error codes to the Agent; private
 diagnostics stay in the trusted episode directory. Candidate and scorer
 containers are destroyed after each evaluation. A conforming Evaluation Worker
 also imposes the release-derived hard byte and entry limits before Candidate

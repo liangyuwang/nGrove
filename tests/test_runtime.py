@@ -67,8 +67,8 @@ def publish_agent_api(public_task: Path) -> None:
     package = public_task.parent / "agent_api/autotrain_bench"
     package.mkdir(parents=True)
     (package / "client.py").write_text("class Client: pass\n", encoding="utf-8")
-    (package / "candidate_preflight.py").write_text(
-        "def main(): pass\n", encoding="utf-8"
+    (package / "candidate_protocol.py").write_text(
+        "def load_context_request(path): pass\n", encoding="utf-8"
     )
 
 

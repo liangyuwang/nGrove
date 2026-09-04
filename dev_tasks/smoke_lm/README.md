@@ -141,15 +141,9 @@ contain extra training corpora or a pretrained target-model checkpoint.
 ## Candidate artifact contract
 
 Training commands write Candidate artifacts beneath the lease-owned `/output`
-mount. A participant can validate the public ABI before committing the artifact:
+mount. A participant commits an artifact through the mailbox:
 
 ```bash
-python -m autotrain_bench.cli agent lease-exec -- \
-  python -m autotrain_bench.candidate_preflight \
-  --candidate /output/candidate \
-  --device cpu --vocab-size 257 --context-lengths 8 16 32 64 128 \
-  --examples 32
-
 python -m autotrain_bench.cli agent lease-commit /output/candidate
 ```
 
@@ -158,27 +152,6 @@ artifact. It returns a content identity but no organizer score. Candidate
 bundles may contain only regular files and directories,
 may not contain symbolic or hard links, and must fit the task-defined file and
 byte limits.
-
-Public preflight is optional participant-side testing. The smoke command above
-explicitly selects 32 synthetic, target-free inference examples, mixing context
-lengths and token patterns. This does not set the number of training samples,
-training steps, or hidden evaluation examples. The shared helper still defaults
-to 512 when `--examples` is omitted; `--examples` and `--seed` select its workload.
-Passing `--examples 512` matches the smoke evaluation's example count using
-synthetic inputs, without measuring model quality.
-It copies the artifact, clears writable permission bits on the copy, and
-invokes the same offline entrypoint in a fresh process with that copy as its
-working directory. Copying and testing
-consume the active Lease's resources. The original artifact is not modified.
-The bundled Worker uses lease-owned `/scratch` for the temporary copy and output;
-other deployments may set `AUTOTRAIN_SCRATCH_DIR` or pass `--scratch-dir`. Without
-either, the helper uses system temporary storage, which must fit the artifact.
-Its JSON status is `public_abi_passed`, with explicit `checks` and `not_checked`
-lists. This means only that the selected synthetic inputs passed in the
-Training environment: the Candidate image, sandbox mounts, resource limits,
-and hidden-input behavior are not certified. Permission bits on a copy are not
-a read-only sandbox mount and may be bypassed by privileged processes. TEST
-may still fail; preflight is not organizer validation or a submission guarantee.
 
 Hidden evaluation uses balanced, non-overlapping context windows at the five
 release-declared lengths above. Each window contributes exactly one prediction:
@@ -223,9 +196,7 @@ machine-readable contract under
 `autotrain_bench.candidate_protocol` API is explicitly allowed in Agent and
 Training environments: `load_context_request(path)` reads the request and
 `write_prediction_artifact(output_dir, *, dataset_id, logits, examples,
-vocab_size)` writes both output files. These helpers are optional. The public
-preflight command reports the particular missing, unexpected, or invalid
-manifest field without exposing hidden evaluation feedback.
+vocab_size)` writes both output files. These helpers are optional.
 
 A conforming Worker hard-limits this untrusted directory to two entries and
 `examples * vocab_size * 4 + 65536` bytes; the manifest itself is limited to
