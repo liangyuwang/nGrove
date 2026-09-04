@@ -75,7 +75,7 @@ budget, isolation, comparison, or eligibility. Device selection, scheduler
 requests, cgroups, filesystem quotas, and other enforcement mechanisms remain
 Worker-owned.
 
-Worker Protocol v9 retains the v7 implementation of this contract for Training
+Worker Protocol v10 retains the v7 implementation of this contract for Training
 Lease admission.
 It retains `TrainingResources` only as a bundled v0 compatibility input while
 passing the release-owned, property-extensible `ResourceEnvelope` and requiring
@@ -90,7 +90,7 @@ The v0 support statement is:
 
 - The bundled `autotrain-bench prepare` and `autotrain-bench start` commands
   are a single-host local Docker reference composition.
-- `autotrain_bench.worker_protocol` version 9 is a synchronous in-process
+- `autotrain_bench.worker_protocol` version 10 is a synchronous in-process
   Python contract. Its remaining TRAIN/workspace/Candidate/output `Path` values
   are local deployment handles, not a serializable remote wire format. Hidden
   dataset requests and resolutions are path-free.
@@ -349,8 +349,12 @@ complete formal receipt.
 Status: implemented in the development schemas.
 
 - Agent Protocol v4 makes Candidate commit return artifact acceptance only.
-- Task and Challenge schema v2 replace legacy VAL with hidden ANALYSIS and a
+- Task schema v2 and Challenge schema v2 replaced legacy VAL with hidden ANALYSIS and a
   release-frozen Candidate limit, selection rule, and result-visibility policy.
+- Task schema v3 and Worker Protocol v10 replace progressive all-prefix scoring
+  with balanced, non-overlapping contexts that each contribute one permanently
+  hidden next-token target. The release freezes the context-length set, and the
+  Candidate receives no target feedback.
 - Research is durably sealed before Agent/Research teardown; hidden evaluation
   is rejected until teardown and Agent-control cleanup are confirmed.
 - The final Agent-declared incumbent is scored on TEST first. The TEST decision
@@ -371,11 +375,11 @@ Status: implemented in the development schemas.
   succeeds; teardown that remains unconfirmed blocks publication and becomes an
   infrastructure failure. Terminal publication happens only after all
   postmortem workload and private-materialization cleanup attempts finish.
-- Worker Protocol v9 retains the transport-neutral Candidate application
+- Worker Protocol v10 retains the transport-neutral Candidate application
   contract and a Worker-owned hidden-data resolution seam. Core supplies only a
   logical split name and release-frozen expected digest; the Worker returns an
   effective digest plus opaque resolution ID before Candidate execution. The
-  task evaluator exports `evaluate(..., predict, ...)`; the bundled Docker
+  task evaluator exports `evaluate(..., predict, context_lengths=...)`; the bundled Docker
   Worker supplies its HTTP adapter and a private local-path resolver, while
   external Workers may supply other isolated mechanisms.
 
@@ -406,7 +410,7 @@ recording an unregistered runner would become unreadable rather than merely
 unverified. This phase must re-express the `agent_system` invariants over
 semantic fields instead of mechanism names, which changes the persisted
 structure and therefore requires a result schema revision with a read-only
-migration. Worker Protocol v9 resolves only Worker-owned training, Candidate,
+migration. Worker Protocol v10 resolves only Worker-owned training, Candidate,
 and Evaluator workloads. The v0 Agent evidence binds the Agent image but not a
 separate inference Gateway image, so formal runs using registered inference now
 fail closed with `inference_gateway_workload_evidence_missing` until C1 defines
@@ -521,8 +525,8 @@ Leases are independently normative.
 
 ### C5. Trusted conformance evidence
 
-Status: evidence boundary implemented in Worker Protocol v9; complete formal
-conformance suite remains future organizer work.
+Status: evidence boundary implemented in Worker Protocol v9 and retained by
+v10; complete formal conformance suite remains future organizer work.
 
 Trigger: the first in-repository resolution probe demonstrated that a partial
 black-box check could otherwise be mistaken for complete Worker conformance,
@@ -569,7 +573,9 @@ it to version 6 and result schema version 7; operation-bound Training Lease
 resource evidence advanced it to version 7 and result schema version 8;
 required workload and hidden-data resolution deadlines advanced the Worker
 Protocol to version 8 without changing the result schema; trusted,
-Worker-bound conformance evidence advanced it to version 9.
+Worker-bound conformance evidence advanced it to version 9; the single-target,
+non-overlapping Candidate evaluation contract advanced it to version 10 and
+task schema version 3.
 
 A new protocol revision is required when an implementation must change a
 required method, argument, return value, ordering guarantee, or failure

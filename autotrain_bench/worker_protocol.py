@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from .config import TaskConfig, TrainingResources
 
 
-WORKER_PROTOCOL_VERSION = 9
+WORKER_PROTOCOL_VERSION = 10
 WORKER_CONFORMANCE_SUITE_VERSION = f"worker-v{WORKER_PROTOCOL_VERSION}"
 CONFORMANCE_RECEIPT_VERSION = 1
 RESOURCE_ENVELOPE_SCHEMA_VERSION = 1
@@ -138,23 +138,41 @@ class CandidateChannelRequirements:
     """Release-owned application semantics, not a transport selection."""
 
     protocol: str
-    request_content: str = "token_prefixes"
+    request_content: str = "single_target_token_contexts"
+    predictions_per_context: int = 1
     hidden_artifact_visible: bool = False
     current_target_visible: bool = False
     future_tokens_visible: bool = False
+    target_feedback_visible: bool = False
+    cross_context_target_overlap_allowed: bool = False
     candidate_egress_allowed: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.protocol, str) or not self.protocol.strip():
             raise ValueError("Candidate channel protocol must not be empty")
-        if self.request_content != "token_prefixes":
-            raise ValueError("Candidate channel must carry token prefixes")
+        if self.request_content != "single_target_token_contexts":
+            raise ValueError(
+                "Candidate channel must carry single-target token contexts"
+            )
+        if (
+            isinstance(self.predictions_per_context, bool)
+            or self.predictions_per_context != 1
+        ):
+            raise ValueError(
+                "Candidate channel must request one prediction per context"
+            )
         if self.hidden_artifact_visible is not False:
             raise ValueError("Candidate channel may not expose the hidden artifact")
         if self.current_target_visible is not False:
             raise ValueError("Candidate channel may not expose the current target")
         if self.future_tokens_visible is not False:
             raise ValueError("Candidate channel may not expose future tokens")
+        if self.target_feedback_visible is not False:
+            raise ValueError("Candidate channel may not return target feedback")
+        if self.cross_context_target_overlap_allowed is not False:
+            raise ValueError(
+                "Candidate channel may not re-expose a target in another context"
+            )
         if self.candidate_egress_allowed is not False:
             raise ValueError("Candidate channel may not grant Candidate egress")
 
@@ -163,9 +181,12 @@ class CandidateChannelRequirements:
             "protocol": self.protocol,
             "mechanism": "worker_defined",
             "request_content": self.request_content,
+            "predictions_per_context": self.predictions_per_context,
             "hidden_artifact_visibility": "denied",
             "current_target_visibility": "denied",
             "future_token_visibility": "denied",
+            "target_feedback_visibility": "denied",
+            "cross_context_target_overlap": "denied",
             "candidate_egress": "denied",
         }
 
@@ -182,6 +203,7 @@ class EvaluationTaskSpec:
     metric: str
     vocab_size: int
     context_length: int
+    context_lengths: Tuple[int, ...]
     batch_size: int
     device: str
     timeout_seconds: int
@@ -198,6 +220,7 @@ class EvaluationTaskSpec:
             metric=task.metric,
             vocab_size=task.vocab_size,
             context_length=task.context_length,
+            context_lengths=task.context_lengths,
             batch_size=task.evaluator_batch_size,
             device=task.evaluator_device,
             timeout_seconds=task.evaluator_timeout_seconds,

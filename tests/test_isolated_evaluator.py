@@ -31,30 +31,79 @@ ADAPTER_SPEC.loader.exec_module(ADAPTER)
 
 
 class IsolatedEvaluatorTests(unittest.TestCase):
-    def test_prefix_batches_are_same_length_and_do_not_expose_future_tokens(self):
+    @staticmethod
+    def _write_examples(path, examples):
+        path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "candidate_protocol": "next_token_logits_v2",
+                    "examples": examples,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_each_context_is_scored_once_and_targets_are_never_sent(self):
         with tempfile.TemporaryDirectory() as directory:
             data = Path(directory) / "data.json"
-            data.write_text(
-                json.dumps({"sequences": [[0, 1, 2, 0], [2, 1, 0, 2]]}),
-                encoding="utf-8",
+            self._write_examples(
+                data,
+                [
+                    {
+                        "context": [0],
+                        "target": 9,
+                        "source_id": "doc-a",
+                        "source_start": 0,
+                        "source_end": 1,
+                    },
+                    {
+                        "context": [2, 3],
+                        "target": 8,
+                        "source_id": "doc-b",
+                        "source_start": 0,
+                        "source_end": 2,
+                    },
+                    {
+                        "context": [4, 5, 6],
+                        "target": 7,
+                        "source_id": "doc-c",
+                        "source_start": 0,
+                        "source_end": 3,
+                    },
+                    {
+                        "context": [1],
+                        "target": 9,
+                        "source_id": "doc-d",
+                        "source_start": 0,
+                        "source_end": 1,
+                    },
+                ],
             )
             calls = []
 
-            def predict(prefixes):
-                calls.append([list(prefix) for prefix in prefixes])
-                return [[0.0, 0.0, 0.0] for _ in prefixes]
+            def predict(contexts):
+                calls.append([list(context) for context in contexts])
+                return [[0.0] * 10 for _ in contexts]
 
-            loss = MODULE.evaluate(data, 3, predict, batch_size=3)
+            loss = MODULE.evaluate(
+                data,
+                10,
+                predict,
+                batch_size=2,
+                context_lengths=(1, 2, 3),
+            )
 
-            self.assertAlmostEqual(loss, math.log(3), places=7)
-            self.assertEqual([len(call) for call in calls], [2, 2, 2])
-            self.assertEqual(calls[0], [[0], [2]])
-            self.assertEqual(calls[1], [[0, 1], [2, 1]])
-            self.assertEqual(calls[2], [[0, 1, 2], [2, 1, 0]])
+            self.assertAlmostEqual(loss, math.log(10), places=7)
+            self.assertEqual(calls, [[[0], [1]], [[2, 3]], [[4, 5, 6]]])
             for call in calls:
-                self.assertEqual(len({len(prefix) for prefix in call}), 1)
+                self.assertEqual(len({len(context) for context in call}), 1)
+            delivered_tokens = {
+                token for call in calls for context in call for token in context
+            }
+            self.assertTrue({7, 8, 9}.isdisjoint(delivered_tokens))
 
-    def test_candidate_cannot_read_a_target_from_a_longer_prefix_in_the_batch(self):
+    def test_legacy_progressive_sequence_dataset_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             data = Path(directory) / "data.json"
             data.write_text(
@@ -62,25 +111,71 @@ class IsolatedEvaluatorTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            def exploit(prefixes):
-                rows = []
-                for prefix in prefixes:
-                    leaked_target = None
-                    for longer in prefixes:
-                        if len(longer) > len(prefix) and list(
-                            longer[: len(prefix)]
-                        ) == list(prefix):
-                            leaked_target = longer[len(prefix)]
-                            break
-                    rows.append(
-                        [100.0 if leaked_target == token else 0.0 for token in range(3)]
-                        if leaked_target is not None
-                        else [0.0, 0.0, 0.0]
-                    )
-                return rows
+            with self.assertRaisesRegex(MODULE.EvaluationError, "schema"):
+                MODULE.evaluate(
+                    data,
+                    3,
+                    lambda contexts: [[0.0] * 3 for _ in contexts],
+                    batch_size=16,
+                    context_lengths=(1, 2, 3),
+                )
 
-            loss = MODULE.evaluate(data, 3, exploit, batch_size=16)
-            self.assertAlmostEqual(loss, math.log(3), places=7)
+    def test_overlapping_source_spans_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = Path(directory) / "data.json"
+            self._write_examples(
+                data,
+                [
+                    {
+                        "context": [0, 1],
+                        "target": 2,
+                        "source_id": "same-document",
+                        "source_start": 0,
+                        "source_end": 2,
+                    },
+                    {
+                        "context": [1, 2],
+                        "target": 3,
+                        "source_id": "same-document",
+                        "source_start": 1,
+                        "source_end": 3,
+                    },
+                ],
+            )
+
+            with self.assertRaisesRegex(MODULE.EvaluationError, "overlap"):
+                MODULE.evaluate(
+                    data,
+                    4,
+                    lambda contexts: [[0.0] * 4 for _ in contexts],
+                    batch_size=2,
+                    context_lengths=(2,),
+                )
+
+    def test_every_release_declared_context_length_must_be_present(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = Path(directory) / "data.json"
+            self._write_examples(
+                data,
+                [
+                    {
+                        "context": [0],
+                        "target": 1,
+                        "source_id": "doc",
+                        "source_start": 0,
+                        "source_end": 1,
+                    }
+                ],
+            )
+
+            with self.assertRaisesRegex(MODULE.EvaluationError, "cover"):
+                MODULE.evaluate(
+                    data,
+                    3,
+                    lambda contexts: [[0.0] * 3 for _ in contexts],
+                    batch_size=1,
+                    context_lengths=(1, 2),
+                )
 
     def test_candidate_abi_is_batch_by_vocabulary(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -33,7 +33,10 @@ TEST_DOCUMENTS = 100
 SOURCE_SHA256 = "0d17abc36c327b1acf37b2f172a76c77a5f4b099fb8608645f4149c8e987529e"
 SEQUENCE_TARGET_TOKENS = 128
 BOS_TOKEN_ID = 256
-EVAL_TARGET_TOKENS = 8_192
+EVAL_CONTEXT_LENGTHS = (8, 16, 32, 64, 128)
+EVAL_EXAMPLES = 512
+EVALUATION_DATASET_SCHEMA_VERSION = 1
+CANDIDATE_PROTOCOL = "next_token_logits_v2"
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
@@ -124,6 +127,95 @@ def make_sequences(
     return sequences
 
 
+class EvaluationCollector:
+    """Build balanced, non-overlapping, single-target evaluation examples."""
+
+    def __init__(
+        self,
+        *,
+        target_examples: int,
+        context_lengths: Sequence[int],
+        boundary_token_id: int,
+    ) -> None:
+        lengths = tuple(context_lengths)
+        if (
+            isinstance(target_examples, bool)
+            or not isinstance(target_examples, int)
+            or target_examples <= 0
+            or not lengths
+            or target_examples < len(lengths)
+            or any(
+                isinstance(length, bool) or not isinstance(length, int) or length <= 0
+                for length in lengths
+            )
+            or tuple(sorted(set(lengths))) != lengths
+        ):
+            raise ValueError(
+                "evaluation examples must cover every positive, ordered context length"
+            )
+        base, extra = divmod(target_examples, len(lengths))
+        self.quotas = {
+            length: base + (index < extra) for index, length in enumerate(lengths)
+        }
+        self.context_lengths = lengths
+        self.boundary_token_id = boundary_token_id
+        self.examples: List[Dict[str, object]] = []
+        self.counts = {length: 0 for length in lengths}
+        self._next_length_index = 0
+
+    @property
+    def complete(self) -> bool:
+        return all(
+            self.counts[length] == self.quotas[length]
+            for length in self.context_lengths
+        )
+
+    def add_document(self, source_id: str, document_tokens: Sequence[int]) -> None:
+        if self.complete:
+            return
+        tokens = list(document_tokens)
+        start = 0
+        while start < len(tokens) and not self.complete:
+            selected_index = None
+            for offset in range(len(self.context_lengths)):
+                index = (self._next_length_index + offset) % len(self.context_lengths)
+                length = self.context_lengths[index]
+                if self.counts[length] < self.quotas[length] and start + length <= len(
+                    tokens
+                ):
+                    selected_index = index
+                    break
+            if selected_index is None:
+                return
+            length = self.context_lengths[selected_index]
+            end = start + length
+            context = [self.boundary_token_id, *tokens[start : end - 1]]
+            self.examples.append(
+                {
+                    "context": context,
+                    "target": tokens[end - 1],
+                    "source_id": source_id,
+                    "source_start": start,
+                    "source_end": end,
+                }
+            )
+            self.counts[length] += 1
+            self._next_length_index = (selected_index + 1) % len(self.context_lengths)
+            start = end
+
+    def payload(self) -> Dict[str, object]:
+        if not self.complete:
+            raise RuntimeError("source sample did not fill hidden evaluation examples")
+        return {
+            "schema_version": EVALUATION_DATASET_SCHEMA_VERSION,
+            "candidate_protocol": CANDIDATE_PROTOCOL,
+            "examples": list(self.examples),
+        }
+
+    def context_length_histogram(self) -> Dict[str, int]:
+        return {str(length): self.counts[length] for length in self.context_lengths}
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -157,6 +249,14 @@ def _existing_data_is_valid() -> bool:
             "sequence_target_tokens": SEQUENCE_TARGET_TOKENS,
         }:
             return False
+        if metadata["evaluation"] != {
+            "candidate_protocol": CANDIDATE_PROTOCOL,
+            "dataset_schema_version": EVALUATION_DATASET_SCHEMA_VERSION,
+            "examples_per_split": EVAL_EXAMPLES,
+            "context_lengths": list(EVAL_CONTEXT_LENGTHS),
+            "construction": "balanced_non_overlapping_single_target_contexts",
+        }:
+            return False
         artifacts: Dict[str, str] = metadata["artifact_sha256"]
         return all(
             path.is_file() and _sha256_file(path) == artifacts[path.name]
@@ -177,14 +277,27 @@ def prepare(*, force: bool = False) -> Dict[str, object]:
     analysis_docs = documents[TRAIN_DOCUMENTS : TRAIN_DOCUMENTS + ANALYSIS_DOCUMENTS]
     test_docs = documents[-TEST_DOCUMENTS:]
     train_sequences = make_sequences(train_docs)
-    analysis_sequences = make_sequences(
-        analysis_docs, max_target_tokens=EVAL_TARGET_TOKENS
+    analysis = EvaluationCollector(
+        target_examples=EVAL_EXAMPLES,
+        context_lengths=EVAL_CONTEXT_LENGTHS,
+        boundary_token_id=BOS_TOKEN_ID,
     )
-    test_sequences = make_sequences(test_docs, max_target_tokens=EVAL_TARGET_TOKENS)
+    test = EvaluationCollector(
+        target_examples=EVAL_EXAMPLES,
+        context_lengths=EVAL_CONTEXT_LENGTHS,
+        boundary_token_id=BOS_TOKEN_ID,
+    )
+    for index, text in enumerate(analysis_docs, start=TRAIN_DOCUMENTS):
+        analysis.add_document(f"tinystories:{index}", text.encode("utf-8"))
+    for index, text in enumerate(
+        test_docs,
+        start=TRAIN_DOCUMENTS + ANALYSIS_DOCUMENTS,
+    ):
+        test.add_document(f"tinystories:{index}", text.encode("utf-8"))
 
     _write_json(TRAIN_PATH, {"sequences": train_sequences})
-    _write_json(ANALYSIS_PATH, {"sequences": analysis_sequences}, private=True)
-    _write_json(TEST_PATH, {"sequences": test_sequences}, private=True)
+    _write_json(ANALYSIS_PATH, analysis.payload(), private=True)
+    _write_json(TEST_PATH, test.payload(), private=True)
 
     metadata: Dict[str, object] = {
         "source": {
@@ -200,6 +313,13 @@ def prepare(*, force: bool = False) -> Dict[str, object]:
             "bos_token_id": BOS_TOKEN_ID,
             "sequence_target_tokens": SEQUENCE_TARGET_TOKENS,
         },
+        "evaluation": {
+            "candidate_protocol": CANDIDATE_PROTOCOL,
+            "dataset_schema_version": EVALUATION_DATASET_SCHEMA_VERSION,
+            "examples_per_split": EVAL_EXAMPLES,
+            "context_lengths": list(EVAL_CONTEXT_LENGTHS),
+            "construction": "balanced_non_overlapping_single_target_contexts",
+        },
         "splits": {
             "train": {
                 "documents": TRAIN_DOCUMENTS,
@@ -208,13 +328,15 @@ def prepare(*, force: bool = False) -> Dict[str, object]:
             },
             "analysis": {
                 "documents": ANALYSIS_DOCUMENTS,
-                "sequences": len(analysis_sequences),
-                "target_tokens": sum(len(row) - 1 for row in analysis_sequences),
+                "examples": len(analysis.examples),
+                "target_predictions": len(analysis.examples),
+                "context_length_histogram": analysis.context_length_histogram(),
             },
             "test": {
                 "documents": TEST_DOCUMENTS,
-                "sequences": len(test_sequences),
-                "target_tokens": sum(len(row) - 1 for row in test_sequences),
+                "examples": len(test.examples),
+                "target_predictions": len(test.examples),
+                "context_length_histogram": test.context_length_histogram(),
             },
         },
         "artifact_sha256": {

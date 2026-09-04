@@ -105,6 +105,17 @@ def _string_list(value: Any, field: str) -> Tuple[str, ...]:
     return tuple(result)
 
 
+def _positive_int_list(value: Any, field: str) -> Tuple[int, ...]:
+    if not isinstance(value, list) or not value:
+        raise ConfigError(f"{field} must be a non-empty integer array")
+    result = tuple(
+        _positive_int(item, f"{field}[{index}]") for index, item in enumerate(value)
+    )
+    if tuple(sorted(set(result))) != result:
+        raise ConfigError(f"{field} must be unique and strictly increasing")
+    return result
+
+
 def agent_environment_names(value: Any, field: str = "agent.environment") -> List[str]:
     if value is None:
         return []
@@ -514,6 +525,7 @@ class TaskConfig:
     leaderboard_metric: LeaderboardMetricConfig
     vocab_size: int
     context_length: int
+    context_lengths: Tuple[int, ...]
     benchmark_owned_preparation: Tuple[str, ...]
     track_a_total_seconds: int
     track_b_max_leases: int
@@ -622,6 +634,9 @@ class TaskConfig:
             context_length=_positive_int(
                 evaluation.get("context_length"), "evaluation.context_length"
             ),
+            context_lengths=_positive_int_list(
+                evaluation.get("context_lengths"), "evaluation.context_lengths"
+            ),
             benchmark_owned_preparation=benchmark_owned_preparation(
                 None if timing is None else timing.get("benchmark_owned_preparation")
             ),
@@ -657,7 +672,7 @@ class TaskConfig:
             evaluator_backend=evaluator_backend(evaluation.get("backend")),
             evaluator_entrypoint=evaluator_entrypoint,
             candidate_protocol=_string(
-                evaluation.get("candidate_protocol", "next_token_logits_v1"),
+                evaluation.get("candidate_protocol", "next_token_logits_v2"),
                 "evaluation.candidate_protocol",
             ),
             analysis_candidate_selection=_string(
@@ -678,8 +693,8 @@ class TaskConfig:
 
     def validate(self) -> "TaskConfig":
         """Validate the immutable task definition and its release classification."""
-        if self.schema_version != 2:
-            raise ConfigError("task schema_version must be 2")
+        if self.schema_version != 3:
+            raise ConfigError("task schema_version must be 3")
         task_kind(self.task_kind)
         if self.task_kind == "development_smoke" and self.leaderboard_eligible:
             raise ConfigError("development smoke tasks may not be leaderboard eligible")
@@ -696,10 +711,27 @@ class TaskConfig:
         if self.evaluator_device not in {"cpu", "cuda"}:
             raise ConfigError("evaluation.device must be 'cpu' or 'cuda'")
         evaluator_backend(self.evaluator_backend)
-        if self.candidate_protocol != "next_token_logits_v1":
+        if self.candidate_protocol != "next_token_logits_v2":
             raise ConfigError(
                 "v0 only implements evaluation.candidate_protocol="
-                "'next_token_logits_v1'"
+                "'next_token_logits_v2'"
+            )
+        if (
+            not self.context_lengths
+            or any(
+                isinstance(length, bool) or not isinstance(length, int) or length <= 0
+                for length in self.context_lengths
+            )
+            or tuple(sorted(set(self.context_lengths))) != self.context_lengths
+        ):
+            raise ConfigError(
+                "evaluation.context_lengths must be positive, unique, and "
+                "strictly increasing"
+            )
+        if self.context_lengths[-1] != self.context_length:
+            raise ConfigError(
+                "evaluation.context_length must equal the largest declared "
+                "context_lengths value"
             )
         if self.analysis_candidate_selection not in ANALYSIS_CANDIDATE_SELECTIONS:
             raise ConfigError("analysis.candidate_selection must be 'all_committed'")
@@ -808,6 +840,7 @@ class TaskConfig:
                 "leaderboard_metric": self.leaderboard_metric.public_manifest(),
                 "vocab_size": self.vocab_size,
                 "context_length": self.context_length,
+                "context_lengths": list(self.context_lengths),
                 "batch_size": self.evaluator_batch_size,
                 "device": self.evaluator_device,
                 "candidate_artifact_limits": {

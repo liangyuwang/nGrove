@@ -290,15 +290,18 @@ class WorkerProtocolTests(unittest.TestCase):
         )
         self.assertEqual(assessment.mismatched, ("host.count",))
 
-    def test_candidate_channel_describes_prefix_visibility_precisely(self):
+    def test_candidate_channel_denies_target_feedback_and_reexposure(self):
         manifest = CandidateChannelRequirements(
-            protocol="next_token_logits_v1"
+            protocol="next_token_logits_v2"
         ).public_manifest()
 
-        self.assertEqual(manifest["request_content"], "token_prefixes")
+        self.assertEqual(manifest["request_content"], "single_target_token_contexts")
+        self.assertEqual(manifest["predictions_per_context"], 1)
         self.assertEqual(manifest["hidden_artifact_visibility"], "denied")
         self.assertEqual(manifest["current_target_visibility"], "denied")
         self.assertEqual(manifest["future_token_visibility"], "denied")
+        self.assertEqual(manifest["target_feedback_visibility"], "denied")
+        self.assertEqual(manifest["cross_context_target_overlap"], "denied")
         self.assertEqual(manifest["candidate_egress"], "denied")
 
     def test_command_result_types_are_strict(self):
@@ -477,7 +480,7 @@ class WorkerProtocolTests(unittest.TestCase):
 
     def test_descriptor_manifest_contains_no_platform_schema(self):
         manifest = descriptor().public_manifest()
-        self.assertEqual(manifest["protocol_version"], 9)
+        self.assertEqual(manifest["protocol_version"], 10)
         self.assertEqual(manifest["roles"], ["research", "evaluation"])
         self.assertNotIn("conformance", manifest)
         serialized = json.dumps(manifest).lower()
@@ -489,7 +492,7 @@ class WorkerProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "protocol version"):
             WorkerDescriptor(
                 worker_id="future-worker",
-                protocol_version=10,
+                protocol_version=11,
                 trust_level=TrustLevel.DEVELOPMENT,
                 roles=("research",),
                 capabilities={},

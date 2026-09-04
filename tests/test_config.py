@@ -46,6 +46,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(public["validation"]["organizer_feedback"], "none")
         self.assertEqual(public["analysis"]["feedback"], "never_agent_visible")
         self.assertEqual(config.evaluator_batch_size, 2)
+        self.assertEqual(config.context_lengths, (1, 2, 3))
         self.assertEqual(config.evaluator_device, "cpu")
         self.assertEqual(config.evaluator_backend, "isolated_candidate")
         self.assertTrue(config.evaluator_policy_compliant)
@@ -64,6 +65,19 @@ class ConfigTests(unittest.TestCase):
                 "direction": "minimize",
             },
         )
+        self.assertEqual(public["evaluation"]["context_lengths"], [1, 2, 3])
+
+    def test_context_lengths_are_frozen_and_end_at_the_context_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = self._write_task(directory)
+            payload = json.loads(task.read_text(encoding="utf-8"))
+
+            for invalid in ([1, 1, 3], [2, 1, 3], [1, 2], [0, 2, 3]):
+                with self.subTest(invalid=invalid):
+                    payload["evaluation"]["context_lengths"] = invalid
+                    task.write_text(json.dumps(payload), encoding="utf-8")
+                    with self.assertRaisesRegex(ConfigError, "context_length"):
+                        TaskConfig.load(task)
 
     def test_task_rejects_participant_owned_fields(self):
         with tempfile.TemporaryDirectory() as directory:

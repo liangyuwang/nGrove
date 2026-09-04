@@ -40,12 +40,17 @@ but neither path is mounted into the Agent or Research Worker. A formal Worker
 may instead fetch, mount, or decrypt the same release-frozen identities only
 after research sealing; Core does not prescribe that mechanism.
 
-The Evaluator computes token-weighted mean autoregressive NLL and preserves it
-in the episode record. ANALYSIS produces a postmortem trajectory over frozen
-Candidates and is never Agent feedback. The primary leaderboard-style score is TEST perplexity,
-derived once as `exp(mean_token_nll)`; lower is better. A run without a
-successful finite TEST result has no NLL or perplexity score and is reported as
-a failed experiment.
+The Evaluator uses balanced, non-overlapping contexts of 64, 128, 256, 512,
+1,024, and 2,048 tokens. Each context contributes exactly one hidden next-token
+target. The Candidate receives each context once and never receives the target
+later through a longer prefix or another overlapping source window. The
+Evaluator preserves mean target NLL in the episode record. ANALYSIS produces a
+postmortem trajectory over frozen Candidates and is never Agent feedback. The
+primary leaderboard-style score is TEST perplexity, derived once as
+`exp(mean_token_nll)`; lower is better. This single-target context metric is not
+comparable with the former progressive all-prefix preview metric. A run without
+a successful finite TEST result has no NLL or perplexity score and is reported
+as a failed experiment.
 
 ## Prepare data
 
@@ -72,13 +77,16 @@ python3 challenges/lm-pretrain-v1/prepare_data.py \
 
 The builder records the exact resulting token count, GPT-2 encoding
 fingerprint, raw and tokenized shard checksums, document mapping, dependency
-versions, and preview hidden-dataset checksums. It does not force the canonical stream
-to contain exactly 10,000,000,000 tokens.
+versions, balanced hidden context-length histograms, and preview hidden-dataset
+checksums. It does not force the canonical stream to contain exactly
+10,000,000,000 tokens.
 
 `--force` replaces only a recognized build of this exact task. The builder
 inventories every existing entry before and immediately around an atomic
 directory swap; if validation or installation fails, it restores the old
 build or preserves it under a named backup path instead of deleting it first.
+An existing build using the former progressive-prefix dataset must be rebuilt
+with `--force`; its scores are not comparable with this single-target metric.
 
 ## Supported preview lanes
 

@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "task_id": "test-byte-lm-v1",
   "task_kind": "development_smoke",
   "leaderboard_eligible": false,
@@ -16,7 +16,7 @@
   },
   "evaluation": {
     "backend": "isolated_candidate",
-    "candidate_protocol": "next_token_logits_v1",
+    "candidate_protocol": "next_token_logits_v2",
     "entrypoint": "evaluator.py",
     "metric": "autoregressive_nll",
     "leaderboard_metric": {
@@ -28,6 +28,7 @@
     },
     "vocab_size": 3,
     "context_length": 3,
+    "context_lengths": [1, 2, 3],
     "batch_size": 2,
     "device": "cpu",
     "max_candidate_bytes": 1048576,

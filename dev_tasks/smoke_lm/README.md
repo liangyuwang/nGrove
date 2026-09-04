@@ -40,14 +40,14 @@ incumbent.
 | --- | --- |
 | Corpus | 1,200 pinned TinyStories documents |
 | TRAIN | 1,000 documents, about 818K target bytes |
-| ANALYSIS / TEST | 8,192 hidden target bytes each |
+| ANALYSIS / TEST | 512 hidden next-token targets each |
 | Token representation | UTF-8 bytes plus BOS, vocabulary 257 |
-| Evaluation prefix limit | 128 tokens |
+| Evaluation context lengths | 8, 16, 32, 64, and 128 tokens |
 | Track A | 300 seconds total wall clock |
 | Track B | Three leases, at most 75 seconds each |
-| Evaluator measurement | Autoregressive NLL |
+| Evaluator measurement | Mean single-target next-token NLL |
 | Leaderboard-style score | Perplexity, `exp(mean_token_nll)`, lower is better |
-| Candidate protocol | `next_token_logits_v1` |
+| Candidate protocol | `next_token_logits_v2` |
 
 The trusted evaluation path runs on CPU. A participant may train with any
 approach supported by the selected Training Environment and must export a
@@ -146,7 +146,7 @@ mount. A participant can validate the public ABI before committing the artifact:
 python -m autotrain_bench.cli agent lease-exec -- \
   python -m autotrain_bench.candidate_preflight \
   --candidate /output/candidate \
-  --device cpu --vocab-size 257 --context-length 128
+  --device cpu --vocab-size 257 --context-lengths 8 16 32 64 128
 
 python -m autotrain_bench.cli agent lease-commit /output/candidate
 ```
@@ -156,6 +156,14 @@ artifact. It returns a content identity but no organizer score. Candidate
 bundles may contain only regular files and directories,
 may not contain symbolic or hard links, and must fit the task-defined file and
 byte limits.
+
+Hidden evaluation uses balanced, non-overlapping context windows at the five
+release-declared lengths above. Each window contributes exactly one prediction:
+the Candidate receives the context and returns next-token logits, while the
+target remains permanently inside the trusted Evaluator. A target is never
+revealed later through a longer prefix or reused inside another context from
+the same source span. TEST perplexity is `exp(mean_token_nll)` over those
+single-target examples; it is not the legacy all-prefix corpus perplexity.
 
 `candidate.py` defines:
 
@@ -175,13 +183,16 @@ trusted Evaluator: one hidden dataset, no Candidate files
 untrusted Candidate: Candidate files, no hidden dataset, no public network
 ```
 
-Only same-length, prefix-free input batches and one `[batch, vocabulary]` logit
-matrix cross this boundary. Each response is scored before any longer prefix is
-sent. Candidate failures expose only a fixed error code to the Agent; raw logs
-remain private to the trusted episode directory. Both containers and the
-network are removed after every query.
+Only same-length batches of single-target contexts and one
+`[batch, vocabulary]` logit matrix cross this boundary. No target feedback is
+ever sent, and the hidden dataset schema rejects overlapping source spans.
+The Candidate may retain previously seen, unlabeled contexts; the v2 contract
+does not reset its process or model between contexts.
+Candidate failures expose only a fixed error code to the Agent; raw logs remain
+private to the trusted episode directory. Both containers and the network are
+removed after every query.
 
 The HTTP/TCP network is only the bundled Docker adapter. The task-owned
-Evaluator exports an `evaluate(..., predict, ...)` function; another Worker may
-provide a different isolated channel mechanism without changing the Candidate
-ABI or Core.
+Evaluator exports an `evaluate(..., predict, context_lengths=...)` function;
+another Worker may provide a different isolated channel mechanism without
+changing the Candidate ABI or Core.

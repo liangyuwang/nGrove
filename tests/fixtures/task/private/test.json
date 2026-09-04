@@ -1,1 +1,1 @@
-{"sequences":[[2,1,0,2]]}
+{"schema_version":1,"candidate_protocol":"next_token_logits_v2","examples":[{"context":[2],"target":1,"source_id":"test-a","source_start":0,"source_end":1},{"context":[1,0],"target":2,"source_id":"test-b","source_start":0,"source_end":2},{"context":[0,2,1],"target":0,"source_id":"test-c","source_start":0,"source_end":3}]}

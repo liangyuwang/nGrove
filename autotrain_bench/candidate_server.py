@@ -12,7 +12,7 @@ from .candidate_protocol import (
     CandidateProtocolError,
     load_candidate,
     normalized_logits,
-    validate_prefixes,
+    validate_contexts,
 )
 
 
@@ -38,7 +38,7 @@ class CandidateApplication:
     def predict(self, payload: Any) -> Dict[str, Any]:
         if not isinstance(payload, dict):
             raise CandidateProtocolError("request body must be an object")
-        prefixes = validate_prefixes(
+        contexts = validate_contexts(
             payload.get("input_ids"),
             vocab_size=self.vocab_size,
             context_length=self.context_length,
@@ -48,7 +48,7 @@ class CandidateApplication:
             "logits": normalized_logits(
                 self.module,
                 self.model,
-                prefixes,
+                contexts,
                 vocab_size=self.vocab_size,
             )
         }
@@ -56,7 +56,7 @@ class CandidateApplication:
 
 def handler_for(application: CandidateApplication):
     class Handler(BaseHTTPRequestHandler):
-        server_version = "AutoTrainCandidate/1"
+        server_version = "AutoTrainCandidate/2"
 
         def log_message(self, _format, *args):
             del args
@@ -76,7 +76,7 @@ def handler_for(application: CandidateApplication):
             self._json(200, {"status": "ready"})
 
         def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-            if self.path != "/v1/next-token-logits":
+            if self.path != "/v2/next-token-logits":
                 self._json(404, {"error": "not_found"})
                 return
             try:

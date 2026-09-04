@@ -76,7 +76,7 @@ sandbox without adding platform branches to Core.
 
 The repository now contains an executable, single-host Docker prototype of the benchmark protocol. It is intended to validate episode lifecycle, Training Lease accounting, hidden evaluation, and the agent-facing control surface before the first official benchmark instance is selected.
 
-The current development snapshot uses Worker Protocol v9 but does not carry a
+The current development snapshot uses Worker Protocol v10 but does not carry a
 release package version yet. Protocol v7 introduced a breaking Worker API
 revision: every successful Training Lease startup returns operation-bound
 resource allocation evidence. The Release selects an extensible semantic resource
@@ -95,12 +95,15 @@ version 5 hidden-data contract: external Evaluation Workers must resolve a
 path-free `HiddenDatasetRequest` after research sealing, return a
 content-identity-bearing `ResolvedHiddenDataset`, accept TEST before ANALYSIS,
 and use the precise
-prefix/target/artifact visibility fields in the transport-neutral
+context/target/artifact visibility fields in the transport-neutral
 `CandidateChannelRequirements` contract. Version 9 removes conformance evidence
 from the Worker's self-description: a trusted Operator composition supplies a
 versioned receipt independently, bound to the assessed Worker ID, issuing
-authority, and organizer-owned report digest. The Python package itself remains
-`0.0.0` while unreleased.
+authority, and organizer-owned report digest. Version 10 replaces progressive
+all-prefix scoring with `next_token_logits_v2`: every non-overlapping hidden
+context contributes exactly one permanently withheld target, and the Candidate
+receives neither target feedback nor another context containing that source
+position. The Python package itself remains `0.0.0` while unreleased.
 
 Docker is the bundled v0 compatibility implementation, not a general platform
 abstraction. The benchmark Supervisor now depends on the semantic
@@ -119,7 +122,7 @@ being hidden behind application-level mailbox limits.
 
 The bundled `autotrain-bench prepare` and `autotrain-bench start` commands are
 the composition root for that local Docker implementation; they are not a
-generic backend loader. Worker Protocol v9 is currently a synchronous,
+generic backend loader. Worker Protocol v10 is currently a synchronous,
 in-process Python contract. Resolution calls receive explicit deadlines, and
 TEST workload/data resolution consumes the same operation budget as evaluation;
 those deadlines are cooperative, so a future asynchronous operation/cancellation
@@ -196,8 +199,8 @@ python3 dev_tasks/smoke_lm/prepare_data.py
 autotrain-bench prepare --task dev_tasks/smoke_lm/task.json
 ```
 
-The smoke task downloads about 0.98 MB of real text and uses hidden 8K-token
-ANALYSIS/TEST datasets. By default the selected Agent receives an empty workspace and
+The smoke task downloads about 0.98 MB of real text and uses 512 hidden
+single-target contexts per ANALYSIS/TEST split. By default the selected Agent receives an empty workspace and
 must create its own training system. See `dev_tasks/smoke_lm/README.md` for the
 development workflow, Candidate ABI, Policy, and reproducibility details.
 Smoke-task scores are not benchmark results.
@@ -529,13 +532,17 @@ require stronger worker or VM isolation.
 The `isolated_candidate` backend starts a fresh internal Docker network per
 query. The trusted Evaluator mounts only the selected hidden dataset and output;
 the untrusted Candidate mounts only its content-addressed artifact. The
-Evaluator sends same-length, prefix-free batches over `next_token_logits_v1`
-and validates a bounded `[batch, vocabulary]` response. It scores each response
-before revealing longer prefixes. Logits must be finite numeric values;
-booleans and numeric strings are rejected. Candidate failures return only fixed
-error codes to the Agent; raw Candidate logs stay in the trusted episode
-directory. Candidate and Evaluator are destroyed after each query. This backend
-satisfies the v0 reference isolation contract.
+Evaluator sends same-length batches of single-target contexts over
+`next_token_logits_v2` and validates a bounded `[batch, vocabulary]` response.
+Each context is scored once; targets are never returned through a later prefix,
+and the hidden schema rejects overlapping protected source spans. Logits must
+be finite numeric values; booleans and numeric strings are rejected. A
+persistent Candidate may retain previously seen, unlabeled contexts; v2 closes
+the target-feedback channel but does not require model reinitialization between
+contexts. Candidate failures return only fixed error codes to the Agent; raw
+Candidate logs stay in the trusted episode directory. Candidate and Evaluator
+are destroyed after each query. This backend satisfies the v0 reference
+isolation contract.
 
 The Agent Container receives a generated, minimal `autotrain_bench.client`
 package rather than the Core source tree. Its mailbox inbox and outbox are
@@ -668,9 +675,9 @@ the bytes physically absent from the host trust domain until evaluation provide
 stronger defense in depth; Core requires the visibility boundary and frozen
 identity, not one materialization mechanism.
 
-Task schema v2 still retains `paths.analysis` and `paths.test` as compatibility
+Task schema v3 still retains `paths.analysis` and `paths.test` as compatibility
 inputs for the bundled local CLI. The Supervisor neither reads them nor sends
-them through Worker Protocol v9. An external launcher supplies its Evaluation
+them through Worker Protocol v10. An external launcher supplies its Evaluation
 Worker's private source mapping independently; the configured local paths may
 remain absent for that deployment. Replacing these compatibility fields in a
 future task schema is separate from the now path-free Worker boundary.
@@ -790,15 +797,22 @@ A benchmark release specifies:
 * evaluation dataset;
 * loss implementation.
 
-The evaluator first computes aggregate autoregressive token negative
-log-likelihood:
+The evaluator contains a release-frozen set of separately scored examples
+$(c_i, y_i)$ at several declared context lengths. It sends each context $c_i$
+to the Candidate exactly once and keeps the corresponding next-token target
+$y_i$ permanently private. Protected source spans may not overlap, so a target
+cannot be recovered later from a longer or neighboring context. Each span
+covers the source tokens represented in a context plus that example's target
+occurrence. If $q_i=\operatorname{softmax}(z_i)$ is the distribution formed from
+the logit vector returned for context $c_i$, the aggregate target negative
+log-likelihood is:
 
 $$
 L
 =
 -\frac{1}{N}
-\sum_t
-\log p(x_t \mid x_{<t}).
+\sum_i
+\log q_i[y_i].
 $$
 
 The primary leaderboard metric is token perplexity:
@@ -808,8 +822,12 @@ $$
 $$
 
 NLL is retained in every successful result as the canonical additive
-measurement. Perplexity is derived once from the token-weighted mean NLL; the
-benchmark never averages per-sequence or per-batch perplexities.
+measurement. Perplexity is derived once from the mean of the single-target
+losses; the benchmark never averages per-sequence or per-batch perplexities.
+This metric deliberately measures next-token prediction across a diverse,
+frozen context-length distribution rather than scoring every prefix of each
+hidden sequence. Scores produced by the former progressive-prefix preview are
+not comparable.
 
 The internal architecture is unrestricted.
 
@@ -1702,7 +1720,7 @@ contract as a challenge preview:
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "task_id": "tinystories-byte-lm-smoke-v1",
   "task_kind": "development_smoke",
   "leaderboard_eligible": false,
@@ -1726,7 +1744,7 @@ contract as a challenge preview:
   "track_b": { "max_leases": 3, "lease_seconds": 75 },
   "evaluation": {
     "backend": "isolated_candidate",
-    "candidate_protocol": "next_token_logits_v1",
+    "candidate_protocol": "next_token_logits_v2",
     "entrypoint": "evaluator/evaluator.py",
     "metric": "autoregressive_nll",
     "leaderboard_metric": {
@@ -1738,6 +1756,7 @@ contract as a challenge preview:
     },
     "vocab_size": 257,
     "context_length": 128,
+    "context_lengths": [8, 16, 32, 64, 128],
     "batch_size": 16,
     "device": "cpu",
     "max_candidate_bytes": 2147483648,

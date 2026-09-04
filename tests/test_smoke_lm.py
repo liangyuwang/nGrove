@@ -60,9 +60,43 @@ class SmokeLmPreparationTests(unittest.TestCase):
         )
         self.assertEqual(sum(len(row) - 1 for row in sequences), len(long_text))
 
-    def test_eval_token_cap_is_exact(self):
-        sequences = PREPARE.make_sequences(["abcdef"], max_target_tokens=4)
-        self.assertEqual(sequences, [[PREPARE.BOS_TOKEN_ID, 97, 98, 99, 100]])
+    def test_evaluation_examples_are_balanced_single_target_and_non_overlapping(self):
+        collector = PREPARE.EvaluationCollector(
+            target_examples=5,
+            context_lengths=(1, 2),
+            boundary_token_id=PREPARE.BOS_TOKEN_ID,
+        )
+        collector.add_document("doc-1", b"abcdefghijk")
+
+        self.assertTrue(collector.complete)
+        self.assertEqual(collector.context_length_histogram(), {"1": 3, "2": 2})
+        self.assertEqual(
+            [example["target"] for example in collector.examples],
+            [ord("a"), ord("c"), ord("d"), ord("f"), ord("g")],
+        )
+        spans = [
+            (example["source_start"], example["source_end"])
+            for example in collector.examples
+        ]
+        self.assertEqual(spans, [(0, 1), (1, 3), (3, 4), (4, 6), (6, 7)])
+        self.assertTrue(
+            all(
+                len(example["context"])
+                == example["source_end"] - example["source_start"]
+                for example in collector.examples
+            )
+        )
+        self.assertEqual(
+            collector.payload()["candidate_protocol"], "next_token_logits_v2"
+        )
+
+    def test_evaluation_requires_at_least_one_example_per_context_length(self):
+        with self.assertRaisesRegex(ValueError, "cover every"):
+            PREPARE.EvaluationCollector(
+                target_examples=1,
+                context_lengths=(1, 2),
+                boundary_token_id=PREPARE.BOS_TOKEN_ID,
+            )
 
     def test_ordered_document_digest_has_unambiguous_boundaries(self):
         self.assertNotEqual(

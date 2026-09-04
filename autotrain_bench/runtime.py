@@ -1459,7 +1459,7 @@ class DockerRuntime:
             raise RuntimeFailure(f"invalid evaluator split: {split}")
         if task.backend != "isolated_candidate":
             raise RuntimeFailure(f"unsupported evaluator backend: {task.backend}")
-        if task.candidate_channel.protocol != "next_token_logits_v1":
+        if task.candidate_channel.protocol != "next_token_logits_v2":
             raise RuntimeFailure("unsupported Candidate application protocol")
         if not data_path.is_file():
             raise RuntimeFailure(f"hidden evaluator split is not a file: {data_path}")
@@ -1600,6 +1600,8 @@ class DockerRuntime:
             str(task.vocab_size),
             "--batch-size",
             str(task.batch_size),
+            "--context-lengths",
+            *(str(length) for length in task.context_lengths),
         ]
         effective_timeout = float(task.timeout_seconds)
         if timeout_seconds is not None:

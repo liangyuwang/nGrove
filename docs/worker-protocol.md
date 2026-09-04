@@ -109,10 +109,10 @@ Passing conformance does not certify a user-controlled deployment.  Likewise,
 an organizer-controlled deployment is not eligible when required technical
 capabilities are missing.  Missing or insufficient capabilities are recorded
 explicitly and never trigger a fallback. A receipt is conformant only for the
-suite version associated with the active Worker Protocol; a passing v8 receipt
-cannot certify a v9 Worker boundary.
+suite version associated with the active Worker Protocol; a passing v9 receipt
+cannot certify a v10 Worker boundary.
 
-Worker Protocol v9 makes the evidence direction explicit. `WorkerDescriptor`
+Worker Protocol v10 retains the v9 evidence direction. `WorkerDescriptor`
 contains only Worker self-description and cannot carry conformance. The trusted
 Operator composition supplies `ConformanceReceipt` independently to the
 Coordinator. The receipt binds its schema and suite versions, the assessed
@@ -131,7 +131,7 @@ suite remains required before a formal deployment can receive one.
 
 ## Research and evaluation roles
 
-Worker Protocol v9 models ResearchWorker and EvaluationWorker as separate
+Worker Protocol v10 models ResearchWorker and EvaluationWorker as separate
 interfaces because their trust domains differ:
 
 - ResearchWorker sees TRAIN, the Agent workspace, and training outputs, but
@@ -162,21 +162,21 @@ artifact is formally usable only when the evidence matches a
 `WorkloadResolutionAcceptance` supplied through the trusted organizer release
 receipt. Worker self-description is never organizer acceptance.
 
-Version 9 is a breaking interface revision in the current unreleased
+Version 10 is a breaking interface revision in the current unreleased
 development snapshot; it does not imply a package release version. Older
-Workers are rejected rather than adapted implicitly. Version 9 retains the v6
+Workers are rejected rather than adapted implicitly. Version 10 retains the v6
 workload-resolution rules, the v7 requirement that a successful `start_lease()`
 return a `ResourceAllocationReceipt`, and the v8 mandatory resolution
-deadlines. It moves conformance from Worker self-description to the trusted
-composition input described above. External Worker
+deadlines, as well as the v9 trusted conformance input. It replaces progressive
+all-prefix evaluation with a single-target context contract. External Worker
 packages must implement workload and hidden-data resolution, bind operations
 to resolved identities and resource requests, accept TEST before ANALYSIS, and
-preserve the precise prefix/target/artifact visibility fields in
+preserve the precise context/target/artifact visibility fields in
 `CandidateChannelRequirements` without assuming a particular transport.
 
 A local development Worker may implement both roles in one process. A future
 formal deployment may place them on separate services connected only through
-an immutable artifact reference. The current version 9 Python interface does
+an immutable artifact reference. The current version 10 Python interface does
 not yet define that remote artifact transport.
 
 Worker operation failures and teardown failures have different episode
@@ -220,7 +220,7 @@ are not additive timeout grants.
 
 ### Known liveness limit: cooperative deadlines
 
-Worker Protocol v9 is a synchronous, in-process Python interface. Its timeout
+Worker Protocol v10 is a synchronous, in-process Python interface. Its timeout
 arguments are semantic deadlines and a conformance requirement, but they are
 cooperative rather than a Core-side preemption mechanism. Core can reject a
 result returned after its deadline; while a call has not returned, however,
@@ -292,19 +292,25 @@ materialization mechanism.
 ## Candidate channel
 
 `CandidateChannelRequirements` fixes the release-owned application protocol and
-security properties. The Candidate receives only the authorized token prefix
-needed by `next_token_logits_v1`; it never receives the hidden dataset artifact,
-the current target token, future tokens, or egress. Only the allowed
-request/response semantics cross the boundary, and teardown is confirmed before
-a metric returns. The requirements deliberately contain no URL, port, socket
-path, network name, or scheduler handle.
+security properties. Under `next_token_logits_v2`, the Candidate receives each
+single-target token context exactly once and returns one next-token logit vector.
+The target remains permanently inside the trusted Evaluator: it is not returned
+as feedback, exposed through a later longer prefix, or reused in an overlapping
+context from the same source span. Contexts of different release-declared
+lengths are grouped into same-length batches. Only the allowed request/response
+semantics cross the boundary, and teardown is confirmed before a metric returns.
+The Candidate process may retain previously seen, unlabeled contexts; v2
+forbids target feedback and overlapping protected source spans, but does not
+require per-context process or model reinitialization.
+The requirements deliberately contain no URL, port, socket path, network name,
+or scheduler handle.
 
 Task evaluator modules export `evaluate(data_path, vocab_size, predict,
-batch_size=...)`. The `predict` callable is the deployment seam. The bundled
-Docker Worker injects an HTTP/TCP adapter and private network; an external
-Worker may inject a Unix-socket, proxy, shared-memory, scheduler-native, or VM
-channel adapter. None of those mechanisms changes the Core protocol or the
-release-owned Candidate ABI.
+batch_size=..., context_lengths=...)`. The `predict` callable is the deployment
+seam. The bundled Docker Worker injects an HTTP/TCP adapter and private network;
+an external Worker may inject a Unix-socket, proxy, shared-memory,
+scheduler-native, or VM channel adapter. None of those mechanisms changes the
+Core protocol or the release-owned Candidate ABI.
 
 ## Current migration stage
 
@@ -320,11 +326,11 @@ implementation can access or materialize the Coordinator-named TRAIN,
 workspace, Lease output, Candidate, public API, and evaluation locations. They
 must not be treated as a stable serializable remote protocol. Hidden datasets
 are the exception: their semantic request and resolution contain no `Path`.
-A shared-filesystem Worker can implement version 9 directly; a topology without
+A shared-filesystem Worker can implement version 10 directly; a topology without
 shared Candidate or workspace paths still needs future artifact-reference and
 materialization semantics.
 
-Version 9 retains the release-selected `ResourceEnvelope` passed into
+Version 10 retains the release-selected `ResourceEnvelope` passed into
 `start_lease()` in addition to the bundled v0 `TrainingResources` compatibility
 input. The
 envelope contains only properties that the release classifies as normative or
@@ -344,7 +350,7 @@ minimum enforcement level, missing and unexpected properties, and the operation
 bindings before admitting the Lease. A rejected receipt causes
 compensating Lease termination; the workload never becomes an active,
 budgeted Lease. Receipt authenticity comes from the trusted Worker deployment
-and its invocation channel—v9 does not pretend that an in-process Python object
+and its invocation channel—v10 does not pretend that an in-process Python object
 is a remote cryptographic transport.
 
 During the v0 manifest transition, an explicit `resource_contract` is the full

@@ -51,8 +51,8 @@ class PretrainV1Tests(unittest.TestCase):
                 "source_dir": source,
                 "target_train_tokens": 1,
                 "shard_tokens": 1,
-                "eval_target_tokens": 1,
-                "eval_sequence_targets": 1,
+                "eval_examples": 1,
+                "eval_context_lengths": (1,),
                 "accept_large_download": False,
                 "force": True,
             }
@@ -90,8 +90,8 @@ class PretrainV1Tests(unittest.TestCase):
                     output_dir=link,
                     target_train_tokens=1,
                     shard_tokens=1,
-                    eval_target_tokens=1,
-                    eval_sequence_targets=1,
+                    eval_examples=1,
+                    eval_context_lengths=(1,),
                     accept_large_download=False,
                     force=True,
                 )
@@ -189,8 +189,8 @@ class PretrainV1Tests(unittest.TestCase):
             private.mkdir()
             analysis = private / "analysis.json"
             test = private / "test.json"
-            analysis.write_text('{"sequences":[[50256,1]]}', encoding="utf-8")
-            test.write_text('{"sequences":[[50256,2]]}', encoding="utf-8")
+            analysis.write_text('{"examples":[]}', encoding="utf-8")
+            test.write_text('{"examples":[]}', encoding="utf-8")
             payload = json.loads(TASK.read_text(encoding="utf-8"))
             payload["paths"] = {
                 "train": str(public),
@@ -207,6 +207,10 @@ class PretrainV1Tests(unittest.TestCase):
             self.assertEqual(task.task_kind, "benchmark_challenge")
             self.assertEqual(task.vocab_size, 50_257)
             self.assertEqual(task.context_length, 2_048)
+            self.assertEqual(
+                task.context_lengths,
+                (64, 128, 256, 512, 1_024, 2_048),
+            )
             self.assertEqual(task.train_dir, public.resolve())
 
     def test_uint16_shards_preserve_document_spans(self):
@@ -229,14 +233,28 @@ class PretrainV1Tests(unittest.TestCase):
             self.assertEqual(struct.unpack("<2H", second.read_bytes()), (3, 4))
             self.assertEqual([shard["tokens"] for shard in shards], [3, 2])
 
-    def test_preview_evaluation_cap_is_exact(self):
-        collector = MODULE.EvaluationCollector(target_tokens=7, sequence_targets=3)
-        collector.add_document([50_256, 1, 2, 3, 4, 5, 6, 7, 8])
+    def test_preview_evaluation_is_balanced_and_non_overlapping(self):
+        collector = MODULE.EvaluationCollector(
+            target_examples=5,
+            context_lengths=(1, 3),
+            boundary_token_id=50_256,
+        )
+        collector.add_document("doc-1", [50_256, 1, 2, 3, 4, 5, 6, 7, 8, 9])
         self.assertTrue(collector.complete)
-        self.assertEqual(collector.token_count, 7)
         self.assertEqual(
-            collector.sequences,
-            [[50_256, 1, 2, 3], [50_256, 4, 5, 6], [50_256, 7]],
+            collector.context_length_histogram(),
+            {"1": 3, "3": 2},
+        )
+        self.assertEqual(
+            [example["target"] for example in collector.examples],
+            [1, 4, 5, 8, 9],
+        )
+        self.assertEqual(
+            [
+                (example["source_start"], example["source_end"])
+                for example in collector.examples
+            ],
+            [(0, 1), (1, 4), (4, 5), (5, 8), (8, 9)],
         )
 
     def test_builder_keeps_raw_and_tokenized_train_but_not_holdouts(self):
@@ -337,8 +355,8 @@ class PretrainV1Tests(unittest.TestCase):
                                 output_dir=output,
                                 target_train_tokens=4,
                                 shard_tokens=4,
-                                eval_target_tokens=2,
-                                eval_sequence_targets=2,
+                                eval_examples=2,
+                                eval_context_lengths=(1,),
                                 accept_large_download=False,
                                 force=False,
                             )

@@ -40,7 +40,7 @@ def load_candidate(candidate_dir: Path, device: str) -> Tuple[Any, Any]:
     return module, module.load(root, device)
 
 
-def validate_prefixes(
+def validate_contexts(
     value: Any,
     *,
     vocab_size: int,
@@ -52,19 +52,19 @@ def validate_prefixes(
     if len(value) > maximum_batch_size:
         raise CandidateProtocolError("input_ids exceeds the maximum batch size")
     result: List[List[int]] = []
-    for sequence in value:
-        if not isinstance(sequence, list) or not sequence:
-            raise CandidateProtocolError("every input prefix must be non-empty")
-        if len(sequence) > context_length:
-            raise CandidateProtocolError("input prefix exceeds the context length")
+    for context in value:
+        if not isinstance(context, list) or not context:
+            raise CandidateProtocolError("every input context must be non-empty")
+        if len(context) > context_length:
+            raise CandidateProtocolError("input context exceeds the context length")
         if not all(
             isinstance(token, int)
             and not isinstance(token, bool)
             and 0 <= token < vocab_size
-            for token in sequence
+            for token in context
         ):
             raise CandidateProtocolError("input token is outside the vocabulary")
-        result.append(sequence)
+        result.append(context)
     return result
 
 

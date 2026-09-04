@@ -1276,6 +1276,11 @@ class RuntimeBoundaryTests(unittest.TestCase):
             self.assertIn("dst=/eval-data/split.json,readonly", evaluator_command)
             self.assertIn(str(config.evaluator_entrypoint), "\n".join(evaluator))
             self.assertIn("http://candidate:8766", evaluator)
+            lengths_index = evaluator.index("--context-lengths")
+            self.assertEqual(
+                evaluator[lengths_index + 1 : lengths_index + 4],
+                ["1", "2", "3"],
+            )
             self.assertIn("--gpus", candidate)
             self.assertNotIn("--gpus", evaluator)
             network = create[-1]

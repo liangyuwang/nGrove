@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "task_id": "lm-pretrain-v1",
   "task_kind": "benchmark_challenge",
   "leaderboard_eligible": false,
@@ -16,7 +16,7 @@
   },
   "evaluation": {
     "backend": "isolated_candidate",
-    "candidate_protocol": "next_token_logits_v1",
+    "candidate_protocol": "next_token_logits_v2",
     "entrypoint": "evaluator/evaluator.py",
     "metric": "autoregressive_nll",
     "leaderboard_metric": {
@@ -28,6 +28,7 @@
     },
     "vocab_size": 50257,
     "context_length": 2048,
+    "context_lengths": [64, 128, 256, 512, 1024, 2048],
     "batch_size": 8,
     "device": "cuda",
     "max_candidate_bytes": 137438953472,

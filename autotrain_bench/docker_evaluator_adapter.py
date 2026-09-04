@@ -2,8 +2,8 @@
 
 The Candidate application protocol is release-owned.  This transport is not:
 an external Worker may provide a Unix socket, proxy, shared-memory RPC, or any
-other channel that preserves the same ``predict(prefixes) -> logits`` contract
-and the isolation requirements in Worker Protocol v9.
+other channel that preserves the same ``predict(contexts) -> logits`` contract
+and the isolation requirements in Worker Protocol v10.
 """
 
 from __future__ import annotations
@@ -51,19 +51,19 @@ class HttpCandidateClient:
                 time.sleep(0.05)
         raise AdapterError("Candidate server did not become ready")
 
-    def predict(self, prefixes: Sequence[Sequence[int]]) -> List[List[float]]:
-        body = json.dumps({"input_ids": prefixes}, separators=(",", ":")).encode(
+    def predict(self, contexts: Sequence[Sequence[int]]) -> List[List[float]]:
+        body = json.dumps({"input_ids": contexts}, separators=(",", ":")).encode(
             "utf-8"
         )
         request = urllib.request.Request(
-            f"{self.base_url}/v1/next-token-logits",
+            f"{self.base_url}/v2/next-token-logits",
             data=body,
             headers={"Content-Type": "application/json"},
             method="POST",
         )
         maximum_response_bytes = max(
             1024 * 1024,
-            len(prefixes) * self.vocab_size * 32,
+            len(contexts) * self.vocab_size * 32,
         )
         try:
             with urllib.request.urlopen(
@@ -78,7 +78,7 @@ class HttpCandidateClient:
             value = json.loads(encoded)["logits"]
         except (json.JSONDecodeError, KeyError, TypeError) as exc:
             raise AdapterError("Candidate returned malformed JSON") from exc
-        if not isinstance(value, list) or len(value) != len(prefixes):
+        if not isinstance(value, list) or len(value) != len(contexts):
             raise AdapterError("Candidate must return [batch, vocabulary] logits")
         result: List[List[float]] = []
         for row in value:
@@ -117,6 +117,7 @@ def main() -> None:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--vocab-size", required=True, type=int)
     parser.add_argument("--batch-size", required=True, type=int)
+    parser.add_argument("--context-lengths", required=True, type=int, nargs="+")
     parser.add_argument("--request-timeout-seconds", type=float, default=120)
     args = parser.parse_args()
     client = HttpCandidateClient(
@@ -129,6 +130,7 @@ def main() -> None:
         args.vocab_size,
         client.predict,
         batch_size=args.batch_size,
+        context_lengths=args.context_lengths,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(

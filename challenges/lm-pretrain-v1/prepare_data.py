@@ -32,8 +32,10 @@ EOT_TOKEN_ID = 50_256
 TARGET_TRAIN_TOKENS = 10_000_000_000
 SHARD_TOKENS = 100_000_000
 RAW_SHARD_DOCUMENTS = 100_000
-PREVIEW_EVAL_TARGET_TOKENS = 4_096
-EVAL_SEQUENCE_TARGETS = 256
+PREVIEW_EVAL_EXAMPLES = 2_048
+EVAL_CONTEXT_LENGTHS = (64, 128, 256, 512, 1_024, 2_048)
+EVALUATION_DATASET_SCHEMA_VERSION = 1
+CANDIDATE_PROTOCOL = "next_token_logits_v2"
 SPLIT_BUCKETS = 4_096
 
 ROOT = Path(__file__).resolve().parent
@@ -266,31 +268,93 @@ def preview_split(source_key: str) -> str:
 
 
 class EvaluationCollector:
-    def __init__(self, *, target_tokens: int, sequence_targets: int) -> None:
-        if target_tokens <= 0 or sequence_targets <= 0:
-            raise ValueError("evaluation token limits must be positive")
-        self.target_tokens = target_tokens
-        self.sequence_targets = sequence_targets
-        self.sequences: List[List[int]] = []
-        self.token_count = 0
+    """Build balanced, non-overlapping, single-target evaluation examples."""
+
+    def __init__(
+        self,
+        *,
+        target_examples: int,
+        context_lengths: Sequence[int],
+        boundary_token_id: int,
+    ) -> None:
+        lengths = tuple(context_lengths)
+        if (
+            isinstance(target_examples, bool)
+            or not isinstance(target_examples, int)
+            or target_examples <= 0
+            or not lengths
+            or target_examples < len(lengths)
+            or any(
+                isinstance(length, bool) or not isinstance(length, int) or length <= 0
+                for length in lengths
+            )
+            or tuple(sorted(set(lengths))) != lengths
+        ):
+            raise ValueError(
+                "evaluation examples must cover every positive, ordered context length"
+            )
+        base, extra = divmod(target_examples, len(lengths))
+        self.quotas = {
+            length: base + (index < extra) for index, length in enumerate(lengths)
+        }
+        self.context_lengths = lengths
+        self.boundary_token_id = boundary_token_id
+        self.examples: List[Dict[str, Any]] = []
+        self.counts = {length: 0 for length in lengths}
+        self._next_length_index = 0
 
     @property
     def complete(self) -> bool:
-        return self.token_count >= self.target_tokens
+        return all(
+            self.counts[length] == self.quotas[length]
+            for length in self.context_lengths
+        )
 
-    def add_document(self, document_tokens: Sequence[int]) -> None:
+    def add_document(self, source_id: str, document_tokens: Sequence[int]) -> None:
         if self.complete:
             return
         content = list(document_tokens[1:])
-        for start in range(0, len(content), self.sequence_targets):
-            remaining = self.target_tokens - self.token_count
-            if remaining <= 0:
+        start = 0
+        while start < len(content) and not self.complete:
+            selected_index = None
+            for offset in range(len(self.context_lengths)):
+                index = (self._next_length_index + offset) % len(self.context_lengths)
+                length = self.context_lengths[index]
+                if self.counts[length] < self.quotas[length] and start + length <= len(
+                    content
+                ):
+                    selected_index = index
+                    break
+            if selected_index is None:
                 return
-            chunk = content[start : start + min(self.sequence_targets, remaining)]
-            if not chunk:
-                continue
-            self.sequences.append([EOT_TOKEN_ID, *chunk])
-            self.token_count += len(chunk)
+            length = self.context_lengths[selected_index]
+            end = start + length
+            self.examples.append(
+                {
+                    "context": [self.boundary_token_id, *content[start : end - 1]],
+                    "target": content[end - 1],
+                    "source_id": source_id,
+                    "source_start": start,
+                    "source_end": end,
+                }
+            )
+            self.counts[length] += 1
+            self._next_length_index = (selected_index + 1) % len(self.context_lengths)
+            start = end
+
+    def payload(self) -> Dict[str, Any]:
+        if not self.complete:
+            raise PreparationError(
+                "source sample did not fill hidden evaluation examples"
+            )
+        return {
+            "schema_version": EVALUATION_DATASET_SCHEMA_VERSION,
+            "candidate_protocol": CANDIDATE_PROTOCOL,
+            "examples": list(self.examples),
+        }
+
+    def context_length_histogram(self) -> Dict[str, int]:
+        return {str(length): self.counts[length] for length in self.context_lengths}
 
 
 class TokenShardWriter:
@@ -560,23 +624,32 @@ def prepare(
     output_dir: Path,
     target_train_tokens: int,
     shard_tokens: int,
-    eval_target_tokens: int,
-    eval_sequence_targets: int,
+    eval_examples: int,
+    eval_context_lengths: Sequence[int],
     accept_large_download: bool,
     force: bool,
 ) -> Dict[str, Any]:
-    if (
-        min(
-            target_train_tokens,
-            shard_tokens,
-            eval_target_tokens,
-            eval_sequence_targets,
-        )
-        <= 0
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value <= 0
+        for value in (target_train_tokens, shard_tokens, eval_examples)
     ):
-        raise PreparationError("all token limits must be positive")
-    if eval_sequence_targets > 2_048:
-        raise PreparationError("evaluation sequences exceed task context_length=2048")
+        raise PreparationError("all token and example limits must be positive")
+    normalized_context_lengths = tuple(eval_context_lengths)
+    if (
+        not normalized_context_lengths
+        or eval_examples < len(normalized_context_lengths)
+        or any(
+            isinstance(length, bool) or not isinstance(length, int) or length <= 0
+            for length in normalized_context_lengths
+        )
+        or tuple(sorted(set(normalized_context_lengths))) != normalized_context_lengths
+    ):
+        raise PreparationError(
+            "evaluation examples must cover every positive, strictly increasing "
+            "context length"
+        )
+    if normalized_context_lengths[-1] > 2_048:
+        raise PreparationError("evaluation contexts exceed task context_length=2048")
     configured_output = output_dir.expanduser()
     if configured_output.is_symlink():
         raise PreparationError("output directory may not be a symbolic link")
@@ -633,12 +706,14 @@ def prepare(
         )
         document_index_path = tokenized_dir / "documents.jsonl"
         analysis = EvaluationCollector(
-            target_tokens=eval_target_tokens,
-            sequence_targets=eval_sequence_targets,
+            target_examples=eval_examples,
+            context_lengths=normalized_context_lengths,
+            boundary_token_id=EOT_TOKEN_ID,
         )
         test = EvaluationCollector(
-            target_tokens=eval_target_tokens,
-            sequence_targets=eval_sequence_targets,
+            target_examples=eval_examples,
+            context_lengths=normalized_context_lengths,
+            boundary_token_id=EOT_TOKEN_ID,
         )
         train_documents = 0
 
@@ -659,10 +734,10 @@ def prepare(
                 if len(tokens) < 2:
                     continue
                 if split == "analysis":
-                    analysis.add_document(tokens)
+                    analysis.add_document(source_key, tokens)
                     continue
                 if split == "test":
-                    test.add_document(tokens)
+                    test.add_document(source_key, tokens)
                     continue
 
                 raw_writer.add_document(row, source_key)
@@ -688,12 +763,12 @@ def prepare(
 
         _write_json(
             private_dir / "analysis.json",
-            {"sequences": analysis.sequences},
+            analysis.payload(),
             private=True,
         )
         _write_json(
             private_dir / "test.json",
-            {"sequences": test.sequences},
+            test.payload(),
             private=True,
         )
         source_files = [
@@ -751,9 +826,16 @@ def prepare(
             **public_manifest,
             "preview_hidden_evaluation": {
                 "policy": "local-preview-only; replace for a verified release",
-                "analysis_target_tokens": analysis.token_count,
-                "test_target_tokens": test.token_count,
-                "sequence_target_tokens": eval_sequence_targets,
+                "candidate_protocol": CANDIDATE_PROTOCOL,
+                "dataset_schema_version": EVALUATION_DATASET_SCHEMA_VERSION,
+                "construction": ("balanced_non_overlapping_single_target_contexts"),
+                "context_lengths": list(normalized_context_lengths),
+                "analysis_target_predictions": len(analysis.examples),
+                "test_target_predictions": len(test.examples),
+                "analysis_context_length_histogram": (
+                    analysis.context_length_histogram()
+                ),
+                "test_context_length_histogram": test.context_length_histogram(),
                 "analysis_sha256": _sha256_file(private_dir / "analysis.json"),
                 "test_sha256": _sha256_file(private_dir / "test.json"),
             },
@@ -792,12 +874,6 @@ def main() -> None:
     parser.add_argument("--target-train-tokens", type=int, default=TARGET_TRAIN_TOKENS)
     parser.add_argument("--shard-tokens", type=int, default=SHARD_TOKENS)
     parser.add_argument(
-        "--eval-target-tokens", type=int, default=PREVIEW_EVAL_TARGET_TOKENS
-    )
-    parser.add_argument(
-        "--eval-sequence-targets", type=int, default=EVAL_SEQUENCE_TARGETS
-    )
-    parser.add_argument(
         "--accept-large-download",
         action="store_true",
         help="acknowledge the roughly 28.5 GB pinned source download",
@@ -811,8 +887,8 @@ def main() -> None:
         output_dir=args.output_dir,
         target_train_tokens=args.target_train_tokens,
         shard_tokens=args.shard_tokens,
-        eval_target_tokens=args.eval_target_tokens,
-        eval_sequence_targets=args.eval_sequence_targets,
+        eval_examples=PREVIEW_EVAL_EXAMPLES,
+        eval_context_lengths=EVAL_CONTEXT_LENGTHS,
         accept_large_download=args.accept_large_download,
         force=args.force,
     )
