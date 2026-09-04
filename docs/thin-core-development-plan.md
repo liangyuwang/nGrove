@@ -363,28 +363,28 @@ Status: implemented in the development schemas.
   performance.
 - Worker Protocol v12 standardizes `hidden-bundle-v1` identity, requires hard
   byte and entry quotas for untrusted prediction storage, and defines ephemeral
-  prediction cleanup after scoring or failure and confirmed teardown. Result
-  schema v10 records the hidden identity algorithm; v9 migration leaves it
-  `null` rather than inventing evidence.
+  prediction cleanup after scoring or failure and confirmed teardown. The
+  current result schema records the hidden identity algorithm.
 - Task schema v5, Worker Protocol v13, and result schema v11 replace
   NLL/perplexity-shaped Core fields with a generic `[0, 100]`, maximize-oriented
   `performance_score` interface. Each release freezes its score definition and
   exact raw metric names; scores are comparable only within that benchmark
-  release. The trusted task evaluator owns the formula.
+  release. The frozen trusted task evaluator owns the formula; Core validates
+  only the generic contract and result shape. The current vocabulary-normalized
+  inverse-NLL mapping assigns the uniform baseline 50, remains monotonic below
+  it, and does not require representable perplexity.
 - Research is durably sealed before Agent/Research teardown; hidden evaluation
   is rejected until teardown and Agent-control cleanup are confirmed.
 - The final Agent-declared incumbent is scored on TEST first. The TEST decision
   is persisted before selected historical Candidates are attempted on ANALYSIS.
-- Result schema v9 retains v8 workload/resource evidence and adds serving
-  measurements. It also records the frozen Candidate
+- The current result schema records workload/resource and serving evidence. It
+  also records the frozen Candidate
   inventory, ordered incumbent declarations, ANALYSIS trajectory, explicit
   analysis disposition, and trajectory-derived selected/evaluated point
   counts. Every trajectory point is
-  bound back to its commit and declaration event evidence. Read-only migration
-  preserves old VAL evidence as legacy evidence and never calls it ANALYSIS; v4
-  postmortem results remain readable with an explicit limitation instead of an
-  invented declaration history, while v5 counts are derived without inventing
-  new measurement evidence.
+  bound back to its commit and declaration event evidence. Because the project
+  is still pre-preview, earlier development schemas are rejected rather than
+  migrated. The first published preview establishes the compatibility baseline.
 - Ordinary ANALYSIS incompleteness never erases TEST or gates leaderboard
   eligibility. A post-TEST evaluation teardown failure is recorded independently
   as a deployment-integrity violation. TEST remains staged if a cleanup retry
@@ -426,8 +426,9 @@ Those checks are correct while Core owns a closed runner set, but a result
 recording an unregistered runner would become unreadable rather than merely
 unverified. This phase must re-express the `agent_system` invariants over
 semantic fields instead of mechanism names, which changes the persisted
-structure and therefore requires a result schema revision with a read-only
-migration. Worker Protocol v13 resolves only Worker-owned training, Candidate,
+structure and therefore requires a result schema revision. Once the first
+preview establishes a compatibility baseline, that revision must also define
+an explicit compatibility policy. Worker Protocol v13 resolves only Worker-owned training, Candidate,
 and Evaluator workloads. The v0 Agent evidence binds the Agent image but not a
 separate inference Gateway image, so formal runs using registered inference now
 fail closed with `inference_gateway_workload_evidence_missing` until C1 defines

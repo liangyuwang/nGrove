@@ -68,11 +68,11 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(
             public["evaluation"]["performance_score"],
             {
-                "definition_id": "uniform_normalized_log_score_v1",
+                "definition_id": "vocab_normalized_inverse_nll_v1",
                 "range": {"minimum": 0.0, "maximum": 100.0},
                 "direction": "maximize",
                 "comparison_scope": "benchmark_release",
-                "raw_metrics": ["mean_nll", "perplexity"],
+                "raw_metrics": ["mean_nll"],
             },
         )
         self.assertEqual(public["evaluation"]["context_lengths"], [1, 2, 3])

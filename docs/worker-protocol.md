@@ -313,8 +313,9 @@ regular files. Lengths are unsigned 64-bit big-endian integers. The shared
 `autotrain_bench.artifact_identity.hidden_bundle_sha256()` implementation is
 normative for Python Workers. The organizer release receipt declares
 `file: sha256` and
-`hidden_evaluation: autotrain-bench-hidden-bundle-v1-sha256`; result schema v10
-records the latter under `artifact_identity_algorithms.hidden_evaluation`.
+`hidden_evaluation: autotrain-bench-hidden-bundle-v1-sha256`; the current result
+schema records the latter under
+`artifact_identity_algorithms.hidden_evaluation`.
 
 ## Candidate channel
 
@@ -434,8 +435,12 @@ trusted source metadata.
 score contract fixes a finite `[0, 100]` range, `maximize` direction, exact raw
 metric names, a definition ID, and `comparison_scope: benchmark_release`. The
 task evaluator owns the mapping from task metrics into this interface; Core and
-the Worker do not assume NLL, perplexity, accuracy, or another particular
-formula. Its serving clock starts immediately before Candidate
+the Worker protocol do not assume NLL, perplexity, accuracy, or another
+particular formula. The current `vocab_normalized_inverse_nll_v1` definition is
+implemented by the frozen task evaluator. It requires finite non-negative
+`mean_nll` and computes `100 / (1 + mean_nll / log(vocab_size))`. Perplexity is
+not required, so overflow in that derived display value cannot invalidate a
+finite score. The serving clock starts immediately before Candidate
 invocation and stops after process exit and output flush, so it includes
 sandbox startup, Candidate import/model load, context-file reading,
 participant-controlled scheduling/inference, and prediction writing. Hidden

@@ -15,6 +15,7 @@ from autotrain_bench.candidate_protocol import (
     validate_prediction_artifact,
     write_prediction_artifact,
 )
+from autotrain_bench.worker_protocol import PerformanceScoreContract
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -118,21 +119,70 @@ class IsolatedEvaluatorTests(unittest.TestCase):
             self.assertAlmostEqual(
                 result["raw_metrics"]["mean_nll"], math.log(10), places=7
             )
-            self.assertAlmostEqual(result["raw_metrics"]["perplexity"], 10.0)
-            self.assertAlmostEqual(result["performance_score"], 0.0, places=7)
+            self.assertEqual(set(result["raw_metrics"]), {"mean_nll"})
+            self.assertAlmostEqual(result["performance_score"], 50.0, places=7)
             self.assertEqual(result["examples"], 3)
             self.assertEqual(result["input_tokens"], 6)
             self.assertGreater(result["prediction_bytes"], 3 * 10 * 4)
 
-    def test_performance_score_has_a_linear_nll_scale_to_the_uniform_baseline(self):
+    def test_performance_score_is_monotonic_below_the_uniform_baseline(self):
         uniform_nll = math.log(10)
+        contract = PerformanceScoreContract(
+            "vocab_normalized_inverse_nll_v1", ("mean_nll",)
+        )
 
-        self.assertEqual(MODULE._performance_score(0.0, 10), 100.0)
-        self.assertAlmostEqual(MODULE._performance_score(uniform_nll * 0.25, 10), 75.0)
-        self.assertAlmostEqual(MODULE._performance_score(uniform_nll * 0.50, 10), 50.0)
-        self.assertAlmostEqual(MODULE._performance_score(uniform_nll * 0.75, 10), 25.0)
-        self.assertAlmostEqual(MODULE._performance_score(uniform_nll, 10), 0.0)
-        self.assertEqual(MODULE._performance_score(uniform_nll * 2.0, 10), 0.0)
+        perfect = MODULE._performance_score(0.0, 10)
+        uniform = MODULE._performance_score(uniform_nll, 10)
+        below_uniform = MODULE._performance_score(uniform_nll * 2.0, 10)
+
+        self.assertEqual(perfect, 100.0)
+        self.assertEqual(uniform, 50.0)
+        self.assertAlmostEqual(below_uniform, 100.0 / 3.0)
+        self.assertGreater(MODULE._performance_score(1e300, 10), 0.0)
+        for mean_nll in (0.0, uniform_nll, uniform_nll * 2.0, 1e300):
+            contract.validate_measurement(
+                MODULE._performance_score(mean_nll, 10),
+                {"mean_nll": mean_nll},
+            )
+        for invalid_nll in (-0.1, float("nan"), float("inf")):
+            with self.subTest(invalid_nll=invalid_nll):
+                with self.assertRaisesRegex(
+                    MODULE.EvaluationError, "finite and non-negative"
+                ):
+                    MODULE._performance_score(invalid_nll, 10)
+
+    def test_large_finite_nll_is_not_rejected_by_perplexity_overflow(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            contexts, targets = self._examples()
+            context_path, target_path = self._write_split(
+                root / "split", contexts, targets
+            )
+            rows = []
+            for target in targets:
+                logits = [0.0] * 10
+                logits[target["target"]] = -1e30
+                rows.append(logits)
+            predictions = root / "predictions"
+            write_prediction_artifact(
+                predictions,
+                dataset_id="test-split",
+                logits=rows,
+                examples=len(rows),
+                vocab_size=10,
+            )
+
+            result = MODULE.evaluate(
+                context_path,
+                target_path,
+                predictions,
+                10,
+                context_lengths=(1, 2, 3),
+            )
+
+            self.assertTrue(math.isfinite(result["raw_metrics"]["mean_nll"]))
+            self.assertGreater(result["performance_score"], 0.0)
+            self.assertLess(result["performance_score"], 1e-20)
 
     def test_legacy_combined_dataset_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

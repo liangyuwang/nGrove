@@ -19,14 +19,14 @@
     "candidate_protocol": "offline_next_token_logits_v3",
     "entrypoint": "evaluator/evaluator.py",
     "performance_score": {
-      "definition_id": "uniform_normalized_log_score_v1",
+      "definition_id": "vocab_normalized_inverse_nll_v1",
       "range": {
         "minimum": 0.0,
         "maximum": 100.0
       },
       "direction": "maximize",
       "comparison_scope": "benchmark_release",
-      "raw_metrics": ["mean_nll", "perplexity"]
+      "raw_metrics": ["mean_nll"]
     },
     "vocab_size": 50257,
     "context_length": 2048,

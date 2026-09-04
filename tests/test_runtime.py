@@ -374,7 +374,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 self.assertNotEqual(kwargs["data_path"], source)
                 return CandidateEvaluationResult(
                     72.5,
-                    {"mean_nll": 1.25, "perplexity": 3.4903429574618414},
+                    {"mean_nll": 1.25},
                     2.0,
                     2,
                     3,
@@ -1427,10 +1427,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                                 json.dumps(
                                     {
                                         "performance_score": 72.5,
-                                        "raw_metrics": {
-                                            "mean_nll": 1.25,
-                                            "perplexity": 3.4903429574618414,
-                                        },
+                                        "raw_metrics": {"mean_nll": 1.25},
                                         "examples": 3,
                                         "input_tokens": 6,
                                         "prediction_bytes": 64,
@@ -1608,10 +1605,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                                     json.dumps(
                                         {
                                             "performance_score": raw_score,
-                                            "raw_metrics": {
-                                                "mean_nll": 1.25,
-                                                "perplexity": 3.4903429574618414,
-                                            },
+                                            "raw_metrics": {"mean_nll": 1.25},
                                             "examples": 3,
                                             "input_tokens": 6,
                                             "prediction_bytes": 64,

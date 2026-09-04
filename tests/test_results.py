@@ -1,4 +1,3 @@
-import math
 import unittest
 
 from autotrain_bench.artifact_identity import (
@@ -7,20 +6,9 @@ from autotrain_bench.artifact_identity import (
     HIDDEN_BUNDLE_IDENTITY_ALGORITHM,
 )
 from autotrain_bench.results import (
-    UNCOUNTED_ANALYSIS_RESULT_SCHEMA_VERSION,
-    AGENT_MODE_RESULT_SCHEMA_VERSION,
-    POSTMORTEM_RESULT_SCHEMA_VERSION,
-    PRE_HIDDEN_BUNDLE_IDENTITY_RESULT_SCHEMA_VERSION,
-    PRE_PERFORMANCE_SCORE_RESULT_SCHEMA_VERSION,
-    PRE_RESOURCE_ALLOCATION_RESULT_SCHEMA_VERSION,
-    PRE_SERVING_EFFICIENCY_RESULT_SCHEMA_VERSION,
-    PRE_WORKLOAD_RESOLUTION_RESULT_SCHEMA_VERSION,
-    PRE_ANALYSIS_RESULT_SCHEMA_VERSION,
     RESULT_SCHEMA_VERSION,
     ResultSchemaError,
     normalize_result_report,
-    perplexity_from_nll,
-    validated_nll,
 )
 
 
@@ -48,23 +36,17 @@ def _incumbent_declaration(candidate_id="sha256:candidate"):
     }
 
 
-def _analysis_point(candidate_id="sha256:candidate", *, legacy=False):
-    point = {
+def _analysis_point(candidate_id="sha256:candidate"):
+    return {
         **_candidate_commit(candidate_id),
         "declared_incumbent": True,
         "declaration_event_seqs": [2],
         "analysis_status": "evaluated",
         "analysis_performance_score": 100.0,
-        "analysis_raw_metrics": {"mean_nll": 0.0, "perplexity": 1.0},
+        "analysis_raw_metrics": {"mean_nll": 0.0},
         "analysis_serving_metrics": _serving_metrics(),
         "analysis_error": None,
     }
-    if legacy:
-        point.pop("analysis_performance_score")
-        point.pop("analysis_raw_metrics")
-        point["analysis_nll"] = 0.0
-        point["analysis_perplexity"] = 1.0
-    return point
 
 
 def _serving_metrics():
@@ -137,11 +119,11 @@ def _resource_fields():
     return {
         "episode_id": "episode-1",
         "performance_score_contract": {
-            "definition_id": "uniform_normalized_log_score_v1",
+            "definition_id": "vocab_normalized_inverse_nll_v1",
             "range": {"minimum": 0.0, "maximum": 100.0},
             "direction": "maximize",
             "comparison_scope": "benchmark_release",
-            "raw_metrics": ["mean_nll", "perplexity"],
+            "raw_metrics": ["mean_nll"],
         },
         "artifact_identity_algorithms": {
             "candidate_tree": CANDIDATE_TREE_IDENTITY_ALGORITHM,
@@ -167,12 +149,11 @@ def _resource_fields():
     }
 
 
-def _finalized(*, schema_version=RESULT_SCHEMA_VERSION, **overrides):
+def _finalized(**overrides):
     """A minimal valid finalized result, so each test varies only one thing."""
 
-    legacy = schema_version < RESULT_SCHEMA_VERSION
     payload = {
-        "result_schema_version": schema_version,
+        "result_schema_version": RESULT_SCHEMA_VERSION,
         "status": "finalized",
         "outcome": "success",
         "final_candidate_id": "sha256:candidate",
@@ -183,19 +164,15 @@ def _finalized(*, schema_version=RESULT_SCHEMA_VERSION, **overrides):
         "analysis_status": "complete",
         "analysis_failure": None,
         "analysis_identity_verified": True,
-        "analysis_trajectory": [_analysis_point(legacy=legacy)],
+        "analysis_trajectory": [_analysis_point()],
         "candidate_commits": [_candidate_commit()],
         "incumbent_declarations": [_incumbent_declaration()],
         "test_status": "evaluated",
         "workload_resolutions": _empty_workload_resolutions(),
         **_resource_fields(),
+        "test_performance_score": 100.0,
+        "test_raw_metrics": {"mean_nll": 0.0},
     }
-    if legacy:
-        payload["test_nll"] = 0.0
-        payload["test_perplexity"] = 1.0
-    else:
-        payload["test_performance_score"] = 100.0
-        payload["test_raw_metrics"] = {"mean_nll": 0.0, "perplexity": 1.0}
     payload.update(overrides)
     # Derive the summary counts from whatever trajectory the test ended up with,
     # so a test that varies the trajectory does not also have to restate them.
@@ -214,71 +191,12 @@ def _finalized(*, schema_version=RESULT_SCHEMA_VERSION, **overrides):
 
 
 class ResultMetricTests(unittest.TestCase):
-    def test_v10_migration_marks_performance_score_as_unavailable(self):
-        legacy = _finalized(schema_version=PRE_PERFORMANCE_SCORE_RESULT_SCHEMA_VERSION)
-
-        report = normalize_result_report(legacy)
-
-        self.assertIsNone(report["performance_score_contract"])
-        self.assertIsNone(report["test_performance_score"])
-        self.assertIsNone(report["test_raw_metrics"])
-        self.assertIsNone(
-            report["analysis_trajectory"][0]["analysis_performance_score"]
-        )
-
-    def test_v9_migration_marks_hidden_bundle_algorithm_as_unavailable(self):
-        legacy = _finalized(
-            schema_version=PRE_HIDDEN_BUNDLE_IDENTITY_RESULT_SCHEMA_VERSION
-        )
-        legacy["artifact_identity_algorithms"].pop("hidden_evaluation")
-
-        report = normalize_result_report(legacy)
-
-        self.assertEqual(report["result_schema_version"], RESULT_SCHEMA_VERSION)
-        self.assertEqual(
-            report["migrated_from_result_schema_version"],
-            PRE_HIDDEN_BUNDLE_IDENTITY_RESULT_SCHEMA_VERSION,
-        )
-        self.assertIsNone(report["artifact_identity_algorithms"]["hidden_evaluation"])
-
-    def test_v8_migration_marks_serving_evidence_as_unavailable(self):
-        legacy = _finalized(schema_version=PRE_SERVING_EFFICIENCY_RESULT_SCHEMA_VERSION)
-        legacy.pop("test_serving_metrics")
-        legacy["analysis_trajectory"][0].pop("analysis_serving_metrics")
-
-        report = normalize_result_report(legacy)
-
-        self.assertEqual(report["result_schema_version"], RESULT_SCHEMA_VERSION)
-        self.assertEqual(
-            report["migrated_from_result_schema_version"],
-            PRE_SERVING_EFFICIENCY_RESULT_SCHEMA_VERSION,
-        )
-        self.assertIsNone(report["test_serving_metrics"])
-        self.assertIsNone(report["analysis_trajectory"][0]["analysis_serving_metrics"])
-
     def test_current_result_rejects_a_different_hidden_bundle_algorithm(self):
         payload = _finalized()
         payload["artifact_identity_algorithms"]["hidden_evaluation"] = "sha256"
 
         with self.assertRaisesRegex(ResultSchemaError, "active protocol"):
             normalize_result_report(payload)
-
-    def test_v7_migration_marks_resource_evidence_as_unavailable(self):
-        legacy = _finalized(
-            schema_version=PRE_RESOURCE_ALLOCATION_RESULT_SCHEMA_VERSION
-        )
-        legacy.pop("resource_envelope")
-        legacy.pop("resource_allocations")
-
-        report = normalize_result_report(legacy)
-
-        self.assertEqual(report["result_schema_version"], RESULT_SCHEMA_VERSION)
-        self.assertEqual(
-            report["migrated_from_result_schema_version"],
-            PRE_RESOURCE_ALLOCATION_RESULT_SCHEMA_VERSION,
-        )
-        self.assertIsNone(report["resource_envelope"])
-        self.assertEqual(report["resource_allocations"], [])
 
     def test_current_resource_receipt_cannot_be_replayed_for_another_request(self):
         payload = _finalized()
@@ -301,17 +219,6 @@ class ResultMetricTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ResultSchemaError, "assessment"):
             normalize_result_report(payload)
-
-    def test_nll_validation_does_not_coerce_non_numeric_json_values(self):
-        invalid = (True, "1.25", None, float("nan"), float("inf"), -0.1, 10**1000)
-        for value in invalid:
-            with self.subTest(value=type(value).__name__):
-                with self.assertRaises(ValueError):
-                    validated_nll(value)
-
-    def test_perplexity_is_derived_from_mean_nll(self):
-        self.assertEqual(validated_nll(0), 0.0)
-        self.assertAlmostEqual(perplexity_from_nll(1.5), math.exp(1.5))
 
     def test_serving_rates_are_bound_to_counts_and_wall_time(self):
         payload = _finalized()
@@ -337,7 +244,7 @@ class ResultMetricTests(unittest.TestCase):
                 "outcome": "success",
                 "final_candidate_id": None,
                 "test_performance_score": 100.0,
-                "test_raw_metrics": {"mean_nll": 0.0, "perplexity": 1.0},
+                "test_raw_metrics": {"mean_nll": 0.0},
                 "failure": None,
                 "research_sealed_at": "2026-01-01T00:00:00+00:00",
                 "analysis_complete": True,
@@ -354,7 +261,7 @@ class ResultMetricTests(unittest.TestCase):
                 "status": "active",
                 "outcome": None,
                 "test_performance_score": 100.0,
-                "test_raw_metrics": {"mean_nll": 0.0, "perplexity": 1.0},
+                "test_raw_metrics": {"mean_nll": 0.0},
                 "test_serving_metrics": _serving_metrics(),
                 "failure": None,
                 "research_sealed_at": "2026-01-01T00:00:00+00:00",
@@ -376,7 +283,7 @@ class ResultMetricTests(unittest.TestCase):
                 "final_candidate_id": "sha256:candidate",
                 "active_lease": {"lease_id": "lease-0001"},
                 "test_performance_score": 100.0,
-                "test_raw_metrics": {"mean_nll": 0.0, "perplexity": 1.0},
+                "test_raw_metrics": {"mean_nll": 0.0},
                 "test_serving_metrics": _serving_metrics(),
                 "failure": None,
             },
@@ -386,7 +293,7 @@ class ResultMetricTests(unittest.TestCase):
                 "final_candidate_id": "sha256:candidate",
                 "pending_lease_teardowns": ["lease-0001"],
                 "test_performance_score": 100.0,
-                "test_raw_metrics": {"mean_nll": 0.0, "perplexity": 1.0},
+                "test_raw_metrics": {"mean_nll": 0.0},
                 "failure": None,
             },
             "finalized_with_empty_publication": {
@@ -394,7 +301,7 @@ class ResultMetricTests(unittest.TestCase):
                 "outcome": "success",
                 "final_candidate_id": "sha256:candidate",
                 "test_performance_score": 100.0,
-                "test_raw_metrics": {"mean_nll": 0.0, "perplexity": 1.0},
+                "test_raw_metrics": {"mean_nll": 0.0},
                 "failure": None,
                 "result_publication": None,
             },
@@ -453,7 +360,7 @@ class ResultMetricTests(unittest.TestCase):
                 "outcome": "success",
                 "final_candidate_id": "sha256:candidate",
                 "test_performance_score": 100.0,
-                "test_raw_metrics": {"mean_nll": 0.0, "perplexity": 1.0},
+                "test_raw_metrics": {"mean_nll": 0.0},
                 "test_serving_metrics": _serving_metrics(),
                 "failure": None,
                 "research_sealed_at": "2026-01-01T00:00:00+00:00",
@@ -541,79 +448,6 @@ class ResultMetricTests(unittest.TestCase):
                 )
             )
 
-    def test_older_v2_finalized_result_without_publication_remains_readable(self):
-        report = normalize_result_report(
-            {
-                "result_schema_version": 2,
-                "status": "finalized",
-                "outcome": "success",
-                "final_candidate_id": "sha256:candidate",
-                "test_nll": 0.0,
-                "test_perplexity": 1.0,
-                "failure": None,
-            }
-        )
-
-        self.assertNotIn("result_publication", report)
-
-    def test_v3_validation_evidence_remains_explicitly_legacy(self):
-        report = normalize_result_report(
-            {
-                "result_schema_version": PRE_ANALYSIS_RESULT_SCHEMA_VERSION,
-                "status": "finalized",
-                "outcome": "success",
-                "final_candidate_id": "sha256:candidate",
-                "test_nll": 0.0,
-                "test_perplexity": 1.0,
-                "failure": None,
-                "candidates": {
-                    "sha256:candidate": {
-                        "val_nll": 1.25,
-                        "val_perplexity": math.exp(1.25),
-                        "evaluation_error": None,
-                    }
-                },
-                "timing": {"validation_evaluation_seconds": 2.0},
-            }
-        )
-
-        candidate = report["candidates"]["sha256:candidate"]
-        self.assertEqual(candidate["legacy_validation"]["nll"], 1.25)
-        self.assertNotIn("val_nll", candidate)
-        self.assertEqual(candidate["analysis_status"], "legacy_not_run")
-        self.assertFalse(report["analysis_complete"])
-        self.assertEqual(report["analysis_trajectory"], [])
-        self.assertTrue(report["legacy_semantics"]["organizer_validation_feedback"])
-        self.assertEqual(report["timing"]["legacy_validation_evaluation_seconds"], 2.0)
-
-    def test_v4_postmortem_result_remains_readable_without_invented_history(self):
-        payload = _finalized(schema_version=POSTMORTEM_RESULT_SCHEMA_VERSION)
-        for field in (
-            "analysis_status",
-            "analysis_failure",
-            "analysis_identity_verified",
-            "incumbent_declarations",
-            "test_status",
-        ):
-            payload.pop(field, None)
-        for point in payload["analysis_trajectory"]:
-            point.pop("declaration_event_seqs", None)
-
-        report = normalize_result_report(payload)
-
-        self.assertEqual(report["result_schema_version"], RESULT_SCHEMA_VERSION)
-        self.assertEqual(
-            report["migrated_from_result_schema_version"],
-            POSTMORTEM_RESULT_SCHEMA_VERSION,
-        )
-        self.assertEqual(report["analysis_status"], "complete")
-        self.assertEqual(report["test_status"], "evaluated")
-        self.assertEqual(report["incumbent_declarations"], [])
-        self.assertEqual(
-            report["migration_limitations"],
-            ["incumbent_declaration_history_unavailable"],
-        )
-
     def test_private_staged_result_is_not_part_of_a_report(self):
         report = normalize_result_report(
             {
@@ -640,10 +474,7 @@ class ResultMetricTests(unittest.TestCase):
                 "pending_result": {
                     "outcome": "success",
                     "test_performance_score": 50.0,
-                    "test_raw_metrics": {
-                        "mean_nll": 1.0,
-                        "perplexity": math.e,
-                    },
+                    "test_raw_metrics": {"mean_nll": 1.0},
                     "failure": None,
                 },
             }
@@ -679,69 +510,7 @@ class ResultMetricTests(unittest.TestCase):
                 }
             )
 
-    def test_legacy_closed_result_remains_pending(self):
-        report = normalize_result_report(
-            {
-                "status": "closed",
-                "final_candidate_id": "sha256:candidate",
-                "test_nll": None,
-                "failure": None,
-            }
-        )
-        self.assertIsNone(report["outcome"])
-        self.assertIsNone(report["failure"])
-
-    def test_legacy_migration_rejects_an_unknown_status(self):
-        with self.assertRaisesRegex(ResultSchemaError, "invalid result status"):
-            normalize_result_report(
-                {
-                    "status": "unknown",
-                    "final_candidate_id": None,
-                    "test_nll": None,
-                    "failure": None,
-                }
-            )
-
-    def test_v2_agent_mode_is_migrated_to_the_v3_egress_field(self):
-        report = normalize_result_report(
-            {
-                "result_schema_version": AGENT_MODE_RESULT_SCHEMA_VERSION,
-                "status": "finalized",
-                "outcome": "success",
-                "final_candidate_id": "sha256:candidate",
-                "test_nll": 0.0,
-                "test_perplexity": 1.0,
-                "failure": None,
-                "agent_system": {"runner": "container", "mode": "sandboxed"},
-            }
-        )
-
-        self.assertEqual(report["result_schema_version"], RESULT_SCHEMA_VERSION)
-        self.assertEqual(
-            report["migrated_from_result_schema_version"],
-            AGENT_MODE_RESULT_SCHEMA_VERSION,
-        )
-        self.assertEqual(report["agent_system"]["egress"], "denied")
-        self.assertNotIn("mode", report["agent_system"])
-
-    def test_v2_host_runner_agent_mode_migrates_without_inventing_a_policy(self):
-        report = normalize_result_report(
-            {
-                "result_schema_version": AGENT_MODE_RESULT_SCHEMA_VERSION,
-                "status": "dnf",
-                "outcome": "failed",
-                "final_candidate_id": None,
-                "test_nll": None,
-                "test_perplexity": None,
-                "failure": "agent exited without finishing the episode",
-                "agent_system": {"runner": "host_cli", "mode": None},
-            }
-        )
-
-        self.assertIsNone(report["agent_system"]["egress"])
-        self.assertNotIn("mode", report["agent_system"])
-
-    def test_current_schema_report_is_not_marked_as_migrated(self):
+    def test_current_schema_normalization_is_idempotent(self):
         report = normalize_result_report(
             {
                 "result_schema_version": RESULT_SCHEMA_VERSION,
@@ -750,7 +519,7 @@ class ResultMetricTests(unittest.TestCase):
                 "outcome": "success",
                 "final_candidate_id": "sha256:candidate",
                 "test_performance_score": 100.0,
-                "test_raw_metrics": {"mean_nll": 0.0, "perplexity": 1.0},
+                "test_raw_metrics": {"mean_nll": 0.0},
                 "test_serving_metrics": _serving_metrics(),
                 "failure": None,
                 "agent_system": {"runner": "container", "egress": "denied"},
@@ -769,22 +538,13 @@ class ResultMetricTests(unittest.TestCase):
             }
         )
 
-        self.assertNotIn("migrated_from_result_schema_version", report)
+        self.assertEqual(normalize_result_report(report), report)
         self.assertEqual(report["agent_system"]["egress"], "denied")
 
-    def test_v3_rejects_a_result_that_still_carries_the_v2_agent_mode(self):
+    def test_current_schema_rejects_the_removed_agent_mode(self):
         with self.assertRaisesRegex(ResultSchemaError, "agent_system.mode"):
             normalize_result_report(
                 _finalized(agent_system={"runner": "container", "mode": "sandboxed"})
-            )
-
-    def test_v2_migration_rejects_an_unknown_agent_mode(self):
-        with self.assertRaisesRegex(ResultSchemaError, "unknown Agent mode"):
-            normalize_result_report(
-                _finalized(
-                    schema_version=AGENT_MODE_RESULT_SCHEMA_VERSION,
-                    agent_system={"runner": "container", "mode": "unknown-policy"},
-                )
             )
 
     def test_an_unknown_agent_egress_policy_is_rejected(self):
@@ -825,14 +585,14 @@ class ResultMetricTests(unittest.TestCase):
             normalize_result_report(
                 {
                     "result_schema_version": RESULT_SCHEMA_VERSION + 1,
-                    "status": "finalized",
-                    "outcome": "success",
-                    "final_candidate_id": "sha256:candidate",
-                    "test_nll": 0.0,
-                    "test_perplexity": 1.0,
-                    "failure": None,
                 }
             )
+
+    def test_unversioned_and_pre_preview_result_schemas_are_rejected(self):
+        for payload in ({}, {"result_schema_version": RESULT_SCHEMA_VERSION - 1}):
+            with self.subTest(payload=payload):
+                with self.assertRaises(ResultSchemaError):
+                    normalize_result_report(payload)
 
     def test_analysis_counts_must_agree_with_the_trajectory_they_summarize(self):
         """A summary that disagrees with its detail would defeat the counts."""
@@ -860,43 +620,6 @@ class ResultMetricTests(unittest.TestCase):
         self.assertEqual(report["analysis_status"], "complete")
         self.assertEqual(report["analysis_selected_points"], 1)
         self.assertEqual(report["analysis_evaluated_points"], 0)
-
-    def test_a_v5_result_gains_counts_derived_from_its_own_trajectory(self):
-        legacy = _finalized(schema_version=UNCOUNTED_ANALYSIS_RESULT_SCHEMA_VERSION)
-        legacy.pop("analysis_selected_points")
-        legacy.pop("analysis_evaluated_points")
-
-        report = normalize_result_report(legacy)
-
-        self.assertEqual(report["result_schema_version"], RESULT_SCHEMA_VERSION)
-        self.assertEqual(
-            report["migrated_from_result_schema_version"],
-            UNCOUNTED_ANALYSIS_RESULT_SCHEMA_VERSION,
-        )
-        self.assertEqual(report["analysis_selected_points"], 1)
-        self.assertEqual(report["analysis_evaluated_points"], 1)
-
-    def test_v5_migration_overwrites_colliding_analysis_count_extensions(self):
-        legacy = _finalized(schema_version=UNCOUNTED_ANALYSIS_RESULT_SCHEMA_VERSION)
-        legacy["analysis_selected_points"] = 999
-        legacy["analysis_evaluated_points"] = 998
-
-        report = normalize_result_report(legacy)
-
-        self.assertEqual(report["analysis_selected_points"], 1)
-        self.assertEqual(report["analysis_evaluated_points"], 1)
-
-    def test_v6_result_records_missing_workload_evidence_without_inventing_it(self):
-        legacy = _finalized(
-            schema_version=PRE_WORKLOAD_RESOLUTION_RESULT_SCHEMA_VERSION,
-            leaderboard_eligible=True,
-        )
-        legacy.pop("workload_resolutions")
-
-        report = normalize_result_report(legacy)
-
-        self.assertEqual(report["result_schema_version"], RESULT_SCHEMA_VERSION)
-        self.assertEqual(report["workload_resolutions"], _empty_workload_resolutions())
 
     def test_leaderboard_result_rejects_unverified_workload_resolution(self):
         resolutions = {
@@ -945,17 +668,6 @@ class ResultMetricTests(unittest.TestCase):
                     }
                 )
             )
-
-    def test_migration_marker_cannot_bypass_v6_validation(self):
-        payload = _finalized(
-            analysis_status="invalid",
-            migrated_from_result_schema_version=(
-                UNCOUNTED_ANALYSIS_RESULT_SCHEMA_VERSION
-            ),
-        )
-
-        with self.assertRaisesRegex(ResultSchemaError, "ANALYSIS lifecycle status"):
-            normalize_result_report(payload)
 
 
 if __name__ == "__main__":

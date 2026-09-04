@@ -25,10 +25,11 @@ class EvaluationError(RuntimeError):
 
 
 def _performance_score(mean_nll: float, vocab_size: int) -> float:
+    if not math.isfinite(mean_nll) or mean_nll < 0:
+        raise EvaluationError("Candidate mean NLL must be finite and non-negative")
     if vocab_size == 1:
         return 100.0
-    normalized = 1.0 - mean_nll / math.log(vocab_size)
-    return 100.0 * max(0.0, min(1.0, normalized))
+    return 100.0 / (1.0 + mean_nll / math.log(vocab_size))
 
 
 def _sha256_file(path: Path) -> str:
@@ -335,19 +336,12 @@ def evaluate(
         raise EvaluationError("Candidate logits could not be read") from exc
 
     mean_nll = math.fsum(losses) / len(losses)
-    try:
-        perplexity = math.exp(mean_nll)
-    except OverflowError as exc:
-        raise EvaluationError("Candidate perplexity is not finite") from exc
-    if not math.isfinite(perplexity):
-        raise EvaluationError("Candidate perplexity is not finite")
     performance_score = _performance_score(mean_nll, vocab_size)
 
     return {
         "performance_score": performance_score,
         "raw_metrics": {
             "mean_nll": mean_nll,
-            "perplexity": perplexity,
         },
         "examples": statistics["examples"],
         "input_tokens": statistics["input_tokens"],

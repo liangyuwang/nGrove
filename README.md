@@ -427,32 +427,12 @@ autotrain-bench report \
   --episode /path/to/autotrain-bench-runs/episodes/<episode-id>
 ```
 
-New episode states declare `result_schema_version: 11`. Reporting an older state
-performs a read-only migration. An unversioned v1 state receives the v2
-outcome fields: a completed result with a valid TEST NLL receives
-`outcome: "success"` and a derived `test_perplexity`, while an unscored
-terminal result receives `outcome: "failed"` with both TEST metrics left
-`null`. A v1 or v2 state additionally has its `agent_system.mode` field renamed
-to `agent_system.egress`, with the value `"sandboxed"` mapped to `"denied"`, so
-one schema version always identifies one structure. A migrated report records
-`migrated_from_result_schema_version`. The persisted historical `state.json` is
-never rewritten, and unknown future result-schema versions are rejected rather
-than guessed. Legacy VAL fields remain explicitly labelled legacy; reporting
-never relabels an old Agent-visible VAL trajectory as postmortem ANALYSIS.
-An existing v4 postmortem result remains readable, but migration explicitly
-reports that its complete ordered incumbent-declaration history is unavailable
-rather than reconstructing that history from an Agent log or a final boolean.
-A v5 result gains its ANALYSIS summary counts by deriving them from the
-trajectory it already carried, so migration invents nothing. A v6 result gains
-an explicit three-role workload-resolution structure whose values are `null`;
-the reader does not invent evidence that the older episode never recorded. A
-v7 result similarly gains `resource_envelope: null` and an empty allocation
-list rather than fabricated effective-resource evidence. A v8 result gains
-`null` serving-efficiency fields rather than invented timing measurements.
-Likewise, a v9 result gains a `null` hidden-evaluation identity-algorithm field;
-the reader does not retroactively claim which bundle grammar produced an older
-digest. A v10 result gains a `null` generic performance-score contract and
-measurement fields rather than assigning a new score formula to an old result.
+Episode states declare `result_schema_version: 11`. This repository is still
+pre-preview, so unpublished development schemas are not a compatibility surface:
+`report` accepts only the current result schema and rejects unversioned, older,
+and unknown future versions rather than guessing their meaning. The first
+published preview establishes the result-compatibility baseline; later schema
+changes must then define an explicit compatibility policy.
 
 In v11, `outcome: "success"` requires a finalized episode, a non-empty final
 Candidate ID, a valid TEST performance score with the exact release-declared raw
@@ -485,8 +465,9 @@ atomic commit, the Supervisor appends a non-terminal
 `RESULT_PUBLICATION_PREPARED` audit record. A finalized v11 state created by the
 current implementation includes `result_publication`, which binds the result
 to that record's publication ID and sequence number. An unreferenced prepared
-record documents an interrupted attempt and is not a terminal result. Older
-states without this optional reference remain readable through migration.
+record documents an interrupted attempt and is not a terminal result. The
+reference remains optional within the current development schema so an
+interrupted publication rollout does not manufacture a terminal result.
 
 Deployment cleanup can still fail after an episode has already reached DNF or
 an infrastructure-failure state. Those failures do not rewrite the original
@@ -845,7 +826,8 @@ L
 \log q_i[y_i].
 $$
 
-The current LM release retains mean NLL and token perplexity as raw metrics:
+The current LM release retains mean NLL as its canonical raw metric. Token
+perplexity can be derived for display when representable:
 
 $$
 \operatorname{PPL}=\exp(L).
@@ -857,16 +839,20 @@ maps the raw measurement into the generic primary interface:
 
 $$
 \operatorname{performance\_score}
-=100\max\left(0,1-\frac{L}{\log V}\right),
+=\frac{100}{1+L/\log V}.
 $$
 
-where $V$ is the frozen vocabulary size. The score is finite, bounded to
-`[0, 100]`, and higher is better. A score of 100 represents perfect prediction;
-0 represents uniform-over-vocabulary performance or worse. The definition ID,
-range, direction, raw metric names, and `benchmark_release` comparison scope are
-part of the task manifest. Another benchmark release may use a different
-dataset, raw metric, or formula without changing the Core result interface, and
-its score is not comparable with this one.
+The score is finite, bounded to `(0, 100]` for every finite NLL, and higher is
+better. A score of 100 represents perfect prediction, uniform-over-vocabulary
+prediction maps to 50, and progressively worse predictions remain ordered below
+50 instead of being clipped into one tie. The definition ID, range, direction,
+raw metric names, and `benchmark_release` comparison scope are part of the task
+manifest. Core validates this generic contract and its result shape; the frozen
+trusted task evaluator owns the formula. Another benchmark release may use a
+different dataset, raw metric, or formula without changing the result interface,
+and its score is not comparable with this one. Perplexity is not a required raw
+field, so overflow in that derived display value cannot invalidate an otherwise
+finite measurement.
 
 The internal architecture is unrestricted.
 
@@ -1814,11 +1800,11 @@ contract as a challenge preview:
     "candidate_protocol": "offline_next_token_logits_v3",
     "entrypoint": "evaluator/evaluator.py",
     "performance_score": {
-      "definition_id": "uniform_normalized_log_score_v1",
+      "definition_id": "vocab_normalized_inverse_nll_v1",
       "range": {"minimum": 0.0, "maximum": 100.0},
       "direction": "maximize",
       "comparison_scope": "benchmark_release",
-      "raw_metrics": ["mean_nll", "perplexity"]
+      "raw_metrics": ["mean_nll"]
     },
     "vocab_size": 257,
     "context_length": 128,

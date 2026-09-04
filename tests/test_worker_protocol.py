@@ -363,7 +363,10 @@ class WorkerProtocolTests(unittest.TestCase):
             result.performance_manifest(
                 PerformanceScoreContract("example_score_v1", ("loss",))
             ),
-            {"performance_score": 72.5, "raw_metrics": {"loss": 1.25}},
+            {
+                "performance_score": 72.5,
+                "raw_metrics": {"loss": 1.25},
+            },
         )
         self.assertEqual(
             result.serving_manifest(),
@@ -377,9 +380,9 @@ class WorkerProtocolTests(unittest.TestCase):
             },
         )
         with self.assertRaisesRegex(ValueError, "serving_seconds"):
-            CandidateEvaluationResult(1.0, {"loss": 1.0}, 0.0, 1, 1, 1)
+            CandidateEvaluationResult(50.0, {"loss": 1.0}, 0.0, 1, 1, 1)
         with self.assertRaisesRegex(ValueError, "serving rates"):
-            CandidateEvaluationResult(1.0, {"loss": 1.0}, 5e-324, 1, 1, 1)
+            CandidateEvaluationResult(50.0, {"loss": 1.0}, 5e-324, 1, 1, 1)
 
     def test_performance_score_contract_is_generic_and_release_scoped(self):
         contract = PerformanceScoreContract("accuracy_v2", ("accuracy",))
