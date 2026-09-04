@@ -158,10 +158,12 @@ bundles may contain only regular files and directories,
 may not contain symbolic or hard links, and must fit the task-defined file and
 byte limits.
 
-Public preflight is optional participant-side testing. It uses 512 synthetic,
+Public preflight is optional participant-side testing. It uses 32 synthetic,
 target-free examples by default, mixing context lengths and token patterns;
-`--examples` and `--seed` select its workload. It copies the artifact, clears
-writable permission bits on the copy, and invokes the same offline entrypoint
+`--examples` and `--seed` select its workload; `--examples 512` opts into a
+larger synthetic check matching the smoke evaluation's example count.
+It copies the artifact, clears writable permission bits on the copy, and
+invokes the same offline entrypoint
 in a fresh process with that copy as its working directory. Copying and testing
 consume the active Lease's resources. The original artifact is not modified.
 The bundled Worker uses lease-owned `/scratch` for the temporary copy and output;

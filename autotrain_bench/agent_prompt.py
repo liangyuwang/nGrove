@@ -36,7 +36,7 @@ Allowed information and actions:
   /output; the Agent process cannot modify that directory after the lease stops.
 - You may self-check the public Candidate ABI inside the active lease with:
   python -m autotrain_bench.candidate_preflight --candidate /output/<candidate-directory> ...
-  It uses 512 synthetic examples by default (--examples and --seed are configurable),
+  It uses 32 synthetic examples by default (--examples and --seed are configurable),
   a fresh offline process, and a copy with read-only permission bits. Copying and
   execution consume Lease time. public_abi_passed means those inputs passed in the
   Training environment; it does not certify the Candidate image, sandbox mounts,

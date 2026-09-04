@@ -170,8 +170,8 @@ def main() -> None:
     parser.add_argument(
         "--examples",
         type=int,
-        default=512,
-        help="public synthetic workload size (default: 512)",
+        default=32,
+        help="public synthetic workload size (default: 32)",
     )
     parser.add_argument(
         "--seed",

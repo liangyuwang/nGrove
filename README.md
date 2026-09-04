@@ -423,7 +423,7 @@ immediately. The Agent may choose whether and how to validate using permitted
 TRAIN information; Core supplies no validation recipe or official feedback.
 
 The optional `candidate_preflight` helper is a public ABI self-check inside a
-Training Lease. It defaults to 512 mixed synthetic contexts (`--examples` and
+Training Lease. It defaults to 32 mixed synthetic contexts (`--examples` and
 `--seed` are configurable), invokes the offline entrypoint in a fresh process,
 and uses an artifact copy with read-only permission bits. Its output reports
 `public_abi_passed` and names both checked and unchecked conditions. It does not
