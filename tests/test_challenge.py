@@ -10,6 +10,7 @@ from autotrain_bench.challenge import (
     ReleaseVerificationReceipt,
 )
 from autotrain_bench.config import ConfigError, TaskConfig
+from autotrain_bench.worker_protocol import WorkloadResolutionAcceptance
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -194,6 +195,36 @@ class ChallengeReleaseTests(unittest.TestCase):
         missing.pop("test_sha256")
         with self.assertRaisesRegex(ConfigError, "test_sha256"):
             replace(receipt, artifact_sha256=missing).validate()
+
+    def test_formal_release_receipt_binds_accepted_workload_transformation(self):
+        acceptance = WorkloadResolutionAcceptance(
+            role="training",
+            requested_identity="example/training@sha256:" + "a" * 64,
+            effective_format="sif",
+            effective_sha256="b" * 64,
+            transformation_sha256="c" * 64,
+        )
+        receipt = ReleaseVerificationReceipt(
+            authority="test-organizer",
+            release_id="test-byte-lm-v1",
+            core_revision="d" * 40,
+            artifact_sha256={
+                field: "a" * 64 for field in FORMAL_ARTIFACT_DIGEST_FIELDS
+            },
+            workload_resolution_acceptance={"training": acceptance},
+        )
+
+        manifest = receipt.validate().private_manifest()
+
+        self.assertEqual(
+            manifest["workload_resolution_acceptance"]["training"],
+            acceptance.public_manifest(),
+        )
+        with self.assertRaisesRegex(ConfigError, "role does not match"):
+            replace(
+                receipt,
+                workload_resolution_acceptance={"candidate": acceptance},
+            ).validate()
 
 
 if __name__ == "__main__":

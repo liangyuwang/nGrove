@@ -5,6 +5,7 @@ from autotrain_bench.results import (
     UNCOUNTED_ANALYSIS_RESULT_SCHEMA_VERSION,
     AGENT_MODE_RESULT_SCHEMA_VERSION,
     POSTMORTEM_RESULT_SCHEMA_VERSION,
+    PRE_WORKLOAD_RESOLUTION_RESULT_SCHEMA_VERSION,
     PRE_ANALYSIS_RESULT_SCHEMA_VERSION,
     RESULT_SCHEMA_VERSION,
     ResultSchemaError,
@@ -50,6 +51,22 @@ def _analysis_point(candidate_id="sha256:candidate"):
     }
 
 
+def _empty_workload_resolutions():
+    return {"training": None, "candidate": None, "evaluator": None}
+
+
+def _workload_resolution(role, acceptance="canonical_identity"):
+    return {
+        "role": role,
+        "requested_identity": f"example/{role}@sha256:" + "a" * 64,
+        "effective_format": "oci",
+        "effective_sha256": "a" * 64,
+        "transformation_sha256": None,
+        "worker_id": "certified-worker",
+        "acceptance": acceptance,
+    }
+
+
 def _finalized(*, schema_version=RESULT_SCHEMA_VERSION, **overrides):
     """A minimal valid finalized result, so each test varies only one thing."""
 
@@ -70,6 +87,7 @@ def _finalized(*, schema_version=RESULT_SCHEMA_VERSION, **overrides):
         "candidate_commits": [_candidate_commit()],
         "incumbent_declarations": [_incumbent_declaration()],
         "test_status": "evaluated",
+        "workload_resolutions": _empty_workload_resolutions(),
     }
     payload.update(overrides)
     # Derive the summary counts from whatever trajectory the test ended up with,
@@ -147,6 +165,7 @@ class ResultMetricTests(unittest.TestCase):
                 "candidate_commits": [_candidate_commit()],
                 "incumbent_declarations": [_incumbent_declaration()],
                 "test_status": "pending",
+                "workload_resolutions": _empty_workload_resolutions(),
             },
             "success_with_active_lease": {
                 "status": "finalized",
@@ -215,6 +234,7 @@ class ResultMetricTests(unittest.TestCase):
                 "candidate_commits": [_candidate_commit()],
                 "incumbent_declarations": [_incumbent_declaration()],
                 "test_status": "pending",
+                "workload_resolutions": _empty_workload_resolutions(),
             }
         )
         self.assertIsNone(report["outcome"])
@@ -240,6 +260,7 @@ class ResultMetricTests(unittest.TestCase):
                 "candidate_commits": [_candidate_commit()],
                 "incumbent_declarations": [_incumbent_declaration()],
                 "test_status": "evaluated",
+                "workload_resolutions": _empty_workload_resolutions(),
                 "result_publication": {
                     "publication_id": "publication",
                     "prepared_event_seq": 7,
@@ -397,6 +418,7 @@ class ResultMetricTests(unittest.TestCase):
                 "candidate_commits": [_candidate_commit()],
                 "incumbent_declarations": [_incumbent_declaration()],
                 "test_status": "evaluated",
+                "workload_resolutions": _empty_workload_resolutions(),
                 "pending_result": {
                     "outcome": "success",
                     "test_nll": 1.0,
@@ -431,6 +453,7 @@ class ResultMetricTests(unittest.TestCase):
                     "candidate_commits": [_candidate_commit()],
                     "incumbent_declarations": [_incumbent_declaration()],
                     "test_status": "failed",
+                    "workload_resolutions": _empty_workload_resolutions(),
                 }
             )
 
@@ -518,6 +541,7 @@ class ResultMetricTests(unittest.TestCase):
                 "candidate_commits": [_candidate_commit()],
                 "incumbent_declarations": [_incumbent_declaration()],
                 "test_status": "evaluated",
+                "workload_resolutions": _empty_workload_resolutions(),
             }
         )
 
@@ -636,6 +660,66 @@ class ResultMetricTests(unittest.TestCase):
 
         self.assertEqual(report["analysis_selected_points"], 1)
         self.assertEqual(report["analysis_evaluated_points"], 1)
+
+    def test_v6_result_records_missing_workload_evidence_without_inventing_it(self):
+        legacy = _finalized(
+            schema_version=PRE_WORKLOAD_RESOLUTION_RESULT_SCHEMA_VERSION,
+            leaderboard_eligible=True,
+        )
+        legacy.pop("workload_resolutions")
+
+        report = normalize_result_report(legacy)
+
+        self.assertEqual(report["result_schema_version"], RESULT_SCHEMA_VERSION)
+        self.assertEqual(report["workload_resolutions"], _empty_workload_resolutions())
+
+    def test_leaderboard_result_rejects_unverified_workload_resolution(self):
+        resolutions = {
+            role: _workload_resolution(role)
+            for role in ("training", "candidate", "evaluator")
+        }
+        resolutions["candidate"] = _workload_resolution(
+            "candidate", acceptance="unverified"
+        )
+
+        with self.assertRaisesRegex(ResultSchemaError, "unverified workload"):
+            normalize_result_report(
+                _finalized(
+                    leaderboard_eligible=True,
+                    workload_resolutions=resolutions,
+                )
+            )
+
+    def test_result_cannot_self_declare_workload_acceptance(self):
+        forged_identity = _workload_resolution("training")
+        forged_identity["effective_sha256"] = "b" * 64
+        with self.assertRaisesRegex(ResultSchemaError, "canonical identity"):
+            normalize_result_report(
+                _finalized(
+                    workload_resolutions={
+                        "training": forged_identity,
+                        "candidate": None,
+                        "evaluator": None,
+                    }
+                )
+            )
+
+        derived = _workload_resolution("training", "organizer_receipt")
+        derived.update(
+            effective_format="sif",
+            effective_sha256="b" * 64,
+            transformation_sha256="c" * 64,
+        )
+        with self.assertRaisesRegex(ResultSchemaError, "organizer acceptance"):
+            normalize_result_report(
+                _finalized(
+                    workload_resolutions={
+                        "training": derived,
+                        "candidate": None,
+                        "evaluator": None,
+                    }
+                )
+            )
 
     def test_migration_marker_cannot_bypass_v6_validation(self):
         payload = _finalized(

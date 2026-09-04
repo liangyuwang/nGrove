@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from .config import TaskConfig, TrainingResources
 
 
-WORKER_PROTOCOL_VERSION = 5
+WORKER_PROTOCOL_VERSION = 6
 WORKER_CONFORMANCE_SUITE_VERSION = f"worker-v{WORKER_PROTOCOL_VERSION}"
 
 
@@ -41,6 +41,10 @@ class WorkerTeardownFailure(WorkerFailure):
 
 class HiddenDatasetResolutionFailure(WorkerFailure):
     """An Evaluation Worker could not resolve an authorized hidden dataset."""
+
+
+class WorkloadResolutionFailure(WorkerFailure):
+    """A Worker could not resolve a release-owned workload identity."""
 
 
 class EnforcementLevel(str, Enum):
@@ -206,6 +210,144 @@ def _validate_sha256(value: str, field: str) -> None:
         raise ValueError(f"{field} must be a lowercase SHA-256 digest")
 
 
+_WORKLOAD_ROLES = {"training", "candidate", "evaluator"}
+
+
+def _validate_workload_role(value: str) -> None:
+    if value not in _WORKLOAD_ROLES:
+        raise ValueError(
+            "workload role must be 'training', 'candidate', or 'evaluator'"
+        )
+
+
+def _validate_workload_identity(value: str, field: str) -> None:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 2048
+        or any(character.isspace() or character == "\0" for character in value)
+    ):
+        raise ValueError(f"{field} must be a safe non-empty identity")
+
+
+def _validate_workload_format(value: str) -> None:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 64
+        or not value[0].isalnum()
+        or any(
+            character not in "abcdefghijklmnopqrstuvwxyz0123456789._+-"
+            for character in value
+        )
+    ):
+        raise ValueError("effective workload format must be a lowercase identifier")
+
+
+def _validate_opaque_id(value: str, field: str) -> None:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 128
+        or any(
+            character
+            not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-"
+            for character in value
+        )
+    ):
+        raise ValueError(f"{field} must be an opaque identifier")
+
+
+@dataclass(frozen=True)
+class WorkloadRequest:
+    """One canonical workload selected by the Challenge Release."""
+
+    role: str
+    requested_identity: str
+
+    def __post_init__(self) -> None:
+        _validate_workload_role(self.role)
+        _validate_workload_identity(
+            self.requested_identity, "requested workload identity"
+        )
+
+
+@dataclass(frozen=True)
+class ResolvedWorkload:
+    """A Worker resolution bound to one immutable effective artifact.
+
+    ``resolution_id`` is an opaque operation handle, not a scheduler, runtime,
+    path, or cache identifier.  Platform handles remain private to the Worker.
+    """
+
+    role: str
+    requested_identity: str
+    effective_format: str
+    effective_sha256: str
+    transformation_sha256: Optional[str]
+    resolution_id: str
+
+    def __post_init__(self) -> None:
+        _validate_workload_role(self.role)
+        _validate_workload_identity(
+            self.requested_identity, "resolved requested workload identity"
+        )
+        _validate_workload_format(self.effective_format)
+        _validate_sha256(self.effective_sha256, "effective workload sha256")
+        if self.transformation_sha256 is not None:
+            _validate_sha256(
+                self.transformation_sha256,
+                "workload transformation provenance sha256",
+            )
+        _validate_opaque_id(self.resolution_id, "workload resolution_id")
+
+    def evidence_manifest(self) -> Dict[str, Any]:
+        return {
+            "role": self.role,
+            "requested_identity": self.requested_identity,
+            "effective_format": self.effective_format,
+            "effective_sha256": self.effective_sha256,
+            "transformation_sha256": self.transformation_sha256,
+        }
+
+
+@dataclass(frozen=True)
+class WorkloadResolutionAcceptance:
+    """Organizer acceptance for one non-identity workload transformation."""
+
+    role: str
+    requested_identity: str
+    effective_format: str
+    effective_sha256: str
+    transformation_sha256: Optional[str]
+
+    def __post_init__(self) -> None:
+        # Reuse the resolution validator with a non-secret synthetic handle so
+        # the accepted and observed evidence have exactly the same schema.
+        ResolvedWorkload(
+            role=self.role,
+            requested_identity=self.requested_identity,
+            effective_format=self.effective_format,
+            effective_sha256=self.effective_sha256,
+            transformation_sha256=self.transformation_sha256,
+            resolution_id="acceptance",
+        )
+
+    def matches(self, resolved: ResolvedWorkload) -> bool:
+        return isinstance(resolved, ResolvedWorkload) and self.public_manifest() == (
+            resolved.evidence_manifest()
+        )
+
+    def public_manifest(self) -> Dict[str, Any]:
+        return {
+            "role": self.role,
+            "requested_identity": self.requested_identity,
+            "effective_format": self.effective_format,
+            "effective_sha256": self.effective_sha256,
+            "transformation_sha256": self.transformation_sha256,
+        }
+
+
 @dataclass(frozen=True)
 class HiddenDatasetRequest:
     """Release-owned identity requested after research sealing.
@@ -240,19 +382,10 @@ class ResolvedHiddenDataset:
         if self.name not in {"analysis", "test"}:
             raise ValueError("resolved hidden dataset has an invalid name")
         _validate_sha256(self.sha256, "resolved hidden dataset sha256")
-        if (
-            not isinstance(self.resolution_id, str)
-            or not self.resolution_id
-            or len(self.resolution_id) > 128
-            or any(
-                character
-                not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-"
-                for character in self.resolution_id
-            )
-        ):
-            raise ValueError(
-                "hidden dataset resolution_id must be an opaque identifier"
-            )
+        _validate_opaque_id(
+            self.resolution_id,
+            "hidden dataset resolution_id",
+        )
 
 
 class HiddenDatasetIdentityMismatch(HiddenDatasetResolutionFailure):
@@ -460,6 +593,13 @@ class ResearchWorker(Protocol):
 
     def describe_capabilities(self) -> WorkerDescriptor: ...
 
+    def resolve_workload(
+        self,
+        *,
+        episode_id: str,
+        workload: WorkloadRequest,
+    ) -> ResolvedWorkload: ...
+
     def start_lease(
         self,
         *,
@@ -470,6 +610,7 @@ class ResearchWorker(Protocol):
         workspace: Path,
         resources: "TrainingResources",
         lease_dir: Path,
+        workload: ResolvedWorkload,
     ) -> None: ...
 
     def exec_lease(
@@ -492,6 +633,13 @@ class EvaluationWorker(Protocol):
 
     def describe_capabilities(self) -> WorkerDescriptor: ...
 
+    def resolve_workload(
+        self,
+        *,
+        episode_id: str,
+        workload: WorkloadRequest,
+    ) -> ResolvedWorkload: ...
+
     def resolve_hidden_dataset(
         self,
         *,
@@ -509,6 +657,8 @@ class EvaluationWorker(Protocol):
         candidate_dir: Path,
         hidden_dataset: ResolvedHiddenDataset,
         output_dir: Path,
+        candidate_workload: ResolvedWorkload,
+        evaluator_workload: ResolvedWorkload,
         timeout_seconds: Optional[float] = None,
     ) -> float: ...
 

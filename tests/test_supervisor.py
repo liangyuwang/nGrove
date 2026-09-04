@@ -17,7 +17,10 @@ from unittest.mock import patch
 
 from autotrain_bench.agent_control import AgentControlStepResult
 from autotrain_bench.agent_api_bundle import publish_agent_api_bundle
-from autotrain_bench.challenge import ReleaseVerificationReceipt
+from autotrain_bench.challenge import (
+    FORMAL_ARTIFACT_DIGEST_FIELDS,
+    ReleaseVerificationReceipt,
+)
 from autotrain_bench.config import (
     AgentConfig,
     InferenceConfig,
@@ -55,6 +58,10 @@ from autotrain_bench.worker_protocol import (
     ResolvedHiddenDataset,
     TrustLevel,
     WORKER_CONFORMANCE_SUITE_VERSION,
+    ResolvedWorkload,
+    WorkloadRequest,
+    WorkloadResolutionAcceptance,
+    WorkloadResolutionFailure,
     WorkerDescriptor,
     WorkerFailure,
     WorkerTeardownFailure,
@@ -103,6 +110,12 @@ class FakeWorker:
         }
         self.hidden_dataset_resolution_failures = {}
         self.hidden_dataset_resolution_hook = None
+        self.workload_requests = []
+        self.workload_resolutions = {}
+        self.workload_resolution_failures = {}
+        self.workload_resolution_exception = None
+        self.lease_workloads = []
+        self.evaluation_workloads = []
         # Simulates benchmark-owned preparation inside start_lease: queue wait,
         # image materialization, workload startup.
         self.start_lease_delay = 0.0
@@ -131,8 +144,12 @@ class FakeWorker:
         workspace,
         resources,
         lease_dir,
+        workload,
     ):
         del duration_seconds, resources
+        if not isinstance(workload, ResolvedWorkload):
+            raise AssertionError("Research Worker did not receive a workload binding")
+        self.lease_workloads.append(workload)
         if self.start_lease_delay and self.clock is not None:
             self.clock.advance(self.start_lease_delay)
         if hasattr(task, "analysis_path") or hasattr(task, "test_path"):
@@ -153,6 +170,40 @@ class FakeWorker:
             output / "candidate.py",
         )
         self.running.add((episode_id, lease_id))
+
+    def resolve_workload(self, *, episode_id, workload):
+        if not isinstance(workload, WorkloadRequest):
+            raise AssertionError("Worker received an invalid workload request")
+        self.workload_requests.append(workload)
+        if self.workload_resolution_exception is not None:
+            raise self.workload_resolution_exception
+        failure = self.workload_resolution_failures.get(workload.role)
+        if failure is not None:
+            raise WorkloadResolutionFailure(failure)
+        resolved = self.workload_resolutions.get(workload.role)
+        if resolved is not None:
+            return resolved
+        declared = (
+            workload.requested_identity.rsplit("@sha256:", 1)[1]
+            if "@sha256:" in workload.requested_identity
+            else None
+        )
+        if (
+            declared is not None
+            and len(declared) == 64
+            and all(character in "0123456789abcdef" for character in declared)
+        ):
+            digest = declared
+        else:
+            digest = hashlib.sha256(workload.requested_identity.encode()).hexdigest()
+        return ResolvedWorkload(
+            role=workload.role,
+            requested_identity=workload.requested_identity,
+            effective_format="oci",
+            effective_sha256=digest,
+            transformation_sha256=None,
+            resolution_id=f"{episode_id}:{workload.role}",
+        )
 
     def exec_lease(self, *, episode_id, lease_id, argv, timeout_seconds):
         del timeout_seconds
@@ -208,9 +259,16 @@ class FakeWorker:
         candidate_dir,
         hidden_dataset,
         output_dir,
+        candidate_workload,
+        evaluator_workload,
         timeout_seconds=None,
     ):
         del episode_id, task, resources, candidate_dir, output_dir
+        if not isinstance(candidate_workload, ResolvedWorkload):
+            raise AssertionError("Candidate workload is not resolved")
+        if not isinstance(evaluator_workload, ResolvedWorkload):
+            raise AssertionError("Evaluator workload is not resolved")
+        self.evaluation_workloads.append((candidate_workload, evaluator_workload))
         split = hidden_dataset.name
         self.hidden_datasets.append(hidden_dataset)
         self.evaluations.append(split)
@@ -445,7 +503,12 @@ class SupervisorTests(unittest.TestCase):
         self.assertFalse(supervisor.state["leaderboard_eligible"])
         self.assertEqual(
             supervisor.state["leaderboard_eligibility_violations"],
-            ["formal_test_evaluation_pending"],
+            [
+                "formal_test_evaluation_pending",
+                "workload_resolution_pending:training",
+                "workload_resolution_pending:candidate",
+                "workload_resolution_pending:evaluator",
+            ],
         )
         public_task = json.loads(
             supervisor.public_task_path.read_text(encoding="utf-8")
@@ -479,6 +542,143 @@ class SupervisorTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "workload identity"):
             self.supervisor(agent_execution=evidence)
+
+    def test_derived_workload_requires_organizer_acceptance_for_formal_use(self):
+        digest = "@sha256:" + "a" * 64
+        config = replace(
+            self.config,
+            task_kind="benchmark_challenge",
+            leaderboard_eligible=True,
+            training_image="example/training" + digest,
+            candidate_image="example/candidate" + digest,
+            evaluator_image="example/evaluator" + digest,
+            inference_gateway_image="example/gateway" + digest,
+        )
+        self.worker.workload_resolutions["training"] = ResolvedWorkload(
+            role="training",
+            requested_identity=config.training_image,
+            effective_format="sif",
+            effective_sha256="b" * 64,
+            transformation_sha256="c" * 64,
+            resolution_id="derived-training",
+        )
+        supervisor = self.supervisor(config=config)
+
+        with self.assertRaisesRegex(
+            ProtocolError, "training workload resolution failed"
+        ):
+            supervisor.start_lease()
+
+        self.assertEqual(supervisor.state["status"], "infrastructure_failure")
+        self.assertEqual(
+            supervisor.state["workload_resolutions"]["training"]["acceptance"],
+            "unverified",
+        )
+        self.assertIn(
+            "workload_resolution_not_accepted:training",
+            supervisor.state["leaderboard_eligibility_violations"],
+        )
+        self.assertEqual(self.worker.lease_workloads, [])
+
+    def test_trusted_release_receipt_accepts_a_derived_workload(self):
+        digest = "@sha256:" + "a" * 64
+        config = replace(
+            self.config,
+            task_kind="benchmark_challenge",
+            leaderboard_eligible=True,
+            training_image="example/training" + digest,
+            candidate_image="example/candidate" + digest,
+            evaluator_image="example/evaluator" + digest,
+            inference_gateway_image="example/gateway" + digest,
+        )
+        resolved = ResolvedWorkload(
+            role="training",
+            requested_identity=config.training_image,
+            effective_format="sif",
+            effective_sha256="b" * 64,
+            transformation_sha256="c" * 64,
+            resolution_id="derived-training",
+        )
+        self.worker.workload_resolutions["training"] = resolved
+        acceptance = WorkloadResolutionAcceptance(
+            role=resolved.role,
+            requested_identity=resolved.requested_identity,
+            effective_format=resolved.effective_format,
+            effective_sha256=resolved.effective_sha256,
+            transformation_sha256=resolved.transformation_sha256,
+        )
+        receipt = ReleaseVerificationReceipt(
+            authority="test-organizer",
+            release_id="test-byte-lm-v1",
+            core_revision="d" * 40,
+            artifact_sha256={
+                field: "a" * 64 for field in FORMAL_ARTIFACT_DIGEST_FIELDS
+            },
+            workload_resolution_acceptance={"training": acceptance},
+        )
+        supervisor = self.supervisor(config=config, release_verification=receipt)
+
+        supervisor.start_lease()
+
+        self.assertEqual(self.worker.lease_workloads, [resolved])
+        self.assertEqual(
+            supervisor.state["workload_resolutions"]["training"]["acceptance"],
+            "organizer_receipt",
+        )
+        self.assertNotIn(
+            "workload_resolution_pending:training",
+            supervisor.state["leaderboard_eligibility_violations"],
+        )
+
+    def test_evaluation_workloads_are_not_resolved_before_research_teardown(self):
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+        candidate = supervisor.commit_lease("/output/candidate")
+        supervisor.declare_incumbent(candidate["candidate_id"])
+        supervisor.finish()
+
+        self.assertEqual(
+            [request.role for request in self.worker.workload_requests],
+            ["training"],
+        )
+
+        self.finalize_after_agent_stop(supervisor)
+
+        self.assertEqual(
+            [request.role for request in self.worker.workload_requests],
+            ["training", "candidate", "evaluator"],
+        )
+
+    def test_formal_inference_fails_closed_without_gateway_execution_evidence(self):
+        digest = "@sha256:" + "a" * 64
+        config = replace(
+            self.config,
+            task_kind="benchmark_challenge",
+            leaderboard_eligible=True,
+            training_image="example/training" + digest,
+            candidate_image="example/candidate" + digest,
+            evaluator_image="example/evaluator" + digest,
+            inference_gateway_image="example/gateway" + digest,
+        )
+        agent = replace(
+            self.agent,
+            image="example/agent" + digest,
+            inference=InferenceConfig(
+                protocol="openai_compatible",
+                base_url="https://inference.example",
+                api_key_env=None,
+                allowed_models=("model",),
+                allowed_paths=("/v1/responses",),
+                timeout_seconds=30,
+            ),
+        )
+
+        supervisor = self.supervisor(config=config, agent=agent)
+
+        self.assertIn(
+            "inference_gateway_workload_evidence_missing",
+            supervisor.state["leaderboard_eligibility_violations"],
+        )
 
     def test_mutable_agent_image_cannot_be_declared_immutable(self):
         evidence = replace(

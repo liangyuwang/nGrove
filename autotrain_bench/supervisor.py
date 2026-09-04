@@ -58,6 +58,9 @@ from .worker_protocol import (
     ResearchTaskSpec,
     ResearchWorker,
     ResolvedHiddenDataset,
+    ResolvedWorkload,
+    WorkloadRequest,
+    WorkloadResolutionFailure,
     WorkerFailure,
     WorkerTeardownFailure,
     assess_worker,
@@ -307,12 +310,16 @@ class Supervisor:
                 release_id=verified_release.release_id,
                 core_revision=verified_release.core_revision,
                 artifact_sha256=dict(verified_release.artifact_sha256),
+                workload_resolution_acceptance=dict(
+                    verified_release.workload_resolution_acceptance
+                ),
             )
         self.monotonic = monotonic
         self.wall_time = wall_time
         self.lock = threading.RLock()
         self.started_monotonic: Optional[float] = None
         self.closed_monotonic: Optional[float] = None
+        self._resolved_workloads: Dict[str, ResolvedWorkload] = {}
 
         self.runs_dir = self.episode_dir / "leases"
         self.candidates_dir = self.episode_dir / "candidates"
@@ -482,6 +489,13 @@ class Supervisor:
             eligibility_violations.append("agent_workload_identity_not_immutable")
         if not agent_execution.leaderboard_eligible:
             eligibility_violations.append("agent_execution_not_certified")
+        # Worker Protocol v6 covers Worker-owned training/Candidate/Evaluator
+        # workloads. AgentExecutionEvidence v0 binds the Agent image itself but
+        # has no trusted field for an inference Gateway workload. Fail closed
+        # instead of treating the task's configured Gateway reference as proof
+        # of what an external launcher actually ran.
+        if config.leaderboard_eligible and agent.inference is not None:
+            eligibility_violations.append("inference_gateway_workload_evidence_missing")
         core_revision = core_identity.get("revision")
         if not isinstance(core_revision, str) or not core_revision:
             eligibility_violations.append("core_identity_unknown")
@@ -514,6 +528,11 @@ class Supervisor:
             # matched.  ANALYSIS identity/completeness is reported on its own
             # diagnostic axis and never gates an otherwise valid TEST result.
             eligibility_violations.append("formal_test_evaluation_pending")
+        if config.leaderboard_eligible:
+            eligibility_violations.extend(
+                f"workload_resolution_pending:{role}"
+                for role in ("training", "candidate", "evaluator")
+            )
 
         leaderboard_eligible = (
             config.leaderboard_eligible
@@ -558,6 +577,11 @@ class Supervisor:
             "artifact_identity_algorithms": {
                 "candidate_tree": "autotrain-bench-tree-v2-sha256",
                 "file": "sha256",
+            },
+            "workload_resolutions": {
+                "training": None,
+                "candidate": None,
+                "evaluator": None,
             },
             "policy_compliant": policy_compliant,
             "policy_violations": policy_violations,
@@ -1116,6 +1140,153 @@ class Supervisor:
             return self.finish()
         raise ProtocolError("unknown_operation", f"unknown operation: {operation!r}")
 
+    def _workload_request(self, role: str) -> WorkloadRequest:
+        requested = {
+            "training": self.config.training_image,
+            "candidate": self.config.candidate_image,
+            "evaluator": self.config.evaluator_image,
+        }[role]
+        return WorkloadRequest(role=role, requested_identity=requested)
+
+    @staticmethod
+    def _identity_workload_resolution(
+        request: WorkloadRequest,
+        resolved: ResolvedWorkload,
+    ) -> bool:
+        """Return whether the Worker executes the canonical OCI identity itself."""
+
+        if not immutable_image_reference(request.requested_identity):
+            return False
+        requested_sha256 = request.requested_identity.rsplit("@sha256:", 1)[1]
+        return bool(
+            resolved.effective_format == "oci"
+            and resolved.effective_sha256 == requested_sha256
+            and resolved.transformation_sha256 is None
+        )
+
+    def _resolve_workload(self, role: str) -> ResolvedWorkload:
+        """Resolve and accept one workload before passing it to an operation.
+
+        The returned opaque handle is the only workload authorization accepted
+        by Worker Protocol v6 operations.  Core records semantic evidence but
+        never learns the Worker's path, scheduler job, image cache, or runtime
+        handle.
+        """
+
+        cached = self._resolved_workloads.get(role)
+        if cached is not None:
+            return cached
+        request = self._workload_request(role)
+        worker = self.research_worker if role == "training" else self.evaluation_worker
+        worker_scope = "research" if role == "training" else "evaluation"
+        try:
+            resolved = worker.resolve_workload(
+                episode_id=self.state["episode_id"],
+                workload=request,
+            )
+        except WorkloadResolutionFailure as exc:
+            self._event(
+                "WORKLOAD_RESOLUTION_FAILED",
+                role=role,
+                code="workload_resolution_failure",
+                message=str(exc),
+            )
+            self._save_state()
+            raise
+        except Exception as exc:
+            self._event(
+                "WORKLOAD_RESOLUTION_FAILED",
+                role=role,
+                code="workload_resolver_state_unknown",
+                exception_type=type(exc).__name__,
+                message=str(exc),
+            )
+            self._save_state()
+            raise WorkerTeardownFailure(
+                f"{role} workload resolver state is unknown: {exc}"
+            ) from exc
+
+        if not isinstance(resolved, ResolvedWorkload):
+            detail = (
+                f"{worker_scope} Worker returned {type(resolved).__name__}, "
+                "expected ResolvedWorkload"
+            )
+            self._event(
+                "WORKLOAD_RESOLUTION_FAILED",
+                role=role,
+                code="workload_resolution_receipt_invalid",
+                message=detail,
+            )
+            self._save_state()
+            raise WorkloadResolutionFailure(detail)
+        if (
+            resolved.role != request.role
+            or resolved.requested_identity != request.requested_identity
+        ):
+            detail = f"{worker_scope} Worker resolved a different workload request"
+            self._event(
+                "WORKLOAD_RESOLUTION_FAILED",
+                role=role,
+                code="workload_resolution_receipt_invalid",
+                message=detail,
+            )
+            self._save_state()
+            raise WorkloadResolutionFailure(detail)
+
+        if self._identity_workload_resolution(request, resolved):
+            acceptance = "canonical_identity"
+        else:
+            accepted = (
+                self.release_verification.workload_resolution_acceptance.get(role)
+                if self.release_verification is not None
+                else None
+            )
+            acceptance = (
+                "organizer_receipt"
+                if accepted is not None and accepted.matches(resolved)
+                else "unverified"
+            )
+
+        evidence = {
+            **resolved.evidence_manifest(),
+            "worker_id": self.state["workers"][worker_scope]["worker_id"],
+            "acceptance": acceptance,
+        }
+        self.state["workload_resolutions"][role] = evidence
+        pending = f"workload_resolution_pending:{role}"
+        if pending in self.state["leaderboard_eligibility_violations"]:
+            self.state["leaderboard_eligibility_violations"].remove(pending)
+        if self.config.leaderboard_eligible and acceptance == "unverified":
+            violation = f"workload_resolution_not_accepted:{role}"
+            if violation not in self.state["leaderboard_eligibility_violations"]:
+                self.state["leaderboard_eligibility_violations"].append(violation)
+            self.state["leaderboard_eligible"] = False
+            self._event(
+                "WORKLOAD_RESOLUTION_REJECTED",
+                role=role,
+                requested_identity=request.requested_identity,
+                effective_format=resolved.effective_format,
+                effective_sha256=resolved.effective_sha256,
+            )
+            self._save_state()
+            raise WorkloadResolutionFailure(
+                f"{role} workload resolution is not accepted by the release"
+            )
+
+        self._resolved_workloads[role] = resolved
+        self._refresh_leaderboard_eligibility()
+        self._event(
+            "WORKLOAD_RESOLVED",
+            role=role,
+            requested_identity=request.requested_identity,
+            effective_format=resolved.effective_format,
+            effective_sha256=resolved.effective_sha256,
+            transformation_sha256=resolved.transformation_sha256,
+            acceptance=acceptance,
+        )
+        self._save_state()
+        return resolved
+
     def start_lease(self, requested_seconds: Any = None) -> Dict[str, Any]:
         with self.lock:
             self._require_active()
@@ -1149,6 +1320,34 @@ class Supervisor:
                     f"requested {duration:g}s but at most {maximum:g}s is available",
                 )
 
+            worker_call_started = self.monotonic()
+            try:
+                training_workload = self._resolve_workload("training")
+            except WorkerTeardownFailure as exc:
+                self._record_benchmark_overhead(
+                    "worker_lease_startup", worker_call_started
+                )
+                self.deployment_teardown_failed(
+                    "research_worker_teardown_failure",
+                    private_detail=str(exc),
+                )
+                raise ProtocolError(
+                    "infrastructure_failure",
+                    "training workload resolution left unknown Worker state",
+                ) from exc
+            except WorkloadResolutionFailure as exc:
+                self._record_benchmark_overhead(
+                    "worker_lease_startup", worker_call_started
+                )
+                self.infrastructure_failed(
+                    "training_workload_resolution_failure",
+                    private_detail=str(exc),
+                )
+                raise ProtocolError(
+                    "infrastructure_failure",
+                    "training workload resolution failed",
+                ) from exc
+
             serial = self.state["lease_serial"] + 1
             lease_id = f"lease-{serial:04d}"
             lease_dir = self.runs_dir / lease_id
@@ -1160,7 +1359,6 @@ class Supervisor:
             pending = self.state["pending_lease_teardowns"]
             pending.append(lease_id)
             self._save_state()
-            worker_call_started = self.monotonic()
             try:
                 self.research_worker.start_lease(
                     episode_id=self.state["episode_id"],
@@ -1170,6 +1368,7 @@ class Supervisor:
                     workspace=self.agent.workspace,
                     resources=self.resources,
                     lease_dir=lease_dir,
+                    workload=training_workload,
                 )
             except WorkerTeardownFailure as exc:
                 self._record_benchmark_overhead(
@@ -2201,13 +2400,20 @@ class Supervisor:
         evaluation_started = self.monotonic()
         request = self._hidden_dataset_request("test")
         resolved: Optional[ResolvedHiddenDataset] = None
+        candidate_workload: Optional[ResolvedWorkload] = None
+        evaluator_workload: Optional[ResolvedWorkload] = None
         test_nll: Optional[float] = None
         test_failure: Optional[str] = None
         test_infrastructure_failure: Optional[str] = None
+        test_infrastructure_failure_code = "test_evaluation_infrastructure_failure"
         test_teardown_failure: Optional[str] = None
         try:
+            candidate_workload = self._resolve_workload("candidate")
+            evaluator_workload = self._resolve_workload("evaluator")
             resolved = self._resolve_hidden_dataset(request, primary=True)
             if resolved is not None:
+                assert candidate_workload is not None
+                assert evaluator_workload is not None
                 test_nll = validated_nll(
                     self.evaluation_worker.evaluate_candidate(
                         episode_id=self.state["episode_id"],
@@ -2216,6 +2422,8 @@ class Supervisor:
                         candidate_dir=self.candidates_dir / digest,
                         hidden_dataset=resolved,
                         output_dir=self.evaluations_dir / "test" / digest,
+                        candidate_workload=candidate_workload,
+                        evaluator_workload=evaluator_workload,
                         timeout_seconds=float(self.config.evaluator_timeout_seconds),
                     )
                 )
@@ -2231,6 +2439,14 @@ class Supervisor:
                 primary=True,
                 code="hidden_dataset_resolution_failure",
                 private_detail=str(exc),
+            )
+        except WorkloadResolutionFailure as exc:
+            test_infrastructure_failure = str(exc)
+            test_infrastructure_failure_code = "evaluation_workload_resolution_failure"
+            self._event(
+                "TEST_INFRASTRUCTURE_FAILURE",
+                candidate_id=candidate_id,
+                code="workload_resolution_failure",
             )
         except WorkerTeardownFailure as exc:
             test_teardown_failure = str(exc)
@@ -2266,9 +2482,6 @@ class Supervisor:
                 0.0, self.monotonic() - evaluation_started
             )
 
-        if resolved is None or self.state["status"] != "closed":
-            self._save_state()
-            return
         if test_teardown_failure is not None:
             self.state["test_status"] = "failed"
             self.deployment_teardown_failed(
@@ -2279,9 +2492,12 @@ class Supervisor:
         if test_infrastructure_failure is not None:
             self.state["test_status"] = "failed"
             self.infrastructure_failed(
-                "test_evaluation_infrastructure_failure",
+                test_infrastructure_failure_code,
                 private_detail=test_infrastructure_failure,
             )
+            return
+        if resolved is None or self.state["status"] != "closed":
+            self._save_state()
             return
         if test_failure is not None or test_nll is None:
             self._stage_failed_test(test_failure or "test_evaluation_failed")
@@ -2338,6 +2554,8 @@ class Supervisor:
                             candidate_dir=self.candidates_dir / digest,
                             hidden_dataset=resolved,
                             output_dir=self.evaluations_dir / "analysis" / digest,
+                            candidate_workload=self._resolved_workloads["candidate"],
+                            evaluator_workload=self._resolved_workloads["evaluator"],
                             timeout_seconds=float(
                                 self.config.evaluator_timeout_seconds
                             ),

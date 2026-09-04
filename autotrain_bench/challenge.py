@@ -11,11 +11,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 from .config import ConfigError, TaskConfig, TrainingResources
+from .worker_protocol import WorkloadResolutionAcceptance
 
 
 RELEASE_STAGES = {"preview", "official"}
@@ -275,6 +276,9 @@ class ReleaseVerificationReceipt:
     release_id: str
     core_revision: str
     artifact_sha256: Mapping[str, str]
+    workload_resolution_acceptance: Mapping[str, WorkloadResolutionAcceptance] = field(
+        default_factory=dict
+    )
 
     def validate(self) -> "ReleaseVerificationReceipt":
         _string(self.authority, "release verification authority")
@@ -309,6 +313,22 @@ class ReleaseVerificationReceipt:
                 "release verification requires SHA-256 identities for: "
                 + ", ".join(details)
             )
+        for role, acceptance in self.workload_resolution_acceptance.items():
+            if role not in {"training", "candidate", "evaluator"}:
+                raise ConfigError(
+                    "release verification workload resolution has an invalid role: "
+                    f"{role}"
+                )
+            if not isinstance(acceptance, WorkloadResolutionAcceptance):
+                raise ConfigError(
+                    "release verification workload resolutions must contain "
+                    "WorkloadResolutionAcceptance values"
+                )
+            if acceptance.role != role:
+                raise ConfigError(
+                    "release verification workload resolution role does not match "
+                    f"its key: {role}"
+                )
         return self
 
     def private_manifest(self) -> Dict[str, Any]:
@@ -317,6 +337,12 @@ class ReleaseVerificationReceipt:
             "release_id": self.release_id,
             "core_revision": self.core_revision,
             "artifact_sha256": dict(self.artifact_sha256),
+            "workload_resolution_acceptance": {
+                role: acceptance.public_manifest()
+                for role, acceptance in sorted(
+                    self.workload_resolution_acceptance.items()
+                )
+            },
         }
 
 

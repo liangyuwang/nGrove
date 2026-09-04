@@ -6,6 +6,9 @@ from pathlib import Path
 from autotrain_bench.worker_protocol import (
     HiddenDatasetRequest,
     ResolvedHiddenDataset,
+    ResolvedWorkload,
+    WorkloadRequest,
+    WorkloadResolutionAcceptance,
 )
 
 
@@ -69,6 +72,25 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         )
         self.assertNotIn("config.analysis_path", supervisor_source)
         self.assertNotIn("config.test_path", supervisor_source)
+
+    def test_workload_resolution_protocol_contains_no_platform_handle(self):
+        forbidden = {
+            "path",
+            "url",
+            "credential",
+            "mount",
+            "cache_path",
+            "container_id",
+            "job_id",
+        }
+        for value_type in (
+            WorkloadRequest,
+            ResolvedWorkload,
+            WorkloadResolutionAcceptance,
+        ):
+            with self.subTest(value_type=value_type.__name__):
+                names = {field.name for field in fields(value_type)}
+                self.assertTrue(names.isdisjoint(forbidden))
 
 
 if __name__ == "__main__":

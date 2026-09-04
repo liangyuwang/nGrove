@@ -8,7 +8,7 @@ from typing import Any, Dict
 from .config import AGENT_EGRESS_POLICIES, AGENT_RUNNERS
 
 
-RESULT_SCHEMA_VERSION = 6
+RESULT_SCHEMA_VERSION = 7
 LEGACY_RESULT_SCHEMA_VERSION = 1
 # Version 2 recorded the Agent egress policy as ``agent_system.mode`` with the
 # value ``"sandboxed"``.  Version 3 renames that field to ``agent_system.egress``
@@ -19,6 +19,7 @@ POSTMORTEM_RESULT_SCHEMA_VERSION = 4
 # Version 5 carried the ANALYSIS trajectory but no summary counts, so a reader
 # of the summary fields alone could not see that a `complete` pass had gaps.
 UNCOUNTED_ANALYSIS_RESULT_SCHEMA_VERSION = 5
+PRE_WORKLOAD_RESOLUTION_RESULT_SCHEMA_VERSION = 6
 _SUPPORTED_INPUT_SCHEMA_VERSIONS = frozenset(
     {
         LEGACY_RESULT_SCHEMA_VERSION,
@@ -26,6 +27,7 @@ _SUPPORTED_INPUT_SCHEMA_VERSIONS = frozenset(
         PRE_ANALYSIS_RESULT_SCHEMA_VERSION,
         POSTMORTEM_RESULT_SCHEMA_VERSION,
         UNCOUNTED_ANALYSIS_RESULT_SCHEMA_VERSION,
+        PRE_WORKLOAD_RESOLUTION_RESULT_SCHEMA_VERSION,
         RESULT_SCHEMA_VERSION,
     }
 )
@@ -105,8 +107,10 @@ def normalize_result_report(payload: Any) -> Dict[str, Any]:
         result = _migrate_pre_analysis_result(result)
     if version < UNCOUNTED_ANALYSIS_RESULT_SCHEMA_VERSION:
         result = _migrate_v4_analysis_result(result)
-    if version < RESULT_SCHEMA_VERSION:
+    if version < PRE_WORKLOAD_RESOLUTION_RESULT_SCHEMA_VERSION:
         result = _migrate_uncounted_analysis_result(result)
+    if version < RESULT_SCHEMA_VERSION:
+        result = _migrate_pre_workload_resolution_result(result)
         result["result_schema_version"] = RESULT_SCHEMA_VERSION
         result["migrated_from_result_schema_version"] = version
     result.setdefault("deployment_teardown_failures", [])
@@ -139,6 +143,20 @@ def _migrate_uncounted_analysis_result(result: Dict[str, Any]) -> Dict[str, Any]
         isinstance(point, dict) and point.get("analysis_status") == "evaluated"
         for point in trajectory
     )
+    return migrated
+
+
+def _migrate_pre_workload_resolution_result(
+    result: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Represent missing pre-v7 evidence explicitly instead of inventing it."""
+
+    migrated = dict(result)
+    migrated["workload_resolutions"] = {
+        "training": None,
+        "candidate": None,
+        "evaluator": None,
+    }
     return migrated
 
 
@@ -279,6 +297,121 @@ def _migrate_v4_analysis_result(result: Dict[str, Any]) -> Dict[str, Any]:
     return migrated
 
 
+def _validate_workload_resolutions(
+    value: Any,
+    *,
+    require_evidence: bool,
+    leaderboard_eligible: bool,
+    release_verification: Any,
+) -> None:
+    roles = {"training", "candidate", "evaluator"}
+    if value is None and not require_evidence:
+        return
+    if not isinstance(value, dict) or set(value) != roles:
+        raise ResultSchemaError(
+            "workload_resolutions must contain training, candidate, and evaluator"
+        )
+    for role in sorted(roles):
+        evidence = value[role]
+        if evidence is None:
+            if leaderboard_eligible and require_evidence:
+                raise ResultSchemaError(
+                    "a leaderboard-eligible result requires every workload resolution"
+                )
+            continue
+        if not isinstance(evidence, dict) or evidence.get("role") != role:
+            raise ResultSchemaError(
+                f"workload resolution {role} must be an object with a matching role"
+            )
+        requested = evidence.get("requested_identity")
+        if (
+            not isinstance(requested, str)
+            or not requested
+            or len(requested) > 2048
+            or any(character.isspace() or character == "\0" for character in requested)
+        ):
+            raise ResultSchemaError(
+                f"workload resolution {role} has an invalid requested identity"
+            )
+        effective_format = evidence.get("effective_format")
+        if (
+            not isinstance(effective_format, str)
+            or not effective_format
+            or len(effective_format) > 64
+            or not effective_format[0].isalnum()
+            or any(
+                character not in "abcdefghijklmnopqrstuvwxyz0123456789._+-"
+                for character in effective_format
+            )
+        ):
+            raise ResultSchemaError(
+                f"workload resolution {role} has an invalid effective format"
+            )
+        for field in ("effective_sha256", "transformation_sha256"):
+            digest = evidence.get(field)
+            if field == "transformation_sha256" and digest is None:
+                continue
+            if (
+                not isinstance(digest, str)
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+            ):
+                raise ResultSchemaError(
+                    f"workload resolution {role} has an invalid {field}"
+                )
+        worker_id = evidence.get("worker_id")
+        if not isinstance(worker_id, str) or not worker_id.strip():
+            raise ResultSchemaError(
+                f"workload resolution {role} requires a Worker identity"
+            )
+        acceptance = evidence.get("acceptance")
+        if acceptance not in {
+            "canonical_identity",
+            "organizer_receipt",
+            "unverified",
+        }:
+            raise ResultSchemaError(
+                f"workload resolution {role} has an invalid acceptance status"
+            )
+        if acceptance == "canonical_identity":
+            marker = "@sha256:"
+            requested_digest = (
+                requested.rsplit(marker, 1)[1] if marker in requested else None
+            )
+            if (
+                requested_digest != evidence["effective_sha256"]
+                or evidence["effective_format"] != "oci"
+                or evidence.get("transformation_sha256") is not None
+            ):
+                raise ResultSchemaError(
+                    f"workload resolution {role} is not a canonical identity"
+                )
+        if acceptance == "organizer_receipt":
+            accepted = (
+                release_verification.get("workload_resolution_acceptance", {}).get(role)
+                if isinstance(release_verification, dict)
+                else None
+            )
+            observed = {
+                field: evidence.get(field)
+                for field in (
+                    "role",
+                    "requested_identity",
+                    "effective_format",
+                    "effective_sha256",
+                    "transformation_sha256",
+                )
+            }
+            if accepted != observed:
+                raise ResultSchemaError(
+                    f"workload resolution {role} lacks matching organizer acceptance"
+                )
+        if leaderboard_eligible and require_evidence and acceptance == "unverified":
+            raise ResultSchemaError(
+                "a leaderboard-eligible result cannot use an unverified workload"
+            )
+
+
 def _validate_agent_system(result: Dict[str, Any]) -> None:
     """Pin the current ``agent_system`` structure to the current schema version."""
 
@@ -363,6 +496,12 @@ def _validate_current_result(
     result: Dict[str, Any], *, migrated_legacy: bool = False
 ) -> None:
     _validate_agent_system(result)
+    _validate_workload_resolutions(
+        result.get("workload_resolutions"),
+        require_evidence=not migrated_legacy,
+        leaderboard_eligible=result.get("leaderboard_eligible") is True,
+        release_verification=result.get("formal_release_verification"),
+    )
     status = result.get("status")
     if status not in _VALID_STATUSES:
         raise ResultSchemaError(f"invalid result status: {status!r}")

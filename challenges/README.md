@@ -30,7 +30,11 @@ Evaluation Workers. Formal deployments must also supply a trusted
 `ReleaseVerificationReceipt` from the organizer-controlled Coordinator. The
 receipt binds the accepted Core revision and the challenge, task, policy,
 evaluator, TRAIN-manifest, ANALYSIS, and TEST digests; hashes calculated only from
-local files cannot self-promote a run. Missing evidence is recorded in
+local files cannot self-promote a run. When a Worker executes a derived SIF, VM
+image, or other artifact rather than the canonical digest-pinned OCI artifact,
+the same trusted receipt must also contain the accepted workload-resolution
+evidence. A Worker's own transformation claim is not organizer acceptance.
+Missing evidence is recorded in
 `leaderboard_eligibility_violations`; it never silently promotes a preview.
 
 A challenge release also publishes finite `track_configs` and

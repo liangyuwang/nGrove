@@ -109,12 +109,12 @@ Passing conformance does not certify a user-controlled deployment.  Likewise,
 an organizer-controlled deployment is not eligible when required technical
 capabilities are missing.  Missing or insufficient capabilities are recorded
 explicitly and never trigger a fallback. A receipt is conformant only for the
-suite version associated with the active Worker Protocol; a passing v4 receipt
-cannot certify a v5 Worker boundary.
+suite version associated with the active Worker Protocol; a passing v5 receipt
+cannot certify a v6 Worker boundary.
 
 ## Research and evaluation roles
 
-Worker Protocol v5 models ResearchWorker and EvaluationWorker as separate
+Worker Protocol v6 models ResearchWorker and EvaluationWorker as separate
 interfaces because their trust domains differ:
 
 - ResearchWorker sees TRAIN, the Agent workspace, and training outputs, but
@@ -135,17 +135,27 @@ and an opaque resolution ID. Core validates the receipt before passing the
 opaque resolution back for Candidate evaluation. A complete `TaskConfig` never
 crosses either role boundary.
 
-Version 5 is a breaking interface revision in the current unreleased
+Before either role launches release-owned code, Core sends a `WorkloadRequest`
+containing a semantic role and the canonical release identity. The Worker
+returns `ResolvedWorkload`: effective format and SHA-256, optional immutable
+transformation provenance, and an opaque resolution ID. Core passes that exact
+resolution into `start_lease()` or `evaluate_candidate()`. A digest-pinned OCI
+identity is accepted when the effective OCI digest is unchanged. Any derived
+artifact is formally usable only when the evidence matches a
+`WorkloadResolutionAcceptance` supplied through the trusted organizer release
+receipt. Worker self-description is never organizer acceptance.
+
+Version 6 is a breaking interface revision in the current unreleased
 development snapshot; it does not imply a package release version. Older
 Workers are rejected rather than adapted implicitly. External Worker packages
-must implement path-free hidden-data resolution, accept TEST before ANALYSIS,
-bind evaluation to the resolved identity, and preserve the precise
+must implement workload and hidden-data resolution, bind operations to both
+resolved identities, accept TEST before ANALYSIS, and preserve the precise
 prefix/target/artifact visibility fields in `CandidateChannelRequirements`
 without assuming a particular transport.
 
 A local development Worker may implement both roles in one process. A future
 formal deployment may place them on separate services connected only through
-an immutable artifact reference. The current version 5 Python interface does
+an immutable artifact reference. The current version 6 Python interface does
 not yet define that remote artifact transport.
 
 Worker operation failures and teardown failures have different episode
@@ -184,7 +194,7 @@ down. If teardown cannot be confirmed, it raises `WorkerTeardownFailure` and
 retains whatever private handles its deployment needs for operator-level retry;
 those handles are not added to the Core protocol.
 
-## Workload identity in v0
+## Workload identity and resolution
 
 The current task fields `training_image`, `candidate_image`,
 `evaluator_image`, and `inference_gateway_image` are release-selected OCI-style
@@ -197,9 +207,9 @@ ineligible.
 A non-Docker Worker may consume the OCI artifact directly. If it executes a
 derived SIF, VM image, or platform artifact, the mapping must be reproducible,
 identified, recorded, and accepted by the organizer. A Worker may not silently
-replace the workload environment. Version 4 does not yet define the normalized
-resolution receipt needed to make such a translated workload formally
-eligible.
+replace the workload environment. Version 6 defines that semantic evidence and
+operation binding without defining how a platform converts or stores the
+artifact.
 
 ## Hidden-evaluation lifecycle
 
@@ -248,9 +258,10 @@ release-owned Candidate ABI.
 ## Current migration stage
 
 The phase-one interface is an in-process Python protocol. The Supervisor uses
-semantic lease operations (`start_lease`, `exec_lease`, `lease_state`, and
-`terminate_lease`), Worker-owned hidden resolution (`resolve_hidden_dataset`),
-and semantic evaluation (`evaluate_candidate`). It neither stores container
+semantic workload resolution (`resolve_workload`), lease operations
+(`start_lease`, `exec_lease`, `lease_state`, and `terminate_lease`), Worker-owned
+hidden resolution (`resolve_hidden_dataset`), and semantic evaluation
+(`evaluate_candidate`). It neither stores container
 identifiers nor asks how those effects are implemented.
 
 Its `Path` arguments are local deployment handles. They assume that the Worker
@@ -258,11 +269,11 @@ implementation can access or materialize the Coordinator-named TRAIN,
 workspace, Lease output, Candidate, public API, and evaluation locations. They
 must not be treated as a stable serializable remote protocol. Hidden datasets
 are the exception: their semantic request and resolution contain no `Path`.
-A shared-filesystem Worker can implement version 5 directly; a topology without
+A shared-filesystem Worker can implement version 6 directly; a topology without
 shared Candidate or workspace paths still needs future artifact-reference and
 materialization semantics.
 
-Version 5 also passes the requested `TrainingResources` to Worker operations
+Version 6 also passes the requested `TrainingResources` to Worker operations
 but does not define a normalized effective-allocation receipt;
 `start_lease()` returns `None`. Environment inventory is useful diagnostic
 metadata, not proof that every release-normative resource property was granted
@@ -291,9 +302,7 @@ Deliberately deferred work includes:
 4. remote authenticated Worker transports where a real topology requires one;
 5. deployment certification;
 6. normalized resource-allocation evidence distinguishing requested,
-   scheduler-allocated, workload-visible, and enforced resources;
-7. workload-resolution evidence binding a release-owned OCI reference to a
-   verified derived SIF, VM image, or other immutable artifact.
+   scheduler-allocated, workload-visible, and enforced resources.
 
 Those features should be added to the Worker protocol and external Worker SDK,
 not by adding platform code to AutoTrain-Bench Core.

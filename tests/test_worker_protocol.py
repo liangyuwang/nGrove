@@ -13,7 +13,10 @@ from autotrain_bench.worker_protocol import (
     HiddenDatasetIdentityMismatch,
     HiddenDatasetRequest,
     ResolvedHiddenDataset,
+    ResolvedWorkload,
     TrustLevel,
+    WorkloadRequest,
+    WorkloadResolutionAcceptance,
     WORKER_CONFORMANCE_SUITE_VERSION,
     WorkerDescriptor,
     assess_worker,
@@ -81,6 +84,47 @@ class WorkerProtocolTests(unittest.TestCase):
         self.assertIs(mismatch.receipt, resolved)
         self.assertNotIn("/", str(mismatch))
 
+    def test_workload_resolution_is_semantic_and_path_free(self):
+        request = WorkloadRequest("training", "example/training@sha256:" + "a" * 64)
+        resolved = ResolvedWorkload(
+            role="training",
+            requested_identity=request.requested_identity,
+            effective_format="sif",
+            effective_sha256="b" * 64,
+            transformation_sha256="c" * 64,
+            resolution_id="opaque-resolution",
+        )
+        acceptance = WorkloadResolutionAcceptance(
+            **resolved.evidence_manifest(),
+        )
+
+        self.assertTrue(acceptance.matches(resolved))
+        serialized = json.dumps(resolved.evidence_manifest()).lower()
+        for forbidden in ("path", "url", "mount", "scheduler", "container_id"):
+            self.assertNotIn(forbidden, serialized)
+
+    def test_workload_resolution_rejects_invalid_or_unbound_evidence(self):
+        with self.assertRaisesRegex(ValueError, "workload role"):
+            WorkloadRequest("agent", "example/agent")
+        with self.assertRaisesRegex(ValueError, "effective workload format"):
+            ResolvedWorkload(
+                "training",
+                "example/training",
+                "Apptainer SIF",
+                "a" * 64,
+                None,
+                "opaque",
+            )
+        with self.assertRaisesRegex(ValueError, "opaque identifier"):
+            ResolvedWorkload(
+                "training",
+                "example/training",
+                "sif",
+                "a" * 64,
+                None,
+                "/private/cache/image.sif",
+            )
+
     def test_capabilities_are_separate_from_deployment_trust(self):
         assessment = assess_worker(
             descriptor(),
@@ -135,7 +179,7 @@ class WorkerProtocolTests(unittest.TestCase):
 
     def test_descriptor_manifest_contains_no_platform_schema(self):
         manifest = descriptor().public_manifest()
-        self.assertEqual(manifest["protocol_version"], 5)
+        self.assertEqual(manifest["protocol_version"], 6)
         self.assertEqual(manifest["roles"], ["research", "evaluation"])
         serialized = json.dumps(manifest).lower()
         self.assertNotIn("docker", serialized)
@@ -146,7 +190,7 @@ class WorkerProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "protocol version"):
             WorkerDescriptor(
                 worker_id="future-worker",
-                protocol_version=6,
+                protocol_version=7,
                 trust_level=TrustLevel.DEVELOPMENT,
                 roles=("research",),
                 capabilities={},

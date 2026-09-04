@@ -32,6 +32,8 @@ from autotrain_bench.worker_protocol import (
     HiddenDatasetRequest,
     HiddenDatasetResolutionFailure,
     ResearchTaskSpec,
+    WorkloadRequest,
+    WorkloadResolutionFailure,
     TrustLevel,
     WorkerTeardownFailure,
 )
@@ -50,6 +52,19 @@ def publish_agent_api(public_task: Path) -> None:
     )
 
 
+def resolve_evaluation_workloads(runtime, task, episode_id):
+    return {
+        "candidate_workload": runtime.resolve_workload(
+            episode_id=episode_id,
+            workload=WorkloadRequest("candidate", task.candidate_image),
+        ),
+        "evaluator_workload": runtime.resolve_workload(
+            episode_id=episode_id,
+            workload=WorkloadRequest("evaluator", task.evaluator_image),
+        ),
+    }
+
+
 class CapturingDockerRuntime(DockerRuntime):
     def __init__(self, *, monotonic=None, hidden_datasets=None):
         super().__init__(
@@ -63,6 +78,8 @@ class CapturingDockerRuntime(DockerRuntime):
     def _run(self, args, **kwargs):
         self.calls.append(list(args))
         self.call_kwargs.append(dict(kwargs))
+        if args[:2] == ["image", "inspect"] and "{{.Id}}" in args:
+            return subprocess.CompletedProcess(args, 0, "sha256:" + "a" * 64 + "\n", "")
         return subprocess.CompletedProcess(args, 0, "container-id\n", "")
 
 
@@ -105,6 +122,83 @@ class RuntimeBoundaryTests(unittest.TestCase):
             )
             self.assertFalse(hasattr(resolved, "path"))
 
+    def test_workload_resolution_is_episode_bound_and_drives_the_launch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            public_task = root / "task.json"
+            public_task.write_text("{}", encoding="utf-8")
+            publish_agent_api(public_task)
+            reference = "example/training@sha256:" + "a" * 64
+            task = replace(
+                ResearchTaskSpec.from_task(
+                    TaskConfig.load(TASK), public_task.parent / "agent_api"
+                ),
+                training_image=reference,
+            )
+            runtime = CapturingDockerRuntime()
+            resolved = runtime.resolve_workload(
+                episode_id="episode-1",
+                workload=WorkloadRequest("training", reference),
+            )
+
+            with self.assertRaises(WorkloadResolutionFailure):
+                runtime.start_lease(
+                    episode_id="episode-2",
+                    lease_id="lease-0001",
+                    duration_seconds=60,
+                    task=task,
+                    workspace=root,
+                    resources=TrainingResources(),
+                    lease_dir=root / "wrong-lease",
+                    workload=resolved,
+                )
+            self.assertEqual(runtime.calls, [])
+
+            runtime.start_lease(
+                episode_id="episode-1",
+                lease_id="lease-0001",
+                duration_seconds=60,
+                task=task,
+                workspace=root,
+                resources=TrainingResources(),
+                lease_dir=root / "lease",
+                workload=resolved,
+            )
+
+            launch = next(call for call in runtime.calls if call[0] == "run")
+            self.assertIn(reference, launch)
+            self.assertNotIn(resolved.resolution_id, launch)
+
+    def test_mutable_preview_tag_is_frozen_to_image_id_before_launch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            public_task = root / "task.json"
+            public_task.write_text("{}", encoding="utf-8")
+            publish_agent_api(public_task)
+            task = ResearchTaskSpec.from_task(
+                TaskConfig.load(TASK), public_task.parent / "agent_api"
+            )
+            runtime = CapturingDockerRuntime()
+            resolved = runtime.resolve_workload(
+                episode_id="episode",
+                workload=WorkloadRequest("training", task.training_image),
+            )
+            runtime.start_lease(
+                episode_id="episode",
+                lease_id="lease-0001",
+                duration_seconds=60,
+                task=task,
+                workspace=root,
+                resources=TrainingResources(),
+                lease_dir=root / "lease",
+                workload=resolved,
+            )
+
+            launch = next(call for call in runtime.calls if call[0] == "run")
+            self.assertEqual(resolved.effective_format, "oci-image-config")
+            self.assertIn("sha256:" + "a" * 64, launch)
+            self.assertNotIn(task.training_image, launch)
+
     def test_resolved_hidden_dataset_cannot_change_before_candidate_start(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "test.json"
@@ -116,6 +210,8 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 task=task,
                 hidden_dataset=HiddenDatasetRequest("test"),
             )
+            workloads = resolve_evaluation_workloads(runtime, task, "episode-1")
+            runtime.calls.clear()
             source.write_text('{"sequences":[[0,2]]}', encoding="utf-8")
 
             with self.assertRaises(HiddenDatasetIdentityMismatch):
@@ -126,6 +222,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                     candidate_dir=TASK.parent / "agent",
                     hidden_dataset=resolved,
                     output_dir=Path(directory) / "output",
+                    **workloads,
                 )
 
             self.assertEqual(runtime.calls, [])
@@ -141,6 +238,8 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 task=task,
                 hidden_dataset=HiddenDatasetRequest("test"),
             )
+            workloads = resolve_evaluation_workloads(runtime, task, "episode-1")
+            runtime.calls.clear()
 
             with self.assertRaises(HiddenDatasetResolutionFailure):
                 runtime.evaluate_candidate(
@@ -150,6 +249,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                     candidate_dir=TASK.parent / "agent",
                     hidden_dataset=resolved,
                     output_dir=Path(directory) / "output",
+                    **workloads,
                 )
 
             self.assertEqual(runtime.calls, [])
@@ -235,6 +335,14 @@ class RuntimeBoundaryTests(unittest.TestCase):
         task = ResearchTaskSpec.from_task(
             TaskConfig.load(TASK), TASK.parent / "agent-api"
         )
+        task = replace(
+            task,
+            training_image="example/training@sha256:" + "a" * 64,
+        )
+        workload = runtime.resolve_workload(
+            episode_id="episode",
+            workload=WorkloadRequest("training", task.training_image),
+        )
 
         with patch.object(
             runtime,
@@ -260,6 +368,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                         workspace=TASK.parent,
                         resources=TrainingResources(),
                         lease_dir=TASK.parent / "lease",
+                        workload=workload,
                     )
 
                 self.assertIn(("episode", "lease"), runtime._worker_leases)
@@ -981,7 +1090,9 @@ class RuntimeBoundaryTests(unittest.TestCase):
                     output_dir=output,
                     timeout_seconds=7,
                 )
-            create = runtime.calls[0]
+            create = next(
+                call for call in runtime.calls if call[:2] == ["network", "create"]
+            )
             run_calls = [call for call in runtime.calls if call and call[0] == "run"]
             candidate = next(
                 call for call in run_calls if "candidate_server" in " ".join(call)
@@ -1130,6 +1241,8 @@ class RuntimeBoundaryTests(unittest.TestCase):
     def test_candidate_logs_are_private_and_never_enter_runtime_error(self):
         class FailingRuntime(CapturingDockerRuntime):
             def _run(self, args, **kwargs):
+                if args[:2] == ["image", "inspect"] and "{{.Id}}" in args:
+                    return super()._run(args, **kwargs)
                 self.calls.append(list(args))
                 self.call_kwargs.append(dict(kwargs))
                 if args and args[0] == "logs":

@@ -75,8 +75,8 @@ budget, isolation, comparison, or eligibility. Device selection, scheduler
 requests, cgroups, filesystem quotas, and other enforcement mechanisms remain
 Worker-owned.
 
-This paragraph states the target contract, not a claim that version 5 already
-has an allocation receipt. Version 5 passes requested `TrainingResources` into
+This paragraph states the target contract, not a claim that version 6 already
+has an allocation receipt. Version 6 passes requested `TrainingResources` into
 Worker operations and records deployment inventory, but `start_lease()` returns
 no normalized effective-allocation evidence. That gap is deferred to C4 and
 must remain explicit for formal evaluation.
@@ -89,7 +89,7 @@ The v0 support statement is:
 
 - The bundled `autotrain-bench prepare` and `autotrain-bench start` commands
   are a single-host local Docker reference composition.
-- `autotrain_bench.worker_protocol` version 5 is a synchronous in-process
+- `autotrain_bench.worker_protocol` version 6 is a synchronous in-process
   Python contract. Its remaining TRAIN/workspace/Candidate/output `Path` values
   are local deployment handles, not a serializable remote wire format. Hidden
   dataset requests and resolutions are path-free.
@@ -115,7 +115,7 @@ The v0 support statement is:
   define site storage policy. The bundled launcher records this limitation and
   therefore does not claim policy compliance.
 - After the v0 Worker stops a Lease, the Coordinator validates, copies, hashes,
-  and atomically stores the Candidate from a shared path. Version 4 has no
+  and atomically stores the Candidate from a shared path. Version 6 has no
   Worker-side capture operation or remote `ArtifactRef`.
 
 Phase A originally changed documentation only. The later postmortem-evaluation
@@ -333,11 +333,12 @@ Worker-owned Candidate/Evaluator channel mechanism. It also supplied negative
 evidence: shared paths were sufficient, so remote `ArtifactRef` work remains
 deferred. No scheduler or runtime mechanism is promoted into Core.
 
-That external run predates Worker Protocol v5. Its evidence still validates the
-thin-Core boundary, but its old conformance result cannot certify the new
-path-free hidden-data resolution contract. The out-of-tree Worker must implement
-`resolve_hidden_dataset()` and rerun the matching conformance suite before a new
-deployment claim is made.
+That external run predates Worker Protocol v5 and v6. Its evidence still
+validates the thin-Core boundary, but its old conformance result cannot certify
+the path-free hidden-data or workload-resolution contracts. The out-of-tree
+Worker must implement `resolve_hidden_dataset()` and `resolve_workload()`, bind
+the returned resolutions to execution, and rerun the matching conformance suite
+before a new deployment claim is made.
 
 ## Postmortem hidden evaluation migration
 
@@ -350,9 +351,10 @@ Status: implemented in the development schemas.
   is rejected until teardown and Agent-control cleanup are confirmed.
 - The final Agent-declared incumbent is scored on TEST first. The TEST decision
   is persisted before selected historical Candidates are attempted on ANALYSIS.
-- Result schema v6 records the frozen Candidate inventory, ordered incumbent
-  declarations, ANALYSIS trajectory, explicit analysis disposition, and
-  trajectory-derived selected/evaluated point counts. Every trajectory point is
+- Result schema v7 records workload-resolution evidence, the frozen Candidate
+  inventory, ordered incumbent declarations, ANALYSIS trajectory, explicit
+  analysis disposition, and trajectory-derived selected/evaluated point
+  counts. Every trajectory point is
   bound back to its commit and declaration event evidence. Read-only migration
   preserves old VAL evidence as legacy evidence and never calls it ANALYSIS; v4
   postmortem results remain readable with an explicit limitation instead of an
@@ -362,7 +364,7 @@ Status: implemented in the development schemas.
   eligibility. Unconfirmed post-TEST evaluation teardown retains TEST but is
   recorded independently as a deployment-integrity violation, making the run
   non-compliant and ineligible.
-- Worker Protocol v5 expresses a transport-neutral Candidate application
+- Worker Protocol v6 expresses a transport-neutral Candidate application
   contract and a Worker-owned hidden-data resolution seam. Core supplies only a
   logical split name and release-frozen expected digest; the Worker returns an
   effective digest plus opaque resolution ID before Candidate execution. The
@@ -387,7 +389,7 @@ External result: not fired. The tested Agent could be sandboxed, but its
 inference channel could not be mediated by the registered Gateway. A different
 participant with a compliant inference path is needed before redesigning C1.
 
-Result schema version 6 still pins `agent_system` to the bundled v0 runner
+Result schema version 7 still pins `agent_system` to the bundled v0 runner
 vocabulary, so this phase also owns that structure. `_validate_agent_system()`
 in `autotrain_bench/results.py` rejects a `runner` outside `AGENT_RUNNERS` and
 keys its "a host runner declares no egress policy" rule on the literal
@@ -397,7 +399,11 @@ recording an unregistered runner would become unreadable rather than merely
 unverified. This phase must re-express the `agent_system` invariants over
 semantic fields instead of mechanism names, which changes the persisted
 structure and therefore requires a result schema revision with a read-only
-migration.
+migration. Worker Protocol v6 resolves only Worker-owned training, Candidate,
+and Evaluator workloads. The v0 Agent evidence binds the Agent image but not a
+separate inference Gateway image, so formal runs using registered inference now
+fail closed with `inference_gateway_workload_evidence_missing` until C1 defines
+trusted evidence for that deployment boundary.
 
 ### C2. Remote immutable artifacts
 
@@ -415,15 +421,67 @@ path and could use Coordinator-side Candidate capture.
 
 ### C3. Workload resolution evidence
 
+Status: implemented in Worker Protocol v6 and result schema v7.
+
 Trigger: a deployment executes a SIF, VM image, or proprietary workload derived
 from the release-owned OCI reference.
 
 Possible result: a receipt binding the requested canonical workload, effective
 artifact identity, transformation provenance, and organizer acceptance.
 
-External result: fired. OCI-to-SIF conversion produced a different effective
-artifact without a normalized binding receipt. The receipt design remains open;
-an arbitrary Worker assertion must not be mistaken for organizer acceptance.
+External result: fired. Worker Protocol v6 now separates `WorkloadRequest` from
+`ResolvedWorkload`, passes the opaque resolution into the operation that may
+launch it, and records the requested identity, effective format and SHA-256,
+optional transformation-provenance SHA-256, Worker identity, and acceptance
+status. An unchanged digest-pinned OCI artifact is accepted by identity. A
+derived SIF, VM image, or other artifact is rejected for formal use unless its
+evidence exactly matches a `WorkloadResolutionAcceptance` supplied by the
+trusted organizer `ReleaseVerificationReceipt`. No runtime, conversion, cache,
+or scheduler mechanism was added to Core.
+
+#### Open v6 resolution follow-ups
+
+The semantic shape of C3 is implemented, but the following implementation and
+lifecycle findings remain open. They must not be treated as completed merely
+because the current unit and conformance tests pass:
+
+1. **Bind hidden-data identity to the bytes actually evaluated.** The bundled
+   Worker currently hashes its configured source and later asks the runtime to
+   mount that path. A mutation or replacement between those operations can make
+   the Evaluator consume bytes different from the resolution receipt. The
+   bundled Worker must instead hash and evaluate the same Worker-private,
+   immutable snapshot (or provide an equivalently atomic mechanism). A
+   regression test must mutate the original source at the hash-to-launch
+   boundary and prove that unreceipted bytes cannot be evaluated.
+2. **Make every primary hidden-resolution path terminal.** A Worker can raise
+   `HiddenDatasetIdentityMismatch` while returning a receipt that does not
+   actually differ from the release or previously resolved identity. The
+   Coordinator must reject that inconsistent signal as invalid Worker evidence
+   instead of leaving `status=closed`, `test_status=pending`, and no staged
+   result. Tests must cover both a missing expected digest and a matching
+   expected digest.
+3. **Preserve workload-resolution failure classes.** A non-creating reference
+   operation such as `docker image inspect` currently raises the runtime's
+   generic `WorkerFailure`, which the Coordinator conservatively interprets as
+   unknown Worker state and a teardown failure. The bundled Worker must
+   translate a confirmed, side-effect-free resolution failure into
+   `WorkloadResolutionFailure`; only genuinely unknown resource state may use
+   `WorkerTeardownFailure`. Tests must distinguish resolution failure from
+   unconfirmed teardown.
+4. **Bound resolution liveness.** Worker Protocol v6 resolution calls are
+   synchronous and have no semantic deadline or cancellation operation. A slow
+   hidden-data or workload resolver can therefore block the Coordinator and is
+   not charged against the later evaluation timeout. Before claiming a bounded
+   formal lifecycle, the protocol must define either a resolution deadline or
+   a separate bounded operation budget and pass only the remaining evaluation
+   allowance onward. This may be addressed together with the independently
+   triggered asynchronous-operation work below; until then it is an explicit
+   v0 limitation, not a platform-specific mechanism to add to Core.
+
+The first three items are correctness and failure-semantics work for the
+bundled implementation. The fourth is a protocol/liveness limitation and may
+require a Worker Protocol revision if it changes required method arguments or
+operation ordering.
 
 ### C4. Resource allocation evidence
 
@@ -437,7 +495,7 @@ identity needed by Core's comparison and eligibility checks. The schema must
 remain property-extensible; it must not turn one platform's CPU, accelerator,
 topology, cgroup, or storage vocabulary into a universal Core checklist.
 
-Worker Protocol v5 has no such receipt: `start_lease()` returns `None`.
+Worker Protocol v6 has no such receipt: `start_lease()` returns `None`.
 
 External result: fired. Requested resources, scheduler allocation,
 workload-visible resources, and the enforcing layer differed. The future schema
@@ -462,7 +520,8 @@ inside Core.
 Phase A documentation and a behavior-preserving Phase B refactor did not change
 the then-current protocol. The postmortem hidden-evaluation contract advanced
 Worker Protocol to version 4; Worker-owned, path-free hidden-data resolution
-advanced it to version 5.
+advanced it to version 5; operation-bound workload resolution evidence advanced
+it to version 6 and result schema version 7.
 
 A new protocol revision is required when an implementation must change a
 required method, argument, return value, ordering guarantee, or failure

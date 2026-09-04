@@ -43,6 +43,9 @@ from .worker_protocol import (
     ResolvedHiddenDataset,
     ResearchTaskSpec,
     TrustLevel,
+    ResolvedWorkload,
+    WorkloadRequest,
+    WorkloadResolutionFailure,
     WorkerDescriptor,
     WorkerFailure,
     WorkerTeardownFailure,
@@ -142,6 +145,9 @@ class DockerRuntime:
             self._hidden_datasets[name] = Path(path).expanduser().resolve()
         self._resolved_hidden_datasets: Dict[
             tuple[str, str], tuple[str, ResolvedHiddenDataset, Path]
+        ] = {}
+        self._resolved_workloads: Dict[
+            tuple[str, str], tuple[ResolvedWorkload, str]
         ] = {}
         self._worker_leases: Dict[tuple, str] = {}
         self._pending_evaluations: Dict[tuple, Tuple[str, str, str]] = {}
@@ -254,6 +260,111 @@ class DockerRuntime:
         if resources is not None:
             resources.validate_for(config)
             self.validate_hardware(resources)
+
+    def resolve_workload(
+        self,
+        *,
+        episode_id: str,
+        workload: WorkloadRequest,
+    ) -> ResolvedWorkload:
+        """Bind an OCI reference to an opaque, episode-scoped authorization."""
+
+        if not isinstance(workload, WorkloadRequest):
+            raise TypeError("workload must be a WorkloadRequest")
+        marker = "@sha256:"
+        declared_sha256 = (
+            workload.requested_identity.rsplit(marker, 1)[1]
+            if marker in workload.requested_identity
+            else None
+        )
+        if (
+            declared_sha256 is not None
+            and len(declared_sha256) == 64
+            and all(character in "0123456789abcdef" for character in declared_sha256)
+        ):
+            effective_sha256 = declared_sha256
+            effective_format = "oci"
+            execution_reference = workload.requested_identity
+        else:
+            inspected = self._run(
+                [
+                    "image",
+                    "inspect",
+                    workload.requested_identity,
+                    "--format",
+                    "{{.Id}}",
+                ],
+                timeout=20,
+            ).stdout.strip()
+            if not inspected.startswith("sha256:"):
+                raise WorkloadResolutionFailure(
+                    "runtime did not return an immutable workload identity"
+                )
+            effective_sha256 = inspected.removeprefix("sha256:")
+            if len(effective_sha256) != 64 or any(
+                character not in "0123456789abcdef" for character in effective_sha256
+            ):
+                raise WorkloadResolutionFailure(
+                    "runtime returned an invalid workload digest"
+                )
+            # Do not launch through the mutable tag after resolving it. Docker
+            # accepts its immutable image ID as an execution reference.
+            effective_format = "oci-image-config"
+            execution_reference = inspected
+        resolution_id = (
+            "workload:"
+            + uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                ":".join(
+                    (
+                        episode_id,
+                        workload.role,
+                        workload.requested_identity,
+                        effective_format,
+                        effective_sha256,
+                    )
+                ),
+            ).hex
+        )
+        resolved = ResolvedWorkload(
+            role=workload.role,
+            requested_identity=workload.requested_identity,
+            effective_format=effective_format,
+            effective_sha256=effective_sha256,
+            transformation_sha256=None,
+            resolution_id=resolution_id,
+        )
+        self._resolved_workloads[(episode_id, resolution_id)] = (
+            resolved,
+            execution_reference,
+        )
+        return resolved
+
+    def _workload_reference(
+        self,
+        *,
+        episode_id: str,
+        workload: ResolvedWorkload,
+        role: str,
+        requested_identity: str,
+    ) -> str:
+        if not isinstance(workload, ResolvedWorkload):
+            raise TypeError("workload resolution must be a ResolvedWorkload")
+        private = self._resolved_workloads.get((episode_id, workload.resolution_id))
+        if private is None:
+            raise WorkloadResolutionFailure(
+                "workload resolution is unavailable for this episode"
+            )
+        expected, reference = private
+        if (
+            workload != expected
+            or workload.role != role
+            or workload.requested_identity != requested_identity
+        ):
+            raise WorkloadResolutionFailure(
+                "workload resolution evidence does not match the requested role"
+            )
+        return reference
 
     def validate_hardware(self, resources: TrainingResources) -> None:
         resources.validate()
@@ -710,6 +821,7 @@ class DockerRuntime:
         workspace: Path,
         resources: TrainingResources,
         lease_dir: Path,
+        workload_image: Optional[str] = None,
     ) -> None:
         public_helper = (
             task.public_api_dir / "autotrain_bench" / "candidate_preflight.py"
@@ -772,7 +884,7 @@ class DockerRuntime:
             args.extend(["--gpus", str(resources.nvidia_gpu_count)])
         for device in resources.devices:
             args.extend(["--device", device])
-        args.extend([task.training_image, "sleep", "infinity"])
+        args.extend([workload_image or task.training_image, "sleep", "infinity"])
         self._run(args)
 
     @staticmethod
@@ -796,6 +908,7 @@ class DockerRuntime:
         workspace: Path,
         resources: TrainingResources,
         lease_dir: Path,
+        workload: ResolvedWorkload,
     ) -> None:
         """Map the semantic lease operation to the local reference runtime."""
 
@@ -804,6 +917,12 @@ class DockerRuntime:
         if key in self._worker_leases:
             raise RuntimeFailure(f"lease already exists: {lease_id}")
         name = self._worker_lease_runtime_name(episode_id, lease_id)
+        workload_image = self._workload_reference(
+            episode_id=episode_id,
+            workload=workload,
+            role="training",
+            requested_identity=task.training_image,
+        )
         self._worker_leases[key] = name
         try:
             self.start_training(
@@ -812,6 +931,7 @@ class DockerRuntime:
                 workspace=workspace,
                 resources=resources,
                 lease_dir=lease_dir,
+                workload_image=workload_image,
             )
         except Exception as start_exc:
             # ``docker run`` may create the named container before the client
@@ -1005,6 +1125,14 @@ class DockerRuntime:
             request,
             data_path,
         )
+        candidate_workload = self.resolve_workload(
+            episode_id="local-preview",
+            workload=WorkloadRequest("candidate", task.candidate_image),
+        )
+        evaluator_workload = self.resolve_workload(
+            episode_id="local-preview",
+            workload=WorkloadRequest("evaluator", task.evaluator_image),
+        )
         return self.evaluate_candidate(
             episode_id="local-preview",
             task=task,
@@ -1012,6 +1140,8 @@ class DockerRuntime:
             candidate_dir=candidate_dir,
             hidden_dataset=resolved,
             output_dir=output_dir,
+            candidate_workload=candidate_workload,
+            evaluator_workload=evaluator_workload,
             timeout_seconds=timeout_seconds,
         )
 
@@ -1082,6 +1212,8 @@ class DockerRuntime:
         split: str,
         data_path: Path,
         output_dir: Path,
+        candidate_image: str,
+        evaluator_image: str,
         timeout_seconds: Optional[float] = None,
     ) -> float:
         resources.validate()
@@ -1161,7 +1293,7 @@ class DockerRuntime:
             candidate_args.extend(["--gpus", str(resources.nvidia_gpu_count)])
         candidate_args.extend(
             [
-                task.candidate_image,
+                candidate_image,
                 "python",
                 "-m",
                 "autotrain_bench.candidate_server",
@@ -1215,7 +1347,7 @@ class DockerRuntime:
             self._mount(output_dir, "/output", read_only=False),
             "--env",
             "PYTHONDONTWRITEBYTECODE=1",
-            task.evaluator_image,
+            evaluator_image,
             "python",
             "/opt/docker-evaluator-adapter.py",
             "--evaluator",
@@ -1310,6 +1442,8 @@ class DockerRuntime:
         candidate_dir: Path,
         hidden_dataset: ResolvedHiddenDataset,
         output_dir: Path,
+        candidate_workload: ResolvedWorkload,
+        evaluator_workload: ResolvedWorkload,
         timeout_seconds: Optional[float] = None,
     ) -> float:
         """Map the semantic evaluation operation to the reference runtime."""
@@ -1342,6 +1476,18 @@ class DockerRuntime:
                     hidden_dataset.resolution_id,
                 )
             )
+        candidate_image = self._workload_reference(
+            episode_id=episode_id,
+            workload=candidate_workload,
+            role="candidate",
+            requested_identity=task.candidate_image,
+        )
+        evaluator_image = self._workload_reference(
+            episode_id=episode_id,
+            workload=evaluator_workload,
+            role="evaluator",
+            requested_identity=task.evaluator_image,
+        )
         return self._run_isolated_evaluator(
             episode_id=episode_id,
             task=task,
@@ -1350,6 +1496,8 @@ class DockerRuntime:
             split=hidden_dataset.name,
             data_path=data_path,
             output_dir=output_dir,
+            candidate_image=candidate_image,
+            evaluator_image=evaluator_image,
             timeout_seconds=timeout_seconds,
         )
 
