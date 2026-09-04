@@ -75,7 +75,7 @@ budget, isolation, comparison, or eligibility. Device selection, scheduler
 requests, cgroups, filesystem quotas, and other enforcement mechanisms remain
 Worker-owned.
 
-Worker Protocol v13 retains the v7 implementation of this contract for Training
+Worker Protocol v14 retains the v7 implementation of this contract for Training
 Lease admission.
 It retains `TrainingResources` only as a bundled v0 compatibility input while
 passing the release-owned, property-extensible `ResourceEnvelope` and requiring
@@ -374,11 +374,17 @@ Status: implemented in the development schemas.
   mapping assigns perfect prediction 100 and uniform prediction or worse 0;
   raw NLL retains distinctions at that floor without requiring representable
   perplexity.
+- Task schema v6, Agent Protocol v6, Worker Protocol v14, and result schema v12
+  promote cost to an independent release-scoped axis. `time_per_task` is the
+  end-to-end Candidate wall time divided by the trusted frozen task count;
+  total wall time, workload counts, output size, and throughput remain audited
+  submetrics. Performance and cost are compared by Pareto dominance only when
+  release, hidden-dataset identity, and runtime profile match.
 - Research is durably sealed before Agent/Research teardown; hidden evaluation
   is rejected until teardown and Agent-control cleanup are confirmed.
 - The final Agent-declared incumbent is scored on TEST first. The TEST decision
   is persisted before selected historical Candidates are attempted on ANALYSIS.
-- The current result schema records workload/resource and serving evidence. It
+- The current result schema records workload/resource and cost evidence. It
   also records the frozen Candidate
   inventory, ordered incumbent declarations, ANALYSIS trajectory, explicit
   analysis disposition, and trajectory-derived selected/evaluated point
@@ -392,7 +398,7 @@ Status: implemented in the development schemas.
   succeeds; teardown that remains unconfirmed blocks publication and becomes an
   infrastructure failure. Terminal publication happens only after all
   postmortem workload and private-materialization cleanup attempts finish.
-- Worker Protocol v13 retains the platform-neutral offline Candidate file
+- Worker Protocol v14 retains the platform-neutral offline Candidate file
   contract and Worker-owned hidden-data resolution seam. Core supplies
   only a logical split name, the normative identity algorithm, and a
   release-frozen expected digest; the Worker returns the same algorithm, an
@@ -418,7 +424,7 @@ External result: not fired. The tested Agent could be sandboxed, but its
 inference channel could not be mediated by the registered Gateway. A different
 participant with a compliant inference path is needed before redesigning C1.
 
-Result schema version 11 still pins `agent_system` to the bundled v0 runner
+Result schema version 12 still pins `agent_system` to the bundled v0 runner
 vocabulary, so this phase also owns that structure. `_validate_agent_system()`
 in `autotrain_bench/results.py` rejects a `runner` outside `AGENT_RUNNERS` and
 keys its "a host runner declares no egress policy" rule on the literal
@@ -429,7 +435,7 @@ unverified. This phase must re-express the `agent_system` invariants over
 semantic fields instead of mechanism names, which changes the persisted
 structure and therefore requires a result schema revision. Once the first
 preview establishes a compatibility baseline, that revision must also define
-an explicit compatibility policy. Worker Protocol v13 resolves only Worker-owned training, Candidate,
+an explicit compatibility policy. Worker Protocol v14 resolves only Worker-owned training, Candidate,
 and Evaluator workloads. The v0 Agent evidence binds the Agent image but not a
 separate inference Gateway image, so formal runs using registered inference now
 fail closed with `inference_gateway_workload_evidence_missing` until C1 defines

@@ -45,8 +45,9 @@ incumbent.
 | Evaluation context lengths | 8, 16, 32, 64, and 128 tokens |
 | Track A | 300 seconds total wall clock |
 | Track B | Three leases, at most 75 seconds each |
-| Evaluator measurement | Generic performance score with mean NLL raw metric |
+| Evaluation axes | Performance score and end-to-end time per task |
 | Performance score | `100 * max(0, min(1, 1 - mean_token_nll / log(vocab_size)))`, higher is better |
+| Cost | Candidate wall seconds / 512 next-token tasks, lower is better |
 | Candidate protocol | `offline_next_token_logits_v3` |
 
 The trusted evaluation path runs on CPU. A participant may train with any
@@ -229,10 +230,12 @@ the evaluation step. Prediction files are ephemeral and are deleted after
 scoring or failure and confirmed teardown; an unconfirmed teardown retains
 them only for a cleanup retry.
 
-Serving wall time covers the entire Candidate invocation: sandbox startup,
+Candidate wall time covers the entire Candidate invocation: sandbox startup,
 Candidate import, model loading, context-file reading, participant-controlled
 scheduling/inference, prediction writing, flushing, and process exit. Trusted
 hidden-data materialization, validation, target joining, and scoring are
-excluded. Results record the performance score, its mean-NLL raw metric,
-and serving efficiency separately; serving efficiency is not folded into the
-performance score.
+excluded. Results record the performance score, its mean-NLL raw metric, and
+the independent `time_per_task` cost axis. `time_per_task` divides that wall
+time by the frozen number of next-token tasks, while total time and throughput
+remain cost submetrics. The two axes form a Pareto frontier and are not folded
+into one score.

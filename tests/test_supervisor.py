@@ -340,8 +340,8 @@ class FakeWorker:
         return CandidateEvaluationResult(
             performance_score=performance_score,
             raw_metrics={"mean_nll": nll},
-            serving_seconds=2.0,
-            examples=3,
+            candidate_wall_seconds=2.0,
+            task_count=3,
             input_tokens=6,
             prediction_bytes=64,
         )
@@ -1069,19 +1069,20 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(final["test_performance_score"], 0.0)
         self.assertEqual(final["test_raw_metrics"]["mean_nll"], 1.5)
         self.assertEqual(
-            final["test_serving_metrics"],
+            final["test_cost"],
             {
-                "wall_seconds": 2.0,
-                "examples": 3,
+                "time_per_task": 2.0 / 3.0,
+                "candidate_wall_seconds": 2.0,
+                "task_count": 3,
                 "input_tokens": 6,
                 "prediction_bytes": 64,
-                "examples_per_second": 1.5,
+                "tasks_per_second": 1.5,
                 "input_tokens_per_second": 3.0,
             },
         )
         self.assertEqual(
-            final["analysis_trajectory"][0]["analysis_serving_metrics"],
-            final["test_serving_metrics"],
+            final["analysis_trajectory"][0]["analysis_cost"],
+            final["test_cost"],
         )
         self.assertIsNone(final["failure"])
         self.assertTrue(final["agent_finish_observed"])

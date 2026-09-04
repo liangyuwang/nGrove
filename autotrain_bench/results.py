@@ -12,6 +12,7 @@ from .artifact_identity import (
 )
 from .config import AGENT_EGRESS_POLICIES, AGENT_RUNNERS
 from .worker_protocol import (
+    CostContract,
     PerformanceScoreContract,
     ResourceAllocationReceipt,
     ResourceEnvelope,
@@ -19,7 +20,7 @@ from .worker_protocol import (
 )
 
 
-RESULT_SCHEMA_VERSION = 11
+RESULT_SCHEMA_VERSION = 12
 _VALID_STATUSES = {
     "created",
     "active",
@@ -40,58 +41,11 @@ class ResultSchemaError(ValueError):
     """An episode state cannot be represented by the requested result schema."""
 
 
-def _validate_serving_metrics(value: Any, field: str) -> None:
-    if not isinstance(value, dict) or set(value) != {
-        "wall_seconds",
-        "examples",
-        "input_tokens",
-        "prediction_bytes",
-        "examples_per_second",
-        "input_tokens_per_second",
-    }:
-        raise ResultSchemaError(f"{field} must be a complete serving metrics object")
-    wall_seconds = value["wall_seconds"]
-    if isinstance(wall_seconds, bool) or not isinstance(wall_seconds, (int, float)):
-        raise ResultSchemaError(f"{field}.wall_seconds must be finite and positive")
+def _validate_cost(value: Any, contract: CostContract, field: str) -> None:
     try:
-        seconds = float(wall_seconds)
-    except OverflowError as exc:
-        raise ResultSchemaError(
-            f"{field}.wall_seconds must be finite and positive"
-        ) from exc
-    if not math.isfinite(seconds) or seconds <= 0:
-        raise ResultSchemaError(f"{field}.wall_seconds must be finite and positive")
-    for name in ("examples", "input_tokens", "prediction_bytes"):
-        count = value[name]
-        if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
-            raise ResultSchemaError(f"{field}.{name} must be a positive integer")
-    for rate_name, count_name in (
-        ("examples_per_second", "examples"),
-        ("input_tokens_per_second", "input_tokens"),
-    ):
-        rate = value[rate_name]
-        if isinstance(rate, bool) or not isinstance(rate, (int, float)):
-            raise ResultSchemaError(f"{field}.{rate_name} must be finite and positive")
-        try:
-            normalized_rate = float(rate)
-        except OverflowError as exc:
-            raise ResultSchemaError(
-                f"{field}.{rate_name} must be finite and positive"
-            ) from exc
-        if not math.isfinite(normalized_rate) or normalized_rate <= 0:
-            raise ResultSchemaError(f"{field}.{rate_name} must be finite and positive")
-        try:
-            expected = value[count_name] / seconds
-        except OverflowError as exc:
-            raise ResultSchemaError(
-                f"{field}.{rate_name} cannot be represented"
-            ) from exc
-        if not math.isfinite(expected):
-            raise ResultSchemaError(f"{field}.{rate_name} cannot be represented")
-        if not math.isclose(normalized_rate, expected, rel_tol=1e-12):
-            raise ResultSchemaError(
-                f"{field}.{rate_name} does not match its count and wall time"
-            )
+        contract.validate_measurement(value)
+    except (TypeError, ValueError) as exc:
+        raise ResultSchemaError(f"invalid {field}: {exc}") from exc
 
 
 def normalize_result_report(payload: Any) -> Dict[str, Any]:
@@ -156,6 +110,14 @@ def _performance_score_contract(result: Dict[str, Any]) -> PerformanceScoreContr
         return PerformanceScoreContract.from_manifest(value)
     except (TypeError, ValueError) as exc:
         raise ResultSchemaError(f"invalid performance score contract: {exc}") from exc
+
+
+def _cost_contract(result: Dict[str, Any]) -> CostContract:
+    value = result.get("cost_contract")
+    try:
+        return CostContract.from_manifest(value)
+    except (TypeError, ValueError) as exc:
+        raise ResultSchemaError(f"invalid cost contract: {exc}") from exc
 
 
 def _validate_performance_measurement(
@@ -415,12 +377,16 @@ def _validate_agent_system(result: Dict[str, Any]) -> None:
 
 
 def _validate_current_result(result: Dict[str, Any]) -> None:
-    if any(field in result for field in ("test_nll", "test_perplexity")):
+    if any(
+        field in result
+        for field in ("test_nll", "test_perplexity", "test_serving_metrics")
+    ):
         raise ResultSchemaError(
             "current results may not contain legacy TEST metric fields"
         )
     _validate_agent_system(result)
     performance_contract = _performance_score_contract(result)
+    cost_contract = _cost_contract(result)
     _validate_artifact_identity_algorithms(result)
     _validate_workload_resolutions(
         result.get("workload_resolutions"),
@@ -437,7 +403,7 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
     analysis_identity_verified = result.get("analysis_identity_verified")
     analysis_trajectory = result.get("analysis_trajectory")
     research_sealed_at = result.get("research_sealed_at")
-    test_serving_metrics = result.get("test_serving_metrics")
+    test_cost = result.get("test_cost")
     if analysis_complete is not None and not isinstance(analysis_complete, bool):
         raise ResultSchemaError("analysis_complete must be null or boolean")
     if analysis_trajectory is not None and not isinstance(analysis_trajectory, list):
@@ -446,6 +412,7 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
         _validate_analysis_trajectory(
             analysis_trajectory,
             performance_contract=performance_contract,
+            cost_contract=cost_contract,
         )
         _validate_analysis_summary_counts(result, analysis_trajectory)
     if analysis_status not in {None, "pending", "complete", "incomplete"}:
@@ -551,10 +518,8 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
             or result.get("test_raw_metrics") is not None
         ):
             raise ResultSchemaError("a pending result may not contain TEST metrics")
-        if test_serving_metrics is not None:
-            raise ResultSchemaError(
-                "a pending result may not contain TEST serving metrics"
-            )
+        if test_cost is not None:
+            raise ResultSchemaError("a pending result may not contain TEST cost")
         if result.get("failure") is not None:
             raise ResultSchemaError("a pending result may not contain a failure")
         if status in {"created", "active"} and candidate_id is not None:
@@ -578,10 +543,7 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
             raise ResultSchemaError("a successful result may not contain a failure")
         if result.get("test_status") != "evaluated":
             raise ResultSchemaError("a successful result requires evaluated TEST")
-        _validate_serving_metrics(
-            test_serving_metrics,
-            "test_serving_metrics",
-        )
+        _validate_cost(test_cost, cost_contract, "TEST cost")
         if not any(
             point["candidate_id"] == candidate_id for point in analysis_trajectory
         ):
@@ -608,10 +570,8 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
             or result.get("test_raw_metrics") is not None
         ):
             raise ResultSchemaError("a failed result may not contain TEST metrics")
-        if test_serving_metrics is not None:
-            raise ResultSchemaError(
-                "a failed result may not contain TEST serving metrics"
-            )
+        if test_cost is not None:
+            raise ResultSchemaError("a failed result may not contain TEST cost")
         failure = result.get("failure")
         if not isinstance(failure, str) or not failure.strip():
             raise ResultSchemaError("a failed result must contain a failure reason")
@@ -647,6 +607,7 @@ def _validate_analysis_trajectory(
     trajectory: list[Any],
     *,
     performance_contract: PerformanceScoreContract,
+    cost_contract: CostContract,
 ) -> None:
     """Validate the auditable postmortem measurement attached to a result."""
 
@@ -689,7 +650,14 @@ def _validate_analysis_trajectory(
                 "ANALYSIS trajectory declaration_event_seqs must be positive integers"
             )
         status = point.get("analysis_status")
-        if any(field in point for field in ("analysis_nll", "analysis_perplexity")):
+        if any(
+            field in point
+            for field in (
+                "analysis_nll",
+                "analysis_perplexity",
+                "analysis_serving_metrics",
+            )
+        ):
             raise ResultSchemaError(
                 "current ANALYSIS points may not contain legacy metric fields"
             )
@@ -704,16 +672,11 @@ def _validate_analysis_trajectory(
                 raise ResultSchemaError(
                     "an evaluated ANALYSIS point may not contain an error"
                 )
-            serving_metrics = point.get("analysis_serving_metrics")
-            if serving_metrics is not None:
-                _validate_serving_metrics(
-                    serving_metrics,
-                    "ANALYSIS trajectory analysis_serving_metrics",
-                )
+            cost = point.get("analysis_cost")
+            if cost is not None:
+                _validate_cost(cost, cost_contract, "ANALYSIS trajectory cost")
             else:
-                raise ResultSchemaError(
-                    "an evaluated ANALYSIS point requires serving metrics"
-                )
+                raise ResultSchemaError("an evaluated ANALYSIS point requires cost")
         elif status in {"failed", "infrastructure_failure", "not_run"}:
             if (
                 point.get("analysis_performance_score") is not None
@@ -722,9 +685,9 @@ def _validate_analysis_trajectory(
                 raise ResultSchemaError(
                     "an unmeasured ANALYSIS point may not contain metrics"
                 )
-            if point.get("analysis_serving_metrics") is not None:
+            if point.get("analysis_cost") is not None:
                 raise ResultSchemaError(
-                    "an unmeasured ANALYSIS point may not contain serving metrics"
+                    "an unmeasured ANALYSIS point may not contain cost"
                 )
             error = point.get("analysis_error")
             if not isinstance(error, str) or not error.strip():

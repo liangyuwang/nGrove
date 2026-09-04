@@ -67,16 +67,19 @@ are frozen by the release and are not comparable with another benchmark
 release. A run without a successful finite TEST measurement has no performance
 score or raw metrics and is reported as a failed experiment.
 
-The result also records Candidate serving wall time, examples, input tokens,
-prediction bytes, and derived throughput. The clock includes Candidate sandbox
-startup, model loading, file I/O, scheduling, and inference, but excludes
-hidden-data materialization and trusted validation/scoring. This preview keeps
-performance and efficiency as separate axes; it does not yet define a combined
-ranking. Efficiency comparisons require the same hidden input identity and
-runtime profile. A conforming Worker hard-limits prediction storage to two
-entries and `examples * vocab_size * 4 + 65536` bytes, then removes it after
-scoring or failure and confirmed teardown. The bundled local Docker preview
-reports its host bind mount quota as unsupported.
+The second evaluation axis is Candidate `time_per_task`, defined as end-to-end
+Candidate wall time divided by the frozen number of next-token prediction
+tasks. Lower is better. The result retains total Candidate wall time, task
+count, input tokens, prediction bytes, and derived throughput as cost
+submetrics. The clock includes Candidate sandbox startup, model loading, file
+I/O, scheduling, and inference, but excludes hidden-data materialization and
+trusted validation/scoring. Results form a Performance–Cost Pareto frontier;
+the axes are not collapsed into a scalar. Cost comparisons require the same
+hidden input identity and runtime profile. A conforming Worker hard-limits
+prediction storage to two entries and
+`examples * vocab_size * 4 + 65536` bytes, then removes it after scoring or
+failure and confirmed teardown. The bundled local Docker preview reports its
+host bind mount quota as unsupported.
 
 The Agent-visible task manifest defines the exact output object at
 `evaluation.candidate_boundary.prediction_manifest`: `predictions.json` must

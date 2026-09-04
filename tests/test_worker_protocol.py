@@ -17,6 +17,7 @@ from autotrain_bench.worker_protocol import (
     CandidateEvaluationResult,
     CommandResult,
     ConformanceReceipt,
+    CostContract,
     EnforcementLevel,
     HiddenDatasetIdentityMismatch,
     HiddenDatasetRequest,
@@ -366,12 +367,12 @@ class WorkerProtocolTests(unittest.TestCase):
                 prediction_artifact_retention="retain",
             )
 
-    def test_candidate_evaluation_result_exposes_raw_efficiency_evidence(self):
+    def test_candidate_evaluation_result_exposes_average_cost_and_evidence(self):
         result = CandidateEvaluationResult(
             performance_score=72.5,
             raw_metrics={"loss": 1.25},
-            serving_seconds=2.0,
-            examples=4,
+            candidate_wall_seconds=2.0,
+            task_count=4,
             input_tokens=20,
             prediction_bytes=128,
         )
@@ -387,20 +388,61 @@ class WorkerProtocolTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            result.serving_manifest(),
+            result.cost_manifest(
+                CostContract(
+                    "candidate_end_to_end_time_per_task_v1",
+                    "next_token_prediction",
+                )
+            ),
             {
-                "wall_seconds": 2.0,
-                "examples": 4,
+                "time_per_task": 0.5,
+                "candidate_wall_seconds": 2.0,
+                "task_count": 4,
                 "input_tokens": 20,
                 "prediction_bytes": 128,
-                "examples_per_second": 2.0,
+                "tasks_per_second": 2.0,
                 "input_tokens_per_second": 10.0,
             },
         )
-        with self.assertRaisesRegex(ValueError, "serving_seconds"):
+        with self.assertRaisesRegex(ValueError, "candidate_wall_seconds"):
             CandidateEvaluationResult(50.0, {"loss": 1.0}, 0.0, 1, 1, 1)
-        with self.assertRaisesRegex(ValueError, "serving rates"):
+        with self.assertRaisesRegex(ValueError, "cost"):
             CandidateEvaluationResult(50.0, {"loss": 1.0}, 5e-324, 1, 1, 1)
+
+    def test_cost_contract_fixes_average_time_semantics(self):
+        contract = CostContract(
+            "candidate_end_to_end_time_per_task_v1",
+            "next_token_prediction",
+        )
+
+        self.assertEqual(
+            CostContract.from_manifest(contract.public_manifest()),
+            contract,
+        )
+        with self.assertRaisesRegex(ValueError, "primary_metric"):
+            CostContract(
+                "candidate_end_to_end_time_per_task_v1",
+                "next_token_prediction",
+                primary_metric="candidate_wall_seconds",
+            )
+
+    def test_cost_contract_rejects_unrepresentable_counts(self):
+        contract = CostContract(
+            "candidate_end_to_end_time_per_task_v1",
+            "next_token_prediction",
+        )
+        cost = {
+            "time_per_task": 1.0,
+            "candidate_wall_seconds": 1.0,
+            "task_count": 10**10000,
+            "input_tokens": 1,
+            "prediction_bytes": 1,
+            "tasks_per_second": 1.0,
+            "input_tokens_per_second": 1.0,
+        }
+
+        with self.assertRaisesRegex(ValueError, "cannot be represented"):
+            contract.validate_measurement(cost)
 
     def test_performance_score_contract_is_generic_and_release_scoped(self):
         contract = PerformanceScoreContract("accuracy_v2", ("accuracy",))
@@ -636,7 +678,7 @@ class WorkerProtocolTests(unittest.TestCase):
 
     def test_descriptor_manifest_contains_no_platform_schema(self):
         manifest = descriptor().public_manifest()
-        self.assertEqual(manifest["protocol_version"], 13)
+        self.assertEqual(manifest["protocol_version"], 14)
         self.assertEqual(manifest["roles"], ["research", "evaluation"])
         self.assertNotIn("conformance", manifest)
         serialized = json.dumps(manifest).lower()
@@ -648,7 +690,7 @@ class WorkerProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "protocol version"):
             WorkerDescriptor(
                 worker_id="future-worker",
-                protocol_version=14,
+                protocol_version=15,
                 trust_level=TrustLevel.DEVELOPMENT,
                 roles=("research",),
                 capabilities={},

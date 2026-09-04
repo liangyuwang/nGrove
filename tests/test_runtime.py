@@ -1452,8 +1452,8 @@ class RuntimeBoundaryTests(unittest.TestCase):
 
             self.assertEqual(result.performance_score, 72.5)
             self.assertEqual(result.raw_metrics["mean_nll"], 1.25)
-            self.assertEqual(result.serving_seconds, 3.0)
-            self.assertEqual(result.examples, 3)
+            self.assertEqual(result.candidate_wall_seconds, 3.0)
+            self.assertEqual(result.task_count, 3)
             self.assertEqual(result.input_tokens, 6)
             self.assertEqual(result.prediction_bytes, 64)
             candidate = next(
@@ -1544,7 +1544,9 @@ class RuntimeBoundaryTests(unittest.TestCase):
             result.write_text('{"performance_score": 99.0}', encoding="utf-8")
             runtime = CapturingDockerRuntime()
 
-            with self.assertRaisesRegex(RuntimeFailure, "valid performance result"):
+            with self.assertRaisesRegex(
+                RuntimeFailure, "valid performance or cost result"
+            ):
                 runtime.run_evaluator(
                     config=TaskConfig.load(TASK),
                     resources=TrainingResources(),
@@ -1617,7 +1619,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
 
                     runtime = ResultRuntime()
                     with self.assertRaisesRegex(
-                        RuntimeFailure, "valid performance result"
+                        RuntimeFailure, "valid performance or cost result"
                     ):
                         runtime.run_evaluator(
                             config=TaskConfig.load(TASK),

@@ -113,10 +113,10 @@ Passing conformance does not certify a user-controlled deployment.  Likewise,
 an organizer-controlled deployment is not eligible when required technical
 capabilities are missing.  Missing or insufficient capabilities are recorded
 explicitly and never trigger a fallback. A receipt is conformant only for the
-suite version associated with the active Worker Protocol; a passing v12 receipt
-cannot certify a v13 Worker boundary.
+suite version associated with the active Worker Protocol; a passing v13 receipt
+cannot certify a v14 Worker boundary.
 
-Worker Protocol v13 retains the v9 evidence direction. `WorkerDescriptor`
+Worker Protocol v14 retains the v9 evidence direction. `WorkerDescriptor`
 contains only Worker self-description and cannot carry conformance. The trusted
 Operator composition supplies `ConformanceReceipt` independently to the
 Coordinator. The receipt binds its schema and suite versions, the assessed
@@ -135,7 +135,7 @@ suite remains required before a formal deployment can receive one.
 
 ## Research and evaluation roles
 
-Worker Protocol v13 models ResearchWorker and EvaluationWorker as separate
+Worker Protocol v14 models ResearchWorker and EvaluationWorker as separate
 interfaces because their trust domains differ:
 
 - ResearchWorker sees TRAIN, the Agent workspace, and training outputs, but
@@ -167,24 +167,25 @@ artifact is formally usable only when the evidence matches a
 `WorkloadResolutionAcceptance` supplied through the trusted organizer release
 receipt. Worker self-description is never organizer acceptance.
 
-Version 13 is a breaking interface revision in the current unreleased
+Version 14 is a breaking interface revision in the current unreleased
 development snapshot; it does not imply a package release version. Older
-Workers are rejected rather than adapted implicitly. Version 13 retains the v6
+Workers are rejected rather than adapted implicitly. Version 14 retains the v6
 workload-resolution rules, the v7 requirement that a successful `start_lease()`
 return a `ResourceAllocationReceipt`, and the v8 mandatory resolution
 deadlines, as well as the v9 trusted conformance input and v10 single-target
 semantics, the v11 offline two-artifact file contract, and the v12 hidden-bundle
-identity and prediction-storage rules. It replaces the LM-specific evaluation
-result with the release-owned generic performance-score contract. External Worker
-packages must implement workload and hidden-data resolution, bind operations
-to resolved identities and resource requests, accept TEST before ANALYSIS, and
-preserve the precise context/target/artifact visibility fields in
+identity and prediction-storage rules. It also retains the v13 generic
+performance-score contract and adds the release-scoped cost contract. External
+Worker packages must implement workload and hidden-data resolution, bind
+operations to resolved identities and resource requests, accept TEST before
+ANALYSIS, return valid performance and cost measurements, and preserve the
+precise context/target/artifact visibility fields in
 `CandidateChannelRequirements` and the offline file ABI without assuming a
 particular storage or sandbox implementation.
 
 A local development Worker may implement both roles in one process. A future
 formal deployment may place them on separate services connected only through
-an immutable artifact reference. The current version 13 Python interface does
+an immutable artifact reference. The current version 14 Python interface does
 not yet define that remote artifact transport.
 
 Worker operation failures and teardown failures have different episode
@@ -228,7 +229,7 @@ are not additive timeout grants.
 
 ### Known liveness limit: cooperative deadlines
 
-Worker Protocol v13 is a synchronous, in-process Python interface. Its timeout
+Worker Protocol v14 is a synchronous, in-process Python interface. Its timeout
 arguments are semantic deadlines and a conformance requirement, but they are
 cooperative rather than a Core-side preemption mechanism. Core can reject a
 result returned after its deadline; while a call has not returned, however,
@@ -440,7 +441,7 @@ they must not encode whether the invocation is ANALYSIS or TEST or reveal
 trusted source metadata.
 
 `evaluate_candidate()` returns `CandidateEvaluationResult`, carrying a generic
-`performance_score`, release-declared `raw_metrics`, and serving evidence. The
+`performance_score`, release-declared `raw_metrics`, and trusted cost evidence. The
 score contract fixes a finite `[0, 100]` range, `maximize` direction, exact raw
 metric names, a definition ID, and `comparison_scope: benchmark_release`. The
 task evaluator owns the mapping from task metrics into this interface; Core and
@@ -451,12 +452,25 @@ implemented by the frozen task evaluator. It requires finite non-negative
 `100 * max(0, min(1, 1 - mean_nll / log(vocab_size)))`. Uniform prediction and
 worse therefore map to 0; the raw NLL retains their distinction. Perplexity is
 not required, so overflow in that derived display value cannot invalidate a
-finite score. The serving clock starts immediately before Candidate
-invocation and stops after process exit and output flush, so it includes
-sandbox startup, Candidate import/model load, context-file reading,
-participant-controlled scheduling/inference, and prediction writing. Hidden
-resolution, trusted validation, target joining, and score computation are
-outside that clock. Teardown is confirmed before the operation returns.
+finite score.
+
+The independent cost contract defines `time_per_task` in
+`seconds_per_task`, with `minimize` direction, as
+`candidate_wall_seconds / task_count`. The task manifest freezes what one task
+means; `lm-pretrain-v1` uses one next-token prediction. This is an amortized
+workload cost rather than per-request latency because the Candidate controls
+batching and scheduling. `task_count` comes from the trusted, release-required
+context set; incomplete prediction output fails before a cost is returned.
+The same cost object retains `candidate_wall_seconds`, `task_count`,
+`input_tokens`, `prediction_bytes`, `tasks_per_second`, and
+`input_tokens_per_second` as auditable submetrics. The Candidate wall clock
+starts immediately before Candidate invocation and stops after process exit
+and output flush, so it includes sandbox startup, Candidate import/model load,
+context-file reading, participant-controlled scheduling/inference, and
+prediction writing. Hidden resolution, trusted validation, target joining, and
+score computation are outside that clock. Teardown is confirmed before the
+operation returns. Cost comparisons require the same benchmark release, hidden
+dataset identity, and runtime profile.
 
 ## Current migration stage
 
@@ -472,7 +486,7 @@ implementation can access or materialize the Coordinator-named TRAIN,
 workspace, Lease output, Candidate, public API, and evaluation locations. They
 must not be treated as a stable serializable remote protocol. Hidden datasets
 are the exception: their semantic request and resolution contain no `Path`.
-A shared-filesystem Worker can implement version 13 directly; a topology without
+A shared-filesystem Worker can implement version 14 directly; a topology without
 shared Candidate or workspace paths still needs future artifact-reference and
 materialization semantics.
 
@@ -496,7 +510,7 @@ minimum enforcement level, missing and unexpected properties, and the operation
 bindings before admitting the Lease. A rejected receipt causes
 compensating Lease termination; the workload never becomes an active,
 budgeted Lease. Receipt authenticity comes from the trusted Worker deployment
-and its invocation channel—v13 does not pretend that an in-process Python object
+and its invocation channel—v14 does not pretend that an in-process Python object
 is a remote cryptographic transport.
 
 During the v0 manifest transition, an explicit `resource_contract` is the full

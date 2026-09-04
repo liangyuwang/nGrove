@@ -1682,13 +1682,13 @@ class DockerRuntime:
             evaluator_name,
             prediction_dir,
         )
-        serving_seconds: Optional[float] = None
+        candidate_wall_seconds: Optional[float] = None
         try:
             self._run(
                 scorer_args("validate"),
                 timeout=remaining_seconds(),
             )
-            serving_started = self.monotonic()
+            candidate_started = self.monotonic()
             self._run(candidate_args, timeout=remaining_seconds())
             wait_result = self._run(
                 ["wait", candidate_name],
@@ -1704,7 +1704,7 @@ class DockerRuntime:
                 raise RuntimeFailure(
                     f"Candidate process exited with status {candidate_exit_code}"
                 )
-            serving_seconds = max(0.0, self.monotonic() - serving_started)
+            candidate_wall_seconds = max(0.0, self.monotonic() - candidate_started)
             self._run(
                 scorer_args("score"),
                 timeout=remaining_seconds(),
@@ -1734,17 +1734,18 @@ class DockerRuntime:
                 "prediction_bytes",
             }:
                 raise ValueError("unexpected scorer result fields")
-            if serving_seconds is None:
-                raise ValueError("serving duration is unavailable")
+            if candidate_wall_seconds is None:
+                raise ValueError("Candidate wall time is unavailable")
             result = CandidateEvaluationResult(
                 performance_score=payload["performance_score"],
                 raw_metrics=payload["raw_metrics"],
-                serving_seconds=serving_seconds,
-                examples=payload["examples"],
+                candidate_wall_seconds=candidate_wall_seconds,
+                task_count=payload["examples"],
                 input_tokens=payload["input_tokens"],
                 prediction_bytes=payload["prediction_bytes"],
             )
             result.performance_manifest(task.performance_score)
+            result.cost_manifest(task.cost)
         except (
             FileNotFoundError,
             KeyError,
@@ -1754,7 +1755,7 @@ class DockerRuntime:
             json.JSONDecodeError,
         ) as exc:
             raise RuntimeFailure(
-                "evaluator did not produce a valid performance result"
+                "evaluator did not produce a valid performance or cost result"
             ) from exc
         return result
 

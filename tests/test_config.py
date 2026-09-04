@@ -108,8 +108,28 @@ class ConfigTests(unittest.TestCase):
         )
         self.assertEqual(public["evaluation"]["context_lengths"], [1, 2, 3])
         self.assertEqual(
-            public["evaluation"]["serving_efficiency"]["status"],
-            "reported_not_ranked",
+            public["evaluation"]["cost"],
+            {
+                "definition_id": "candidate_end_to_end_time_per_task_v1",
+                "task_unit": "next_token_prediction",
+                "primary_metric": "time_per_task",
+                "unit": "seconds_per_task",
+                "direction": "minimize",
+                "aggregation": "candidate_wall_seconds_divided_by_task_count",
+                "comparison_scope": "benchmark_release",
+                "comparison_requires": [
+                    "hidden_dataset_identity",
+                    "runtime_profile",
+                ],
+                "submetrics": [
+                    "candidate_wall_seconds",
+                    "task_count",
+                    "input_tokens",
+                    "prediction_bytes",
+                    "tasks_per_second",
+                    "input_tokens_per_second",
+                ],
+            },
         )
 
     def test_context_lengths_are_frozen_and_end_at_the_context_limit(self):
@@ -208,6 +228,16 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ConfigError, "performance_score"):
                 TaskConfig.load(task)
 
+    def test_task_requires_the_average_cost_contract(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = self._write_task(directory)
+            payload = json.loads(task.read_text(encoding="utf-8"))
+
+            payload["evaluation"].pop("cost")
+            task.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ConfigError, "evaluation.cost"):
+                TaskConfig.load(task)
+
     def test_leaderboard_task_requires_digest_pinned_images(self):
         with tempfile.TemporaryDirectory() as directory:
             task = self._write_task(directory)
@@ -263,7 +293,7 @@ class ConfigTests(unittest.TestCase):
         # The Agent reads this manifest and the `agent status` response.  A
         # rename in either surface must move this version with it.
         self.assertEqual(manifest["protocol_version"], AGENT_PROTOCOL_VERSION)
-        self.assertEqual(AGENT_PROTOCOL_VERSION, 5)
+        self.assertEqual(AGENT_PROTOCOL_VERSION, 6)
 
     def test_agent_egress_environment_and_host_runner_are_separate(self):
         with tempfile.TemporaryDirectory() as directory:

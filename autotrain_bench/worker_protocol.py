@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from .config import TaskConfig, TrainingResources
 
 
-WORKER_PROTOCOL_VERSION = 13
+WORKER_PROTOCOL_VERSION = 14
 WORKER_CONFORMANCE_SUITE_VERSION = f"worker-v{WORKER_PROTOCOL_VERSION}"
 CONFORMANCE_RECEIPT_VERSION = 1
 RESOURCE_ENVELOPE_SCHEMA_VERSION = 1
@@ -48,6 +48,20 @@ PERFORMANCE_SCORE_MINIMUM = 0.0
 PERFORMANCE_SCORE_MAXIMUM = 100.0
 PERFORMANCE_SCORE_DIRECTION = "maximize"
 PERFORMANCE_SCORE_COMPARISON_SCOPE = "benchmark_release"
+COST_PRIMARY_METRIC = "time_per_task"
+COST_PRIMARY_UNIT = "seconds_per_task"
+COST_DIRECTION = "minimize"
+COST_AGGREGATION = "candidate_wall_seconds_divided_by_task_count"
+COST_COMPARISON_SCOPE = "benchmark_release"
+COST_COMPARISON_REQUIRES = ("hidden_dataset_identity", "runtime_profile")
+COST_SUBMETRICS = (
+    "candidate_wall_seconds",
+    "task_count",
+    "input_tokens",
+    "prediction_bytes",
+    "tasks_per_second",
+    "input_tokens_per_second",
+)
 
 
 class WorkerFailure(RuntimeError):
@@ -370,6 +384,159 @@ class PerformanceScoreContract:
 
 
 @dataclass(frozen=True)
+class CostContract:
+    """Release-owned interface for the independent evaluation-cost axis."""
+
+    definition_id: str
+    task_unit: str
+    primary_metric: str = COST_PRIMARY_METRIC
+    unit: str = COST_PRIMARY_UNIT
+    direction: str = COST_DIRECTION
+    aggregation: str = COST_AGGREGATION
+    comparison_scope: str = COST_COMPARISON_SCOPE
+    comparison_requires: Tuple[str, ...] = COST_COMPARISON_REQUIRES
+    submetrics: Tuple[str, ...] = COST_SUBMETRICS
+
+    def __post_init__(self) -> None:
+        for field_name, value in (
+            ("definition_id", self.definition_id),
+            ("task_unit", self.task_unit),
+        ):
+            if (
+                not isinstance(value, str)
+                or not value
+                or len(value) > 128
+                or not value[0].isalnum()
+                or any(
+                    character not in "abcdefghijklmnopqrstuvwxyz0123456789._-"
+                    for character in value
+                )
+            ):
+                raise ValueError(f"cost {field_name} is invalid")
+        if self.primary_metric != COST_PRIMARY_METRIC:
+            raise ValueError("cost primary_metric must be time_per_task")
+        if self.unit != COST_PRIMARY_UNIT:
+            raise ValueError("cost unit must be seconds_per_task")
+        if self.direction != COST_DIRECTION:
+            raise ValueError("cost direction must be minimize")
+        if self.aggregation != COST_AGGREGATION:
+            raise ValueError(
+                "cost aggregation must divide Candidate wall time by task count"
+            )
+        if self.comparison_scope != COST_COMPARISON_SCOPE:
+            raise ValueError("cost comparison_scope must be benchmark_release")
+        if self.comparison_requires != COST_COMPARISON_REQUIRES:
+            raise ValueError(
+                "cost comparisons must require hidden dataset identity and "
+                "runtime profile"
+            )
+        if self.submetrics != COST_SUBMETRICS:
+            raise ValueError("cost submetrics do not match the active protocol")
+
+    @classmethod
+    def from_manifest(cls, value: Any) -> "CostContract":
+        if not isinstance(value, dict) or set(value) != {
+            "definition_id",
+            "task_unit",
+            "primary_metric",
+            "unit",
+            "direction",
+            "aggregation",
+            "comparison_scope",
+            "comparison_requires",
+            "submetrics",
+        }:
+            raise ValueError("cost contract has unexpected fields")
+        comparison_requires = value["comparison_requires"]
+        submetrics = value["submetrics"]
+        if not isinstance(comparison_requires, list):
+            raise ValueError("cost comparison_requires must be an array")
+        if not isinstance(submetrics, list):
+            raise ValueError("cost submetrics must be an array")
+        return cls(
+            definition_id=value["definition_id"],
+            task_unit=value["task_unit"],
+            primary_metric=value["primary_metric"],
+            unit=value["unit"],
+            direction=value["direction"],
+            aggregation=value["aggregation"],
+            comparison_scope=value["comparison_scope"],
+            comparison_requires=tuple(comparison_requires),
+            submetrics=tuple(submetrics),
+        )
+
+    def public_manifest(self) -> Dict[str, Any]:
+        return {
+            "definition_id": self.definition_id,
+            "task_unit": self.task_unit,
+            "primary_metric": self.primary_metric,
+            "unit": self.unit,
+            "direction": self.direction,
+            "aggregation": self.aggregation,
+            "comparison_scope": self.comparison_scope,
+            "comparison_requires": list(self.comparison_requires),
+            "submetrics": list(self.submetrics),
+        }
+
+    def validate_measurement(self, value: Any) -> Dict[str, float | int]:
+        if not isinstance(value, Mapping) or set(value) != {
+            COST_PRIMARY_METRIC,
+            *COST_SUBMETRICS,
+        }:
+            raise ValueError("cost must exactly match the cost contract")
+        normalized: Dict[str, float | int] = {}
+        for name in ("task_count", "input_tokens", "prediction_bytes"):
+            count = value[name]
+            if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+                raise ValueError(f"cost {name} must be a positive integer")
+            normalized[name] = count
+        for name in (
+            COST_PRIMARY_METRIC,
+            "candidate_wall_seconds",
+            "tasks_per_second",
+            "input_tokens_per_second",
+        ):
+            measurement = value[name]
+            if isinstance(measurement, bool) or not isinstance(
+                measurement, (int, float)
+            ):
+                raise ValueError(f"cost {name} must be finite and positive")
+            try:
+                number = float(measurement)
+            except OverflowError as exc:
+                raise ValueError(f"cost {name} must be finite and positive") from exc
+            if not math.isfinite(number) or number <= 0:
+                raise ValueError(f"cost {name} must be finite and positive")
+            normalized[name] = number
+
+        seconds = normalized["candidate_wall_seconds"]
+        task_count = normalized["task_count"]
+        input_tokens = normalized["input_tokens"]
+        try:
+            expected = {
+                COST_PRIMARY_METRIC: seconds / task_count,
+                "tasks_per_second": task_count / seconds,
+                "input_tokens_per_second": input_tokens / seconds,
+            }
+        except OverflowError as exc:
+            raise ValueError("cost derived metrics cannot be represented") from exc
+        for name, expected_value in expected.items():
+            if not math.isfinite(expected_value) or expected_value <= 0:
+                raise ValueError(f"cost {name} cannot be represented")
+            if not math.isclose(normalized[name], expected_value, rel_tol=1e-12):
+                raise ValueError(f"cost {name} does not match its source measurements")
+        return {
+            COST_PRIMARY_METRIC: normalized[COST_PRIMARY_METRIC],
+            "candidate_wall_seconds": normalized["candidate_wall_seconds"],
+            "task_count": normalized["task_count"],
+            "input_tokens": normalized["input_tokens"],
+            "prediction_bytes": normalized["prediction_bytes"],
+            "tasks_per_second": normalized["tasks_per_second"],
+            "input_tokens_per_second": normalized["input_tokens_per_second"],
+        }
+
+
+@dataclass(frozen=True)
 class EvaluationTaskSpec:
     """Evaluator configuration without either hidden-dataset location."""
 
@@ -379,6 +546,7 @@ class EvaluationTaskSpec:
     evaluator_image: str
     evaluator_entrypoint: Path
     performance_score: PerformanceScoreContract
+    cost: CostContract
     vocab_size: int
     context_length: int
     context_lengths: Tuple[int, ...]
@@ -395,6 +563,7 @@ class EvaluationTaskSpec:
             evaluator_image=task.evaluator_image,
             evaluator_entrypoint=task.evaluator_entrypoint,
             performance_score=task.performance_score,
+            cost=task.cost,
             vocab_size=task.vocab_size,
             context_length=task.context_length,
             context_lengths=task.context_lengths,
@@ -408,12 +577,12 @@ class EvaluationTaskSpec:
 
 @dataclass(frozen=True)
 class CandidateEvaluationResult:
-    """Trusted performance and end-to-end serving evidence from one evaluation."""
+    """Trusted performance and end-to-end cost evidence from one evaluation."""
 
     performance_score: float
     raw_metrics: Mapping[str, float]
-    serving_seconds: float
-    examples: int
+    candidate_wall_seconds: float
+    task_count: int
     input_tokens: int
     prediction_bytes: int
 
@@ -456,25 +625,30 @@ class CandidateEvaluationResult:
                 raise ValueError(
                     f"Candidate evaluation raw metric {name} must be finite"
                 )
-        value = self.serving_seconds
+        value = self.candidate_wall_seconds
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(
-                "Candidate evaluation serving_seconds must be finite and non-negative"
+                "Candidate evaluation candidate_wall_seconds must be finite and "
+                "non-negative"
             )
         try:
             normalized = float(value)
         except OverflowError as exc:
             raise ValueError(
-                "Candidate evaluation serving_seconds must be finite and non-negative"
+                "Candidate evaluation candidate_wall_seconds must be finite and "
+                "non-negative"
             ) from exc
         if not math.isfinite(normalized) or normalized < 0:
             raise ValueError(
-                "Candidate evaluation serving_seconds must be finite and non-negative"
+                "Candidate evaluation candidate_wall_seconds must be finite and "
+                "non-negative"
             )
-        if self.serving_seconds <= 0:
-            raise ValueError("Candidate evaluation serving_seconds must be positive")
+        if self.candidate_wall_seconds <= 0:
+            raise ValueError(
+                "Candidate evaluation candidate_wall_seconds must be positive"
+            )
         for name, value in (
-            ("examples", self.examples),
+            ("task_count", self.task_count),
             ("input_tokens", self.input_tokens),
             ("prediction_bytes", self.prediction_bytes),
         ):
@@ -482,15 +656,17 @@ class CandidateEvaluationResult:
                 raise ValueError(
                     f"Candidate evaluation {name} must be a positive integer"
                 )
-        seconds = float(self.serving_seconds)
+        seconds = float(self.candidate_wall_seconds)
         try:
-            rates = (self.examples / seconds, self.input_tokens / seconds)
+            derived = (
+                seconds / self.task_count,
+                self.task_count / seconds,
+                self.input_tokens / seconds,
+            )
         except OverflowError as exc:
-            raise ValueError(
-                "Candidate evaluation serving rates must be finite"
-            ) from exc
-        if not all(math.isfinite(rate) for rate in rates):
-            raise ValueError("Candidate evaluation serving rates must be finite")
+            raise ValueError("Candidate evaluation cost must be finite") from exc
+        if not all(math.isfinite(item) and item > 0 for item in derived):
+            raise ValueError("Candidate evaluation cost must be finite and positive")
 
     def performance_manifest(
         self, contract: PerformanceScoreContract
@@ -504,16 +680,18 @@ class CandidateEvaluationResult:
             "raw_metrics": raw_metrics,
         }
 
-    def serving_manifest(self) -> Dict[str, Any]:
-        seconds = float(self.serving_seconds)
-        return {
-            "wall_seconds": seconds,
-            "examples": self.examples,
+    def cost_manifest(self, contract: CostContract) -> Dict[str, Any]:
+        seconds = float(self.candidate_wall_seconds)
+        cost = {
+            "time_per_task": seconds / self.task_count,
+            "candidate_wall_seconds": seconds,
+            "task_count": self.task_count,
             "input_tokens": self.input_tokens,
             "prediction_bytes": self.prediction_bytes,
-            "examples_per_second": self.examples / seconds,
+            "tasks_per_second": self.task_count / seconds,
             "input_tokens_per_second": self.input_tokens / seconds,
         }
+        return contract.validate_measurement(cost)
 
 
 def _validate_sha256(value: str, field: str) -> None:

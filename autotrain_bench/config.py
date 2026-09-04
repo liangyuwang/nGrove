@@ -16,7 +16,7 @@ from .candidate_protocol import (
     prediction_storage_manifest,
     serving_timing_manifest,
 )
-from .worker_protocol import PerformanceScoreContract
+from .worker_protocol import CostContract, PerformanceScoreContract
 
 
 class ConfigError(ValueError):
@@ -39,7 +39,11 @@ class ConfigError(ValueError):
 #
 # Version 5 publishes the exact offline prediction-manifest contract and the
 # optional generated helper API in the Agent-visible task manifest.
-AGENT_PROTOCOL_VERSION = 5
+#
+# Version 6 promotes Candidate cost to an independent, release-scoped axis. Its
+# primary metric is end-to-end Candidate wall time amortized over the frozen
+# number of evaluation tasks.
+AGENT_PROTOCOL_VERSION = 6
 
 # Phases a release may declare as benchmark-owned rather than participant time.
 # `README.md` requires this boundary to be release-defined and identical across
@@ -195,6 +199,13 @@ def _performance_score_contract(
 ) -> PerformanceScoreContract:
     try:
         return PerformanceScoreContract.from_manifest(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"{field} is invalid: {exc}") from exc
+
+
+def _cost_contract(value: Any, field: str = "evaluation.cost") -> CostContract:
+    try:
+        return CostContract.from_manifest(value)
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"{field} is invalid: {exc}") from exc
 
@@ -493,6 +504,7 @@ class TaskConfig:
     evaluator_image: str
     inference_gateway_image: str
     performance_score: PerformanceScoreContract
+    cost: CostContract
     vocab_size: int
     context_length: int
     context_lengths: Tuple[int, ...]
@@ -596,6 +608,7 @@ class TaskConfig:
             performance_score=_performance_score_contract(
                 evaluation.get("performance_score")
             ),
+            cost=_cost_contract(evaluation.get("cost")),
             vocab_size=_positive_int(
                 evaluation.get("vocab_size"), "evaluation.vocab_size"
             ),
@@ -657,13 +670,15 @@ class TaskConfig:
 
     def validate(self) -> "TaskConfig":
         """Validate the immutable task definition and its release classification."""
-        if self.schema_version != 5:
-            raise ConfigError("task schema_version must be 5")
+        if self.schema_version != 6:
+            raise ConfigError("task schema_version must be 6")
         task_kind(self.task_kind)
         if self.task_kind == "development_smoke" and self.leaderboard_eligible:
             raise ConfigError("development smoke tasks may not be leaderboard eligible")
         if not isinstance(self.performance_score, PerformanceScoreContract):
             raise ConfigError("evaluation.performance_score is invalid")
+        if not isinstance(self.cost, CostContract):
+            raise ConfigError("evaluation.cost is invalid")
         if self.evaluator_device not in {"cpu", "cuda"}:
             raise ConfigError("evaluation.device must be 'cpu' or 'cuda'")
         evaluator_backend(self.evaluator_backend)
@@ -793,23 +808,11 @@ class TaskConfig:
                 "candidate_image": self.candidate_image,
                 "candidate_protocol": self.candidate_protocol,
                 "performance_score": self.performance_score.public_manifest(),
+                "cost": self.cost.public_manifest(),
                 "vocab_size": self.vocab_size,
                 "context_length": self.context_length,
                 "context_lengths": list(self.context_lengths),
                 "device": self.evaluator_device,
-                "serving_efficiency": {
-                    "status": "reported_not_ranked",
-                    "wall_time_field": "wall_seconds",
-                    "wall_time_direction": "minimize",
-                    "derived_rate_fields": [
-                        "examples_per_second",
-                        "input_tokens_per_second",
-                    ],
-                    "comparison_requires": [
-                        "hidden_dataset_identity",
-                        "runtime_profile",
-                    ],
-                },
                 "candidate_artifact_limits": {
                     "max_bytes": self.candidate_max_bytes,
                     "max_files": self.candidate_max_files,

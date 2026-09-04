@@ -55,13 +55,17 @@ There is no reference `train.py` that participants are expected to tune.
 
 The AutoTrain system is responsible for building the training system itself.
 
-The primary objective is simple:
+The evaluation objective is two-dimensional:
 
 $$
-\boxed{\text{Maximize hidden TEST performance score}}
+\boxed{\text{maximize hidden TEST performance score}}
+\qquad
+\boxed{\text{minimize hidden TEST time per task}}
 $$
 
-under the resource constraints of the selected benchmark track.
+under the resource constraints of the selected benchmark track. Results are
+compared on a Performance–Cost Pareto frontier rather than collapsed into an
+opaque scalar.
 
 The architectural model is **sandbox-style workload semantics**, not “Docker
 semantics”: workloads have fixed identities, bounded visibility and resources,
@@ -76,7 +80,7 @@ sandbox without adding platform branches to Core.
 
 The repository now contains an executable, single-host Docker prototype of the benchmark protocol. It is intended to validate episode lifecycle, Training Lease accounting, hidden evaluation, and the agent-facing control surface before the first official benchmark instance is selected.
 
-The current development snapshot uses Worker Protocol v13 but does not carry a
+The current development snapshot uses Worker Protocol v14 but does not carry a
 release package version yet. Protocol v7 introduced a breaking Worker API
 revision: every successful Training Lease startup returns operation-bound
 resource allocation evidence. The Release selects an extensible semantic resource
@@ -113,6 +117,11 @@ artifacts ephemeral once evaluation ends and workload teardown is confirmed.
 Version 13 replaces the LM-specific Worker result with a generic `[0, 100]`,
 maximize-oriented performance score, exact release-declared raw metrics, and a
 score definition that is comparable only within one benchmark release.
+Version 14 promotes end-to-end Candidate cost to a release-scoped second axis.
+Its primary metric is `time_per_task`: Candidate wall time divided by the
+frozen task count. Total wall time and throughput remain auditable cost
+submetrics, and comparisons additionally require the same hidden dataset
+identity and runtime profile.
 The Python package itself remains `0.0.0` while unreleased.
 
 Docker is the bundled v0 compatibility implementation, not a general platform
@@ -132,7 +141,7 @@ being hidden behind application-level mailbox limits.
 
 The bundled `autotrain-bench prepare` and `autotrain-bench start` commands are
 the composition root for that local Docker implementation; they are not a
-generic backend loader. Worker Protocol v13 is currently a synchronous,
+generic backend loader. Worker Protocol v14 is currently a synchronous,
 in-process Python contract. Resolution calls receive explicit deadlines, and
 TEST workload/data resolution consumes the same operation budget as evaluation;
 those deadlines are cooperative, so a future asynchronous operation/cancellation
@@ -430,19 +439,19 @@ autotrain-bench report \
   --episode /path/to/autotrain-bench-runs/episodes/<episode-id>
 ```
 
-Episode states declare `result_schema_version: 11`. This repository is still
+Episode states declare `result_schema_version: 12`. This repository is still
 pre-preview, so unpublished development schemas are not a compatibility surface:
 `report` accepts only the current result schema and rejects unversioned, older,
 and unknown future versions rather than guessing their meaning. The first
 published preview establishes the result-compatibility baseline; later schema
 changes must then define an explicit compatibility policy.
 
-In v11, `outcome: "success"` requires a finalized episode, a non-empty final
+In v12, `outcome: "success"` requires a finalized episode, a non-empty final
 Candidate ID, a valid TEST performance score with the exact release-declared raw
-metrics, and complete trusted serving metrics. Current reports identify hidden split digests with
+metrics, and a complete trusted TEST cost measurement. Current reports identify hidden split digests with
 `artifact_identity_algorithms.hidden_evaluation` and a formal organizer receipt
 must declare the same algorithm. A failed outcome requires a failure reason and
-keeps performance and serving metrics `null`. A null outcome is allowed
+keeps performance and cost measurements `null`. A null outcome is allowed
 only before a result exists (`created`, `active`, or the transient `closed`
 state while postmortem TEST, ANALYSIS, and trusted finalization are running),
 and may not carry TEST metrics or a failure reason. Research is first sealed
@@ -690,9 +699,9 @@ the bytes physically absent from the host trust domain until evaluation provide
 stronger defense in depth; Core requires the visibility boundary and frozen
 identity, not one materialization mechanism.
 
-Task schema v5 still retains `paths.analysis` and `paths.test` as compatibility
+Task schema v6 still retains `paths.analysis` and `paths.test` as compatibility
 inputs for the bundled local CLI. The Supervisor neither reads them nor sends
-them through Worker Protocol v13. An external launcher supplies its Evaluation
+them through Worker Protocol v14. An external launcher supplies its Evaluation
 Worker's private source mapping independently; the configured local paths may
 remain absent for that deployment. Replacing these compatibility fields in a
 future task schema is separate from the now path-free Worker boundary.
@@ -842,7 +851,7 @@ $$
 
 Perplexity is derived once from the mean of the single-target losses; the
 evaluator never averages per-sequence or per-batch perplexities. This release
-maps the raw measurement into the generic primary interface:
+maps the raw measurement into the generic performance interface:
 
 $$
 \operatorname{performance\_score}
@@ -1414,11 +1423,11 @@ The second system may be more interesting from an RSI perspective even when the 
 
 ---
 
-# Primary and Secondary Metrics
+# Evaluation Axes
 
-## Primary metric
+## Performance
 
-The primary benchmark interface is:
+The performance axis is:
 
 $$
 \boxed{\text{final hidden TEST performance score}}
@@ -1431,8 +1440,37 @@ release-owned definition converts the task's raw metrics into that interface.
 Scores from different benchmark releases are not comparable.
 
 The performance-score mapping must not combine unrelated axes into an opaque
-formula. In particular, serving efficiency remains separate from task
-performance.
+formula.
+
+## Cost
+
+The independent cost axis is:
+
+$$
+\boxed{\operatorname{time\_per\_task}
+=\frac{\operatorname{candidate\_wall\_seconds}}
+{\operatorname{task\_count}}}
+$$
+
+Lower is better. For `lm-pretrain-v1`, one task is one next-token prediction
+from one hidden prefix. This is an amortized workload cost, not the latency of
+an individual request: the Candidate controls batching and scheduling across
+the complete hidden context file. The denominator is the release-required task
+count, never a participant-selected count of successful outputs. Missing or
+malformed predictions fail the evaluation instead of reducing reported cost.
+
+Candidate wall time starts immediately before the isolated Candidate
+invocation and stops after process exit and prediction-file flush. It includes
+sandbox startup, Candidate import, model loading, input-file reading,
+participant-controlled scheduling and inference, and output-file writing.
+Hidden-data materialization, trusted input validation, target joining, and
+metric computation are excluded.
+
+Performance–Cost comparison uses Pareto dominance: result A dominates result B
+when A has no lower performance and no higher time per task, with at least one
+strict improvement. The leaderboard frontier contains the non-dominated
+results. The two axes are never collapsed into a scalar. Comparisons require
+the same benchmark release, hidden input identity, and runtime profile.
 
 ---
 
@@ -1442,8 +1480,8 @@ The benchmark also records:
 
 * postmortem ANALYSIS performance score and release-declared raw metrics;
 * final TEST performance score and release-declared raw metrics;
-* Candidate serving wall time, examples/second, input tokens/second, and
-  prediction bytes for TEST and each measured ANALYSIS point;
+* Candidate wall time, task count, tasks/second, input tokens/second, and
+  prediction bytes as cost submetrics for TEST and each measured ANALYSIS point;
 * postmortem ANALYSIS performance-score trajectory;
 * final ANALYSIS–TEST disagreement as a distribution diagnostic, not a measure
   of overfitting to ANALYSIS;
@@ -1461,18 +1499,8 @@ The benchmark also records:
 * run failures;
 * incumbent changes.
 
-These metrics are intended for scientific analysis rather than replacing the primary objective.
-
-Serving wall time starts immediately before the isolated Candidate invocation
-and stops after that process exits and its prediction files are flushed. It
-therefore includes sandbox startup, Candidate import, model loading, input-file
-reading, participant-controlled scheduling and inference, and output-file
-writing. Hidden-data materialization, trusted input validation, target joining,
-and task metric computation are excluded. Efficiency comparisons require the same
-hidden input identity and runtime profile. During this development stage the
-result records the two independent axes—performance and efficiency—but does not
-collapse them into a scalar or change leaderboard ordering; a later release can
-define a Pareto or other explicit two-dimensional comparison rule.
+These metrics support scientific analysis without replacing either evaluation
+axis.
 
 ---
 
@@ -1568,7 +1596,7 @@ private writable prediction directory with a release-derived hard byte and
 entry budget. The Worker runs these environments sequentially and transfers
 only the prescribed files; neither has a network. Both are inaccessible to
 Agent and Training Containers, and the scorer returns only
-benchmark-permitted aggregate metrics and serving evidence. Prediction files
+benchmark-permitted aggregate performance and cost evidence. Prediction files
 are not episode audit artifacts: they are removed after scoring or failure and
 confirmed evaluation teardown.
 
@@ -1633,11 +1661,11 @@ The infrastructure-failure policy must be deterministic and auditable.
 
 An episode succeeds only when post-mortem TEST evaluation produces a finite
 performance score in `[0, 100]`, the exact finite raw metrics declared by the
-release, and complete trusted Candidate-serving measurements.
+release, and a complete trusted Candidate cost measurement.
 An episode with no declared incumbent, a failed TEST evaluation, an invalid TEST
 performance measurement, or an invalid raw metric is finalized with
 `outcome: "failed"`; `test_performance_score`, `test_raw_metrics`, and
-`test_serving_metrics` remain `null`.
+`test_cost` remain `null`.
 Infrastructure failures are
 also failed episodes, but remain separately classified for retry policy.
 
@@ -1670,7 +1698,7 @@ postmortem ANALYSIS trajectory
 incumbent declarations
 final artifact
 post-mortem TEST results
-per-evaluation Candidate serving wall time and workload counts
+per-evaluation Candidate time per task and supporting cost measurements
 ```
 
 Where possible, official candidates and episode traces should be reproducible from immutable artifacts.
@@ -1691,10 +1719,11 @@ AutoTrain-Bench should maintain separate leaderboards for the two tracks.
 
 ## Track A
 
-Ranked primarily by:
+Published as a Performance–Cost Pareto frontier at:
 
 ```text
-final TEST performance score at fixed total wall-clock
+final TEST performance score vs. TEST time per task
+at fixed research wall-clock
 ```
 
 Reported alongside:
@@ -1705,15 +1734,16 @@ agent tokens
 Training Leases
 training compute
 model size
-Candidate serving efficiency
+Candidate cost submetrics
 ```
 
 ## Track B
 
-Ranked primarily by:
+Published as a Performance–Cost Pareto frontier at:
 
 ```text
-final TEST performance score after at most N Training Leases
+final TEST performance score vs. TEST time per task
+after at most N Training Leases
 ```
 
 with fixed maximum duration per lease and no organizer feedback during research.
@@ -1727,7 +1757,7 @@ agent tokens
 agent reasoning between leases
 training compute
 model size
-Candidate serving efficiency
+Candidate cost submetrics
 ```
 
 Results from materially different runtime profiles or budget scales should not
@@ -1780,7 +1810,7 @@ contract as a challenge preview:
 
 ```json
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "task_id": "tinystories-byte-lm-smoke-v1",
   "task_kind": "development_smoke",
   "leaderboard_eligible": false,
@@ -1812,6 +1842,24 @@ contract as a challenge preview:
       "direction": "maximize",
       "comparison_scope": "benchmark_release",
       "raw_metrics": ["mean_nll"]
+    },
+    "cost": {
+      "definition_id": "candidate_end_to_end_time_per_task_v1",
+      "task_unit": "next_token_prediction",
+      "primary_metric": "time_per_task",
+      "unit": "seconds_per_task",
+      "direction": "minimize",
+      "aggregation": "candidate_wall_seconds_divided_by_task_count",
+      "comparison_scope": "benchmark_release",
+      "comparison_requires": ["hidden_dataset_identity", "runtime_profile"],
+      "submetrics": [
+        "candidate_wall_seconds",
+        "task_count",
+        "input_tokens",
+        "prediction_bytes",
+        "tasks_per_second",
+        "input_tokens_per_second"
+      ]
     },
     "vocab_size": 257,
     "context_length": 128,
@@ -1864,9 +1912,10 @@ The initial system is fixed. Its autonomous trajectory is not.
 
 The system should succeed or fail based on its own actions after task reveal.
 
-### 7. Keep the primary objective simple
+### 7. Keep evaluation axes explicit
 
-The final objective is the release-defined hidden TEST performance score.
+The final objective is the release-defined hidden TEST Performance–Cost Pareto
+frontier. Performance and time per task remain independently interpretable.
 
 ### 8. Record trajectories, not only endpoints
 

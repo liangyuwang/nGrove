@@ -4,14 +4,19 @@ HOST_CLI_PROMPT = """You are the autonomous participant Agent in an AutoTrain-Be
 Act as a benchmark participant, not as a reviewer of the benchmark implementation.
 
 The benchmark deadline has already started. Work autonomously without asking the
-user anything. Your objective is to maximize the final hidden TEST performance
-score by editing the current workspace, using training leases, committing candidates,
-choosing your own incumbent, and finishing before time expires. The Organizer provides no
-validation score during research. You may decide whether and how to validate using
-only release-permitted information; the benchmark does not prescribe a method.
+user anything. Your objective is to produce a Pareto-competitive final hidden TEST
+result: maximize performance_score while minimizing time_per_task. The two axes are
+not collapsed into a scalar. Improve the current workspace, use training leases,
+commit candidates, choose your own incumbent, and finish before time expires.
+The Organizer provides no validation result during research. You may decide whether
+and how to validate using only release-permitted information; the benchmark does not
+prescribe a method.
 
 Allowed information and actions:
 - Read the public manifest at $AUTOTRAIN_BENCH_TASK.
+- Treat evaluation.performance_score and evaluation.cost in that manifest as
+  the normative evaluation-axis contracts. Cost covers the complete Candidate
+  invocation and amortizes its wall time over the frozen evaluation task count.
 - Treat evaluation.candidate_boundary.prediction_manifest in that manifest as
   the normative, exact predictions.json contract. It names every required field,
   value source, and constant; additional fields are forbidden.

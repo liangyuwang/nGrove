@@ -44,18 +44,19 @@ def _analysis_point(candidate_id="sha256:candidate"):
         "analysis_status": "evaluated",
         "analysis_performance_score": 100.0,
         "analysis_raw_metrics": {"mean_nll": 0.0},
-        "analysis_serving_metrics": _serving_metrics(),
+        "analysis_cost": _cost(),
         "analysis_error": None,
     }
 
 
-def _serving_metrics():
+def _cost():
     return {
-        "wall_seconds": 2.0,
-        "examples": 4,
+        "time_per_task": 0.5,
+        "candidate_wall_seconds": 2.0,
+        "task_count": 4,
         "input_tokens": 20,
         "prediction_bytes": 128,
-        "examples_per_second": 2.0,
+        "tasks_per_second": 2.0,
         "input_tokens_per_second": 10.0,
     }
 
@@ -125,6 +126,27 @@ def _resource_fields():
             "comparison_scope": "benchmark_release",
             "raw_metrics": ["mean_nll"],
         },
+        "cost_contract": {
+            "definition_id": "candidate_end_to_end_time_per_task_v1",
+            "task_unit": "next_token_prediction",
+            "primary_metric": "time_per_task",
+            "unit": "seconds_per_task",
+            "direction": "minimize",
+            "aggregation": "candidate_wall_seconds_divided_by_task_count",
+            "comparison_scope": "benchmark_release",
+            "comparison_requires": [
+                "hidden_dataset_identity",
+                "runtime_profile",
+            ],
+            "submetrics": [
+                "candidate_wall_seconds",
+                "task_count",
+                "input_tokens",
+                "prediction_bytes",
+                "tasks_per_second",
+                "input_tokens_per_second",
+            ],
+        },
         "artifact_identity_algorithms": {
             "candidate_tree": CANDIDATE_TREE_IDENTITY_ALGORITHM,
             "file": FILE_IDENTITY_ALGORITHM,
@@ -157,7 +179,7 @@ def _finalized(**overrides):
         "status": "finalized",
         "outcome": "success",
         "final_candidate_id": "sha256:candidate",
-        "test_serving_metrics": _serving_metrics(),
+        "test_cost": _cost(),
         "failure": None,
         "research_sealed_at": "2026-01-01T00:00:00+00:00",
         "analysis_complete": True,
@@ -220,11 +242,24 @@ class ResultMetricTests(unittest.TestCase):
         with self.assertRaisesRegex(ResultSchemaError, "assessment"):
             normalize_result_report(payload)
 
-    def test_serving_rates_are_bound_to_counts_and_wall_time(self):
+    def test_cost_is_bound_to_counts_and_wall_time(self):
         payload = _finalized()
-        payload["test_serving_metrics"]["examples_per_second"] = 999.0
+        payload["test_cost"]["tasks_per_second"] = 999.0
 
         with self.assertRaisesRegex(ResultSchemaError, "does not match"):
+            normalize_result_report(payload)
+
+        payload = _finalized()
+        payload["test_cost"]["time_per_task"] = 0.01
+
+        with self.assertRaisesRegex(ResultSchemaError, "does not match"):
+            normalize_result_report(payload)
+
+    def test_unrepresentable_cost_counts_are_schema_errors(self):
+        payload = _finalized()
+        payload["test_cost"]["task_count"] = 10**10000
+
+        with self.assertRaisesRegex(ResultSchemaError, "cannot be represented"):
             normalize_result_report(payload)
 
     def test_current_result_schema_rejects_inconsistent_states(self):
@@ -262,7 +297,7 @@ class ResultMetricTests(unittest.TestCase):
                 "outcome": None,
                 "test_performance_score": 100.0,
                 "test_raw_metrics": {"mean_nll": 0.0},
-                "test_serving_metrics": _serving_metrics(),
+                "test_cost": _cost(),
                 "failure": None,
                 "research_sealed_at": "2026-01-01T00:00:00+00:00",
                 "analysis_complete": False,
@@ -284,7 +319,7 @@ class ResultMetricTests(unittest.TestCase):
                 "active_lease": {"lease_id": "lease-0001"},
                 "test_performance_score": 100.0,
                 "test_raw_metrics": {"mean_nll": 0.0},
-                "test_serving_metrics": _serving_metrics(),
+                "test_cost": _cost(),
                 "failure": None,
             },
             "success_with_pending_teardown": {
@@ -361,7 +396,7 @@ class ResultMetricTests(unittest.TestCase):
                 "final_candidate_id": "sha256:candidate",
                 "test_performance_score": 100.0,
                 "test_raw_metrics": {"mean_nll": 0.0},
-                "test_serving_metrics": _serving_metrics(),
+                "test_cost": _cost(),
                 "failure": None,
                 "research_sealed_at": "2026-01-01T00:00:00+00:00",
                 "analysis_complete": True,
@@ -406,7 +441,7 @@ class ResultMetricTests(unittest.TestCase):
             analysis_status="infrastructure_failure",
             analysis_performance_score=None,
             analysis_raw_metrics=None,
-            analysis_serving_metrics=None,
+            analysis_cost=None,
             analysis_error="worker_teardown_failure",
         )
 
@@ -520,7 +555,7 @@ class ResultMetricTests(unittest.TestCase):
                 "final_candidate_id": "sha256:candidate",
                 "test_performance_score": 100.0,
                 "test_raw_metrics": {"mean_nll": 0.0},
-                "test_serving_metrics": _serving_metrics(),
+                "test_cost": _cost(),
                 "failure": None,
                 "agent_system": {"runner": "container", "egress": "denied"},
                 "research_sealed_at": "2026-01-01T00:00:00+00:00",
@@ -610,7 +645,7 @@ class ResultMetricTests(unittest.TestCase):
             analysis_status="failed",
             analysis_performance_score=None,
             analysis_raw_metrics=None,
-            analysis_serving_metrics=None,
+            analysis_cost=None,
             analysis_error="evaluation_failed",
         )
         report = normalize_result_report(
