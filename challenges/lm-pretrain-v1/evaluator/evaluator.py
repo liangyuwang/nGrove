@@ -329,10 +329,12 @@ def evaluate(
                 if any(not math.isfinite(value) for value in logits):
                     raise EvaluationError("Candidate logits must be finite float32")
                 maximum = max(logits)
-                log_normalizer = maximum + math.log(
+                shifted_log_normalizer = math.log(
                     math.fsum(math.exp(value - maximum) for value in logits)
                 )
-                losses.append(log_normalizer - logits[target])
+                # Subtract before adding: a large common logit offset must not
+                # round away the normalizer and turn uniform output into NLL=0.
+                losses.append(shifted_log_normalizer + (maximum - logits[target]))
             if stream.read(1):
                 raise EvaluationError("Candidate logits contain trailing bytes")
     except OSError as exc:

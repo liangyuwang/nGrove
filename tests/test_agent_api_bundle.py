@@ -1,3 +1,8 @@
+import json
+import os
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,6 +14,42 @@ from autotrain_bench.agent_api_bundle import (
 
 
 class AgentApiBundleTests(unittest.TestCase):
+    def test_published_preflight_works_without_the_core_package(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            published = publish_agent_api_bundle(root / "agent-api")
+            candidate = root / "candidate"
+            candidate.mkdir()
+            fixture = Path(__file__).parent / "fixtures/task/agent/candidate.py"
+            shutil.copyfile(fixture, candidate / "candidate.py")
+            environment = dict(os.environ)
+            environment["PYTHONPATH"] = str(published)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "autotrain_bench.candidate_preflight",
+                    "--candidate",
+                    str(candidate),
+                    "--device",
+                    "cpu",
+                    "--vocab-size",
+                    "10",
+                    "--context-lengths",
+                    "1",
+                    "2",
+                    "--examples",
+                    "4",
+                ],
+                cwd=root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["status"], "public_abi_passed")
+
     def test_publishes_only_the_explicit_public_allowlist(self):
         with tempfile.TemporaryDirectory() as temporary:
             destination = Path(temporary) / "agent-api"

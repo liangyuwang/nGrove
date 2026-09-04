@@ -15,6 +15,7 @@ PUBLIC_AGENT_API_FILES = {
     "agent_cli.py": "cli.py",
     "candidate_protocol.py": "candidate_protocol.py",
     "candidate_preflight.py": "candidate_preflight.py",
+    "candidate_offline_runner.py": "candidate_offline_runner.py",
 }
 
 

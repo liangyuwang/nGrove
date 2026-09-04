@@ -5,13 +5,14 @@ from __future__ import annotations
 import importlib.util
 import json
 import math
+import os
 import stat
 import sys
 import uuid
 from array import array
 from numbers import Real
 from pathlib import Path
-from typing import Any, Dict, Iterable, Sequence
+from typing import Any, Dict, Iterable, Sequence, Union
 
 
 DATASET_SCHEMA_VERSION = 2
@@ -22,6 +23,7 @@ LOGITS_FILENAME = "logits.f32"
 PREDICTION_ARTIFACT_MAX_ENTRIES = 2
 PREDICTION_MANIFEST_MAX_BYTES = 64 * 1024
 PREDICTION_ARTIFACT_RETENTION = "ephemeral_until_evaluation_teardown"
+PathInput = Union[str, os.PathLike]
 _PREDICTION_MANIFEST_FIELD_SPECS = (
     ("schema_version", "integer", "constant", PREDICTION_SCHEMA_VERSION),
     ("candidate_protocol", "string", "constant", CANDIDATE_PROTOCOL),
@@ -60,6 +62,7 @@ def candidate_helper_api_manifest() -> Dict[str, Any]:
     return {
         "module": "autotrain_bench.candidate_protocol",
         "request_reader": "load_context_request(path)",
+        "path_parameters": "str or os.PathLike (including pathlib.Path)",
         "prediction_writer": (
             "write_prediction_artifact(output_dir, *, dataset_id, logits, "
             "examples, vocab_size)"
@@ -194,10 +197,10 @@ def _validate_prediction_manifest(
         )
 
 
-def load_candidate(candidate_dir: Path) -> Any:
+def load_candidate(candidate_dir: PathInput) -> Any:
     """Import an offline Candidate inside its untrusted evaluation process."""
 
-    root = candidate_dir.resolve()
+    root = Path(candidate_dir).resolve()
     module_path = root / "candidate.py"
     if not module_path.is_file():
         raise CandidateProtocolError("candidate.py is missing")
@@ -216,9 +219,10 @@ def load_candidate(candidate_dir: Path) -> Any:
     return module
 
 
-def load_context_request(path: Path) -> Dict[str, Any]:
+def load_context_request(path: PathInput) -> Dict[str, Any]:
     """Read and validate the target-free request visible to a Candidate."""
 
+    path = Path(path)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError, json.JSONDecodeError) as exc:
@@ -293,7 +297,7 @@ def load_context_request(path: Path) -> Dict[str, Any]:
 
 
 def write_prediction_artifact(
-    output_dir: Path,
+    output_dir: PathInput,
     *,
     dataset_id: str,
     logits: Iterable[Sequence[Real]],
@@ -302,6 +306,7 @@ def write_prediction_artifact(
 ) -> None:
     """Write the portable row-major float32 artifact required by the scorer."""
 
+    output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     logits_path = output_dir / LOGITS_FILENAME
     rows = 0
@@ -347,7 +352,7 @@ def write_prediction_artifact(
 
 
 def validate_prediction_artifact(
-    output_dir: Path,
+    output_dir: PathInput,
     *,
     dataset_id: str,
     examples: int,
@@ -355,6 +360,7 @@ def validate_prediction_artifact(
 ) -> int:
     """Validate a Candidate output without requiring access to hidden targets."""
 
+    output_dir = Path(output_dir)
     try:
         entries = {entry.name: entry for entry in output_dir.iterdir()}
     except OSError as exc:

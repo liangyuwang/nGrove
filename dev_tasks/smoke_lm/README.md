@@ -158,6 +158,22 @@ bundles may contain only regular files and directories,
 may not contain symbolic or hard links, and must fit the task-defined file and
 byte limits.
 
+Public preflight is optional participant-side testing. It uses 512 synthetic,
+target-free examples by default, mixing context lengths and token patterns;
+`--examples` and `--seed` select its workload. It copies the artifact, clears
+writable permission bits on the copy, and invokes the same offline entrypoint
+in a fresh process with that copy as its working directory. Copying and testing
+consume the active Lease's resources. The original artifact is not modified.
+The bundled Worker uses lease-owned `/scratch` for the temporary copy and output;
+other deployments may set `AUTOTRAIN_SCRATCH_DIR` or pass `--scratch-dir`. Without
+either, the helper uses system temporary storage, which must fit the artifact.
+Its JSON status is `public_abi_passed`, with explicit `checks` and `not_checked`
+lists. This means only that the selected synthetic inputs passed in the
+Training environment: the Candidate image, sandbox mounts, resource limits,
+and hidden-input behavior are not certified. Permission bits on a copy are not
+a read-only sandbox mount and may be bypassed by privileged processes. TEST
+may still fail; preflight is not organizer validation or a submission guarantee.
+
 Hidden evaluation uses balanced, non-overlapping context windows at the five
 release-declared lengths above. Each window contributes exactly one prediction:
 the Candidate receives the context and returns next-token logits, while the
@@ -229,6 +245,16 @@ diagnostics remain inside the trusted boundary. Each container is removed after
 the evaluation step. Prediction files are ephemeral and are deleted after
 scoring or failure and confirmed teardown; an unconfirmed teardown retains
 them only for a cleanup retry.
+
+On an execution failure, the Worker records the stage in `<split>.failure.json`
+and attempts to retain `<split>.candidate.stdout.log` and
+`<split>.candidate.stderr.log` before removing the container. It stops Candidate
+execution before collecting diagnostics, limits each stream to 1 MiB, and bounds
+log collection time. Files are private (`0600`); raw output may contain hidden
+contexts and must not be returned to the Agent or treated as a public report.
+OOM/exit state and log truncation or collection failures are recorded separately.
+Failure to collect diagnostics never skips workload cleanup or changes the fixed
+public failure code.
 
 Candidate wall time covers the entire Candidate invocation: sandbox startup,
 Candidate import, model loading, context-file reading, participant-controlled

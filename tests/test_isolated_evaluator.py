@@ -28,6 +28,72 @@ SPEC.loader.exec_module(MODULE)
 
 
 class IsolatedEvaluatorTests(unittest.TestCase):
+    def test_uniform_scores_are_invariant_to_large_finite_logit_offsets(self):
+        for task in ("dev_tasks/smoke_lm", "challenges/lm-pretrain-v1"):
+            spec = importlib.util.spec_from_file_location(
+                "shifted_logit_evaluator", ROOT / task / "evaluator/evaluator.py"
+            )
+            evaluator = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(evaluator)
+            for vocab in (257, 50257):
+                for offset in (0.0, 1e20, -1e20, 3e38, -3e38):
+                    with self.subTest(task=task, vocab=vocab, offset=offset):
+                        with tempfile.TemporaryDirectory() as temporary:
+                            root = Path(temporary)
+                            contexts, targets = self._examples()
+                            c, t = self._write_split(
+                                root / "split", contexts, targets, vocab=vocab
+                            )
+                            write_prediction_artifact(
+                                root / "predictions",
+                                dataset_id="test-split",
+                                logits=([offset] * vocab for _ in contexts),
+                                examples=len(contexts),
+                                vocab_size=vocab,
+                            )
+                            result = evaluator.evaluate(
+                                c,
+                                t,
+                                root / "predictions",
+                                vocab,
+                                context_lengths=(1, 2, 3),
+                            )
+                            self.assertAlmostEqual(
+                                result["raw_metrics"]["mean_nll"], math.log(vocab)
+                            )
+                            self.assertAlmostEqual(result["performance_score"], 0.0)
+
+    def test_public_path_helpers_accept_strings_and_path_objects(self):
+        for path_type in (str, Path):
+            with self.subTest(
+                path_type=path_type
+            ), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                contexts, targets = self._examples()
+                c, _ = self._write_split(root / "split", contexts, targets)
+                request = load_context_request(path_type(c))
+                self.assertEqual(len(request["examples"]), 3)
+                write_prediction_artifact(
+                    path_type(root / "predictions"),
+                    dataset_id="test-split",
+                    logits=([0.0] * 10 for _ in contexts),
+                    examples=3,
+                    vocab_size=10,
+                )
+                self.assertGreater(
+                    validate_prediction_artifact(
+                        path_type(root / "predictions"),
+                        dataset_id="test-split",
+                        examples=3,
+                        vocab_size=10,
+                    ),
+                    0,
+                )
+                with self.assertRaisesRegex(
+                    CandidateProtocolError, "context request is invalid"
+                ):
+                    load_context_request(path_type(root / "missing.json"))
+
     @staticmethod
     def _write_split(root, contexts, targets, *, lengths=(1, 2, 3), vocab=10):
         root.mkdir()

@@ -950,6 +950,7 @@ class SupervisorTests(unittest.TestCase):
                 "client.py",
                 "candidate_protocol.py",
                 "candidate_preflight.py",
+                "candidate_offline_runner.py",
             },
         )
         environment = os.environ.copy()

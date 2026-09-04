@@ -23,7 +23,12 @@ from autotrain_bench.host_agent import (
     start_host_agent_process,
     summarize_host_agent_trace,
 )
-from autotrain_bench.runtime import DockerRuntime, RuntimeFailure
+from autotrain_bench.runtime import (
+    DockerRuntime,
+    RuntimeFailure,
+    MAX_RUNTIME_STREAM_BYTES,
+    _capture_diagnostic_command,
+)
 from autotrain_bench.worker_protocol import (
     CANDIDATE_PREDICTION_ARTIFACT_LIFECYCLE,
     CANDIDATE_PREDICTION_STORAGE_QUOTA,
@@ -83,6 +88,9 @@ def resolve_evaluation_workloads(runtime, task, episode_id):
 
 
 class CapturingDockerRuntime(DockerRuntime):
+    def _candidate_failure_diagnostics(self, name):
+        return {"logs_unavailable": True, "state_unavailable": True}
+
     def __init__(self, *, monotonic=None, hidden_datasets=None):
         super().__init__(
             docker_binary="docker",
@@ -103,6 +111,155 @@ class CapturingDockerRuntime(DockerRuntime):
 
 
 class RuntimeBoundaryTests(unittest.TestCase):
+    def test_failure_diagnostics_stop_execution_before_reading_logs(self):
+        for running in (False, True):
+            order = []
+            runtime = DockerRuntime(docker_binary="docker")
+
+            def run(args, **kwargs):
+                order.append(args[0])
+                return subprocess.CompletedProcess(
+                    args,
+                    0,
+                    json.dumps(
+                        {
+                            "ExitCode": 137,
+                            "OOMKilled": True,
+                            "Running": running,
+                            "Error": "private runtime error",
+                        }
+                    ),
+                    "",
+                )
+
+            def capture(command, **kwargs):
+                order.append("logs")
+                return {"stdout": "", "stderr": "private trace"}
+
+            with patch.object(runtime, "_require_docker"), patch.object(
+                runtime, "_run", side_effect=run
+            ), patch(
+                "autotrain_bench.runtime._capture_diagnostic_command",
+                side_effect=capture,
+            ):
+                result = runtime._candidate_failure_diagnostics("candidate")
+            self.assertEqual(
+                order, ["kill", "inspect"] if running else ["kill", "inspect", "logs"]
+            )
+            self.assertEqual(result["state"]["oom_killed"], True)
+            self.assertNotIn("private runtime error", json.dumps(result))
+            if running:
+                self.assertTrue(result["logs_skipped_while_running"])
+
+    def test_diagnostic_streams_are_bounded_and_excess_output_is_drained(self):
+        result = _capture_diagnostic_command(
+            [
+                sys.executable,
+                "-c",
+                "import os; os.write(1, b'x' * 3000000); os.write(2, b'y' * 3000000)",
+            ],
+            timeout_seconds=10,
+        )
+        self.assertEqual(result["exit_code"], 0)
+        self.assertTrue(result["drain_complete"])
+        for stream in ("stdout", "stderr"):
+            self.assertLessEqual(len(result[stream].encode()), MAX_RUNTIME_STREAM_BYTES)
+            self.assertTrue(result[f"{stream}_truncated"])
+
+    def test_diagnostic_timeout_terminates_the_log_client(self):
+        result = _capture_diagnostic_command(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            timeout_seconds=0.1,
+        )
+        self.assertTrue(result["timed_out"])
+        self.assertIsNotNone(result["exit_code"])
+        self.assertTrue(result["drain_complete"])
+
+    def test_candidate_exit_failure_saves_private_logs_before_removal(self):
+        order = []
+
+        class FailedCandidate(CapturingDockerRuntime):
+            def _run(self, args, **kwargs):
+                if args and args[0] == "wait":
+                    return subprocess.CompletedProcess(args, 0, "1\n", "")
+                return super()._run(args, **kwargs)
+
+            def _candidate_failure_diagnostics(self, name):
+                order.append("capture")
+                return {
+                    "state": {"exit_code": 1, "oom_killed": False, "running": False},
+                    "logs": {
+                        "stdout": "hidden context printed here",
+                        "stderr": "Traceback: participant failure",
+                        "stdout_truncated": False,
+                        "stderr_truncated": False,
+                    },
+                }
+
+            def stop_container(self, name):
+                order.append("remove")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = FailedCandidate()
+            output = Path(temporary) / "evaluation"
+            with self.assertRaisesRegex(RuntimeFailure, "^isolated evaluation failed$"):
+                runtime.run_evaluator(
+                    config=TaskConfig.load(TASK),
+                    resources=TrainingResources(),
+                    candidate_dir=TASK.parent / "agent",
+                    split="test",
+                    output_dir=output,
+                )
+            self.assertEqual(order, ["capture", "remove", "remove"])
+            self.assertIn(
+                "Traceback", (output / "test.candidate.stderr.log").read_text()
+            )
+            metadata = json.loads((output / "test.failure.json").read_text())
+            self.assertEqual(metadata["phase"], "candidate_execution")
+            self.assertEqual(metadata["state"]["exit_code"], 1)
+            self.assertNotIn("hidden context", json.dumps(metadata))
+            for path in output.glob("test.*"):
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(list(output.glob("predictions-*")), [])
+
+    def test_diagnostic_failure_never_skips_teardown_or_changes_public_error(self):
+        class FailedCandidate(CapturingDockerRuntime):
+            def _run(self, args, **kwargs):
+                if args and args[0] == "wait":
+                    return subprocess.CompletedProcess(args, 0, "1\n", "")
+                return super()._run(args, **kwargs)
+
+        for failure in ("capture", "persistence"):
+            with self.subTest(
+                failure=failure
+            ), tempfile.TemporaryDirectory() as temporary:
+                runtime = FailedCandidate()
+                output = Path(temporary) / "evaluation"
+                target = (
+                    patch.object(
+                        runtime,
+                        "_candidate_failure_diagnostics",
+                        side_effect=OSError("unavailable"),
+                    )
+                    if failure == "capture"
+                    else patch(
+                        "autotrain_bench.runtime._write_private_diagnostic",
+                        side_effect=OSError("disk full"),
+                    )
+                )
+                with target, self.assertRaisesRegex(
+                    RuntimeFailure, "^isolated evaluation failed$"
+                ):
+                    runtime.run_evaluator(
+                        config=TaskConfig.load(TASK),
+                        resources=TrainingResources(),
+                        candidate_dir=TASK.parent / "agent",
+                        split="test",
+                        output_dir=output,
+                    )
+                self.assertEqual(runtime._pending_evaluations, {})
+                self.assertEqual(list(output.glob("predictions-*")), [])
+
     def test_local_gpu_receipt_reports_workload_visible_values_but_not_exact_binding(
         self,
     ):

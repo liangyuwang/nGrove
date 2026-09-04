@@ -67,6 +67,7 @@ RuntimeFailure = WorkerFailure
 ExecResult = CommandResult
 MAX_RUNTIME_STREAM_BYTES = 1024 * 1024
 _TRUNCATION_MARKER = b"\n[output truncated by AutoTrain-Bench]\n"
+EVALUATION_DIAGNOSTIC_TIMEOUT_SECONDS = 5.0
 
 
 def _sha256_file(path: Path) -> str:
@@ -132,6 +133,52 @@ class _BoundedCapture:
             payload = payload[: max(0, self.maximum_bytes - len(_TRUNCATION_MARKER))]
             payload += _TRUNCATION_MARKER
         return payload.decode("utf-8", errors="replace")
+
+
+def _capture_diagnostic_command(
+    command: Sequence[str], *, timeout_seconds: float
+) -> Dict[str, Any]:
+    """Drain diagnostic streams with fixed memory and wall-time limits."""
+
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout = _BoundedCapture()
+    stderr = _BoundedCapture()
+    threads = [
+        threading.Thread(target=stdout.drain, args=(process.stdout,), daemon=True),
+        threading.Thread(target=stderr.drain, args=(process.stderr,), daemon=True),
+    ]
+    timed_out = False
+    try:
+        for thread in threads:
+            thread.start()
+        try:
+            process.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        for thread in threads:
+            if thread.ident is not None:
+                thread.join(timeout=1)
+    return {
+        "stdout": stdout.text(),
+        "stderr": stderr.text(),
+        "stdout_truncated": stdout.truncated,
+        "stderr_truncated": stderr.truncated,
+        "timed_out": timed_out,
+        "exit_code": process.returncode,
+        "drain_complete": not any(thread.is_alive() for thread in threads),
+    }
+
+
+def _write_private_diagnostic(path: Path, text: str) -> None:
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "wb") as stream:
+        os.chmod(path, 0o600)
+        encoded = text.encode("utf-8", errors="replace")[:MAX_RUNTIME_STREAM_BYTES]
+        stream.write(encoded.decode("utf-8", errors="ignore").encode("utf-8"))
 
 
 class DockerRuntime:
@@ -912,6 +959,8 @@ class DockerRuntime:
             "AUTOTRAIN_TRAIN_DIR=/benchmark/train",
             "--env",
             "AUTOTRAIN_OUTPUT_DIR=/output",
+            "--env",
+            "AUTOTRAIN_SCRATCH_DIR=/scratch",
             "--workdir",
             "/workspace",
         ]
@@ -1229,6 +1278,101 @@ class DockerRuntime:
         )
         parts = [value for value in (result.stdout, result.stderr) if value]
         return "".join(parts)
+
+    def _candidate_failure_diagnostics(self, name: str) -> Dict[str, Any]:
+        """Capture before removal; all streams are potentially hidden data."""
+
+        self._require_docker()
+        result: Dict[str, Any] = {}
+        try:
+            # A wait/start timeout may leave participant code running. Stop
+            # execution before collecting logs, retaining the container until
+            # the ordinary finally block removes it. Killing an exited or
+            # absent container is harmless; the following inspect is decisive.
+            self._run(
+                ["kill", name],
+                check=False,
+                timeout=EVALUATION_DIAGNOSTIC_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            result["termination_before_diagnostics_unconfirmed"] = True
+            return result
+        try:
+            inspected = self._run(
+                ["inspect", "--format", "{{json .State}}", name],
+                timeout=EVALUATION_DIAGNOSTIC_TIMEOUT_SECONDS,
+            )
+            state = json.loads(inspected.stdout)
+            if (
+                not isinstance(state["ExitCode"], int)
+                or isinstance(state["ExitCode"], bool)
+                or not isinstance(state["OOMKilled"], bool)
+                or not isinstance(state["Running"], bool)
+            ):
+                raise ValueError("invalid container state")
+            result["state"] = {
+                "exit_code": state["ExitCode"],
+                "oom_killed": state["OOMKilled"],
+                "running": state["Running"],
+            }
+        except Exception:
+            result["state_unavailable"] = True
+            return result
+        if result["state"]["running"]:
+            result["logs_skipped_while_running"] = True
+            return result
+        try:
+            result["logs"] = _capture_diagnostic_command(
+                [self.docker, "logs", "--tail", "10000", name],
+                timeout_seconds=EVALUATION_DIAGNOSTIC_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            result["logs_unavailable"] = True
+        return result
+
+    def _record_evaluation_failure(
+        self,
+        *,
+        output_dir: Path,
+        split: str,
+        phase: str,
+        error: Exception,
+        candidate_name: str,
+        candidate_attempted: bool,
+    ) -> None:
+        """Best-effort diagnostics must never prevent workload teardown."""
+
+        metadata = {"phase": phase, "candidate_attempted": candidate_attempted}
+        try:
+            _write_private_diagnostic(
+                output_dir / f"{split}.failure.log", f"Runtime failure: {error}\n"
+            )
+        except Exception:
+            pass
+        if candidate_attempted:
+            try:
+                captured = self._candidate_failure_diagnostics(candidate_name)
+                logs = captured.pop("logs", None)
+                if logs is not None:
+                    for stream in ("stdout", "stderr"):
+                        try:
+                            _write_private_diagnostic(
+                                output_dir / f"{split}.candidate.{stream}.log",
+                                logs.pop(stream),
+                            )
+                        except Exception:
+                            metadata[f"{stream}_persistence_failed"] = True
+                    captured["log_capture"] = logs
+                metadata.update(captured)
+            except Exception:
+                metadata["diagnostics_unavailable"] = True
+        try:
+            _write_private_diagnostic(
+                output_dir / f"{split}.failure.json",
+                json.dumps(metadata, sort_keys=True) + "\n",
+            )
+        except Exception:
+            pass
 
     def stop_container(self, name: str) -> None:
         """Force-remove a container and fail unless its absence is confirmed."""
@@ -1683,13 +1827,18 @@ class DockerRuntime:
             prediction_dir,
         )
         candidate_wall_seconds: Optional[float] = None
+        phase = "trusted_input_validation"
+        candidate_attempted = False
         try:
             self._run(
                 scorer_args("validate"),
                 timeout=remaining_seconds(),
             )
             candidate_started = self.monotonic()
+            phase = "candidate_startup"
+            candidate_attempted = True
             self._run(candidate_args, timeout=remaining_seconds())
+            phase = "candidate_execution"
             wait_result = self._run(
                 ["wait", candidate_name],
                 timeout=remaining_seconds(),
@@ -1705,22 +1854,20 @@ class DockerRuntime:
                     f"Candidate process exited with status {candidate_exit_code}"
                 )
             candidate_wall_seconds = max(0.0, self.monotonic() - candidate_started)
+            phase = "trusted_scoring"
             self._run(
                 scorer_args("score"),
                 timeout=remaining_seconds(),
             )
         except RuntimeFailure as exc:
-            diagnostic_path = output_dir / f"{split}.failure.log"
-            try:
-                diagnostic_path.write_text(
-                    f"Runtime failure: {exc}\n",
-                    encoding="utf-8",
-                )
-                diagnostic_path.chmod(0o600)
-            except OSError:
-                # Diagnostic persistence must never change the fixed public
-                # failure returned across the untrusted boundary.
-                pass
+            self._record_evaluation_failure(
+                output_dir=output_dir,
+                split=split,
+                phase=phase,
+                error=exc,
+                candidate_name=candidate_name,
+                candidate_attempted=candidate_attempted,
+            )
             raise RuntimeFailure("isolated evaluation failed") from None
         finally:
             self._teardown_evaluation(evaluation_key)

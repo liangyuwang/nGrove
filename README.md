@@ -422,6 +422,16 @@ evaluation or change the incumbent. The Agent must explicitly call
 immediately. The Agent may choose whether and how to validate using permitted
 TRAIN information; Core supplies no validation recipe or official feedback.
 
+The optional `candidate_preflight` helper is a public ABI self-check inside a
+Training Lease. It defaults to 512 mixed synthetic contexts (`--examples` and
+`--seed` are configurable), invokes the offline entrypoint in a fresh process,
+and uses an artifact copy with read-only permission bits. Its output reports
+`public_abi_passed` and names both checked and unchecked conditions. It does not
+certify the Candidate image, sandbox mounts, resource limits, or hidden-input
+behavior. Copying and execution consume Lease resources. For the LM preview,
+`--examples 2048` exercises the declared preview workload size on public
+synthetic inputs. Passing this check does not guarantee a successful TEST.
+
 The submitted Agent command must be autonomous and non-interactive. Docker does
 not attach a user input stream after task reveal, so the user cannot continue
 steering the Agent during the episode. Each episode receives a private copy of
