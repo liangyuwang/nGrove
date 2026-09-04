@@ -120,25 +120,27 @@ class IsolatedEvaluatorTests(unittest.TestCase):
                 result["raw_metrics"]["mean_nll"], math.log(10), places=7
             )
             self.assertEqual(set(result["raw_metrics"]), {"mean_nll"})
-            self.assertAlmostEqual(result["performance_score"], 50.0, places=7)
+            self.assertAlmostEqual(result["performance_score"], 0.0, places=7)
             self.assertEqual(result["examples"], 3)
             self.assertEqual(result["input_tokens"], 6)
             self.assertGreater(result["prediction_bytes"], 3 * 10 * 4)
 
-    def test_performance_score_is_monotonic_below_the_uniform_baseline(self):
+    def test_performance_score_is_normalized_against_the_uniform_baseline(self):
         uniform_nll = math.log(10)
         contract = PerformanceScoreContract(
-            "vocab_normalized_inverse_nll_v1", ("mean_nll",)
+            "uniform_normalized_log_score_v1", ("mean_nll",)
         )
 
         perfect = MODULE._performance_score(0.0, 10)
+        halfway = MODULE._performance_score(uniform_nll / 2.0, 10)
         uniform = MODULE._performance_score(uniform_nll, 10)
         below_uniform = MODULE._performance_score(uniform_nll * 2.0, 10)
 
         self.assertEqual(perfect, 100.0)
-        self.assertEqual(uniform, 50.0)
-        self.assertAlmostEqual(below_uniform, 100.0 / 3.0)
-        self.assertGreater(MODULE._performance_score(1e300, 10), 0.0)
+        self.assertEqual(halfway, 50.0)
+        self.assertEqual(uniform, 0.0)
+        self.assertEqual(below_uniform, 0.0)
+        self.assertEqual(MODULE._performance_score(1e300, 10), 0.0)
         for mean_nll in (0.0, uniform_nll, uniform_nll * 2.0, 1e300):
             contract.validate_measurement(
                 MODULE._performance_score(mean_nll, 10),
@@ -181,8 +183,7 @@ class IsolatedEvaluatorTests(unittest.TestCase):
             )
 
             self.assertTrue(math.isfinite(result["raw_metrics"]["mean_nll"]))
-            self.assertGreater(result["performance_score"], 0.0)
-            self.assertLess(result["performance_score"], 1e-20)
+            self.assertEqual(result["performance_score"], 0.0)
 
     def test_legacy_combined_dataset_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

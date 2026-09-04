@@ -46,7 +46,7 @@ incumbent.
 | Track A | 300 seconds total wall clock |
 | Track B | Three leases, at most 75 seconds each |
 | Evaluator measurement | Generic performance score with mean NLL raw metric |
-| Performance score | `100 / (1 + mean_token_nll / log(vocab_size))`, higher is better |
+| Performance score | `100 * max(0, min(1, 1 - mean_token_nll / log(vocab_size)))`, higher is better |
 | Candidate protocol | `offline_next_token_logits_v3` |
 
 The trusted evaluation path runs on CPU. A participant may train with any

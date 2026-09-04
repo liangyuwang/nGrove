@@ -57,16 +57,15 @@ Evaluator preserves mean target NLL as the canonical raw metric. ANALYSIS
 produces a postmortem trajectory over frozen Candidates and is never Agent
 feedback. The primary result is a `[0, 100]` TEST performance score, where
 higher is better. This release defines it as
-`100 / (1 + mean_token_nll / log(vocab_size))`: 100 is perfect prediction,
-uniform-over-vocabulary prediction maps to 50, and every finite positive NLL
-maps to a positive score below 100. Performance below the uniform baseline
-remains ordered rather than being clipped into one tie. The frozen trusted
-Evaluator owns this formula; Core validates only the generic score contract and
-result shape. Perplexity may be derived for display but is not a required finite
-result field. The score definition and raw metric names are frozen by the
-release and are not comparable with another benchmark release. A run without a
-successful finite TEST measurement has no performance score or raw metrics and
-is reported as a failed experiment.
+`100 * max(0, min(1, 1 - mean_token_nll / log(vocab_size)))`: 100 is perfect
+prediction, while uniform-over-vocabulary prediction and worse map to 0. The
+canonical mean NLL raw metric retains distinctions among results at that floor.
+The frozen trusted Evaluator owns this formula; Core validates only the generic
+score contract and result shape. Perplexity may be derived for display but is
+not a required finite result field. The score definition and raw metric names
+are frozen by the release and are not comparable with another benchmark
+release. A run without a successful finite TEST measurement has no performance
+score or raw metrics and is reported as a failed experiment.
 
 The result also records Candidate serving wall time, examples, input tokens,
 prediction bytes, and derived throughput. The clock includes Candidate sandbox

@@ -370,9 +370,10 @@ Status: implemented in the development schemas.
   `performance_score` interface. Each release freezes its score definition and
   exact raw metric names; scores are comparable only within that benchmark
   release. The frozen trusted task evaluator owns the formula; Core validates
-  only the generic contract and result shape. The current vocabulary-normalized
-  inverse-NLL mapping assigns the uniform baseline 50, remains monotonic below
-  it, and does not require representable perplexity.
+  only the generic contract and result shape. The current normalized log-score
+  mapping assigns perfect prediction 100 and uniform prediction or worse 0;
+  raw NLL retains distinctions at that floor without requiring representable
+  perplexity.
 - Research is durably sealed before Agent/Research teardown; hidden evaluation
   is rejected until teardown and Agent-control cleanup are confirmed.
 - The final Agent-declared incumbent is scored on TEST first. The TEST decision

@@ -436,9 +436,11 @@ score contract fixes a finite `[0, 100]` range, `maximize` direction, exact raw
 metric names, a definition ID, and `comparison_scope: benchmark_release`. The
 task evaluator owns the mapping from task metrics into this interface; Core and
 the Worker protocol do not assume NLL, perplexity, accuracy, or another
-particular formula. The current `vocab_normalized_inverse_nll_v1` definition is
+particular formula. The current `uniform_normalized_log_score_v1` definition is
 implemented by the frozen task evaluator. It requires finite non-negative
-`mean_nll` and computes `100 / (1 + mean_nll / log(vocab_size))`. Perplexity is
+`mean_nll` and computes
+`100 * max(0, min(1, 1 - mean_nll / log(vocab_size)))`. Uniform prediction and
+worse therefore map to 0; the raw NLL retains their distinction. Perplexity is
 not required, so overflow in that derived display value cannot invalidate a
 finite score. The serving clock starts immediately before Candidate
 invocation and stops after process exit and output flush, so it includes

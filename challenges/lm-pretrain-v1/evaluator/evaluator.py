@@ -29,7 +29,10 @@ def _performance_score(mean_nll: float, vocab_size: int) -> float:
         raise EvaluationError("Candidate mean NLL must be finite and non-negative")
     if vocab_size == 1:
         return 100.0
-    return 100.0 / (1.0 + mean_nll / math.log(vocab_size))
+    return 100.0 * max(
+        0.0,
+        min(1.0, 1.0 - mean_nll / math.log(vocab_size)),
+    )
 
 
 def _sha256_file(path: Path) -> str:

@@ -839,20 +839,20 @@ maps the raw measurement into the generic primary interface:
 
 $$
 \operatorname{performance\_score}
-=\frac{100}{1+L/\log V}.
+=100\max\left(0,\min\left(1,1-\frac{L}{\log V}\right)\right).
 $$
 
-The score is finite, bounded to `(0, 100]` for every finite NLL, and higher is
-better. A score of 100 represents perfect prediction, uniform-over-vocabulary
-prediction maps to 50, and progressively worse predictions remain ordered below
-50 instead of being clipped into one tie. The definition ID, range, direction,
-raw metric names, and `benchmark_release` comparison scope are part of the task
-manifest. Core validates this generic contract and its result shape; the frozen
-trusted task evaluator owns the formula. Another benchmark release may use a
-different dataset, raw metric, or formula without changing the result interface,
-and its score is not comparable with this one. Perplexity is not a required raw
-field, so overflow in that derived display value cannot invalidate an otherwise
-finite measurement.
+The score is finite, bounded to `[0, 100]`, and higher is better. A score of 100
+represents perfect prediction; uniform-over-vocabulary prediction and worse map
+to 0. The canonical `mean_nll` raw metric retains distinctions among results at
+that floor. The definition ID, range, direction, raw metric names, and
+`benchmark_release` comparison scope are part of the task manifest. Core
+validates this generic contract and its result shape; the frozen trusted task
+evaluator owns the formula. Another benchmark release may use a different
+dataset, raw metric, or formula without changing the result interface, and its
+score is not comparable with this one. Perplexity is not a required raw field,
+so overflow in that derived display value cannot invalidate an otherwise finite
+measurement.
 
 The internal architecture is unrestricted.
 
@@ -1800,7 +1800,7 @@ contract as a challenge preview:
     "candidate_protocol": "offline_next_token_logits_v3",
     "entrypoint": "evaluator/evaluator.py",
     "performance_score": {
-      "definition_id": "vocab_normalized_inverse_nll_v1",
+      "definition_id": "uniform_normalized_log_score_v1",
       "range": {"minimum": 0.0, "maximum": 100.0},
       "direction": "maximize",
       "comparison_scope": "benchmark_release",

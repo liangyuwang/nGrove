@@ -335,7 +335,7 @@ class FakeWorker:
         performance_score = (
             100.0
             if task.vocab_size == 1
-            else 100.0 / (1.0 + nll / math.log(task.vocab_size))
+            else 100.0 * max(0.0, min(1.0, 1.0 - nll / math.log(task.vocab_size)))
         )
         return CandidateEvaluationResult(
             performance_score=performance_score,
@@ -1066,10 +1066,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(final["status"], "finalized")
         self.assertEqual(final["result_schema_version"], RESULT_SCHEMA_VERSION)
         self.assertEqual(final["outcome"], "success")
-        self.assertEqual(
-            final["test_performance_score"],
-            100.0 / (1.0 + 1.5 / math.log(self.config.vocab_size)),
-        )
+        self.assertEqual(final["test_performance_score"], 0.0)
         self.assertEqual(final["test_raw_metrics"]["mean_nll"], 1.5)
         self.assertEqual(
             final["test_serving_metrics"],
@@ -1475,9 +1472,32 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(final["outcome"], "success")
         self.assertEqual(
             final["test_performance_score"],
-            100.0 / (1.0 + 710.0 / math.log(self.config.vocab_size)),
+            0.0,
         )
         self.assertEqual(final["test_raw_metrics"], {"mean_nll": 710.0})
+
+    def test_nonzero_performance_score_is_persisted_in_the_final_result(self):
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+        committed = supervisor.commit_lease("/output/candidate")
+        supervisor.declare_incumbent(committed["candidate_id"])
+        self.worker.test_nll = 0.5
+
+        supervisor.finish()
+        final = self.finalize_after_agent_stop(supervisor)
+        persisted = json.loads(supervisor.state_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(final["outcome"], "success")
+        self.assertAlmostEqual(
+            final["test_performance_score"],
+            54.488038668658135,
+        )
+        self.assertEqual(final["test_raw_metrics"], {"mean_nll": 0.5})
+        self.assertEqual(
+            persisted["test_performance_score"],
+            final["test_performance_score"],
+        )
+        self.assertEqual(persisted["test_raw_metrics"], {"mean_nll": 0.5})
 
     def test_agent_text_cannot_turn_local_encoding_errors_into_infrastructure(self):
         supervisor = self.supervisor()
