@@ -1155,6 +1155,7 @@ class ResearchWorker(Protocol):
         *,
         episode_id: str,
         workload: WorkloadRequest,
+        timeout_seconds: float,
     ) -> ResolvedWorkload: ...
 
     def start_lease(
@@ -1196,6 +1197,7 @@ class EvaluationWorker(Protocol):
         *,
         episode_id: str,
         workload: WorkloadRequest,
+        timeout_seconds: float,
     ) -> ResolvedWorkload: ...
 
     def resolve_hidden_dataset(
@@ -1204,6 +1206,7 @@ class EvaluationWorker(Protocol):
         episode_id: str,
         task: EvaluationTaskSpec,
         hidden_dataset: HiddenDatasetRequest,
+        timeout_seconds: float,
     ) -> ResolvedHiddenDataset: ...
 
     def evaluate_candidate(

@@ -247,10 +247,8 @@ class RuntimeProfile:
         *,
         minimum_enforcement: EnforcementLevel,
     ) -> ResourceEnvelope:
-        """Return the release contract without selecting an enforcement mechanism."""
+        """Return one contract consistent with the v0 profile projection."""
 
-        if self.resource_contract is not None:
-            return self.resource_contract
         requirements = [
             ResourceRequirement(
                 "host.count",
@@ -288,7 +286,27 @@ class RuntimeProfile:
                     ),
                 )
             )
-        return ResourceEnvelope(requirements=tuple(requirements))
+        baseline = ResourceEnvelope(requirements=tuple(requirements))
+        if self.resource_contract is None:
+            return baseline
+
+        declared = {
+            requirement.name: requirement
+            for requirement in self.resource_contract.requirements
+        }
+        for required in baseline.requirements:
+            actual = declared.get(required.name)
+            if actual is None:
+                raise ConfigError(
+                    f"runtime profile {self.profile_id!r} resource_contract must "
+                    f"include {required.name!r} from its compatibility fields"
+                )
+            if actual.relation != required.relation or actual.value != required.value:
+                raise ConfigError(
+                    f"runtime profile {self.profile_id!r} resource_contract "
+                    f"conflicts with compatibility field {required.name!r}"
+                )
+        return self.resource_contract
 
     def public_manifest(self) -> Dict[str, Any]:
         manifest = {
@@ -497,6 +515,13 @@ class ChallengeRelease:
         return release
 
     def validate(self) -> "ChallengeRelease":
+        minimum_resource_enforcement = (
+            EnforcementLevel.ENFORCED
+            if self.leaderboard_eligible
+            else EnforcementLevel.BEST_EFFORT
+        )
+        for profile in self.runtime_profiles.values():
+            profile.resource_envelope(minimum_enforcement=minimum_resource_enforcement)
         if self.leaderboard_eligible:
             if self.release_stage != "official":
                 raise ConfigError(
@@ -517,11 +542,9 @@ class ChallengeRelease:
             weak_resource_requirements = sorted(
                 f"{profile_id}:{requirement.name}"
                 for profile_id, profile in self.runtime_profiles.items()
-                for requirement in (
-                    profile.resource_contract.requirements
-                    if profile.resource_contract is not None
-                    else ()
-                )
+                for requirement in profile.resource_envelope(
+                    minimum_enforcement=EnforcementLevel.ENFORCED
+                ).requirements
                 if requirement.minimum_enforcement is not EnforcementLevel.ENFORCED
             )
             if weak_resource_requirements:

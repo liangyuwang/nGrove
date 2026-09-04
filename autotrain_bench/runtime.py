@@ -13,6 +13,7 @@ import math
 import os
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -151,6 +152,7 @@ class DockerRuntime:
         self._resolved_hidden_datasets: Dict[
             tuple[str, str], tuple[str, ResolvedHiddenDataset, Path]
         ] = {}
+        self._hidden_snapshot_root: Optional[Path] = None
         self._resolved_workloads: Dict[
             tuple[str, str], tuple[ResolvedWorkload, str]
         ] = {}
@@ -271,11 +273,22 @@ class DockerRuntime:
         *,
         episode_id: str,
         workload: WorkloadRequest,
+        timeout_seconds: float,
     ) -> ResolvedWorkload:
         """Bind an OCI reference to an opaque, episode-scoped authorization."""
 
         if not isinstance(workload, WorkloadRequest):
             raise TypeError("workload must be a WorkloadRequest")
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise WorkloadResolutionFailure("workload resolution deadline reached")
+        deadline = self.monotonic() + timeout_seconds
+
+        def remaining_seconds() -> float:
+            remaining = deadline - self.monotonic()
+            if remaining <= 0:
+                raise WorkloadResolutionFailure("workload resolution deadline reached")
+            return remaining
+
         marker = "@sha256:"
         declared_sha256 = (
             workload.requested_identity.rsplit(marker, 1)[1]
@@ -291,16 +304,22 @@ class DockerRuntime:
             effective_format = "oci"
             execution_reference = workload.requested_identity
         else:
-            inspected = self._run(
-                [
-                    "image",
-                    "inspect",
-                    workload.requested_identity,
-                    "--format",
-                    "{{.Id}}",
-                ],
-                timeout=20,
-            ).stdout.strip()
+            try:
+                inspected = self._run(
+                    [
+                        "image",
+                        "inspect",
+                        workload.requested_identity,
+                        "--format",
+                        "{{.Id}}",
+                    ],
+                    timeout=min(20.0, remaining_seconds()),
+                ).stdout.strip()
+            except WorkerTeardownFailure:
+                raise
+            except WorkerFailure as exc:
+                raise WorkloadResolutionFailure(str(exc)) from exc
+            remaining_seconds()
             if not inspected.startswith("sha256:"):
                 raise WorkloadResolutionFailure(
                     "runtime did not return an immutable workload identity"
@@ -1240,31 +1259,58 @@ class DockerRuntime:
         data_path = config.analysis_path if split == "analysis" else config.test_path
         task = EvaluationTaskSpec.from_task(config)
         request = HiddenDatasetRequest(split)
+        operation_timeout = float(
+            task.timeout_seconds if timeout_seconds is None else timeout_seconds
+        )
+        if not math.isfinite(operation_timeout) or operation_timeout <= 0:
+            raise RuntimeFailure("evaluation deadline reached")
+        operation_deadline = self.monotonic() + operation_timeout
+
+        def remaining_seconds() -> float:
+            remaining = operation_deadline - self.monotonic()
+            if remaining <= 0:
+                raise RuntimeFailure("evaluation deadline reached")
+            return remaining
+
         resolved = self._resolve_hidden_dataset_path(
             "local-preview",
             task.task_id,
             request,
             data_path,
+            remaining_seconds(),
         )
-        candidate_workload = self.resolve_workload(
-            episode_id="local-preview",
-            workload=WorkloadRequest("candidate", task.candidate_image),
-        )
-        evaluator_workload = self.resolve_workload(
-            episode_id="local-preview",
-            workload=WorkloadRequest("evaluator", task.evaluator_image),
-        )
-        return self.evaluate_candidate(
-            episode_id="local-preview",
-            task=task,
-            resources=resources,
-            candidate_dir=candidate_dir,
-            hidden_dataset=resolved,
-            output_dir=output_dir,
-            candidate_workload=candidate_workload,
-            evaluator_workload=evaluator_workload,
-            timeout_seconds=timeout_seconds,
-        )
+        try:
+            candidate_workload = self.resolve_workload(
+                episode_id="local-preview",
+                workload=WorkloadRequest("candidate", task.candidate_image),
+                timeout_seconds=remaining_seconds(),
+            )
+            evaluator_workload = self.resolve_workload(
+                episode_id="local-preview",
+                workload=WorkloadRequest("evaluator", task.evaluator_image),
+                timeout_seconds=remaining_seconds(),
+            )
+            result = self.evaluate_candidate(
+                episode_id="local-preview",
+                task=task,
+                resources=resources,
+                candidate_dir=candidate_dir,
+                hidden_dataset=resolved,
+                output_dir=output_dir,
+                candidate_workload=candidate_workload,
+                evaluator_workload=evaluator_workload,
+                timeout_seconds=remaining_seconds(),
+            )
+        except WorkerTeardownFailure:
+            # The original error already reports the unconfirmed evaluation
+            # boundary. Keep its private snapshots for operator-level retry;
+            # the cleanup guard below would only restate the same condition.
+            raise
+        except BaseException:
+            self.close_private_materializations()
+            raise
+        self.close_private_materializations()
+        return result
 
     def _resolve_hidden_dataset_path(
         self,
@@ -1272,30 +1318,79 @@ class DockerRuntime:
         task_id: str,
         request: HiddenDatasetRequest,
         data_path: Path,
+        timeout_seconds: float,
     ) -> ResolvedHiddenDataset:
-        """Verify and retain one private deployment source behind an opaque ID."""
+        """Materialize one immutable private snapshot behind an opaque ID."""
 
         if not isinstance(request, HiddenDatasetRequest):
             raise TypeError("hidden_dataset must be a HiddenDatasetRequest")
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise HiddenDatasetResolutionFailure(
+                "hidden dataset resolution deadline reached"
+            )
+        deadline = self.monotonic() + timeout_seconds
+        resolution_id = uuid.uuid4().hex
+        if self._hidden_snapshot_root is None:
+            try:
+                self._hidden_snapshot_root = Path(
+                    tempfile.mkdtemp(prefix="autotrain-bench-hidden-")
+                ).resolve()
+                self._hidden_snapshot_root.chmod(0o700)
+            except OSError as exc:
+                raise HiddenDatasetResolutionFailure(
+                    f"failed to create private hidden dataset storage: {exc}"
+                ) from exc
+        snapshot = self._hidden_snapshot_root / f"{resolution_id}.snapshot"
+        staged = self._hidden_snapshot_root / f".{resolution_id}.tmp"
+        digest = hashlib.sha256()
         try:
             if not data_path.is_file():
                 raise FileNotFoundError(data_path)
-            digest = _sha256_file(data_path)
+            with data_path.open("rb") as source, staged.open("xb") as destination:
+                while True:
+                    if self.monotonic() >= deadline:
+                        raise HiddenDatasetResolutionFailure(
+                            "hidden dataset resolution deadline reached"
+                        )
+                    chunk = source.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    destination.write(chunk)
+                    digest.update(chunk)
+                destination.flush()
+                os.fsync(destination.fileno())
+            staged.chmod(0o400)
+            os.replace(staged, snapshot)
+            if self.monotonic() >= deadline:
+                raise HiddenDatasetResolutionFailure(
+                    "hidden dataset resolution deadline reached"
+                )
+        except HiddenDatasetResolutionFailure:
+            staged.unlink(missing_ok=True)
+            snapshot.unlink(missing_ok=True)
+            raise
         except OSError as exc:
+            staged.unlink(missing_ok=True)
+            snapshot.unlink(missing_ok=True)
             raise HiddenDatasetResolutionFailure(
                 f"failed to resolve hidden dataset {request.name}: {exc}"
             ) from exc
+        digest_hex = digest.hexdigest()
         resolved = ResolvedHiddenDataset(
             request.name,
-            digest,
-            uuid.uuid4().hex,
+            digest_hex,
+            resolution_id,
         )
-        if request.expected_sha256 is not None and digest != request.expected_sha256:
+        if (
+            request.expected_sha256 is not None
+            and digest_hex != request.expected_sha256
+        ):
+            snapshot.unlink(missing_ok=True)
             raise HiddenDatasetIdentityMismatch(resolved)
         self._resolved_hidden_datasets[(episode_id, resolved.resolution_id)] = (
             task_id,
             resolved,
-            data_path,
+            snapshot,
         )
         return resolved
 
@@ -1305,6 +1400,7 @@ class DockerRuntime:
         episode_id: str,
         task: EvaluationTaskSpec,
         hidden_dataset: HiddenDatasetRequest,
+        timeout_seconds: float,
     ) -> ResolvedHiddenDataset:
         """Resolve the local reference source only when Core requests it."""
 
@@ -1321,7 +1417,28 @@ class DockerRuntime:
             task.task_id,
             hidden_dataset,
             data_path,
+            timeout_seconds,
         )
+
+    def close_private_materializations(self) -> None:
+        """Remove Worker-private hidden snapshots after all evaluations stop."""
+
+        root = self._hidden_snapshot_root
+        if root is None:
+            return
+        if self._pending_evaluations:
+            raise WorkerTeardownFailure(
+                "cannot remove private hidden datasets while evaluation teardown "
+                "is unconfirmed"
+            )
+        try:
+            shutil.rmtree(root)
+        except OSError as exc:
+            raise WorkerTeardownFailure(
+                f"private hidden dataset cleanup failed: {exc}"
+            ) from exc
+        self._hidden_snapshot_root = None
+        self._resolved_hidden_datasets.clear()
 
     def _run_isolated_evaluator(
         self,

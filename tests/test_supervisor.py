@@ -114,10 +114,13 @@ class FakeWorker:
         }
         self.hidden_dataset_resolution_failures = {}
         self.hidden_dataset_resolution_hook = None
+        self.hidden_dataset_resolution_timeouts = []
         self.workload_requests = []
         self.workload_resolutions = {}
         self.workload_resolution_failures = {}
         self.workload_resolution_exception = None
+        self.workload_resolution_hook = None
+        self.workload_resolution_timeouts = []
         self.lease_workloads = []
         self.resource_envelopes = []
         self.resource_receipt_override = None
@@ -202,10 +205,13 @@ class FakeWorker:
             receipt_id=f"receipt:{lease_id}",
         )
 
-    def resolve_workload(self, *, episode_id, workload):
+    def resolve_workload(self, *, episode_id, workload, timeout_seconds):
         if not isinstance(workload, WorkloadRequest):
             raise AssertionError("Worker received an invalid workload request")
         self.workload_requests.append(workload)
+        self.workload_resolution_timeouts.append(timeout_seconds)
+        if self.workload_resolution_hook is not None:
+            self.workload_resolution_hook(workload, timeout_seconds)
         if self.workload_resolution_exception is not None:
             raise self.workload_resolution_exception
         failure = self.workload_resolution_failures.get(workload.role)
@@ -261,9 +267,11 @@ class FakeWorker:
         episode_id,
         task,
         hidden_dataset,
+        timeout_seconds,
     ):
         del task
         self.hidden_dataset_requests.append(hidden_dataset)
+        self.hidden_dataset_resolution_timeouts.append(timeout_seconds)
         if self.hidden_dataset_resolution_hook is not None:
             self.hidden_dataset_resolution_hook(hidden_dataset)
         failure = self.hidden_dataset_resolution_failures.get(hidden_dataset.name)
@@ -685,6 +693,79 @@ class SupervisorTests(unittest.TestCase):
             ["training", "candidate", "evaluator"],
         )
 
+    def test_test_operation_passes_only_remaining_deadline_to_evaluator(self):
+        config = replace(self.config, evaluator_timeout_seconds=30)
+        supervisor = self.supervisor(config=config)
+
+        def resolve_workload(workload, timeout_seconds):
+            self.assertGreater(timeout_seconds, 0)
+            if workload.role == "candidate":
+                self.clock.advance(5)
+            elif workload.role == "evaluator":
+                self.clock.advance(7)
+
+        def resolve_hidden(hidden_dataset):
+            if hidden_dataset.name == "test":
+                self.clock.advance(3)
+
+        self.worker.workload_resolution_hook = resolve_workload
+        self.worker.hidden_dataset_resolution_hook = resolve_hidden
+        supervisor.start_lease()
+        candidate = supervisor.commit_lease("/output/candidate")
+        supervisor.declare_incumbent(candidate["candidate_id"])
+        supervisor.finish()
+
+        final = self.finalize_after_agent_stop(supervisor)
+
+        self.assertEqual(final["outcome"], "success")
+        self.assertEqual(self.worker.evaluation_timeouts[0], 15.0)
+        self.assertEqual(
+            self.worker.hidden_dataset_resolution_timeouts[0],
+            18.0,
+        )
+
+    def test_workload_resolution_overrun_fails_before_test_execution(self):
+        config = replace(self.config, evaluator_timeout_seconds=30)
+        supervisor = self.supervisor(config=config)
+
+        def overrun(workload, timeout_seconds):
+            if workload.role == "candidate":
+                self.clock.advance(timeout_seconds + 1)
+
+        self.worker.workload_resolution_hook = overrun
+        supervisor.start_lease()
+        candidate = supervisor.commit_lease("/output/candidate")
+        supervisor.declare_incumbent(candidate["candidate_id"])
+        supervisor.finish()
+
+        final = self.finalize_after_agent_stop(supervisor)
+
+        self.assertEqual(final["status"], "infrastructure_failure")
+        self.assertEqual(final["test_status"], "failed")
+        self.assertEqual(final["failure"], "evaluation_workload_resolution_failure")
+        self.assertEqual(self.worker.evaluations, [])
+
+    def test_late_test_metric_is_not_accepted(self):
+        config = replace(self.config, evaluator_timeout_seconds=30)
+        supervisor = self.supervisor(config=config)
+
+        def finish_late(split, timeout_seconds):
+            if split == "test":
+                self.clock.advance(timeout_seconds + 1)
+
+        self.worker.evaluation_hook = finish_late
+        supervisor.start_lease()
+        candidate = supervisor.commit_lease("/output/candidate")
+        supervisor.declare_incumbent(candidate["candidate_id"])
+        supervisor.finish()
+
+        final = self.finalize_after_agent_stop(supervisor)
+
+        self.assertEqual(final["status"], "finalized")
+        self.assertEqual(final["outcome"], "failed")
+        self.assertEqual(final["failure"], "test_evaluation_failed")
+        self.assertIsNone(final["test_nll"])
+
     def test_formal_inference_fails_closed_without_gateway_execution_evidence(self):
         digest = "@sha256:" + "a" * 64
         config = replace(
@@ -1091,6 +1172,77 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(final["status"], "infrastructure_failure")
         self.assertEqual(final["failure"], "hidden_dataset_receipt_invalid")
         self.assertNotIn("/organizer/private", json.dumps(final))
+        self.assertEqual(self.worker.evaluations, [])
+
+    def test_unsubstantiated_hidden_mismatch_is_terminal(self):
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+        committed = supervisor.commit_lease("/output/candidate")
+        supervisor.declare_incumbent(committed["candidate_id"])
+        supervisor.finish()
+        receipt = ResolvedHiddenDataset(
+            "test",
+            self.worker.hidden_dataset_digests["test"],
+            "unsubstantiated-mismatch",
+        )
+
+        with patch.object(
+            self.worker,
+            "resolve_hidden_dataset",
+            side_effect=HiddenDatasetIdentityMismatch(receipt),
+        ):
+            final = self.finalize_after_agent_stop(supervisor)
+
+        self.assertEqual(final["status"], "infrastructure_failure")
+        self.assertEqual(final["test_status"], "failed")
+        self.assertEqual(final["failure"], "hidden_dataset_receipt_invalid")
+        self.assertEqual(self.worker.evaluations, [])
+
+    def test_hidden_mismatch_matching_prior_identity_is_invalid(self):
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+        committed = supervisor.commit_lease("/output/candidate")
+        supervisor.declare_incumbent(committed["candidate_id"])
+        supervisor.finish()
+        supervisor.state["artifact_identities"]["hidden_evaluation"]["test_sha256"] = (
+            self.worker.hidden_dataset_digests["test"]
+        )
+        receipt = ResolvedHiddenDataset(
+            "test",
+            self.worker.hidden_dataset_digests["test"],
+            "matching-mismatch",
+        )
+
+        with patch.object(
+            self.worker,
+            "resolve_hidden_dataset",
+            side_effect=HiddenDatasetIdentityMismatch(receipt),
+        ):
+            final = self.finalize_after_agent_stop(supervisor)
+
+        self.assertEqual(final["status"], "infrastructure_failure")
+        self.assertEqual(final["test_status"], "failed")
+        self.assertEqual(final["failure"], "hidden_dataset_receipt_invalid")
+        self.assertEqual(self.worker.evaluations, [])
+
+    def test_hidden_resolution_overrun_is_terminal(self):
+        config = replace(self.config, evaluator_timeout_seconds=30)
+        supervisor = self.supervisor(config=config)
+        supervisor.start_lease()
+        committed = supervisor.commit_lease("/output/candidate")
+        supervisor.declare_incumbent(committed["candidate_id"])
+        supervisor.finish()
+
+        def overrun(hidden_dataset):
+            if hidden_dataset.name == "test":
+                self.clock.advance(31)
+
+        self.worker.hidden_dataset_resolution_hook = overrun
+        final = self.finalize_after_agent_stop(supervisor)
+
+        self.assertEqual(final["status"], "infrastructure_failure")
+        self.assertEqual(final["test_status"], "failed")
+        self.assertEqual(final["failure"], "hidden_dataset_resolution_failure")
         self.assertEqual(self.worker.evaluations, [])
 
     def test_unexpected_resolver_failure_marks_worker_state_unknown(self):

@@ -836,8 +836,8 @@ def command_start(args: argparse.Namespace) -> int:
         # Research Leases are gone, and the control transport is cleaned.  A
         # Worker deployment may materialize ANALYSIS/TEST at this point; Core
         # neither downloads hidden data nor selects a platform mechanism.
+        postmortem_error: Optional[BaseException] = None
         if supervisor.state["status"] == "closed":
-            postmortem_error: Optional[BaseException] = None
             try:
                 supervisor.evaluate_postmortem()
             except BaseException as exc:
@@ -855,8 +855,21 @@ def command_start(args: argparse.Namespace) -> int:
             except BaseException as exc:
                 if postmortem_error is None:
                     postmortem_error = exc
-            if postmortem_error is not None:
-                raise postmortem_error
+        private_materialization_failures = _run_cleanup_steps(
+            [
+                (
+                    "evaluation_private_storage_teardown_failure",
+                    reference_runtime.close_private_materializations,
+                )
+            ]
+        )
+        try:
+            _report_cleanup_failures(supervisor, private_materialization_failures)
+        except BaseException as exc:
+            if postmortem_error is None:
+                postmortem_error = exc
+        if postmortem_error is not None:
+            raise postmortem_error
 
     _print(supervisor.public_status())
     return _episode_exit_code(supervisor.state)

@@ -74,6 +74,7 @@ MAX_COMMAND_STREAM_BYTES = 1024 * 1024
 MAX_LOG_READ_BYTES = 4 * 1024 * 1024
 MAX_COMMAND_LOG_BYTES = 64 * 1024 * 1024
 MAX_INCUMBENT_DECLARATIONS = 4096
+DEFAULT_WORKER_RESOLUTION_TIMEOUT_SECONDS = 300.0
 _OUTPUT_TRUNCATION_MARKER = "\n[output truncated by AutoTrain-Bench]\n"
 _TREE_HASH_DOMAIN = b"autotrain-bench-tree-v2\0"
 _PARTICIPANT_ARTIFACT_ERRNOS = {
@@ -260,6 +261,9 @@ class Supervisor:
         release_verification: Optional[ReleaseVerificationReceipt] = None,
         monotonic: Callable[[], float] = time.monotonic,
         wall_time: Callable[[], float] = time.time,
+        worker_resolution_timeout_seconds: float = (
+            DEFAULT_WORKER_RESOLUTION_TIMEOUT_SECONDS
+        ),
     ) -> None:
         normalized = track.upper()
         if normalized not in {"A", "B"}:
@@ -301,6 +305,14 @@ class Supervisor:
         if not isinstance(self.resource_envelope, ResourceEnvelope):
             raise TypeError("resource_envelope must be a ResourceEnvelope")
         self.track = normalized
+        if (
+            not math.isfinite(worker_resolution_timeout_seconds)
+            or worker_resolution_timeout_seconds <= 0
+        ):
+            raise ValueError("worker resolution timeout must be finite and positive")
+        self.worker_resolution_timeout_seconds = float(
+            worker_resolution_timeout_seconds
+        )
         self.episode_dir = episode_dir.resolve()
         self.research_worker = research_worker
         self.evaluation_worker = evaluation_worker
@@ -549,7 +561,7 @@ class Supervisor:
             # diagnostic axis and never gates an otherwise valid TEST result.
             eligibility_violations.append("formal_test_evaluation_pending")
         if config.leaderboard_eligible:
-            if any(
+            if not self.resource_envelope.requirements or any(
                 requirement.minimum_enforcement is not EnforcementLevel.ENFORCED
                 for requirement in self.resource_envelope.requirements
             ):
@@ -1195,7 +1207,12 @@ class Supervisor:
             and resolved.transformation_sha256 is None
         )
 
-    def _resolve_workload(self, role: str) -> ResolvedWorkload:
+    def _resolve_workload(
+        self,
+        role: str,
+        *,
+        timeout_seconds: Optional[float] = None,
+    ) -> ResolvedWorkload:
         """Resolve and accept one workload before passing it to an operation.
 
         The returned opaque handle is the only workload authorization accepted
@@ -1204,17 +1221,30 @@ class Supervisor:
         handle.
         """
 
+        effective_timeout = (
+            self.worker_resolution_timeout_seconds
+            if timeout_seconds is None
+            else float(timeout_seconds)
+        )
+        if not math.isfinite(effective_timeout) or effective_timeout <= 0:
+            raise WorkloadResolutionFailure("workload resolution deadline reached")
         cached = self._resolved_workloads.get(role)
         if cached is not None:
             return cached
         request = self._workload_request(role)
         worker = self.research_worker if role == "training" else self.evaluation_worker
         worker_scope = "research" if role == "training" else "evaluation"
+        resolution_deadline = self.monotonic() + effective_timeout
         try:
             resolved = worker.resolve_workload(
                 episode_id=self.state["episode_id"],
                 workload=request,
+                timeout_seconds=effective_timeout,
             )
+            if self.monotonic() >= resolution_deadline:
+                raise WorkloadResolutionFailure(
+                    f"{role} workload resolution deadline reached"
+                )
         except WorkloadResolutionFailure as exc:
             self._event(
                 "WORKLOAD_RESOLUTION_FAILED",
@@ -2400,7 +2430,6 @@ class Supervisor:
         field = f"{request.name}_sha256"
         identities = self.state["artifact_identities"]["hidden_evaluation"]
         previously_resolved = identities[field]
-        identities[field] = resolved.sha256
         expected = request.expected_sha256 or previously_resolved
         if expected is not None and expected != resolved.sha256:
             self._event(
@@ -2419,6 +2448,7 @@ class Supervisor:
                 self.state["analysis_identity_verified"] = False
                 self._mark_analysis_incomplete("hidden_dataset_identity_mismatch")
             return False
+        identities[field] = resolved.sha256
 
         if request.name == "test":
             violation = "formal_test_evaluation_pending"
@@ -2436,20 +2466,71 @@ class Supervisor:
         self._save_state()
         return True
 
+    def _record_hidden_dataset_mismatch(
+        self,
+        request: HiddenDatasetRequest,
+        receipt: Any,
+        *,
+        primary: bool,
+    ) -> None:
+        """Accept a mismatch signal only when its receipt proves a mismatch."""
+
+        field = f"{request.name}_sha256"
+        previously_resolved = self.state["artifact_identities"]["hidden_evaluation"][
+            field
+        ]
+        expected = request.expected_sha256 or previously_resolved
+        if (
+            not isinstance(receipt, ResolvedHiddenDataset)
+            or receipt.name != request.name
+            or expected is None
+            or receipt.sha256 == expected
+        ):
+            self._hidden_dataset_resolution_failed(
+                request.name,
+                primary=primary,
+                code="hidden_dataset_receipt_invalid",
+                private_detail=(
+                    "Evaluation Worker raised HiddenDatasetIdentityMismatch "
+                    "without evidence of a different hidden dataset identity"
+                ),
+            )
+            return
+        self._record_hidden_dataset_resolution(
+            request,
+            receipt,
+            primary=primary,
+        )
+
     def _resolve_hidden_dataset(
         self,
         request: HiddenDatasetRequest,
         *,
         primary: bool,
+        timeout_seconds: float,
     ) -> Optional[ResolvedHiddenDataset]:
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            self._hidden_dataset_resolution_failed(
+                request.name,
+                primary=primary,
+                code="hidden_dataset_resolution_deadline",
+                private_detail="hidden dataset resolution deadline reached",
+            )
+            return None
+        resolution_deadline = self.monotonic() + timeout_seconds
         try:
             resolved = self.evaluation_worker.resolve_hidden_dataset(
                 episode_id=self.state["episode_id"],
                 task=self.evaluation_task,
                 hidden_dataset=request,
+                timeout_seconds=timeout_seconds,
             )
+            if self.monotonic() >= resolution_deadline:
+                raise HiddenDatasetResolutionFailure(
+                    "hidden dataset resolution deadline reached"
+                )
         except HiddenDatasetIdentityMismatch as exc:
-            self._record_hidden_dataset_resolution(
+            self._record_hidden_dataset_mismatch(
                 request,
                 exc.receipt,
                 primary=primary,
@@ -2557,6 +2638,18 @@ class Supervisor:
 
         digest = candidate_id.split(":", 1)[1]
         evaluation_started = self.monotonic()
+        evaluation_deadline = evaluation_started + float(
+            self.config.evaluator_timeout_seconds
+        )
+
+        def remaining_seconds() -> float:
+            remaining = evaluation_deadline - self.monotonic()
+            if remaining <= 0:
+                raise WorkloadResolutionFailure(
+                    "TEST evaluation operation deadline reached"
+                )
+            return remaining
+
         request = self._hidden_dataset_request("test")
         resolved: Optional[ResolvedHiddenDataset] = None
         candidate_workload: Optional[ResolvedWorkload] = None
@@ -2567,27 +2660,36 @@ class Supervisor:
         test_infrastructure_failure_code = "test_evaluation_infrastructure_failure"
         test_teardown_failure: Optional[str] = None
         try:
-            candidate_workload = self._resolve_workload("candidate")
-            evaluator_workload = self._resolve_workload("evaluator")
-            resolved = self._resolve_hidden_dataset(request, primary=True)
+            candidate_workload = self._resolve_workload(
+                "candidate", timeout_seconds=remaining_seconds()
+            )
+            evaluator_workload = self._resolve_workload(
+                "evaluator", timeout_seconds=remaining_seconds()
+            )
+            resolved = self._resolve_hidden_dataset(
+                request,
+                primary=True,
+                timeout_seconds=remaining_seconds(),
+            )
             if resolved is not None:
                 assert candidate_workload is not None
                 assert evaluator_workload is not None
-                test_nll = validated_nll(
-                    self.evaluation_worker.evaluate_candidate(
-                        episode_id=self.state["episode_id"],
-                        task=self.evaluation_task,
-                        resources=self.resources,
-                        candidate_dir=self.candidates_dir / digest,
-                        hidden_dataset=resolved,
-                        output_dir=self.evaluations_dir / "test" / digest,
-                        candidate_workload=candidate_workload,
-                        evaluator_workload=evaluator_workload,
-                        timeout_seconds=float(self.config.evaluator_timeout_seconds),
-                    )
+                raw_test_nll = self.evaluation_worker.evaluate_candidate(
+                    episode_id=self.state["episode_id"],
+                    task=self.evaluation_task,
+                    resources=self.resources,
+                    candidate_dir=self.candidates_dir / digest,
+                    hidden_dataset=resolved,
+                    output_dir=self.evaluations_dir / "test" / digest,
+                    candidate_workload=candidate_workload,
+                    evaluator_workload=evaluator_workload,
+                    timeout_seconds=remaining_seconds(),
                 )
+                if self.monotonic() >= evaluation_deadline:
+                    raise WorkerFailure("TEST evaluation operation deadline reached")
+                test_nll = validated_nll(raw_test_nll)
         except HiddenDatasetIdentityMismatch as exc:
-            self._record_hidden_dataset_resolution(
+            self._record_hidden_dataset_mismatch(
                 request,
                 exc.receipt,
                 primary=True,
@@ -2698,31 +2800,39 @@ class Supervisor:
         incomplete: Optional[tuple[str, Optional[str], Optional[str]]] = None
         try:
             if candidate_ids:
-                resolved = self._resolve_hidden_dataset(request, primary=False)
+                resolved = self._resolve_hidden_dataset(
+                    request,
+                    primary=False,
+                    timeout_seconds=float(self.config.evaluator_timeout_seconds),
+                )
             for candidate_id in candidate_ids if resolved is not None else []:
                 metadata = self.state["candidates"][candidate_id]
                 if metadata["analysis_status"] in {"evaluated", "failed"}:
                     continue
                 digest = candidate_id.split(":", 1)[1]
+                candidate_deadline = self.monotonic() + float(
+                    self.config.evaluator_timeout_seconds
+                )
                 try:
-                    nll = validated_nll(
-                        self.evaluation_worker.evaluate_candidate(
-                            episode_id=self.state["episode_id"],
-                            task=self.evaluation_task,
-                            resources=self.resources,
-                            candidate_dir=self.candidates_dir / digest,
-                            hidden_dataset=resolved,
-                            output_dir=self.evaluations_dir / "analysis" / digest,
-                            candidate_workload=self._resolved_workloads["candidate"],
-                            evaluator_workload=self._resolved_workloads["evaluator"],
-                            timeout_seconds=float(
-                                self.config.evaluator_timeout_seconds
-                            ),
-                        )
+                    raw_nll = self.evaluation_worker.evaluate_candidate(
+                        episode_id=self.state["episode_id"],
+                        task=self.evaluation_task,
+                        resources=self.resources,
+                        candidate_dir=self.candidates_dir / digest,
+                        hidden_dataset=resolved,
+                        output_dir=self.evaluations_dir / "analysis" / digest,
+                        candidate_workload=self._resolved_workloads["candidate"],
+                        evaluator_workload=self._resolved_workloads["evaluator"],
+                        timeout_seconds=max(0.0, candidate_deadline - self.monotonic()),
                     )
+                    if self.monotonic() >= candidate_deadline:
+                        raise WorkerFailure(
+                            "ANALYSIS evaluation operation deadline reached"
+                        )
+                    nll = validated_nll(raw_nll)
                     perplexity = perplexity_from_nll(nll)
                 except HiddenDatasetIdentityMismatch as exc:
-                    self._record_hidden_dataset_resolution(
+                    self._record_hidden_dataset_mismatch(
                         request,
                         exc.receipt,
                         primary=False,

@@ -190,6 +190,15 @@ metric. Paths, source URLs, credentials, mount handles, and cache identifiers
 remain Worker-private; only the opaque resolution ID and content digest cross
 the protocol.
 
+Both `resolve_workload()` and `resolve_hidden_dataset()` receive a positive,
+finite `timeout_seconds`. A conforming Worker must stop resolution by that
+deadline and return no authorization for a late result. For primary TEST, the
+Coordinator passes only the remaining evaluator-operation allowance through
+workload resolution, hidden-data resolution, and `evaluate_candidate()`; these
+are not additive timeout grants. The current Python calls are synchronous, so
+an asynchronous operation/cancellation protocol remains future work for
+preempting a wedged or nonconforming in-process Worker.
+
 The same ownership rule applies to evaluation: `evaluate_candidate()` must not
 return a metric until its isolated Candidate/Evaluator boundary has been torn
 down. If teardown cannot be confirmed, it raises `WorkerTeardownFailure` and
@@ -293,6 +302,14 @@ compensating Lease termination; the workload never becomes an active,
 budgeted Lease. Receipt authenticity comes from the trusted Worker deployment
 and its invocation channel—v7 does not pretend that an in-process Python object
 is a remote cryptographic transport.
+
+During the v0 manifest transition, an explicit `resource_contract` is the full
+semantic envelope and must include requirements consistent with the profile's
+legacy `host_count` and `accelerator` compatibility fields. It may add arbitrary
+release-defined properties, but it cannot erase or contradict those legacy
+requirements. A future schema may remove that duplicate compatibility
+projection; until then the cross-check prevents two conflicting resource
+sources of truth.
 
 The bundled Docker Worker reports its existing count-based GPU allocation as
 `best_effort`, even when the workload-visible inventory matches the request.

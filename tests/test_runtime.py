@@ -28,7 +28,6 @@ from autotrain_bench.worker_protocol import (
     DEADLINE_TERMINATION,
     EnforcementLevel,
     EvaluationTaskSpec,
-    HiddenDatasetIdentityMismatch,
     HiddenDatasetRequest,
     HiddenDatasetResolutionFailure,
     ResearchTaskSpec,
@@ -42,6 +41,7 @@ from autotrain_bench.worker_protocol import (
 
 ROOT = Path(__file__).resolve().parents[1]
 TASK = ROOT / "tests/fixtures/task/task.json"
+RESOLUTION_TIMEOUT = 30.0
 
 
 def publish_agent_api(public_task: Path) -> None:
@@ -58,10 +58,12 @@ def resolve_evaluation_workloads(runtime, task, episode_id):
         "candidate_workload": runtime.resolve_workload(
             episode_id=episode_id,
             workload=WorkloadRequest("candidate", task.candidate_image),
+            timeout_seconds=RESOLUTION_TIMEOUT,
         ),
         "evaluator_workload": runtime.resolve_workload(
             episode_id=episode_id,
             workload=WorkloadRequest("evaluator", task.evaluator_image),
+            timeout_seconds=RESOLUTION_TIMEOUT,
         ),
     }
 
@@ -126,6 +128,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             workload = runtime.resolve_workload(
                 episode_id="episode-1",
                 workload=WorkloadRequest("training", reference),
+                timeout_seconds=RESOLUTION_TIMEOUT,
             )
 
             receipt = runtime.start_lease(
@@ -172,6 +175,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                     episode_id="episode-1",
                     task=task,
                     hidden_dataset=request,
+                    timeout_seconds=RESOLUTION_TIMEOUT,
                 )
 
             source.parent.mkdir()
@@ -180,6 +184,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 episode_id="episode-1",
                 task=task,
                 hidden_dataset=request,
+                timeout_seconds=RESOLUTION_TIMEOUT,
             )
 
             self.assertEqual(
@@ -205,6 +210,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             resolved = runtime.resolve_workload(
                 episode_id="episode-1",
                 workload=WorkloadRequest("training", reference),
+                timeout_seconds=RESOLUTION_TIMEOUT,
             )
 
             with self.assertRaises(WorkloadResolutionFailure):
@@ -254,6 +260,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             resolved = runtime.resolve_workload(
                 episode_id="episode",
                 workload=WorkloadRequest("training", task.training_image),
+                timeout_seconds=RESOLUTION_TIMEOUT,
             )
             runtime.start_lease(
                 episode_id="episode",
@@ -271,23 +278,72 @@ class RuntimeBoundaryTests(unittest.TestCase):
             self.assertIn("sha256:" + "a" * 64, launch)
             self.assertNotIn(task.training_image, launch)
 
-    def test_resolved_hidden_dataset_cannot_change_before_candidate_start(self):
+    def test_workload_inspect_failure_preserves_resolution_failure_type(self):
+        runtime = DockerRuntime(docker_binary="docker")
+
+        with patch.object(
+            runtime,
+            "_run",
+            side_effect=RuntimeFailure("private Docker diagnostic"),
+        ):
+            with self.assertRaisesRegex(
+                WorkloadResolutionFailure,
+                "private Docker diagnostic",
+            ):
+                runtime.resolve_workload(
+                    episode_id="episode",
+                    workload=WorkloadRequest("training", "mutable:latest"),
+                    timeout_seconds=RESOLUTION_TIMEOUT,
+                )
+
+    def test_workload_inspect_does_not_downgrade_unknown_teardown_state(self):
+        runtime = DockerRuntime(docker_binary="docker")
+
+        with patch.object(
+            runtime,
+            "_run",
+            side_effect=WorkerTeardownFailure("inspection helper still running"),
+        ):
+            with self.assertRaisesRegex(
+                WorkerTeardownFailure,
+                "still running",
+            ):
+                runtime.resolve_workload(
+                    episode_id="episode",
+                    workload=WorkloadRequest("training", "mutable:latest"),
+                    timeout_seconds=RESOLUTION_TIMEOUT,
+                )
+
+    def test_resolved_hidden_dataset_uses_the_receipted_immutable_snapshot(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "test.json"
-            source.write_text('{"sequences":[[0,1]]}', encoding="utf-8")
+            original = b'{"sequences":[[0,1]]}'
+            source.write_bytes(original)
             runtime = CapturingDockerRuntime(hidden_datasets={"test": source})
             task = EvaluationTaskSpec.from_task(TaskConfig.load(TASK))
             resolved = runtime.resolve_hidden_dataset(
                 episode_id="episode-1",
                 task=task,
                 hidden_dataset=HiddenDatasetRequest("test"),
+                timeout_seconds=RESOLUTION_TIMEOUT,
             )
             workloads = resolve_evaluation_workloads(runtime, task, "episode-1")
             runtime.calls.clear()
             source.write_text('{"sequences":[[0,2]]}', encoding="utf-8")
 
-            with self.assertRaises(HiddenDatasetIdentityMismatch):
-                runtime.evaluate_candidate(
+            evaluated_bytes = []
+
+            def evaluate_snapshot(**kwargs):
+                evaluated_bytes.append(kwargs["data_path"].read_bytes())
+                self.assertNotEqual(kwargs["data_path"], source)
+                return 1.25
+
+            with patch.object(
+                runtime,
+                "_run_isolated_evaluator",
+                side_effect=evaluate_snapshot,
+            ):
+                nll = runtime.evaluate_candidate(
                     episode_id="episode-1",
                     task=task,
                     resources=TrainingResources(),
@@ -297,7 +353,43 @@ class RuntimeBoundaryTests(unittest.TestCase):
                     **workloads,
                 )
 
-            self.assertEqual(runtime.calls, [])
+            self.assertEqual(nll, 1.25)
+            self.assertEqual(evaluated_bytes, [original])
+            self.assertEqual(resolved.sha256, hashlib.sha256(original).hexdigest())
+
+            snapshot_root = runtime._hidden_snapshot_root
+            self.assertIsNotNone(snapshot_root)
+            runtime.close_private_materializations()
+            self.assertFalse(snapshot_root.exists())
+            self.assertEqual(runtime._resolved_hidden_datasets, {})
+
+    def test_private_hidden_snapshots_wait_for_confirmed_evaluation_teardown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "test.json"
+            source.write_text('{"sequences":[[0,1]]}', encoding="utf-8")
+            runtime = CapturingDockerRuntime(hidden_datasets={"test": source})
+            task = EvaluationTaskSpec.from_task(TaskConfig.load(TASK))
+            runtime.resolve_hidden_dataset(
+                episode_id="episode",
+                task=task,
+                hidden_dataset=HiddenDatasetRequest("test"),
+                timeout_seconds=RESOLUTION_TIMEOUT,
+            )
+            runtime._pending_evaluations[("episode", "test", "candidate")] = (
+                "candidate",
+                "evaluator",
+                "network",
+            )
+
+            with self.assertRaisesRegex(
+                WorkerTeardownFailure,
+                "teardown is unconfirmed",
+            ):
+                runtime.close_private_materializations()
+
+            self.assertTrue(runtime._hidden_snapshot_root.exists())
+            runtime._pending_evaluations.clear()
+            runtime.close_private_materializations()
 
     def test_hidden_dataset_resolution_is_bound_to_one_episode(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -309,6 +401,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 episode_id="episode-1",
                 task=task,
                 hidden_dataset=HiddenDatasetRequest("test"),
+                timeout_seconds=RESOLUTION_TIMEOUT,
             )
             workloads = resolve_evaluation_workloads(runtime, task, "episode-1")
             runtime.calls.clear()
@@ -414,6 +507,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
         workload = runtime.resolve_workload(
             episode_id="episode",
             workload=WorkloadRequest("training", task.training_image),
+            timeout_seconds=RESOLUTION_TIMEOUT,
         )
 
         with patch.object(
@@ -1176,7 +1270,10 @@ class RuntimeBoundaryTests(unittest.TestCase):
             self.assertNotIn(str(ROOT / "autotrain_bench"), "\n".join(candidate))
             self.assertNotIn(str(config.analysis_path), "\n".join(candidate))
             self.assertNotIn("dst=/candidate", "\n".join(evaluator))
-            self.assertIn(str(config.analysis_path), "\n".join(evaluator))
+            evaluator_command = "\n".join(evaluator)
+            self.assertNotIn(str(config.analysis_path), evaluator_command)
+            self.assertIn("autotrain-bench-hidden-", evaluator_command)
+            self.assertIn("dst=/eval-data/split.json,readonly", evaluator_command)
             self.assertIn(str(config.evaluator_entrypoint), "\n".join(evaluator))
             self.assertIn("http://candidate:8766", evaluator)
             self.assertIn("--gpus", candidate)
@@ -1280,6 +1377,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
         runtime.stop_container = lambda name: runtime.teardown.append("retry-container")
         runtime.remove_network = lambda name: runtime.teardown.append("retry-network")
         runtime.teardown_pending_evaluations()
+        runtime.close_private_materializations()
 
         self.assertEqual(runtime._pending_evaluations, {})
         self.assertEqual(

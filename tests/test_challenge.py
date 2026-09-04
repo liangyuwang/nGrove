@@ -10,7 +10,10 @@ from autotrain_bench.challenge import (
     ReleaseVerificationReceipt,
 )
 from autotrain_bench.config import ConfigError, TaskConfig
-from autotrain_bench.worker_protocol import WorkloadResolutionAcceptance
+from autotrain_bench.worker_protocol import (
+    ResourceEnvelope,
+    WorkloadResolutionAcceptance,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -187,11 +190,41 @@ class ChallengeReleaseTests(unittest.TestCase):
                 "schema_version": 1,
                 "normative": [
                     {
+                        "name": "host.count",
+                        "relation": "exact",
+                        "value": 1,
+                        "minimum_enforcement": "enforced",
+                    },
+                    {
+                        "name": "accelerator.count",
+                        "relation": "exact",
+                        "value": 4,
+                        "minimum_enforcement": "enforced",
+                    },
+                    {
+                        "name": "accelerator.vendor",
+                        "relation": "exact",
+                        "value": "nvidia",
+                        "minimum_enforcement": "enforced",
+                    },
+                    {
+                        "name": "accelerator.model",
+                        "relation": "contains",
+                        "value": "H100",
+                        "minimum_enforcement": "enforced",
+                    },
+                    {
+                        "name": "accelerator.memory_mib_per_device",
+                        "relation": "at_least",
+                        "value": 80000,
+                        "minimum_enforcement": "enforced",
+                    },
+                    {
                         "name": "site.scratch.capacity_bytes",
                         "relation": "at_least",
                         "value": 1000,
                         "minimum_enforcement": "enforced",
-                    }
+                    },
                 ],
                 "observational": ["site.fabric.class"],
             }
@@ -208,8 +241,69 @@ class ChallengeReleaseTests(unittest.TestCase):
 
             self.assertEqual(
                 resolved.resource_envelope.public_manifest(),
-                profile["resource_contract"],
+                ResourceEnvelope.from_manifest(
+                    profile["resource_contract"]
+                ).public_manifest(),
             )
+
+    def test_resource_contract_cannot_erase_profile_requirements(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._write_release(directory)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["runtime_profiles"]["h100-80gb-x4"]["resource_contract"] = {
+                "schema_version": 1,
+                "normative": [],
+                "observational": [],
+            }
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            with self.assertRaisesRegex(ConfigError, "must include 'host.count'"):
+                ChallengeRelease.load(path)
+
+    def test_resource_contract_cannot_conflict_with_profile_requirements(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._write_release(directory)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["runtime_profiles"]["h100-80gb-x4"]["resource_contract"] = {
+                "schema_version": 1,
+                "normative": [
+                    {
+                        "name": "host.count",
+                        "relation": "exact",
+                        "value": 2,
+                        "minimum_enforcement": "best_effort",
+                    },
+                    {
+                        "name": "accelerator.count",
+                        "relation": "exact",
+                        "value": 4,
+                        "minimum_enforcement": "best_effort",
+                    },
+                    {
+                        "name": "accelerator.vendor",
+                        "relation": "exact",
+                        "value": "nvidia",
+                        "minimum_enforcement": "best_effort",
+                    },
+                    {
+                        "name": "accelerator.model",
+                        "relation": "contains",
+                        "value": "H100",
+                        "minimum_enforcement": "best_effort",
+                    },
+                    {
+                        "name": "accelerator.memory_mib_per_device",
+                        "relation": "at_least",
+                        "value": 80000,
+                        "minimum_enforcement": "best_effort",
+                    },
+                ],
+                "observational": [],
+            }
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            with self.assertRaisesRegex(ConfigError, "conflicts.*'host.count'"):
+                ChallengeRelease.load(path)
 
     def test_release_rejects_unsupported_runtime_shapes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -253,7 +347,31 @@ class ChallengeReleaseTests(unittest.TestCase):
                             "relation": "exact",
                             "value": 1,
                             "minimum_enforcement": "best_effort",
-                        }
+                        },
+                        {
+                            "name": "accelerator.count",
+                            "relation": "exact",
+                            "value": 4,
+                            "minimum_enforcement": "enforced",
+                        },
+                        {
+                            "name": "accelerator.vendor",
+                            "relation": "exact",
+                            "value": "nvidia",
+                            "minimum_enforcement": "enforced",
+                        },
+                        {
+                            "name": "accelerator.model",
+                            "relation": "contains",
+                            "value": "H100",
+                            "minimum_enforcement": "enforced",
+                        },
+                        {
+                            "name": "accelerator.memory_mib_per_device",
+                            "relation": "at_least",
+                            "value": 80000,
+                            "minimum_enforcement": "enforced",
+                        },
                     ],
                     "observational": [],
                 }

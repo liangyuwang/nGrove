@@ -441,50 +441,33 @@ evidence exactly matches a `WorkloadResolutionAcceptance` supplied by the
 trusted organizer `ReleaseVerificationReceipt`. No runtime, conversion, cache,
 or scheduler mechanism was added to Core.
 
-#### Open v6 resolution follow-ups
+#### C3 resolution closure
 
-The semantic shape of C3 is implemented, but the following implementation and
-lifecycle findings remain open. They must not be treated as completed merely
-because the current unit and conformance tests pass:
+Status: implemented in Worker Protocol v7 and the bundled Worker, with the
+asynchronous transport work below still deliberately deferred.
 
-1. **Bind hidden-data identity to the bytes actually evaluated.** The bundled
-   Worker currently hashes its configured source and later asks the runtime to
-   mount that path. A mutation or replacement between those operations can make
-   the Evaluator consume bytes different from the resolution receipt. The
-   bundled Worker must instead hash and evaluate the same Worker-private,
-   immutable snapshot (or provide an equivalently atomic mechanism). A
-   regression test must mutate the original source at the hash-to-launch
-   boundary and prove that unreceipted bytes cannot be evaluated.
-2. **Make every primary hidden-resolution path terminal.** A Worker can raise
-   `HiddenDatasetIdentityMismatch` while returning a receipt that does not
-   actually differ from the release or previously resolved identity. The
-   Coordinator must reject that inconsistent signal as invalid Worker evidence
-   instead of leaving `status=closed`, `test_status=pending`, and no staged
-   result. Tests must cover both a missing expected digest and a matching
-   expected digest.
-3. **Preserve workload-resolution failure classes.** A non-creating reference
-   operation such as `docker image inspect` currently raises the runtime's
-   generic `WorkerFailure`, which the Coordinator conservatively interprets as
-   unknown Worker state and a teardown failure. The bundled Worker must
-   translate a confirmed, side-effect-free resolution failure into
-   `WorkloadResolutionFailure`; only genuinely unknown resource state may use
-   `WorkerTeardownFailure`. Tests must distinguish resolution failure from
-   unconfirmed teardown.
-4. **Bound resolution liveness.** Worker Protocol v7 retains synchronous
-   resolution calls from v6; they
-   synchronous and have no semantic deadline or cancellation operation. A slow
-   hidden-data or workload resolver can therefore block the Coordinator and is
-   not charged against the later evaluation timeout. Before claiming a bounded
-   formal lifecycle, the protocol must define either a resolution deadline or
-   a separate bounded operation budget and pass only the remaining evaluation
-   allowance onward. This may be addressed together with the independently
-   triggered asynchronous-operation work below; until then it is an explicit
-   v0 limitation, not a platform-specific mechanism to add to Core.
-
-The first three items are correctness and failure-semantics work for the
-bundled implementation. The fourth is a protocol/liveness limitation and may
-require a Worker Protocol revision if it changes required method arguments or
-operation ordering.
+1. **Hidden-data identity is bound to the bytes actually evaluated.** The
+   bundled Worker copies its configured source into Worker-private read-only
+   storage, hashes that exact snapshot, and mounts only the snapshot. Regression
+   coverage mutates the source after resolution and proves that evaluation
+   still consumes the receipted bytes. Snapshot cleanup is part of deployment
+   teardown.
+2. **Every primary hidden-resolution path is terminal.** If a Worker raises
+   `HiddenDatasetIdentityMismatch` with a receipt that does not actually differ
+   from the release or previously resolved identity, the Coordinator treats it
+   as invalid Worker evidence and reaches an explicit primary failure terminal.
+3. **Workload-resolution failure classes are preserved.** The bundled
+   `docker image inspect` path translates a confirmed, side-effect-free failure
+   into `WorkloadResolutionFailure`; only genuinely unknown resource state uses
+   `WorkerTeardownFailure`.
+4. **Bound resolution liveness.** Version 7 gives workload and hidden-data
+   resolution explicit deadlines. TEST resolution and execution share one
+   evaluator-operation deadline, so slow resolution cannot obtain a fresh full
+   evaluation allowance. The bundled Worker checks filesystem-copy progress
+   and bounds runtime inspection. Because the current interface remains a
+   synchronous in-process call, Core still cannot forcibly preempt a wedged or
+   nonconforming Worker; asynchronous operation IDs and cancellation remain a
+   separately triggered future seam rather than a platform branch.
 
 ### C4. Resource allocation evidence
 
@@ -513,10 +496,13 @@ fails closed, with compensating termination, before a mismatched allocation can
 become an active Lease.
 
 The schema fixes no CPU, accelerator, topology, scheduler, cgroup, or storage
-property list. The existing v0 NVIDIA flags generate a compatibility envelope;
-an explicit release `resource_contract` can use other semantic property names
-without a platform branch in Core. Authenticity still depends on the trusted
-Worker deployment and invocation channel. Remote cryptographic transport and
+property list. The existing v0 NVIDIA flags generate a compatibility envelope.
+During this schema transition, an explicit `resource_contract` is a full
+envelope: it must restate the legacy profile requirements consistently and may
+add other semantic property names without a platform branch in Core. It cannot
+silently erase an H100 count/model/memory requirement while the same runtime
+profile still declares one. Authenticity still depends on the trusted Worker
+deployment and invocation channel. Remote cryptographic transport and
 deployment certification remain separate future work.
 
 The bundled Docker Worker reports count-based GPU selection as `best_effort`.

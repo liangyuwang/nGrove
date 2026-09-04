@@ -115,7 +115,10 @@ being hidden behind application-level mailbox limits.
 The bundled `autotrain-bench prepare` and `autotrain-bench start` commands are
 the composition root for that local Docker implementation; they are not a
 generic backend loader. Worker Protocol v7 is currently a synchronous,
-in-process Python contract. Its remaining `Path` values for TRAIN, workspaces,
+in-process Python contract. Resolution calls receive explicit deadlines, and
+TEST workload/data resolution consumes the same operation budget as evaluation;
+the future asynchronous protocol is still needed to preempt a nonconforming or
+wedged in-process Worker. Its remaining `Path` values for TRAIN, workspaces,
 Candidate artifacts, and output directories are local deployment handles, not
 a remote wire format. Hidden-data requests and resolution receipts contain no
 path. An external Worker package uses its own trusted launcher to compose Core
