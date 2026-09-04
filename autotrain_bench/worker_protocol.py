@@ -30,8 +30,9 @@ if TYPE_CHECKING:
     from .config import TaskConfig, TrainingResources
 
 
-WORKER_PROTOCOL_VERSION = 8
+WORKER_PROTOCOL_VERSION = 9
 WORKER_CONFORMANCE_SUITE_VERSION = f"worker-v{WORKER_PROTOCOL_VERSION}"
+CONFORMANCE_RECEIPT_VERSION = 1
 RESOURCE_ENVELOPE_SCHEMA_VERSION = 1
 RESOURCE_ALLOCATION_RECEIPT_VERSION = 1
 
@@ -986,17 +987,58 @@ class Capability:
 
 @dataclass(frozen=True)
 class ConformanceReceipt:
+    """Trusted conformance evidence supplied by the Operator composition.
+
+    A Worker does not issue this object through ``describe_capabilities()``.
+    The trusted caller binds an organizer-owned report to the concrete Worker
+    identity before constructing the Coordinator.
+    """
+
+    receipt_version: int
     suite_version: str
+    worker_id: str
+    authority: str
+    report_sha256: str
     passed: bool
 
     def __post_init__(self) -> None:
-        if not isinstance(self.suite_version, str) or not self.suite_version.strip():
-            raise ValueError("conformance suite_version must not be empty")
+        if (
+            isinstance(self.receipt_version, bool)
+            or not isinstance(self.receipt_version, int)
+            or self.receipt_version != CONFORMANCE_RECEIPT_VERSION
+        ):
+            raise ValueError("unsupported conformance receipt version")
+        if (
+            not isinstance(self.suite_version, str)
+            or not self.suite_version.strip()
+            or len(self.suite_version) > 256
+            or "\0" in self.suite_version
+        ):
+            raise ValueError("conformance suite_version is invalid")
+        for value, field_name in (
+            (self.worker_id, "worker_id"),
+            (self.authority, "authority"),
+        ):
+            if (
+                not isinstance(value, str)
+                or not value.strip()
+                or len(value) > 256
+                or "\0" in value
+            ):
+                raise ValueError(f"conformance {field_name} is invalid")
+        _validate_sha256(self.report_sha256, "conformance report_sha256")
         if not isinstance(self.passed, bool):
             raise TypeError("conformance passed must be a boolean")
 
     def public_manifest(self) -> Dict[str, Any]:
-        return {"suite_version": self.suite_version, "passed": self.passed}
+        return {
+            "receipt_version": self.receipt_version,
+            "suite_version": self.suite_version,
+            "worker_id": self.worker_id,
+            "authority": self.authority,
+            "report_sha256": self.report_sha256,
+            "passed": self.passed,
+        }
 
 
 @dataclass(frozen=True)
@@ -1013,7 +1055,6 @@ class WorkerDescriptor:
     roles: Tuple[str, ...]
     capabilities: Mapping[str, Capability]
     protocol_version: int = WORKER_PROTOCOL_VERSION
-    conformance: Optional[ConformanceReceipt] = None
 
     def __post_init__(self) -> None:
         if self.protocol_version != WORKER_PROTOCOL_VERSION:
@@ -1026,10 +1067,6 @@ class WorkerDescriptor:
             raise ValueError("Worker roles must not be empty")
         if len(set(self.roles)) != len(self.roles):
             raise ValueError("Worker roles must be unique")
-        if self.conformance is not None and not isinstance(
-            self.conformance, ConformanceReceipt
-        ):
-            raise TypeError("conformance must be a ConformanceReceipt")
         for name, capability in self.capabilities.items():
             if not isinstance(name, str) or not name.strip():
                 raise ValueError("capability names must not be empty")
@@ -1046,9 +1083,6 @@ class WorkerDescriptor:
                 name: capability.public_manifest()
                 for name, capability in sorted(self.capabilities.items())
             },
-            "conformance": (
-                self.conformance.public_manifest() if self.conformance else None
-            ),
         }
 
 
@@ -1126,10 +1160,16 @@ def assess_worker(
     descriptor: WorkerDescriptor,
     requirements: Sequence[CapabilityRequirement],
     *,
+    conformance_receipt: Optional[ConformanceReceipt] = None,
     minimum_trust: TrustLevel = TrustLevel.CERTIFIED,
     require_conformance: bool = True,
 ) -> CapabilityAssessment:
-    """Evaluate capabilities separately from deployment trust."""
+    """Evaluate capability, trust, and trusted conformance independently."""
+
+    if conformance_receipt is not None and not isinstance(
+        conformance_receipt, ConformanceReceipt
+    ):
+        raise TypeError("conformance_receipt must be a ConformanceReceipt")
 
     missing = []
     insufficient = []
@@ -1150,10 +1190,11 @@ def assess_worker(
         conformance_satisfied=(
             not require_conformance
             or bool(
-                descriptor.conformance
-                and descriptor.conformance.suite_version
+                conformance_receipt
+                and conformance_receipt.suite_version
                 == WORKER_CONFORMANCE_SUITE_VERSION
-                and descriptor.conformance.passed is True
+                and conformance_receipt.worker_id == descriptor.worker_id
+                and conformance_receipt.passed is True
             )
         ),
     )

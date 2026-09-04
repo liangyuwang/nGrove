@@ -3,6 +3,7 @@ import unittest
 
 from autotrain_bench.worker_protocol import (
     BASELINE_REQUIREMENTS,
+    CONFORMANCE_RECEIPT_VERSION,
     IMMUTABLE_WORKLOAD_IDENTITY,
     Capability,
     CapabilityRequirement,
@@ -29,7 +30,7 @@ from autotrain_bench.worker_protocol import (
 )
 
 
-def descriptor(*, trust=TrustLevel.DEVELOPMENT, conformance=None, overrides=None):
+def descriptor(*, trust=TrustLevel.DEVELOPMENT, overrides=None):
     capabilities = {
         requirement.name: Capability(EnforcementLevel.ENFORCED)
         for requirement in BASELINE_REQUIREMENTS
@@ -40,7 +41,22 @@ def descriptor(*, trust=TrustLevel.DEVELOPMENT, conformance=None, overrides=None
         trust_level=trust,
         roles=("research", "evaluation"),
         capabilities=capabilities,
-        conformance=conformance,
+    )
+
+
+def conformance_receipt(
+    *,
+    worker_id="test-deployment",
+    suite_version=WORKER_CONFORMANCE_SUITE_VERSION,
+    passed=True,
+):
+    return ConformanceReceipt(
+        receipt_version=CONFORMANCE_RECEIPT_VERSION,
+        suite_version=suite_version,
+        worker_id=worker_id,
+        authority="test-organizer",
+        report_sha256="c" * 64,
+        passed=passed,
     )
 
 
@@ -372,11 +388,9 @@ class WorkerProtocolTests(unittest.TestCase):
 
     def test_certified_conformant_worker_can_be_eligible(self):
         assessment = assess_worker(
-            descriptor(
-                trust=TrustLevel.CERTIFIED,
-                conformance=ConformanceReceipt(WORKER_CONFORMANCE_SUITE_VERSION, True),
-            ),
+            descriptor(trust=TrustLevel.CERTIFIED),
             BASELINE_REQUIREMENTS,
+            conformance_receipt=conformance_receipt(),
         )
         self.assertTrue(assessment.leaderboard_eligible)
 
@@ -384,19 +398,68 @@ class WorkerProtocolTests(unittest.TestCase):
         for invalid in ("false", "true", 0, 1, None):
             with self.subTest(invalid=invalid):
                 with self.assertRaisesRegex(TypeError, "must be a boolean"):
-                    ConformanceReceipt(WORKER_CONFORMANCE_SUITE_VERSION, invalid)
+                    conformance_receipt(passed=invalid)
+
+    def test_conformance_receipt_identity_fields_are_strict(self):
+        for invalid_version in (True, 1.0, 2):
+            with self.subTest(invalid_version=invalid_version):
+                with self.assertRaisesRegex(ValueError, "receipt version"):
+                    ConformanceReceipt(
+                        receipt_version=invalid_version,
+                        suite_version=WORKER_CONFORMANCE_SUITE_VERSION,
+                        worker_id="test-deployment",
+                        authority="test-organizer",
+                        report_sha256="c" * 64,
+                        passed=True,
+                    )
+        with self.assertRaisesRegex(ValueError, "worker_id"):
+            ConformanceReceipt(
+                receipt_version=CONFORMANCE_RECEIPT_VERSION,
+                suite_version=WORKER_CONFORMANCE_SUITE_VERSION,
+                worker_id="",
+                authority="test-organizer",
+                report_sha256="c" * 64,
+                passed=True,
+            )
+        with self.assertRaisesRegex(ValueError, "report_sha256"):
+            ConformanceReceipt(
+                receipt_version=CONFORMANCE_RECEIPT_VERSION,
+                suite_version=WORKER_CONFORMANCE_SUITE_VERSION,
+                worker_id="test-deployment",
+                authority="test-organizer",
+                report_sha256="not-a-digest",
+                passed=True,
+            )
 
     def test_stale_conformance_suite_cannot_certify_a_new_protocol(self):
         assessment = assess_worker(
-            descriptor(
-                trust=TrustLevel.CERTIFIED,
-                conformance=ConformanceReceipt("worker-v7", True),
-            ),
+            descriptor(trust=TrustLevel.CERTIFIED),
             BASELINE_REQUIREMENTS,
+            conformance_receipt=conformance_receipt(suite_version="worker-v8"),
         )
 
         self.assertFalse(assessment.conformance_satisfied)
         self.assertFalse(assessment.leaderboard_eligible)
+
+    def test_conformance_receipt_is_bound_to_the_assessed_worker(self):
+        assessment = assess_worker(
+            descriptor(trust=TrustLevel.CERTIFIED),
+            BASELINE_REQUIREMENTS,
+            conformance_receipt=conformance_receipt(worker_id="another-worker"),
+        )
+
+        self.assertFalse(assessment.conformance_satisfied)
+        self.assertFalse(assessment.leaderboard_eligible)
+
+    def test_worker_descriptor_cannot_self_certify(self):
+        with self.assertRaisesRegex(TypeError, "unexpected keyword"):
+            WorkerDescriptor(
+                worker_id="test-deployment",
+                trust_level=TrustLevel.CERTIFIED,
+                roles=("research", "evaluation"),
+                capabilities={},
+                conformance=conformance_receipt(),
+            )
 
     def test_missing_and_insufficient_capabilities_never_silently_pass(self):
         worker = descriptor(
@@ -414,8 +477,9 @@ class WorkerProtocolTests(unittest.TestCase):
 
     def test_descriptor_manifest_contains_no_platform_schema(self):
         manifest = descriptor().public_manifest()
-        self.assertEqual(manifest["protocol_version"], 8)
+        self.assertEqual(manifest["protocol_version"], 9)
         self.assertEqual(manifest["roles"], ["research", "evaluation"])
+        self.assertNotIn("conformance", manifest)
         serialized = json.dumps(manifest).lower()
         self.assertNotIn("docker", serialized)
         self.assertNotIn("slurm", serialized)
@@ -425,7 +489,7 @@ class WorkerProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "protocol version"):
             WorkerDescriptor(
                 worker_id="future-worker",
-                protocol_version=9,
+                protocol_version=10,
                 trust_level=TrustLevel.DEVELOPMENT,
                 roles=("research",),
                 capabilities={},

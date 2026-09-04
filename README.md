@@ -76,7 +76,7 @@ sandbox without adding platform branches to Core.
 
 The repository now contains an executable, single-host Docker prototype of the benchmark protocol. It is intended to validate episode lifecycle, Training Lease accounting, hidden evaluation, and the agent-facing control surface before the first official benchmark instance is selected.
 
-The current development snapshot uses Worker Protocol v8 but does not carry a
+The current development snapshot uses Worker Protocol v9 but does not carry a
 release package version yet. Protocol v7 introduced a breaking Worker API
 revision: every successful Training Lease startup returns operation-bound
 resource allocation evidence. The Release selects an extensible semantic resource
@@ -96,7 +96,10 @@ path-free `HiddenDatasetRequest` after research sealing, return a
 content-identity-bearing `ResolvedHiddenDataset`, accept TEST before ANALYSIS,
 and use the precise
 prefix/target/artifact visibility fields in the transport-neutral
-`CandidateChannelRequirements` contract. The Python package itself remains
+`CandidateChannelRequirements` contract. Version 9 removes conformance evidence
+from the Worker's self-description: a trusted Operator composition supplies a
+versioned receipt independently, bound to the assessed Worker ID, issuing
+authority, and organizer-owned report digest. The Python package itself remains
 `0.0.0` while unreleased.
 
 Docker is the bundled v0 compatibility implementation, not a general platform
@@ -116,7 +119,7 @@ being hidden behind application-level mailbox limits.
 
 The bundled `autotrain-bench prepare` and `autotrain-bench start` commands are
 the composition root for that local Docker implementation; they are not a
-generic backend loader. Worker Protocol v8 is currently a synchronous,
+generic backend loader. Worker Protocol v9 is currently a synchronous,
 in-process Python contract. Resolution calls receive explicit deadlines, and
 TEST workload/data resolution consumes the same operation budget as evaluation;
 those deadlines are cooperative, so a future asynchronous operation/cancellation
@@ -667,7 +670,7 @@ identity, not one materialization mechanism.
 
 Task schema v2 still retains `paths.analysis` and `paths.test` as compatibility
 inputs for the bundled local CLI. The Supervisor neither reads them nor sends
-them through Worker Protocol v8. An external launcher supplies its Evaluation
+them through Worker Protocol v9. An external launcher supplies its Evaluation
 Worker's private source mapping independently; the configured local paths may
 remain absent for that deployment. Replacing these compatibility fields in a
 future task schema is separate from the now path-free Worker boundary.

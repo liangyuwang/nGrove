@@ -44,6 +44,7 @@ from autotrain_bench.supervisor import (
 )
 from autotrain_bench.worker_protocol import (
     BASELINE_REQUIREMENTS,
+    CONFORMANCE_RECEIPT_VERSION,
     GPU_DEVICE_ISOLATION,
     HIDDEN_DATASET_IDENTITY_VERIFICATION,
     HIDDEN_DATASET_ISOLATION,
@@ -103,7 +104,6 @@ class FakeWorker:
         self.capability_overrides = {}
         self.command_result = None
         self.trust_level = TrustLevel.DEVELOPMENT
-        self.conformance = None
         self.roles = ("research", "evaluation")
         self.research_tasks = []
         self.hidden_datasets = []
@@ -140,7 +140,6 @@ class FakeWorker:
             trust_level=self.trust_level,
             roles=self.roles,
             capabilities=capabilities,
-            conformance=self.conformance,
         )
 
     def start_lease(
@@ -373,6 +372,7 @@ class SupervisorTests(unittest.TestCase):
         challenge_release=None,
         release_verification=None,
         agent_execution=None,
+        worker_conformance=None,
     ):
         resolved_agent = agent or self.agent
         agent_api_dir = publish_agent_api_bundle(self.episode / "public" / "agent_api")
@@ -394,6 +394,8 @@ class SupervisorTests(unittest.TestCase):
             comparison_key=comparison_key,
             challenge_release=challenge_release,
             release_verification=release_verification,
+            research_worker_conformance=worker_conformance,
+            evaluation_worker_conformance=worker_conformance,
             monotonic=self.clock,
             wall_time=lambda: 1_700_000_000.0,
         )
@@ -491,8 +493,13 @@ class SupervisorTests(unittest.TestCase):
         )
         agent = replace(self.agent, image="example/agent" + digest)
         self.worker.trust_level = TrustLevel.CERTIFIED
-        self.worker.conformance = ConformanceReceipt(
-            WORKER_CONFORMANCE_SUITE_VERSION, True
+        worker_conformance = ConformanceReceipt(
+            receipt_version=CONFORMANCE_RECEIPT_VERSION,
+            suite_version=WORKER_CONFORMANCE_SUITE_VERSION,
+            worker_id="test-worker",
+            authority="test-organizer",
+            report_sha256="e" * 64,
+            passed=True,
         )
         comparison_key = {
             "challenge_id": "test-byte-lm-v1",
@@ -557,6 +564,7 @@ class SupervisorTests(unittest.TestCase):
                 comparison_key=comparison_key,
                 challenge_release=release,
                 release_verification=receipt,
+                worker_conformance=worker_conformance,
             )
         self.assertFalse(supervisor.state["leaderboard_eligible"])
         self.assertEqual(
@@ -834,8 +842,13 @@ class SupervisorTests(unittest.TestCase):
         )
         agent = replace(self.agent, image="example/agent" + digest)
         self.worker.trust_level = TrustLevel.CERTIFIED
-        self.worker.conformance = ConformanceReceipt(
-            WORKER_CONFORMANCE_SUITE_VERSION, True
+        worker_conformance = ConformanceReceipt(
+            receipt_version=CONFORMANCE_RECEIPT_VERSION,
+            suite_version=WORKER_CONFORMANCE_SUITE_VERSION,
+            worker_id="test-worker",
+            authority="test-organizer",
+            report_sha256="e" * 64,
+            passed=True,
         )
         with patch(
             "autotrain_bench.supervisor._core_identity",
@@ -861,6 +874,7 @@ class SupervisorTests(unittest.TestCase):
                     "track_config": {"provisional": False},
                     "runtime_profile": {"provisional": False},
                 },
+                worker_conformance=worker_conformance,
             )
         self.assertFalse(supervisor.state["leaderboard_eligible"])
         self.assertIn(

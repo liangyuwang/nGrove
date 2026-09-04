@@ -48,6 +48,7 @@ from .worker_protocol import (
     RESEARCH_REQUIREMENTS,
     CapabilityRequirement,
     CommandResult,
+    ConformanceReceipt,
     EvaluationWorker,
     EnforcementLevel,
     EvaluationTaskSpec,
@@ -259,6 +260,8 @@ class Supervisor:
         comparison_key: Optional[Dict[str, str]] = None,
         challenge_release: Optional[Dict[str, Any]] = None,
         release_verification: Optional[ReleaseVerificationReceipt] = None,
+        research_worker_conformance: Optional[ConformanceReceipt] = None,
+        evaluation_worker_conformance: Optional[ConformanceReceipt] = None,
         monotonic: Callable[[], float] = time.monotonic,
         wall_time: Callable[[], float] = time.time,
         worker_resolution_timeout_seconds: float = (
@@ -316,6 +319,14 @@ class Supervisor:
         self.episode_dir = episode_dir.resolve()
         self.research_worker = research_worker
         self.evaluation_worker = evaluation_worker
+        for receipt, field_name in (
+            (research_worker_conformance, "research_worker_conformance"),
+            (evaluation_worker_conformance, "evaluation_worker_conformance"),
+        ):
+            if receipt is not None and not isinstance(receipt, ConformanceReceipt):
+                raise TypeError(f"{field_name} must be a ConformanceReceipt")
+        self.research_worker_conformance = research_worker_conformance
+        self.evaluation_worker_conformance = evaluation_worker_conformance
         self.agent_control_transport = agent_control_transport
         agent_control_name = (
             agent_control_transport.transport_name
@@ -396,9 +407,15 @@ class Supervisor:
             evaluation_requirements.append(
                 CapabilityRequirement(GPU_DEVICE_ISOLATION, EnforcementLevel.ENFORCED)
             )
-        research_assessment = assess_worker(research_descriptor, research_requirements)
+        research_assessment = assess_worker(
+            research_descriptor,
+            research_requirements,
+            conformance_receipt=self.research_worker_conformance,
+        )
         evaluation_assessment = assess_worker(
-            evaluation_descriptor, evaluation_requirements
+            evaluation_descriptor,
+            evaluation_requirements,
+            conformance_receipt=self.evaluation_worker_conformance,
         )
         core_identity = _core_identity()
         artifact_identities = {
@@ -521,7 +538,7 @@ class Supervisor:
             eligibility_violations.append("agent_workload_identity_not_immutable")
         if not agent_execution.leaderboard_eligible:
             eligibility_violations.append("agent_execution_not_certified")
-        # Worker Protocol v8 covers Worker-owned training/Candidate/Evaluator
+        # Worker Protocol v9 covers Worker-owned training/Candidate/Evaluator
         # workloads. AgentExecutionEvidence v0 binds the Agent image itself but
         # has no trusted field for an inference Gateway workload. Fail closed
         # instead of treating the task's configured Gateway reference as proof
@@ -632,11 +649,21 @@ class Supervisor:
             "workers": {
                 "research": {
                     **research_descriptor.public_manifest(),
+                    "conformance": (
+                        self.research_worker_conformance.public_manifest()
+                        if self.research_worker_conformance
+                        else None
+                    ),
                     "assessment": research_assessment.public_manifest(),
                     "environment": dict(research_worker_environment or {}),
                 },
                 "evaluation": {
                     **evaluation_descriptor.public_manifest(),
+                    "conformance": (
+                        self.evaluation_worker_conformance.public_manifest()
+                        if self.evaluation_worker_conformance
+                        else None
+                    ),
                     "assessment": evaluation_assessment.public_manifest(),
                     "environment": dict(evaluation_worker_environment or {}),
                 },
@@ -1220,7 +1247,7 @@ class Supervisor:
         """Resolve and accept one workload before passing it to an operation.
 
         The returned opaque handle is the only workload authorization accepted
-        by Worker Protocol v8 operations.  Core records semantic evidence but
+        by Worker Protocol v9 operations. Core records semantic evidence but
         never learns the Worker's path, scheduler job, image cache, or runtime
         handle.
         """

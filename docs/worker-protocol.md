@@ -109,12 +109,29 @@ Passing conformance does not certify a user-controlled deployment.  Likewise,
 an organizer-controlled deployment is not eligible when required technical
 capabilities are missing.  Missing or insufficient capabilities are recorded
 explicitly and never trigger a fallback. A receipt is conformant only for the
-suite version associated with the active Worker Protocol; a passing v7 receipt
-cannot certify a v8 Worker boundary.
+suite version associated with the active Worker Protocol; a passing v8 receipt
+cannot certify a v9 Worker boundary.
+
+Worker Protocol v9 makes the evidence direction explicit. `WorkerDescriptor`
+contains only Worker self-description and cannot carry conformance. The trusted
+Operator composition supplies `ConformanceReceipt` independently to the
+Coordinator. The receipt binds its schema and suite versions, the assessed
+Worker ID, issuing authority, organizer-owned report SHA-256, and pass/fail
+decision. Core checks the Worker binding before using the receipt. This local
+trusted-input seam does not pretend to be a cryptographic remote attestation;
+authentication of a future remote receipt belongs to the deployment transport.
+
+`autotrain_bench.conformance` currently provides only a resolution diagnostic
+probe. It requires release-owned workload and hidden-data identities, uses a
+unique operation scope, separates public failure codes from trusted details,
+and always invokes deployment teardown. Because it does not test the complete
+Lease, evaluation, isolation, deadline, and teardown contract, it deliberately
+cannot issue a formal `ConformanceReceipt`. A complete organizer-controlled
+suite remains required before a formal deployment can receive one.
 
 ## Research and evaluation roles
 
-Worker Protocol v8 models ResearchWorker and EvaluationWorker as separate
+Worker Protocol v9 models ResearchWorker and EvaluationWorker as separate
 interfaces because their trust domains differ:
 
 - ResearchWorker sees TRAIN, the Agent workspace, and training outputs, but
@@ -145,12 +162,13 @@ artifact is formally usable only when the evidence matches a
 `WorkloadResolutionAcceptance` supplied through the trusted organizer release
 receipt. Worker self-description is never organizer acceptance.
 
-Version 8 is a breaking interface revision in the current unreleased
+Version 9 is a breaking interface revision in the current unreleased
 development snapshot; it does not imply a package release version. Older
-Workers are rejected rather than adapted implicitly. Version 8 retains the v6
-workload-resolution rules and the v7 requirement that a successful
-`start_lease()` return a `ResourceAllocationReceipt`, and adds mandatory
-resolution deadlines. External Worker
+Workers are rejected rather than adapted implicitly. Version 9 retains the v6
+workload-resolution rules, the v7 requirement that a successful `start_lease()`
+return a `ResourceAllocationReceipt`, and the v8 mandatory resolution
+deadlines. It moves conformance from Worker self-description to the trusted
+composition input described above. External Worker
 packages must implement workload and hidden-data resolution, bind operations
 to resolved identities and resource requests, accept TEST before ANALYSIS, and
 preserve the precise prefix/target/artifact visibility fields in
@@ -158,7 +176,7 @@ preserve the precise prefix/target/artifact visibility fields in
 
 A local development Worker may implement both roles in one process. A future
 formal deployment may place them on separate services connected only through
-an immutable artifact reference. The current version 8 Python interface does
+an immutable artifact reference. The current version 9 Python interface does
 not yet define that remote artifact transport.
 
 Worker operation failures and teardown failures have different episode
@@ -202,7 +220,7 @@ are not additive timeout grants.
 
 ### Known liveness limit: cooperative deadlines
 
-Worker Protocol v8 is a synchronous, in-process Python interface. Its timeout
+Worker Protocol v9 is a synchronous, in-process Python interface. Its timeout
 arguments are semantic deadlines and a conformance requirement, but they are
 cooperative rather than a Core-side preemption mechanism. Core can reject a
 result returned after its deadline; while a call has not returned, however,
@@ -302,12 +320,13 @@ implementation can access or materialize the Coordinator-named TRAIN,
 workspace, Lease output, Candidate, public API, and evaluation locations. They
 must not be treated as a stable serializable remote protocol. Hidden datasets
 are the exception: their semantic request and resolution contain no `Path`.
-A shared-filesystem Worker can implement version 8 directly; a topology without
+A shared-filesystem Worker can implement version 9 directly; a topology without
 shared Candidate or workspace paths still needs future artifact-reference and
 materialization semantics.
 
-Version 8 passes a release-selected `ResourceEnvelope` into `start_lease()` in
-addition to the bundled v0 `TrainingResources` compatibility input. The
+Version 9 retains the release-selected `ResourceEnvelope` passed into
+`start_lease()` in addition to the bundled v0 `TrainingResources` compatibility
+input. The
 envelope contains only properties that the release classifies as normative or
 observational; an absent property remains deliberately unspecified. Property
 names are extensible, while the generic relations (`exact`, `at_least`,
@@ -325,7 +344,7 @@ minimum enforcement level, missing and unexpected properties, and the operation
 bindings before admitting the Lease. A rejected receipt causes
 compensating Lease termination; the workload never becomes an active,
 budgeted Lease. Receipt authenticity comes from the trusted Worker deployment
-and its invocation channel—v8 does not pretend that an in-process Python object
+and its invocation channel—v9 does not pretend that an in-process Python object
 is a remote cryptographic transport.
 
 During the v0 manifest transition, an explicit `resource_contract` is the full

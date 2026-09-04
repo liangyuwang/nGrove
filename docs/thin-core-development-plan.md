@@ -75,7 +75,7 @@ budget, isolation, comparison, or eligibility. Device selection, scheduler
 requests, cgroups, filesystem quotas, and other enforcement mechanisms remain
 Worker-owned.
 
-Worker Protocol v8 retains the v7 implementation of this contract for Training
+Worker Protocol v9 retains the v7 implementation of this contract for Training
 Lease admission.
 It retains `TrainingResources` only as a bundled v0 compatibility input while
 passing the release-owned, property-extensible `ResourceEnvelope` and requiring
@@ -90,7 +90,7 @@ The v0 support statement is:
 
 - The bundled `autotrain-bench prepare` and `autotrain-bench start` commands
   are a single-host local Docker reference composition.
-- `autotrain_bench.worker_protocol` version 8 is a synchronous in-process
+- `autotrain_bench.worker_protocol` version 9 is a synchronous in-process
   Python contract. Its remaining TRAIN/workspace/Candidate/output `Path` values
   are local deployment handles, not a serializable remote wire format. Hidden
   dataset requests and resolutions are path-free.
@@ -334,13 +334,15 @@ Worker-owned Candidate/Evaluator channel mechanism. It also supplied negative
 evidence: shared paths were sufficient, so remote `ArtifactRef` work remains
 deferred. No scheduler or runtime mechanism is promoted into Core.
 
-That external run predates Worker Protocol v5 through v8. Its evidence still
+That external run predates Worker Protocol v5 through v9. Its evidence still
 validates the thin-Core boundary, but its old conformance result cannot certify
 the path-free hidden-data, workload-resolution, or resource-receipt contracts.
 The out-of-tree Worker must implement `resolve_hidden_dataset()` and
 `resolve_workload()`, bind the returned resolutions to execution, return a v7
 allocation receipt from `start_lease()`, and rerun the matching conformance
-suite before a new deployment claim is made.
+suite before a new deployment claim is made. The in-repository resolution probe
+is useful for that migration but is intentionally too narrow to issue the
+complete formal receipt.
 
 ## Postmortem hidden evaluation migration
 
@@ -369,7 +371,7 @@ Status: implemented in the development schemas.
   succeeds; teardown that remains unconfirmed blocks publication and becomes an
   infrastructure failure. Terminal publication happens only after all
   postmortem workload and private-materialization cleanup attempts finish.
-- Worker Protocol v8 expresses a transport-neutral Candidate application
+- Worker Protocol v9 retains the transport-neutral Candidate application
   contract and a Worker-owned hidden-data resolution seam. Core supplies only a
   logical split name and release-frozen expected digest; the Worker returns an
   effective digest plus opaque resolution ID before Candidate execution. The
@@ -404,7 +406,7 @@ recording an unregistered runner would become unreadable rather than merely
 unverified. This phase must re-express the `agent_system` invariants over
 semantic fields instead of mechanism names, which changes the persisted
 structure and therefore requires a result schema revision with a read-only
-migration. Worker Protocol v8 resolves only Worker-owned training, Candidate,
+migration. Worker Protocol v9 resolves only Worker-owned training, Candidate,
 and Evaluator workloads. The v0 Agent evidence binds the Agent image but not a
 separate inference Gateway image, so formal runs using registered inference now
 fail closed with `inference_gateway_workload_evidence_missing` until C1 defines
@@ -446,8 +448,8 @@ or scheduler mechanism was added to Core.
 
 #### C3 resolution closure
 
-Status: implemented in Worker Protocol v8 and the bundled Worker, with the
-asynchronous transport work below still deliberately deferred.
+Status: implemented in Worker Protocol v8, retained by v9, and the bundled
+Worker. The asynchronous transport work below remains deliberately deferred.
 
 1. **Hidden-data identity is bound to the bytes actually evaluated.** The
    bundled Worker copies its configured source into Worker-private read-only
@@ -474,7 +476,7 @@ asynchronous transport work below still deliberately deferred.
 
 ### C4. Resource allocation evidence
 
-Status: implemented in Worker Protocol v7, retained by v8, and result schema v8
+Status: implemented in Worker Protocol v7, retained by v9, and result schema v8
 for Training Lease admission.
 
 Trigger: a release makes one or more resource properties normative, but the
@@ -517,6 +519,29 @@ than part of the C4 Core schema. Evaluation-operation allocation evidence is
 also deferred until a release demonstrates that resources outside Training
 Leases are independently normative.
 
+### C5. Trusted conformance evidence
+
+Status: evidence boundary implemented in Worker Protocol v9; complete formal
+conformance suite remains future organizer work.
+
+Trigger: the first in-repository resolution probe demonstrated that a partial
+black-box check could otherwise be mistaken for complete Worker conformance,
+and that a receipt returned in `WorkerDescriptor` could not prove who issued it
+or which Worker was tested.
+
+Result: Worker self-description no longer carries conformance. A trusted
+Operator composition supplies a versioned `ConformanceReceipt` independently;
+the receipt binds the assessed Worker ID, issuing authority, organizer-owned
+report SHA-256, suite version, and decision. Core checks that binding separately
+from capability claims and deployment trust. The diagnostic resolution probe
+requires release-owned identities, a unique run scope, a mandatory deployment
+teardown callback, and public/private diagnostic separation, but cannot issue a
+formal receipt because it does not exercise the complete v9 contract.
+
+The future formal suite belongs to organizer tooling and the external Worker
+SDK. Platform-specific deployment setup, outer watchdogs, destructive cleanup,
+and remote receipt authentication stay outside Core.
+
 ### Other independently triggered work
 
 - atomic episode activation with Worker-local monotonic timing;
@@ -543,7 +568,8 @@ advanced it to version 5; operation-bound workload resolution evidence advanced
 it to version 6 and result schema version 7; operation-bound Training Lease
 resource evidence advanced it to version 7 and result schema version 8;
 required workload and hidden-data resolution deadlines advanced the Worker
-Protocol to version 8 without changing the result schema.
+Protocol to version 8 without changing the result schema; trusted,
+Worker-bound conformance evidence advanced it to version 9.
 
 A new protocol revision is required when an implementation must change a
 required method, argument, return value, ordering guarantee, or failure

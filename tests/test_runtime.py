@@ -156,7 +156,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
     def test_local_reference_worker_is_explicitly_development_only(self):
         descriptor = DockerRuntime(docker_binary="docker").describe_capabilities()
         self.assertEqual(descriptor.trust_level, TrustLevel.DEVELOPMENT)
-        self.assertIsNone(descriptor.conformance)
+        self.assertFalse(hasattr(descriptor, "conformance"))
         self.assertEqual(
             descriptor.capabilities[DEADLINE_TERMINATION].level,
             EnforcementLevel.BEST_EFFORT,
