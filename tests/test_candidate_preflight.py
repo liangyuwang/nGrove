@@ -143,18 +143,21 @@ def run_offline(candidate_dir, contexts_path, output_dir, device):
     assert not (candidate_dir.stat().st_mode & 0o222)
     assert not ((candidate_dir / "candidate.py").stat().st_mode & 0o222)
     request = load_context_request(str(contexts_path))
-    assert len(request["examples"]) == 32
     print("participant debug output")
     write_prediction_artifact(str(output_dir), dataset_id=request["dataset_id"],
-        logits=([0.0] * 257 for _ in request["examples"]), examples=32, vocab_size=257)
+        logits=([0.0] * 257 for _ in request["examples"]),
+        examples=len(request["examples"]), vocab_size=257)
 """
-        result = self._run_candidate(source)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        payload = json.loads(result.stdout)
-        self.assertEqual(payload["status"], "public_abi_passed")
-        self.assertFalse(payload["hidden_evaluation_guaranteed"])
-        self.assertIn("candidate_image", payload["not_checked"])
-        self.assertIn("participant debug output", result.stderr)
+        for examples, expected in ((None, 512), (32, 32)):
+            with self.subTest(examples=examples):
+                result = self._run_candidate(source, examples=examples)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                payload = json.loads(result.stdout)
+                self.assertEqual(payload["examples"], expected)
+                self.assertEqual(payload["status"], "public_abi_passed")
+                self.assertFalse(payload["hidden_evaluation_guaranteed"])
+                self.assertIn("candidate_image", payload["not_checked"])
+                self.assertIn("participant debug output", result.stderr)
 
     def test_large_batch_failure_preserves_public_input_traceback(self):
         result = self._run_candidate(

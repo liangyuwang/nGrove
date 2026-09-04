@@ -147,7 +147,8 @@ mount. A participant can validate the public ABI before committing the artifact:
 python -m autotrain_bench.cli agent lease-exec -- \
   python -m autotrain_bench.candidate_preflight \
   --candidate /output/candidate \
-  --device cpu --vocab-size 257 --context-lengths 8 16 32 64 128
+  --device cpu --vocab-size 257 --context-lengths 8 16 32 64 128 \
+  --examples 32
 
 python -m autotrain_bench.cli agent lease-commit /output/candidate
 ```
@@ -158,13 +159,16 @@ bundles may contain only regular files and directories,
 may not contain symbolic or hard links, and must fit the task-defined file and
 byte limits.
 
-Public preflight is optional participant-side testing. It uses 32 synthetic,
-target-free examples by default, mixing context lengths and token patterns;
-`--examples` and `--seed` select its workload; `--examples 512` opts into a
-larger synthetic check matching the smoke evaluation's example count.
+Public preflight is optional participant-side testing. The smoke command above
+explicitly selects 32 synthetic, target-free inference examples, mixing context
+lengths and token patterns. This does not set the number of training samples,
+training steps, or hidden evaluation examples. The shared helper still defaults
+to 512 when `--examples` is omitted; `--examples` and `--seed` select its workload.
+Passing `--examples 512` matches the smoke evaluation's example count using
+synthetic inputs, without measuring model quality.
 It copies the artifact, clears writable permission bits on the copy, and
-invokes the same offline entrypoint
-in a fresh process with that copy as its working directory. Copying and testing
+invokes the same offline entrypoint in a fresh process with that copy as its
+working directory. Copying and testing
 consume the active Lease's resources. The original artifact is not modified.
 The bundled Worker uses lease-owned `/scratch` for the temporary copy and output;
 other deployments may set `AUTOTRAIN_SCRATCH_DIR` or pass `--scratch-dir`. Without
