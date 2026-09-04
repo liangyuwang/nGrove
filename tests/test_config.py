@@ -66,13 +66,13 @@ class ConfigTests(unittest.TestCase):
         limits = public["evaluation"]["candidate_artifact_limits"]
         self.assertEqual(limits, {"max_bytes": 1048576, "max_files": 100})
         self.assertEqual(
-            public["evaluation"]["leaderboard_metric"],
+            public["evaluation"]["performance_score"],
             {
-                "name": "perplexity",
-                "field": "test_perplexity",
-                "derived_from": "autoregressive_nll",
-                "formula": "exp(mean_token_nll)",
-                "direction": "minimize",
+                "definition_id": "uniform_normalized_log_score_v1",
+                "range": {"minimum": 0.0, "maximum": 100.0},
+                "direction": "maximize",
+                "comparison_scope": "benchmark_release",
+                "raw_metrics": ["mean_nll", "perplexity"],
             },
         )
         self.assertEqual(public["evaluation"]["context_lengths"], [1, 2, 3])
@@ -143,25 +143,38 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.task_kind, "benchmark_challenge")
             self.assertFalse(config.leaderboard_eligible)
 
-    def test_task_requires_the_supported_leaderboard_metric_contract(self):
+    def test_task_requires_the_generic_performance_score_contract(self):
         with tempfile.TemporaryDirectory() as directory:
             task = self._write_task(directory)
             payload = json.loads(task.read_text(encoding="utf-8"))
 
-            payload["evaluation"].pop("leaderboard_metric")
+            payload["evaluation"].pop("performance_score")
             task.write_text(json.dumps(payload), encoding="utf-8")
-            with self.assertRaisesRegex(ConfigError, "leaderboard_metric"):
+            with self.assertRaisesRegex(ConfigError, "performance_score"):
                 TaskConfig.load(task)
 
-            payload["evaluation"]["leaderboard_metric"] = {
-                "name": "nll",
-                "field": "test_nll",
-                "derived_from": "autoregressive_nll",
-                "formula": "mean_token_nll",
-                "direction": "minimize",
+            payload["evaluation"]["performance_score"] = {
+                "definition_id": "accuracy_v2",
+                "range": {"minimum": 0.0, "maximum": 100.0},
+                "direction": "maximize",
+                "comparison_scope": "benchmark_release",
+                "raw_metrics": ["accuracy"],
             }
             task.write_text(json.dumps(payload), encoding="utf-8")
-            with self.assertRaisesRegex(ConfigError, "leaderboard_metric"):
+            self.assertEqual(
+                TaskConfig.load(task).performance_score.definition_id,
+                "accuracy_v2",
+            )
+
+            payload["evaluation"]["performance_score"] = {
+                "definition_id": "example_score_v1",
+                "range": {"minimum": 0.0, "maximum": 1.0},
+                "direction": "minimize",
+                "comparison_scope": "global",
+                "raw_metrics": ["loss"],
+            }
+            task.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ConfigError, "performance_score"):
                 TaskConfig.load(task)
 
     def test_leaderboard_task_requires_digest_pinned_images(self):

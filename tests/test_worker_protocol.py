@@ -20,6 +20,7 @@ from autotrain_bench.worker_protocol import (
     EnforcementLevel,
     HiddenDatasetIdentityMismatch,
     HiddenDatasetRequest,
+    PerformanceScoreContract,
     ResourceAllocationReceipt,
     ResourceEnvelope,
     ResourceObservation,
@@ -349,14 +350,21 @@ class WorkerProtocolTests(unittest.TestCase):
 
     def test_candidate_evaluation_result_exposes_raw_efficiency_evidence(self):
         result = CandidateEvaluationResult(
-            nll=1.25,
+            performance_score=72.5,
+            raw_metrics={"loss": 1.25},
             serving_seconds=2.0,
             examples=4,
             input_tokens=20,
             prediction_bytes=128,
         )
 
-        self.assertEqual(result.nll, 1.25)
+        self.assertEqual(result.performance_score, 72.5)
+        self.assertEqual(
+            result.performance_manifest(
+                PerformanceScoreContract("example_score_v1", ("loss",))
+            ),
+            {"performance_score": 72.5, "raw_metrics": {"loss": 1.25}},
+        )
         self.assertEqual(
             result.serving_manifest(),
             {
@@ -369,9 +377,49 @@ class WorkerProtocolTests(unittest.TestCase):
             },
         )
         with self.assertRaisesRegex(ValueError, "serving_seconds"):
-            CandidateEvaluationResult(1.0, 0.0, 1, 1, 1)
+            CandidateEvaluationResult(1.0, {"loss": 1.0}, 0.0, 1, 1, 1)
         with self.assertRaisesRegex(ValueError, "serving rates"):
-            CandidateEvaluationResult(1.0, 5e-324, 1, 1, 1)
+            CandidateEvaluationResult(1.0, {"loss": 1.0}, 5e-324, 1, 1, 1)
+
+    def test_performance_score_contract_is_generic_and_release_scoped(self):
+        contract = PerformanceScoreContract("accuracy_v2", ("accuracy",))
+
+        self.assertEqual(
+            contract.validate_measurement(84.5, {"accuracy": 0.845}),
+            (84.5, {"accuracy": 0.845}),
+        )
+        with self.assertRaisesRegex(ValueError, "exactly match"):
+            contract.validate_measurement(84.5, {"loss": 0.2})
+        with self.assertRaisesRegex(ValueError, "between 0 and 100"):
+            contract.validate_measurement(101.0, {"accuracy": 0.845})
+        with self.assertRaisesRegex(ValueError, "raw metric name"):
+            PerformanceScoreContract("accuracy_v2", (1,))
+        with self.assertRaisesRegex(ValueError, "range"):
+            PerformanceScoreContract(
+                "accuracy_v2",
+                ("accuracy",),
+                minimum=10**1000,
+            )
+
+    def test_candidate_evaluation_rejects_unrepresentable_numbers(self):
+        with self.assertRaisesRegex(ValueError, "performance_score"):
+            CandidateEvaluationResult(
+                10**1000,
+                {"loss": 1.0},
+                1.0,
+                1,
+                1,
+                1,
+            )
+        with self.assertRaisesRegex(ValueError, "raw metric loss"):
+            CandidateEvaluationResult(
+                50.0,
+                {"loss": 10**1000},
+                1.0,
+                1,
+                1,
+                1,
+            )
 
     def test_prediction_storage_limit_is_derived_from_the_request_shape(self):
         self.assertEqual(
@@ -567,7 +615,7 @@ class WorkerProtocolTests(unittest.TestCase):
 
     def test_descriptor_manifest_contains_no_platform_schema(self):
         manifest = descriptor().public_manifest()
-        self.assertEqual(manifest["protocol_version"], 12)
+        self.assertEqual(manifest["protocol_version"], 13)
         self.assertEqual(manifest["roles"], ["research", "evaluation"])
         self.assertNotIn("conformance", manifest)
         serialized = json.dumps(manifest).lower()
@@ -579,7 +627,7 @@ class WorkerProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "protocol version"):
             WorkerDescriptor(
                 worker_id="future-worker",
-                protocol_version=13,
+                protocol_version=14,
                 trust_level=TrustLevel.DEVELOPMENT,
                 roles=("research",),
                 capabilities={},

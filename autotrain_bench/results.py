@@ -12,13 +12,14 @@ from .artifact_identity import (
 )
 from .config import AGENT_EGRESS_POLICIES, AGENT_RUNNERS
 from .worker_protocol import (
+    PerformanceScoreContract,
     ResourceAllocationReceipt,
     ResourceEnvelope,
     assess_resource_allocation,
 )
 
 
-RESULT_SCHEMA_VERSION = 10
+RESULT_SCHEMA_VERSION = 11
 LEGACY_RESULT_SCHEMA_VERSION = 1
 # Version 2 recorded the Agent egress policy as ``agent_system.mode`` with the
 # value ``"sandboxed"``.  Version 3 renames that field to ``agent_system.egress``
@@ -35,6 +36,9 @@ PRE_SERVING_EFFICIENCY_RESULT_SCHEMA_VERSION = 8
 # Version 9 added serving metrics but did not identify the directory-bundle
 # grammar used by analysis_sha256 and test_sha256.
 PRE_HIDDEN_BUNDLE_IDENTITY_RESULT_SCHEMA_VERSION = 9
+# Version 10 standardized hidden-bundle identity but still exposed NLL and
+# perplexity as Core-owned result fields.
+PRE_PERFORMANCE_SCORE_RESULT_SCHEMA_VERSION = 10
 _SUPPORTED_INPUT_SCHEMA_VERSIONS = frozenset(
     {
         LEGACY_RESULT_SCHEMA_VERSION,
@@ -46,6 +50,7 @@ _SUPPORTED_INPUT_SCHEMA_VERSIONS = frozenset(
         PRE_RESOURCE_ALLOCATION_RESULT_SCHEMA_VERSION,
         PRE_SERVING_EFFICIENCY_RESULT_SCHEMA_VERSION,
         PRE_HIDDEN_BUNDLE_IDENTITY_RESULT_SCHEMA_VERSION,
+        PRE_PERFORMANCE_SCORE_RESULT_SCHEMA_VERSION,
         RESULT_SCHEMA_VERSION,
     }
 )
@@ -187,8 +192,10 @@ def normalize_result_report(payload: Any) -> Dict[str, Any]:
         result = _migrate_pre_resource_allocation_result(result)
     if version < PRE_HIDDEN_BUNDLE_IDENTITY_RESULT_SCHEMA_VERSION:
         result = _migrate_pre_serving_efficiency_result(result)
-    if version < RESULT_SCHEMA_VERSION:
+    if version < PRE_PERFORMANCE_SCORE_RESULT_SCHEMA_VERSION:
         result = _migrate_pre_hidden_bundle_identity_result(result)
+    if version < RESULT_SCHEMA_VERSION:
+        result = _migrate_pre_performance_score_result(result)
         result["result_schema_version"] = RESULT_SCHEMA_VERSION
         result["migrated_from_result_schema_version"] = version
     result.setdefault("deployment_teardown_failures", [])
@@ -306,6 +313,30 @@ def _migrate_pre_hidden_bundle_identity_result(
     return migrated
 
 
+def _migrate_pre_performance_score_result(
+    result: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Mark the generic score interface as unavailable for pre-v11 results."""
+
+    migrated = dict(result)
+    migrated["performance_score_contract"] = None
+    migrated["test_performance_score"] = None
+    migrated["test_raw_metrics"] = None
+    trajectory = migrated.get("analysis_trajectory")
+    if isinstance(trajectory, list):
+        migrated_trajectory = []
+        for point in trajectory:
+            if isinstance(point, dict):
+                item = dict(point)
+                item["analysis_performance_score"] = None
+                item["analysis_raw_metrics"] = None
+                migrated_trajectory.append(item)
+            else:
+                migrated_trajectory.append(point)
+        migrated["analysis_trajectory"] = migrated_trajectory
+    return migrated
+
+
 def _validate_artifact_identity_algorithms(
     result: Dict[str, Any], *, require_evidence: bool
 ) -> None:
@@ -357,6 +388,30 @@ def _validate_artifact_identity_algorithms(
         for name, value in receipt_algorithms.items()
     ):
         raise ResultSchemaError("migrated formal artifact algorithm is invalid")
+
+
+def _performance_score_contract(
+    result: Dict[str, Any], *, require_evidence: bool
+) -> PerformanceScoreContract | None:
+    value = result.get("performance_score_contract")
+    if value is None and not require_evidence:
+        return None
+    try:
+        return PerformanceScoreContract.from_manifest(value)
+    except (TypeError, ValueError) as exc:
+        raise ResultSchemaError(f"invalid performance score contract: {exc}") from exc
+
+
+def _validate_performance_measurement(
+    performance_score: Any,
+    raw_metrics: Any,
+    contract: PerformanceScoreContract,
+    field: str,
+) -> None:
+    try:
+        contract.validate_measurement(performance_score, raw_metrics)
+    except (TypeError, ValueError) as exc:
+        raise ResultSchemaError(f"invalid {field}: {exc}") from exc
 
 
 def _migrate_agent_mode_to_egress(result: Dict[str, Any]) -> Dict[str, Any]:
@@ -808,7 +863,17 @@ def _mark_migrated_failure(result: Dict[str, Any], failure: str) -> Dict[str, An
 def _validate_current_result(
     result: Dict[str, Any], *, migrated_legacy: bool = False
 ) -> None:
+    if not migrated_legacy and any(
+        field in result for field in ("test_nll", "test_perplexity")
+    ):
+        raise ResultSchemaError(
+            "current results may not contain legacy TEST metric fields"
+        )
     _validate_agent_system(result)
+    performance_contract = _performance_score_contract(
+        result,
+        require_evidence=not migrated_legacy,
+    )
     _validate_artifact_identity_algorithms(
         result,
         require_evidence=not migrated_legacy,
@@ -841,6 +906,8 @@ def _validate_current_result(
         _validate_analysis_trajectory(
             analysis_trajectory,
             require_serving_metrics=not migrated_legacy,
+            performance_contract=performance_contract,
+            require_performance_score=not migrated_legacy,
         )
         _validate_analysis_summary_counts(result, analysis_trajectory)
     if not migrated_legacy:
@@ -949,7 +1016,9 @@ def _validate_current_result(
                 f"status {status!r} requires a success or failed outcome"
             )
         if (
-            result.get("test_nll") is not None
+            result.get("test_performance_score") is not None
+            or result.get("test_raw_metrics") is not None
+            or result.get("test_nll") is not None
             or result.get("test_perplexity") is not None
         ):
             raise ResultSchemaError("a pending result may not contain TEST metrics")
@@ -970,14 +1039,27 @@ def _validate_current_result(
             raise ResultSchemaError(
                 "a successful result must contain a final candidate"
             )
-        try:
-            nll = validated_nll(result.get("test_nll"))
-            expected_perplexity = perplexity_from_nll(nll)
-            perplexity = validated_nll(result.get("test_perplexity"))
-        except ValueError as exc:
-            raise ResultSchemaError(f"invalid successful result metric: {exc}") from exc
-        if not math.isclose(perplexity, expected_perplexity, rel_tol=1e-12):
-            raise ResultSchemaError("test_perplexity does not equal exp(test_nll)")
+        if migrated_legacy:
+            try:
+                nll = validated_nll(result.get("test_nll"))
+                expected_perplexity = perplexity_from_nll(nll)
+                perplexity = validated_nll(result.get("test_perplexity"))
+            except ValueError as exc:
+                raise ResultSchemaError(
+                    f"invalid legacy successful result metric: {exc}"
+                ) from exc
+            if not math.isclose(perplexity, expected_perplexity, rel_tol=1e-12):
+                raise ResultSchemaError(
+                    "legacy test_perplexity does not equal exp(test_nll)"
+                )
+        else:
+            assert performance_contract is not None
+            _validate_performance_measurement(
+                result.get("test_performance_score"),
+                result.get("test_raw_metrics"),
+                performance_contract,
+                "TEST performance measurement",
+            )
         if result.get("failure") is not None:
             raise ResultSchemaError("a successful result may not contain a failure")
         if not migrated_legacy and result.get("test_status") != "evaluated":
@@ -1015,7 +1097,9 @@ def _validate_current_result(
                 f"status {status!r} may not contain a failed outcome"
             )
         if (
-            result.get("test_nll") is not None
+            result.get("test_performance_score") is not None
+            or result.get("test_raw_metrics") is not None
+            or result.get("test_nll") is not None
             or result.get("test_perplexity") is not None
         ):
             raise ResultSchemaError("a failed result may not contain TEST metrics")
@@ -1059,7 +1143,11 @@ def _validate_analysis_summary_counts(
 
 
 def _validate_analysis_trajectory(
-    trajectory: list[Any], *, require_serving_metrics: bool
+    trajectory: list[Any],
+    *,
+    require_serving_metrics: bool,
+    performance_contract: PerformanceScoreContract | None,
+    require_performance_score: bool,
 ) -> None:
     """Validate the auditable postmortem measurement attached to a result."""
 
@@ -1102,19 +1190,34 @@ def _validate_analysis_trajectory(
                 "ANALYSIS trajectory declaration_event_seqs must be positive integers"
             )
         status = point.get("analysis_status")
+        if require_performance_score and any(
+            field in point for field in ("analysis_nll", "analysis_perplexity")
+        ):
+            raise ResultSchemaError(
+                "current ANALYSIS points may not contain legacy metric fields"
+            )
         if status == "evaluated":
-            try:
-                nll = validated_nll(point.get("analysis_nll"))
-                expected_perplexity = perplexity_from_nll(nll)
-                perplexity = validated_nll(point.get("analysis_perplexity"))
-            except ValueError as exc:
-                raise ResultSchemaError(
-                    f"invalid ANALYSIS trajectory metric: {exc}"
-                ) from exc
-            if not math.isclose(perplexity, expected_perplexity, rel_tol=1e-12):
-                raise ResultSchemaError(
-                    "ANALYSIS perplexity does not equal exp(ANALYSIS NLL)"
+            if require_performance_score:
+                assert performance_contract is not None
+                _validate_performance_measurement(
+                    point.get("analysis_performance_score"),
+                    point.get("analysis_raw_metrics"),
+                    performance_contract,
+                    "ANALYSIS performance measurement",
                 )
+            else:
+                try:
+                    nll = validated_nll(point.get("analysis_nll"))
+                    expected_perplexity = perplexity_from_nll(nll)
+                    perplexity = validated_nll(point.get("analysis_perplexity"))
+                except ValueError as exc:
+                    raise ResultSchemaError(
+                        f"invalid legacy ANALYSIS trajectory metric: {exc}"
+                    ) from exc
+                if not math.isclose(perplexity, expected_perplexity, rel_tol=1e-12):
+                    raise ResultSchemaError(
+                        "legacy ANALYSIS perplexity does not equal exp(ANALYSIS NLL)"
+                    )
             if point.get("analysis_error") is not None:
                 raise ResultSchemaError(
                     "an evaluated ANALYSIS point may not contain an error"
@@ -1131,7 +1234,9 @@ def _validate_analysis_trajectory(
                 )
         elif status in {"failed", "infrastructure_failure", "not_run"}:
             if (
-                point.get("analysis_nll") is not None
+                point.get("analysis_performance_score") is not None
+                or point.get("analysis_raw_metrics") is not None
+                or point.get("analysis_nll") is not None
                 or point.get("analysis_perplexity") is not None
             ):
                 raise ResultSchemaError(

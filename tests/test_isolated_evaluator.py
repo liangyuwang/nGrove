@@ -115,10 +115,24 @@ class IsolatedEvaluatorTests(unittest.TestCase):
             )
 
             self.assertNotIn("target", json.dumps(visible))
-            self.assertAlmostEqual(result["nll"], math.log(10), places=7)
+            self.assertAlmostEqual(
+                result["raw_metrics"]["mean_nll"], math.log(10), places=7
+            )
+            self.assertAlmostEqual(result["raw_metrics"]["perplexity"], 10.0)
+            self.assertAlmostEqual(result["performance_score"], 0.0, places=7)
             self.assertEqual(result["examples"], 3)
             self.assertEqual(result["input_tokens"], 6)
             self.assertGreater(result["prediction_bytes"], 3 * 10 * 4)
+
+    def test_performance_score_has_a_linear_nll_scale_to_the_uniform_baseline(self):
+        uniform_nll = math.log(10)
+
+        self.assertEqual(MODULE._performance_score(0.0, 10), 100.0)
+        self.assertAlmostEqual(MODULE._performance_score(uniform_nll * 0.25, 10), 75.0)
+        self.assertAlmostEqual(MODULE._performance_score(uniform_nll * 0.50, 10), 50.0)
+        self.assertAlmostEqual(MODULE._performance_score(uniform_nll * 0.75, 10), 25.0)
+        self.assertAlmostEqual(MODULE._performance_score(uniform_nll, 10), 0.0)
+        self.assertEqual(MODULE._performance_score(uniform_nll * 2.0, 10), 0.0)
 
     def test_legacy_combined_dataset_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

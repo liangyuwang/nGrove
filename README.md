@@ -58,7 +58,7 @@ The AutoTrain system is responsible for building the training system itself.
 The primary objective is simple:
 
 $$
-\boxed{\text{Minimize hidden TEST perplexity}}
+\boxed{\text{Maximize hidden TEST performance score}}
 $$
 
 under the resource constraints of the selected benchmark track.
@@ -76,7 +76,7 @@ sandbox without adding platform branches to Core.
 
 The repository now contains an executable, single-host Docker prototype of the benchmark protocol. It is intended to validate episode lifecycle, Training Lease accounting, hidden evaluation, and the agent-facing control surface before the first official benchmark instance is selected.
 
-The current development snapshot uses Worker Protocol v12 but does not carry a
+The current development snapshot uses Worker Protocol v13 but does not carry a
 release package version yet. Protocol v7 introduced a breaking Worker API
 revision: every successful Training Lease startup returns operation-bound
 resource allocation evidence. The Release selects an extensible semantic resource
@@ -110,6 +110,9 @@ Trusted timing records that complete serving invocation independently from
 NLL. Version 12 standardizes the two-file hidden-bundle digest, requires a hard
 byte-and-entry quota for untrusted prediction storage, and makes prediction
 artifacts ephemeral once evaluation ends and workload teardown is confirmed.
+Version 13 replaces the LM-specific Worker result with a generic `[0, 100]`,
+maximize-oriented performance score, exact release-declared raw metrics, and a
+score definition that is comparable only within one benchmark release.
 The Python package itself remains `0.0.0` while unreleased.
 
 Docker is the bundled v0 compatibility implementation, not a general platform
@@ -129,7 +132,7 @@ being hidden behind application-level mailbox limits.
 
 The bundled `autotrain-bench prepare` and `autotrain-bench start` commands are
 the composition root for that local Docker implementation; they are not a
-generic backend loader. Worker Protocol v12 is currently a synchronous,
+generic backend loader. Worker Protocol v13 is currently a synchronous,
 in-process Python contract. Resolution calls receive explicit deadlines, and
 TEST workload/data resolution consumes the same operation budget as evaluation;
 those deadlines are cooperative, so a future asynchronous operation/cancellation
@@ -424,7 +427,7 @@ autotrain-bench report \
   --episode /path/to/autotrain-bench-runs/episodes/<episode-id>
 ```
 
-New episode states declare `result_schema_version: 10`. Reporting an older state
+New episode states declare `result_schema_version: 11`. Reporting an older state
 performs a read-only migration. An unversioned v1 state receives the v2
 outcome fields: a completed result with a valid TEST NLL receives
 `outcome: "success"` and a derived `test_perplexity`, while an unscored
@@ -448,11 +451,12 @@ list rather than fabricated effective-resource evidence. A v8 result gains
 `null` serving-efficiency fields rather than invented timing measurements.
 Likewise, a v9 result gains a `null` hidden-evaluation identity-algorithm field;
 the reader does not retroactively claim which bundle grammar produced an older
-digest.
+digest. A v10 result gains a `null` generic performance-score contract and
+measurement fields rather than assigning a new score formula to an old result.
 
-In v10, `outcome: "success"` requires a finalized episode, a non-empty final
-Candidate ID, consistent TEST NLL/perplexity, and complete trusted serving
-metrics. Current reports identify hidden split digests with
+In v11, `outcome: "success"` requires a finalized episode, a non-empty final
+Candidate ID, a valid TEST performance score with the exact release-declared raw
+metrics, and complete trusted serving metrics. Current reports identify hidden split digests with
 `artifact_identity_algorithms.hidden_evaluation` and a formal organizer receipt
 must declare the same algorithm. A failed outcome requires a failure reason and
 keeps performance and serving metrics `null`. A null outcome is allowed
@@ -478,7 +482,7 @@ summarize, so the summary cannot drift from its own detail.
 
 `state.json` is the authoritative result commit point. Immediately before that
 atomic commit, the Supervisor appends a non-terminal
-`RESULT_PUBLICATION_PREPARED` audit record. A finalized v10 state created by the
+`RESULT_PUBLICATION_PREPARED` audit record. A finalized v11 state created by the
 current implementation includes `result_publication`, which binds the result
 to that record's publication ID and sequence number. An unreferenced prepared
 record documents an interrupted attempt and is not a terminal result. Older
@@ -698,9 +702,9 @@ the bytes physically absent from the host trust domain until evaluation provide
 stronger defense in depth; Core requires the visibility boundary and frozen
 identity, not one materialization mechanism.
 
-Task schema v4 still retains `paths.analysis` and `paths.test` as compatibility
+Task schema v5 still retains `paths.analysis` and `paths.test` as compatibility
 inputs for the bundled local CLI. The Supervisor neither reads them nor sends
-them through Worker Protocol v12. An external launcher supplies its Evaluation
+them through Worker Protocol v13. An external launcher supplies its Evaluation
 Worker's private source mapping independently; the configured local paths may
 remain absent for that deployment. Replacing these compatibility fields in a
 future task schema is separate from the now path-free Worker boundary.
@@ -841,19 +845,28 @@ L
 \log q_i[y_i].
 $$
 
-The primary leaderboard metric is token perplexity:
+The current LM release retains mean NLL and token perplexity as raw metrics:
 
 $$
 \operatorname{PPL}=\exp(L).
 $$
 
-NLL is retained in every successful result as the canonical additive
-measurement. Perplexity is derived once from the mean of the single-target
-losses; the benchmark never averages per-sequence or per-batch perplexities.
-This metric deliberately measures next-token prediction across a diverse,
-frozen context-length distribution rather than scoring every prefix of each
-hidden sequence. Scores produced by the former progressive-prefix preview are
-not comparable.
+Perplexity is derived once from the mean of the single-target losses; the
+evaluator never averages per-sequence or per-batch perplexities. This release
+maps the raw measurement into the generic primary interface:
+
+$$
+\operatorname{performance\_score}
+=100\max\left(0,1-\frac{L}{\log V}\right),
+$$
+
+where $V$ is the frozen vocabulary size. The score is finite, bounded to
+`[0, 100]`, and higher is better. A score of 100 represents perfect prediction;
+0 represents uniform-over-vocabulary performance or worse. The definition ID,
+range, direction, raw metric names, and `benchmark_release` comparison scope are
+part of the task manifest. Another benchmark release may use a different
+dataset, raw metric, or formula without changing the Core result interface, and
+its score is not comparable with this one.
 
 The internal architecture is unrestricted.
 
@@ -1412,17 +1425,21 @@ The second system may be more interesting from an RSI perspective even when the 
 
 ## Primary metric
 
-The primary leaderboard metric is:
+The primary benchmark interface is:
 
 $$
-\boxed{\text{final hidden TEST perplexity}}
+\boxed{\text{final hidden TEST performance score}}
 $$
 
 under the selected track's resource constraint.
 
-Lower is better.
+Higher is better. The score is always finite and lies in `[0, 100]`; its
+release-owned definition converts the task's raw metrics into that interface.
+Scores from different benchmark releases are not comparable.
 
-The benchmark should avoid combining many metrics into a complicated scoring formula.
+The performance-score mapping must not combine unrelated axes into an opaque
+formula. In particular, serving efficiency remains separate from task
+performance.
 
 ---
 
@@ -1430,11 +1447,11 @@ The benchmark should avoid combining many metrics into a complicated scoring for
 
 The benchmark also records:
 
-* postmortem ANALYSIS NLL;
-* final TEST NLL;
+* postmortem ANALYSIS performance score and release-declared raw metrics;
+* final TEST performance score and release-declared raw metrics;
 * Candidate serving wall time, examples/second, input tokens/second, and
   prediction bytes for TEST and each measured ANALYSIS point;
-* postmortem ANALYSIS NLL trajectory;
+* postmortem ANALYSIS performance-score trajectory;
 * final ANALYSIS–TEST disagreement as a distribution diagnostic, not a measure
   of overfitting to ANALYSIS;
 * agent input/output tokens;
@@ -1458,7 +1475,7 @@ and stops after that process exits and its prediction files are flushed. It
 therefore includes sandbox startup, Candidate import, model loading, input-file
 reading, participant-controlled scheduling and inference, and output-file
 writing. Hidden-data materialization, trusted input validation, target joining,
-and NLL computation are excluded. Efficiency comparisons require the same
+and task metric computation are excluded. Efficiency comparisons require the same
 hidden input identity and runtime profile. During this development stage the
 result records the two independent axes—performance and efficiency—but does not
 collapse them into a scalar or change leaderboard ordering; a later release can
@@ -1621,12 +1638,13 @@ Benchmark infrastructure failures are excluded and may be rerun.
 
 The infrastructure-failure policy must be deterministic and auditable.
 
-An episode succeeds only when post-mortem TEST evaluation produces a finite,
-non-negative mean NLL, a finite perplexity derived as `exp(mean_token_nll)`, and
-complete trusted Candidate-serving measurements.
+An episode succeeds only when post-mortem TEST evaluation produces a finite
+performance score in `[0, 100]`, the exact finite raw metrics declared by the
+release, and complete trusted Candidate-serving measurements.
 An episode with no declared incumbent, a failed TEST evaluation, an invalid TEST
-metric, or an unrepresentable perplexity is finalized with `outcome: "failed"`;
-`test_nll`, `test_perplexity`, and `test_serving_metrics` remain `null`.
+performance measurement, or an invalid raw metric is finalized with
+`outcome: "failed"`; `test_performance_score`, `test_raw_metrics`, and
+`test_serving_metrics` remain `null`.
 Infrastructure failures are
 also failed episodes, but remain separately classified for retry policy.
 
@@ -1683,7 +1701,7 @@ AutoTrain-Bench should maintain separate leaderboards for the two tracks.
 Ranked primarily by:
 
 ```text
-final TEST perplexity at fixed total wall-clock
+final TEST performance score at fixed total wall-clock
 ```
 
 Reported alongside:
@@ -1702,7 +1720,7 @@ Candidate serving efficiency
 Ranked primarily by:
 
 ```text
-final TEST perplexity after at most N Training Leases
+final TEST performance score after at most N Training Leases
 ```
 
 with fixed maximum duration per lease and no organizer feedback during research.
@@ -1710,8 +1728,8 @@ with fixed maximum duration per lease and no organizer feedback during research.
 Reported alongside:
 
 ```text
-postmortem ANALYSIS NLL by Candidate commit
-final TEST perplexity
+postmortem ANALYSIS performance score and raw metrics by Candidate commit
+final TEST performance score and raw metrics
 agent tokens
 agent reasoning between leases
 training compute
@@ -1769,7 +1787,7 @@ contract as a challenge preview:
 
 ```json
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "task_id": "tinystories-byte-lm-smoke-v1",
   "task_kind": "development_smoke",
   "leaderboard_eligible": false,
@@ -1795,13 +1813,12 @@ contract as a challenge preview:
     "backend": "isolated_candidate",
     "candidate_protocol": "offline_next_token_logits_v3",
     "entrypoint": "evaluator/evaluator.py",
-    "metric": "autoregressive_nll",
-    "leaderboard_metric": {
-      "name": "perplexity",
-      "field": "test_perplexity",
-      "derived_from": "autoregressive_nll",
-      "formula": "exp(mean_token_nll)",
-      "direction": "minimize"
+    "performance_score": {
+      "definition_id": "uniform_normalized_log_score_v1",
+      "range": {"minimum": 0.0, "maximum": 100.0},
+      "direction": "maximize",
+      "comparison_scope": "benchmark_release",
+      "raw_metrics": ["mean_nll", "perplexity"]
     },
     "vocab_size": 257,
     "context_length": 128,
@@ -1856,7 +1873,7 @@ The system should succeed or fail based on its own actions after task reveal.
 
 ### 7. Keep the primary objective simple
 
-The final objective is hidden TEST perplexity.
+The final objective is the release-defined hidden TEST performance score.
 
 ### 8. Record trajectories, not only endpoints
 

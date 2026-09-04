@@ -14,6 +14,7 @@ from .candidate_protocol import (
     prediction_storage_manifest,
     serving_timing_manifest,
 )
+from .worker_protocol import PerformanceScoreContract
 
 
 class ConfigError(ValueError):
@@ -182,6 +183,15 @@ def evaluator_backend(value: Any, field: str = "evaluation.backend") -> str:
         allowed = ", ".join(sorted(EVALUATOR_BACKENDS))
         raise ConfigError(f"{field} must be one of: {allowed}")
     return value
+
+
+def _performance_score_contract(
+    value: Any, field: str = "evaluation.performance_score"
+) -> PerformanceScoreContract:
+    try:
+        return PerformanceScoreContract.from_manifest(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"{field} is invalid: {exc}") from exc
 
 
 def task_kind(value: Any, field: str = "task_kind") -> str:
@@ -457,56 +467,6 @@ class TrainingResources:
 
 
 @dataclass(frozen=True)
-class LeaderboardMetricConfig:
-    """Primary score frozen into the immutable task definition."""
-
-    name: str
-    field: str
-    derived_from: str
-    formula: str
-    direction: str
-
-    @classmethod
-    def load(
-        cls,
-        value: Any,
-        field: str = "evaluation.leaderboard_metric",
-    ) -> "LeaderboardMetricConfig":
-        raw = _mapping(value, field)
-        return cls(
-            name=_string(raw.get("name"), f"{field}.name"),
-            field=_string(raw.get("field"), f"{field}.field"),
-            derived_from=_string(raw.get("derived_from"), f"{field}.derived_from"),
-            formula=_string(raw.get("formula"), f"{field}.formula"),
-            direction=_string(raw.get("direction"), f"{field}.direction"),
-        ).validate()
-
-    def validate(self) -> "LeaderboardMetricConfig":
-        expected = {
-            "name": "perplexity",
-            "field": "test_perplexity",
-            "derived_from": "autoregressive_nll",
-            "formula": "exp(mean_token_nll)",
-            "direction": "minimize",
-        }
-        if self.public_manifest() != expected:
-            raise ConfigError(
-                "v0 requires evaluation.leaderboard_metric to declare "
-                "test_perplexity = exp(mean_token_nll), minimized"
-            )
-        return self
-
-    def public_manifest(self) -> Dict[str, str]:
-        return {
-            "name": self.name,
-            "field": self.field,
-            "derived_from": self.derived_from,
-            "formula": self.formula,
-            "direction": self.direction,
-        }
-
-
-@dataclass(frozen=True)
 class TaskConfig:
     """Fully resolved benchmark task configuration.
 
@@ -527,8 +487,7 @@ class TaskConfig:
     candidate_image: str
     evaluator_image: str
     inference_gateway_image: str
-    metric: str
-    leaderboard_metric: LeaderboardMetricConfig
+    performance_score: PerformanceScoreContract
     vocab_size: int
     context_length: int
     context_lengths: Tuple[int, ...]
@@ -629,9 +588,8 @@ class TaskConfig:
                 images.get("inference_gateway", "python:3.11-slim"),
                 "images.inference_gateway",
             ),
-            metric=_string(evaluation.get("metric"), "evaluation.metric"),
-            leaderboard_metric=LeaderboardMetricConfig.load(
-                evaluation.get("leaderboard_metric")
+            performance_score=_performance_score_contract(
+                evaluation.get("performance_score")
             ),
             vocab_size=_positive_int(
                 evaluation.get("vocab_size"), "evaluation.vocab_size"
@@ -694,21 +652,13 @@ class TaskConfig:
 
     def validate(self) -> "TaskConfig":
         """Validate the immutable task definition and its release classification."""
-        if self.schema_version != 4:
-            raise ConfigError("task schema_version must be 4")
+        if self.schema_version != 5:
+            raise ConfigError("task schema_version must be 5")
         task_kind(self.task_kind)
         if self.task_kind == "development_smoke" and self.leaderboard_eligible:
             raise ConfigError("development smoke tasks may not be leaderboard eligible")
-        if self.metric != "autoregressive_nll":
-            raise ConfigError(
-                "v0 only implements evaluation.metric='autoregressive_nll'"
-            )
-        self.leaderboard_metric.validate()
-        if self.leaderboard_metric.derived_from != self.metric:
-            raise ConfigError(
-                "evaluation.leaderboard_metric.derived_from must match "
-                "evaluation.metric"
-            )
+        if not isinstance(self.performance_score, PerformanceScoreContract):
+            raise ConfigError("evaluation.performance_score is invalid")
         if self.evaluator_device not in {"cpu", "cuda"}:
             raise ConfigError("evaluation.device must be 'cpu' or 'cuda'")
         evaluator_backend(self.evaluator_backend)
@@ -837,8 +787,7 @@ class TaskConfig:
                 "backend": self.evaluator_backend,
                 "candidate_image": self.candidate_image,
                 "candidate_protocol": self.candidate_protocol,
-                "metric": self.metric,
-                "leaderboard_metric": self.leaderboard_metric.public_manifest(),
+                "performance_score": self.performance_score.public_manifest(),
                 "vocab_size": self.vocab_size,
                 "context_length": self.context_length,
                 "context_lengths": list(self.context_lengths),

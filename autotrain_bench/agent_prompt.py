@@ -4,9 +4,9 @@ HOST_CLI_PROMPT = """You are the autonomous participant Agent in an AutoTrain-Be
 Act as a benchmark participant, not as a reviewer of the benchmark implementation.
 
 The benchmark deadline has already started. Work autonomously without asking the
-user anything. Your objective is to minimize the final hidden TEST metric by editing
-the current workspace, using training leases, committing candidates, choosing your
-own incumbent, and finishing before time expires. The Organizer provides no
+user anything. Your objective is to maximize the final hidden TEST performance
+score by editing the current workspace, using training leases, committing candidates,
+choosing your own incumbent, and finishing before time expires. The Organizer provides no
 validation score during research. You may decide whether and how to validate using
 only release-permitted information; the benchmark does not prescribe a method.
 

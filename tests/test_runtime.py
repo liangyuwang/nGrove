@@ -372,14 +372,21 @@ class RuntimeBoundaryTests(unittest.TestCase):
                     }
                 )
                 self.assertNotEqual(kwargs["data_path"], source)
-                return CandidateEvaluationResult(1.25, 2.0, 2, 3, 64)
+                return CandidateEvaluationResult(
+                    72.5,
+                    {"mean_nll": 1.25, "perplexity": 3.4903429574618414},
+                    2.0,
+                    2,
+                    3,
+                    64,
+                )
 
             with patch.object(
                 runtime,
                 "_run_isolated_evaluator",
                 side_effect=evaluate_snapshot,
             ):
-                nll = runtime.evaluate_candidate(
+                result = runtime.evaluate_candidate(
                     episode_id="episode-1",
                     task=task,
                     resources=TrainingResources(),
@@ -389,7 +396,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                     **workloads,
                 )
 
-            self.assertEqual(nll.nll, 1.25)
+            self.assertEqual(result.performance_score, 72.5)
             self.assertEqual(evaluated_bytes, [original])
             snapshot = runtime._resolved_hidden_datasets[
                 ("episode-1", resolved.resolution_id)
@@ -1419,7 +1426,11 @@ class RuntimeBoundaryTests(unittest.TestCase):
                             (output / "analysis.json").write_text(
                                 json.dumps(
                                     {
-                                        "nll": 1.25,
+                                        "performance_score": 72.5,
+                                        "raw_metrics": {
+                                            "mean_nll": 1.25,
+                                            "perplexity": 3.4903429574618414,
+                                        },
                                         "examples": 3,
                                         "input_tokens": 6,
                                         "prediction_bytes": 64,
@@ -1442,7 +1453,8 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 timeout_seconds=20,
             )
 
-            self.assertEqual(result.nll, 1.25)
+            self.assertEqual(result.performance_score, 72.5)
+            self.assertEqual(result.raw_metrics["mean_nll"], 1.25)
             self.assertEqual(result.serving_seconds, 3.0)
             self.assertEqual(result.examples, 3)
             self.assertEqual(result.input_tokens, 6)
@@ -1532,10 +1544,10 @@ class RuntimeBoundaryTests(unittest.TestCase):
             output = Path(directory) / "output"
             output.mkdir()
             result = output / "analysis.json"
-            result.write_text('{"nll": 0.01}', encoding="utf-8")
+            result.write_text('{"performance_score": 99.0}', encoding="utf-8")
             runtime = CapturingDockerRuntime()
 
-            with self.assertRaisesRegex(RuntimeFailure, "valid NLL result"):
+            with self.assertRaisesRegex(RuntimeFailure, "valid performance result"):
                 runtime.run_evaluator(
                     config=TaskConfig.load(TASK),
                     resources=TrainingResources(),
@@ -1578,9 +1590,9 @@ class RuntimeBoundaryTests(unittest.TestCase):
             self.assertIn("hidden input_ids", diagnostic.read_text(encoding="utf-8"))
             self.assertEqual(list(output.glob("predictions-*")), [])
 
-    def test_evaluator_rejects_boolean_and_string_nll_values(self):
-        for raw_nll in (True, "1.25"):
-            with self.subTest(raw_nll=raw_nll):
+    def test_evaluator_rejects_boolean_and_string_performance_scores(self):
+        for raw_score in (True, "72.5"):
+            with self.subTest(raw_score=raw_score):
                 with tempfile.TemporaryDirectory() as directory:
                     output = Path(directory) / "evaluation"
 
@@ -1595,7 +1607,11 @@ class RuntimeBoundaryTests(unittest.TestCase):
                                 (output / "analysis.json").write_text(
                                     json.dumps(
                                         {
-                                            "nll": raw_nll,
+                                            "performance_score": raw_score,
+                                            "raw_metrics": {
+                                                "mean_nll": 1.25,
+                                                "perplexity": 3.4903429574618414,
+                                            },
                                             "examples": 3,
                                             "input_tokens": 6,
                                             "prediction_bytes": 64,
@@ -1606,7 +1622,9 @@ class RuntimeBoundaryTests(unittest.TestCase):
                             return result
 
                     runtime = ResultRuntime()
-                    with self.assertRaisesRegex(RuntimeFailure, "valid NLL result"):
+                    with self.assertRaisesRegex(
+                        RuntimeFailure, "valid performance result"
+                    ):
                         runtime.run_evaluator(
                             config=TaskConfig.load(TASK),
                             resources=TrainingResources(),

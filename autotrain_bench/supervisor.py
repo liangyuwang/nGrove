@@ -44,8 +44,6 @@ from .inference import summarize_inference_trace
 from .results import (
     RESULT_SCHEMA_VERSION,
     normalize_result_report,
-    perplexity_from_nll,
-    validated_nll,
 )
 from .worker_protocol import (
     EVALUATION_REQUIREMENTS,
@@ -547,7 +545,7 @@ class Supervisor:
             eligibility_violations.append("agent_workload_identity_not_immutable")
         if not agent_execution.leaderboard_eligible:
             eligibility_violations.append("agent_execution_not_certified")
-        # Worker Protocol v12 covers Worker-owned training/Candidate/Evaluator
+        # Worker Protocol v13 covers Worker-owned training/Candidate/Evaluator
         # workloads. AgentExecutionEvidence v0 binds the Agent image itself but
         # has no trusted field for an inference Gateway workload. Fail closed
         # instead of treating the task's configured Gateway reference as proof
@@ -765,8 +763,9 @@ class Supervisor:
             "analysis_selected_points": 0,
             "analysis_evaluated_points": 0,
             "test_status": None,
-            "test_nll": None,
-            "test_perplexity": None,
+            "performance_score_contract": config.performance_score.public_manifest(),
+            "test_performance_score": None,
+            "test_raw_metrics": None,
             "test_serving_metrics": None,
             "pending_result": None,
             "result_publication": None,
@@ -1058,8 +1057,8 @@ class Supervisor:
         }:
             raise RuntimeError("a staged result requires a completed TEST decision")
         if outcome == "failed" and (
-            self.state.get("test_nll") is not None
-            or self.state.get("test_perplexity") is not None
+            self.state.get("test_performance_score") is not None
+            or self.state.get("test_raw_metrics") is not None
             or self.state.get("test_serving_metrics") is not None
         ):
             raise RuntimeError("a failed outcome cannot retain TEST metrics")
@@ -1199,8 +1198,8 @@ class Supervisor:
                 ]
                 status["final_candidate_id"] = self.state["final_candidate_id"]
                 status["test_status"] = self.state["test_status"]
-                status["test_nll"] = self.state["test_nll"]
-                status["test_perplexity"] = self.state["test_perplexity"]
+                status["test_performance_score"] = self.state["test_performance_score"]
+                status["test_raw_metrics"] = self.state["test_raw_metrics"]
                 status["test_serving_metrics"] = self.state["test_serving_metrics"]
                 status["failure"] = self.state["failure"]
             return status
@@ -1260,7 +1259,7 @@ class Supervisor:
         """Resolve and accept one workload before passing it to an operation.
 
         The returned opaque handle is the only workload authorization accepted
-        by Worker Protocol v12 operations. Core records semantic evidence but
+        by Worker Protocol v13 operations. Core records semantic evidence but
         never learns the Worker's path, scheduler job, image cache, or runtime
         handle.
         """
@@ -2216,8 +2215,8 @@ class Supervisor:
                     "source_leases": [lease_id],
                     "declared_incumbent": False,
                     "analysis_status": "pending",
-                    "analysis_nll": None,
-                    "analysis_perplexity": None,
+                    "analysis_performance_score": None,
+                    "analysis_raw_metrics": None,
                     "analysis_serving_metrics": None,
                     "analysis_error": None,
                 }
@@ -2654,8 +2653,10 @@ class Supervisor:
                 {
                     **commit,
                     "analysis_status": status,
-                    "analysis_nll": metadata["analysis_nll"],
-                    "analysis_perplexity": metadata["analysis_perplexity"],
+                    "analysis_performance_score": metadata[
+                        "analysis_performance_score"
+                    ],
+                    "analysis_raw_metrics": metadata["analysis_raw_metrics"],
                     "analysis_serving_metrics": metadata["analysis_serving_metrics"],
                     "analysis_error": error,
                     "declared_incumbent": metadata["declared_incumbent"],
@@ -2714,7 +2715,8 @@ class Supervisor:
         resolved: Optional[ResolvedHiddenDataset] = None
         candidate_workload: Optional[ResolvedWorkload] = None
         evaluator_workload: Optional[ResolvedWorkload] = None
-        test_nll: Optional[float] = None
+        test_performance_score: Optional[float] = None
+        test_raw_metrics: Optional[Dict[str, float]] = None
         test_serving_metrics: Optional[Dict[str, Any]] = None
         test_failure: Optional[str] = None
         test_infrastructure_failure: Optional[str] = None
@@ -2752,7 +2754,11 @@ class Supervisor:
                     raise WorkerFailure(
                         "Evaluation Worker returned an invalid result type"
                     )
-                test_nll = validated_nll(evaluation_result.nll)
+                performance = evaluation_result.performance_manifest(
+                    self.evaluation_task.performance_score
+                )
+                test_performance_score = performance["performance_score"]
+                test_raw_metrics = performance["raw_metrics"]
                 test_serving_metrics = evaluation_result.serving_manifest()
         except HiddenDatasetIdentityMismatch as exc:
             self._record_hidden_dataset_mismatch(
@@ -2826,34 +2832,29 @@ class Supervisor:
         if resolved is None or self.state["status"] != "closed":
             self._save_state()
             return
-        if test_failure is not None or test_nll is None or test_serving_metrics is None:
+        if (
+            test_failure is not None
+            or test_performance_score is None
+            or test_raw_metrics is None
+            or test_serving_metrics is None
+        ):
             self._stage_failed_test(test_failure or "test_evaluation_failed")
-            return
-        try:
-            test_perplexity = perplexity_from_nll(test_nll)
-        except ValueError:
-            self._event(
-                "TEST_EVALUATION_FAILED",
-                candidate_id=candidate_id,
-                code="perplexity_overflow",
-            )
-            self._stage_failed_test("perplexity_overflow")
             return
 
         self.state["test_status"] = "evaluated"
         self.state["pending_result"] = {
             "outcome": "success",
             "failure": None,
-            "test_nll": test_nll,
-            "test_perplexity": test_perplexity,
+            "test_performance_score": test_performance_score,
+            "test_raw_metrics": test_raw_metrics,
             "test_serving_metrics": test_serving_metrics,
             "publication_id": uuid.uuid4().hex,
         }
         self._event(
             "TEST_EVALUATED",
             candidate_id=candidate_id,
-            nll=test_nll,
-            perplexity=test_perplexity,
+            performance_score=test_performance_score,
+            raw_metrics=test_raw_metrics,
             serving=test_serving_metrics,
         )
         self._save_state()
@@ -2901,8 +2902,9 @@ class Supervisor:
                         raise WorkerFailure(
                             "Evaluation Worker returned an invalid result type"
                         )
-                    nll = validated_nll(evaluation_result.nll)
-                    perplexity = perplexity_from_nll(nll)
+                    performance = evaluation_result.performance_manifest(
+                        self.evaluation_task.performance_score
+                    )
                     serving_metrics = evaluation_result.serving_manifest()
                 except HiddenDatasetIdentityMismatch as exc:
                     self._record_hidden_dataset_mismatch(
@@ -2966,14 +2968,16 @@ class Supervisor:
                     break
                 else:
                     metadata["analysis_status"] = "evaluated"
-                    metadata["analysis_nll"] = nll
-                    metadata["analysis_perplexity"] = perplexity
+                    metadata["analysis_performance_score"] = performance[
+                        "performance_score"
+                    ]
+                    metadata["analysis_raw_metrics"] = performance["raw_metrics"]
                     metadata["analysis_serving_metrics"] = serving_metrics
                     self._event(
                         "ANALYSIS_EVALUATED",
                         candidate_id=candidate_id,
-                        nll=nll,
-                        perplexity=perplexity,
+                        performance_score=performance["performance_score"],
+                        raw_metrics=performance["raw_metrics"],
                         serving=serving_metrics,
                     )
                 self._store_analysis_trajectory()
@@ -3071,8 +3075,8 @@ class Supervisor:
         self.state["pending_result"] = {
             "outcome": "failed",
             "failure": failure,
-            "test_nll": None,
-            "test_perplexity": None,
+            "test_performance_score": None,
+            "test_raw_metrics": None,
             "test_serving_metrics": None,
             "publication_id": uuid.uuid4().hex,
         }
@@ -3130,8 +3134,8 @@ class Supervisor:
         self.state["status"] = "finalized"
         self.state["outcome"] = outcome
         self.state["failure"] = failure
-        self.state["test_nll"] = pending["test_nll"]
-        self.state["test_perplexity"] = pending["test_perplexity"]
+        self.state["test_performance_score"] = pending["test_performance_score"]
+        self.state["test_raw_metrics"] = pending["test_raw_metrics"]
         self.state["test_serving_metrics"] = pending["test_serving_metrics"]
         self.state["pending_result"] = None
         self.state["result_publication"] = {
@@ -3215,8 +3219,8 @@ class Supervisor:
             self.state["outcome"] = "failed"
             self.state["closure_reason"] = "infrastructure_failure"
             self.state["failure"] = code
-            self.state["test_nll"] = None
-            self.state["test_perplexity"] = None
+            self.state["test_performance_score"] = None
+            self.state["test_raw_metrics"] = None
             self.state["test_serving_metrics"] = None
             self.state["pending_result"] = None
             event = {"code": code}
@@ -3279,8 +3283,8 @@ class Supervisor:
         self.state["outcome"] = "failed"
         self.state["closure_reason"] = "agent_policy_violation"
         self.state["failure"] = "agent_control_policy_violation"
-        self.state["test_nll"] = None
-        self.state["test_perplexity"] = None
+        self.state["test_performance_score"] = None
+        self.state["test_raw_metrics"] = None
         self.state["test_serving_metrics"] = None
         self.state["pending_result"] = None
         self._event("EPISODE_DNF", reason="agent_control_policy_violation")

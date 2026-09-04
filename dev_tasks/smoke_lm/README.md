@@ -45,8 +45,8 @@ incumbent.
 | Evaluation context lengths | 8, 16, 32, 64, and 128 tokens |
 | Track A | 300 seconds total wall clock |
 | Track B | Three leases, at most 75 seconds each |
-| Evaluator measurement | Mean single-target next-token NLL |
-| Leaderboard-style score | Perplexity, `exp(mean_token_nll)`, lower is better |
+| Evaluator measurement | Generic performance score with mean NLL/perplexity raw metrics |
+| Performance score | `100 * max(0, 1 - mean_token_nll / log(vocab_size))`, higher is better |
 | Candidate protocol | `offline_next_token_logits_v3` |
 
 The trusted evaluation path runs on CPU. A participant may train with any
@@ -162,8 +162,10 @@ release-declared lengths above. Each window contributes exactly one prediction:
 the Candidate receives the context and returns next-token logits, while the
 target remains permanently inside the trusted Evaluator. A target is never
 revealed later through a longer prefix or reused inside another context from
-the same source span. TEST perplexity is `exp(mean_token_nll)` over those
-single-target examples; it is not the legacy all-prefix corpus perplexity.
+the same source span. The evaluator retains mean NLL and
+`exp(mean_token_nll)` as raw metrics, then maps them to the release's generic
+`[0, 100]` performance score. This development result is not comparable with a
+different benchmark release.
 
 `candidate.py` defines one offline entry point:
 
@@ -208,5 +210,6 @@ Serving wall time covers the entire Candidate invocation: sandbox startup,
 Candidate import, model loading, context-file reading, participant-controlled
 scheduling/inference, prediction writing, flushing, and process exit. Trusted
 hidden-data materialization, validation, target joining, and scoring are
-excluded. Results record NLL/perplexity and raw serving efficiency separately;
-this development task does not yet combine them into one ranking score.
+excluded. Results record the performance score, its NLL/perplexity raw metrics,
+and serving efficiency separately; serving efficiency is not folded into the
+performance score.

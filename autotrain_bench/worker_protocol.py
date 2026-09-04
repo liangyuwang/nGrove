@@ -37,11 +37,15 @@ if TYPE_CHECKING:
     from .config import TaskConfig, TrainingResources
 
 
-WORKER_PROTOCOL_VERSION = 12
+WORKER_PROTOCOL_VERSION = 13
 WORKER_CONFORMANCE_SUITE_VERSION = f"worker-v{WORKER_PROTOCOL_VERSION}"
 CONFORMANCE_RECEIPT_VERSION = 1
 RESOURCE_ENVELOPE_SCHEMA_VERSION = 1
 RESOURCE_ALLOCATION_RECEIPT_VERSION = 1
+PERFORMANCE_SCORE_MINIMUM = 0.0
+PERFORMANCE_SCORE_MAXIMUM = 100.0
+PERFORMANCE_SCORE_DIRECTION = "maximize"
+PERFORMANCE_SCORE_COMPARISON_SCOPE = "benchmark_release"
 
 
 class WorkerFailure(RuntimeError):
@@ -220,6 +224,148 @@ class CandidateChannelRequirements:
 
 
 @dataclass(frozen=True)
+class PerformanceScoreContract:
+    """Release-owned, task-independent primary score interface."""
+
+    definition_id: str
+    raw_metrics: Tuple[str, ...]
+    minimum: float = PERFORMANCE_SCORE_MINIMUM
+    maximum: float = PERFORMANCE_SCORE_MAXIMUM
+    direction: str = PERFORMANCE_SCORE_DIRECTION
+    comparison_scope: str = PERFORMANCE_SCORE_COMPARISON_SCOPE
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.definition_id, str)
+            or not self.definition_id
+            or len(self.definition_id) > 128
+            or not self.definition_id[0].isalnum()
+            or any(
+                character not in "abcdefghijklmnopqrstuvwxyz0123456789._-"
+                for character in self.definition_id
+            )
+        ):
+            raise ValueError("performance score definition_id is invalid")
+        if (
+            not isinstance(self.raw_metrics, tuple)
+            or not self.raw_metrics
+            or len(self.raw_metrics) > 64
+        ):
+            raise ValueError("performance score raw_metrics must be a bounded tuple")
+        for name in self.raw_metrics:
+            if (
+                not isinstance(name, str)
+                or not name
+                or len(name) > 64
+                or not name[0].isalpha()
+                or any(
+                    character not in "abcdefghijklmnopqrstuvwxyz0123456789_"
+                    for character in name
+                )
+            ):
+                raise ValueError("performance score raw metric name is invalid")
+        if tuple(sorted(set(self.raw_metrics))) != self.raw_metrics:
+            raise ValueError("performance score raw_metrics must be unique and sorted")
+        if (
+            isinstance(self.minimum, bool)
+            or not isinstance(self.minimum, (int, float))
+            or isinstance(self.maximum, bool)
+            or not isinstance(self.maximum, (int, float))
+        ):
+            raise ValueError("performance score range must be exactly 0 to 100")
+        try:
+            minimum = float(self.minimum)
+            maximum = float(self.maximum)
+        except OverflowError as exc:
+            raise ValueError(
+                "performance score range must be exactly 0 to 100"
+            ) from exc
+        if minimum != PERFORMANCE_SCORE_MINIMUM or maximum != PERFORMANCE_SCORE_MAXIMUM:
+            raise ValueError("performance score range must be exactly 0 to 100")
+        if self.direction != PERFORMANCE_SCORE_DIRECTION:
+            raise ValueError("performance score direction must be maximize")
+        if self.comparison_scope != PERFORMANCE_SCORE_COMPARISON_SCOPE:
+            raise ValueError(
+                "performance scores are comparable only within one benchmark release"
+            )
+
+    @classmethod
+    def from_manifest(cls, value: Any) -> "PerformanceScoreContract":
+        if not isinstance(value, dict) or set(value) != {
+            "definition_id",
+            "range",
+            "direction",
+            "comparison_scope",
+            "raw_metrics",
+        }:
+            raise ValueError("performance score contract has unexpected fields")
+        score_range = value["range"]
+        if not isinstance(score_range, dict) or set(score_range) != {
+            "minimum",
+            "maximum",
+        }:
+            raise ValueError("performance score range must declare minimum and maximum")
+        raw_metrics = value["raw_metrics"]
+        if not isinstance(raw_metrics, list):
+            raise ValueError("performance score raw_metrics must be an array")
+        return cls(
+            definition_id=value["definition_id"],
+            raw_metrics=tuple(raw_metrics),
+            minimum=score_range["minimum"],
+            maximum=score_range["maximum"],
+            direction=value["direction"],
+            comparison_scope=value["comparison_scope"],
+        )
+
+    def public_manifest(self) -> Dict[str, Any]:
+        return {
+            "definition_id": self.definition_id,
+            "range": {
+                "minimum": float(self.minimum),
+                "maximum": float(self.maximum),
+            },
+            "direction": self.direction,
+            "comparison_scope": self.comparison_scope,
+            "raw_metrics": list(self.raw_metrics),
+        }
+
+    def validate_measurement(
+        self, performance_score: Any, raw_metrics: Any
+    ) -> Tuple[float, Dict[str, float]]:
+        if isinstance(performance_score, bool) or not isinstance(
+            performance_score, (int, float)
+        ):
+            raise ValueError("performance_score must be finite and between 0 and 100")
+        try:
+            score = float(performance_score)
+        except OverflowError as exc:
+            raise ValueError(
+                "performance_score must be finite and between 0 and 100"
+            ) from exc
+        if not math.isfinite(score) or not self.minimum <= score <= self.maximum:
+            raise ValueError("performance_score must be finite and between 0 and 100")
+        if not isinstance(raw_metrics, Mapping) or set(raw_metrics) != set(
+            self.raw_metrics
+        ):
+            raise ValueError(
+                "raw_metrics must exactly match the performance score contract"
+            )
+        normalized: Dict[str, float] = {}
+        for name in self.raw_metrics:
+            value = raw_metrics[name]
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"raw metric {name} must be finite")
+            try:
+                metric = float(value)
+            except OverflowError as exc:
+                raise ValueError(f"raw metric {name} must be finite") from exc
+            if not math.isfinite(metric):
+                raise ValueError(f"raw metric {name} must be finite")
+            normalized[name] = metric
+        return score, normalized
+
+
+@dataclass(frozen=True)
 class EvaluationTaskSpec:
     """Evaluator configuration without either hidden-dataset location."""
 
@@ -228,7 +374,7 @@ class EvaluationTaskSpec:
     candidate_image: str
     evaluator_image: str
     evaluator_entrypoint: Path
-    metric: str
+    performance_score: PerformanceScoreContract
     vocab_size: int
     context_length: int
     context_lengths: Tuple[int, ...]
@@ -244,7 +390,7 @@ class EvaluationTaskSpec:
             candidate_image=task.candidate_image,
             evaluator_image=task.evaluator_image,
             evaluator_entrypoint=task.evaluator_entrypoint,
-            metric=task.metric,
+            performance_score=task.performance_score,
             vocab_size=task.vocab_size,
             context_length=task.context_length,
             context_lengths=task.context_lengths,
@@ -260,31 +406,67 @@ class EvaluationTaskSpec:
 class CandidateEvaluationResult:
     """Trusted performance and end-to-end serving evidence from one evaluation."""
 
-    nll: float
+    performance_score: float
+    raw_metrics: Mapping[str, float]
     serving_seconds: float
     examples: int
     input_tokens: int
     prediction_bytes: int
 
     def __post_init__(self) -> None:
-        for name, value in (
-            ("nll", self.nll),
-            ("serving_seconds", self.serving_seconds),
+        if isinstance(self.performance_score, bool) or not isinstance(
+            self.performance_score, (int, float)
         ):
+            raise ValueError(
+                "Candidate evaluation performance_score must be finite and "
+                "between 0 and 100"
+            )
+        try:
+            score = float(self.performance_score)
+        except OverflowError as exc:
+            raise ValueError(
+                "Candidate evaluation performance_score must be finite and "
+                "between 0 and 100"
+            ) from exc
+        if not math.isfinite(score) or not 0.0 <= score <= 100.0:
+            raise ValueError(
+                "Candidate evaluation performance_score must be finite and "
+                "between 0 and 100"
+            )
+        if not isinstance(self.raw_metrics, Mapping) or not self.raw_metrics:
+            raise ValueError("Candidate evaluation raw_metrics must be an object")
+        for name, value in self.raw_metrics.items():
+            if not isinstance(name, str) or not name:
+                raise ValueError("Candidate evaluation raw metric name is invalid")
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ValueError(
-                    f"Candidate evaluation {name} must be finite and non-negative"
+                    f"Candidate evaluation raw metric {name} must be finite"
                 )
             try:
-                normalized = float(value)
+                normalized_metric = float(value)
             except OverflowError as exc:
                 raise ValueError(
-                    f"Candidate evaluation {name} must be finite and non-negative"
+                    f"Candidate evaluation raw metric {name} must be finite"
                 ) from exc
-            if not math.isfinite(normalized) or normalized < 0:
+            if not math.isfinite(normalized_metric):
                 raise ValueError(
-                    f"Candidate evaluation {name} must be finite and non-negative"
+                    f"Candidate evaluation raw metric {name} must be finite"
                 )
+        value = self.serving_seconds
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(
+                "Candidate evaluation serving_seconds must be finite and non-negative"
+            )
+        try:
+            normalized = float(value)
+        except OverflowError as exc:
+            raise ValueError(
+                "Candidate evaluation serving_seconds must be finite and non-negative"
+            ) from exc
+        if not math.isfinite(normalized) or normalized < 0:
+            raise ValueError(
+                "Candidate evaluation serving_seconds must be finite and non-negative"
+            )
         if self.serving_seconds <= 0:
             raise ValueError("Candidate evaluation serving_seconds must be positive")
         for name, value in (
@@ -305,6 +487,18 @@ class CandidateEvaluationResult:
             ) from exc
         if not all(math.isfinite(rate) for rate in rates):
             raise ValueError("Candidate evaluation serving rates must be finite")
+
+    def performance_manifest(
+        self, contract: PerformanceScoreContract
+    ) -> Dict[str, Any]:
+        score, raw_metrics = contract.validate_measurement(
+            self.performance_score,
+            self.raw_metrics,
+        )
+        return {
+            "performance_score": score,
+            "raw_metrics": raw_metrics,
+        }
 
     def serving_manifest(self) -> Dict[str, Any]:
         seconds = float(self.serving_seconds)

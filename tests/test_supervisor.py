@@ -308,7 +308,7 @@ class FakeWorker:
         evaluator_workload,
         timeout_seconds=None,
     ):
-        del episode_id, task, resources, candidate_dir, output_dir
+        del episode_id, resources, candidate_dir, output_dir
         if not isinstance(candidate_workload, ResolvedWorkload):
             raise AssertionError("Candidate workload is not resolved")
         if not isinstance(evaluator_workload, ResolvedWorkload):
@@ -332,8 +332,18 @@ class FakeWorker:
             nll = self.analysis_nlls.pop(0)
         else:
             nll = 1.25 if split == "analysis" else self.test_nll
+        try:
+            perplexity = math.exp(nll)
+        except OverflowError:
+            perplexity = float("inf")
+        performance_score = (
+            100.0
+            if task.vocab_size == 1
+            else 100.0 * max(0.0, min(1.0, 1.0 - nll / math.log(task.vocab_size)))
+        )
         return CandidateEvaluationResult(
-            nll=nll,
+            performance_score=performance_score,
+            raw_metrics={"mean_nll": nll, "perplexity": perplexity},
             serving_seconds=2.0,
             examples=3,
             input_tokens=6,
@@ -800,7 +810,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(final["status"], "finalized")
         self.assertEqual(final["outcome"], "failed")
         self.assertEqual(final["failure"], "test_evaluation_failed")
-        self.assertIsNone(final["test_nll"])
+        self.assertIsNone(final["test_performance_score"])
 
     def test_formal_inference_fails_closed_without_gateway_execution_evidence(self):
         digest = "@sha256:" + "a" * 64
@@ -1031,7 +1041,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(command["exit_code"], 0)
         committed = supervisor.commit_lease("/output/candidate")
         self.assertNotIn("val_nll", committed)
-        self.assertNotIn("analysis_nll", committed)
+        self.assertNotIn("analysis_performance_score", committed)
         self.assertEqual(self.worker.evaluations, [])
         self.assertIsNone(supervisor.state["active_lease"])
         self.assertIsNone(supervisor.state["incumbent_id"])
@@ -1049,7 +1059,7 @@ class SupervisorTests(unittest.TestCase):
         staged = supervisor.finish()
         self.assertEqual(staged["status"], "closed")
         self.assertIsNone(staged["outcome"])
-        self.assertIsNone(staged["test_nll"])
+        self.assertIsNone(staged["test_performance_score"])
         self.assertIsNone(supervisor.state["agent_control"]["cleanup_complete"])
         self.assertNotIn(
             "RESULT_PUBLICATION_PREPARED",
@@ -1060,8 +1070,9 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(final["status"], "finalized")
         self.assertEqual(final["result_schema_version"], RESULT_SCHEMA_VERSION)
         self.assertEqual(final["outcome"], "success")
-        self.assertEqual(final["test_nll"], 1.5)
-        self.assertAlmostEqual(final["test_perplexity"], math.exp(1.5))
+        self.assertEqual(final["test_performance_score"], 0.0)
+        self.assertEqual(final["test_raw_metrics"]["mean_nll"], 1.5)
+        self.assertAlmostEqual(final["test_raw_metrics"]["perplexity"], math.exp(1.5))
         self.assertEqual(
             final["test_serving_metrics"],
             {
@@ -1375,8 +1386,8 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(final["status"], "finalized")
         self.assertEqual(final["outcome"], "failed")
         self.assertEqual(final["failure"], "no_candidate")
-        self.assertIsNone(final["test_nll"])
-        self.assertIsNone(final["test_perplexity"])
+        self.assertIsNone(final["test_performance_score"])
+        self.assertIsNone(final["test_raw_metrics"])
         self.assertEqual(self.worker.evaluations, [])
 
     def test_failed_test_evaluation_has_no_metric(self):
@@ -1392,8 +1403,8 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(final["status"], "finalized")
         self.assertEqual(final["outcome"], "failed")
         self.assertEqual(final["failure"], "test_evaluation_failed")
-        self.assertIsNone(final["test_nll"])
-        self.assertIsNone(final["test_perplexity"])
+        self.assertIsNone(final["test_performance_score"])
+        self.assertIsNone(final["test_raw_metrics"])
 
     def test_test_worker_teardown_failure_is_infrastructure_failure(self):
         supervisor = self.supervisor()
@@ -1435,8 +1446,8 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(final["status"], "infrastructure_failure")
         self.assertEqual(final["outcome"], "failed")
         self.assertEqual(final["failure"], "test_evaluation_infrastructure_failure")
-        self.assertIsNone(final["test_nll"])
-        self.assertIsNone(final["test_perplexity"])
+        self.assertIsNone(final["test_performance_score"])
+        self.assertIsNone(final["test_raw_metrics"])
 
     def test_nonfinite_test_nll_is_a_failed_experiment(self):
         supervisor = self.supervisor()
@@ -1450,10 +1461,10 @@ class SupervisorTests(unittest.TestCase):
 
         self.assertEqual(final["outcome"], "failed")
         self.assertEqual(final["failure"], "invalid_test_metric")
-        self.assertIsNone(final["test_nll"])
-        self.assertIsNone(final["test_perplexity"])
+        self.assertIsNone(final["test_performance_score"])
+        self.assertIsNone(final["test_raw_metrics"])
 
-    def test_perplexity_overflow_is_a_failed_experiment(self):
+    def test_nonfinite_raw_metric_is_a_failed_experiment(self):
         supervisor = self.supervisor()
         supervisor.start_lease()
         committed = supervisor.commit_lease("/output/candidate")
@@ -1464,9 +1475,9 @@ class SupervisorTests(unittest.TestCase):
         final = self.finalize_after_agent_stop(supervisor)
 
         self.assertEqual(final["outcome"], "failed")
-        self.assertEqual(final["failure"], "perplexity_overflow")
-        self.assertIsNone(final["test_nll"])
-        self.assertIsNone(final["test_perplexity"])
+        self.assertEqual(final["failure"], "invalid_test_metric")
+        self.assertIsNone(final["test_performance_score"])
+        self.assertIsNone(final["test_raw_metrics"])
 
     def test_agent_text_cannot_turn_local_encoding_errors_into_infrastructure(self):
         supervisor = self.supervisor()
@@ -2338,7 +2349,7 @@ class SupervisorTests(unittest.TestCase):
 
         self.assertEqual(self.worker.evaluation_timeouts, [])
         self.assertNotIn("val_nll", committed)
-        self.assertNotIn("analysis_nll", committed)
+        self.assertNotIn("analysis_performance_score", committed)
         self.assertEqual(supervisor.state["status"], "active")
         self.clock.advance(2)
         self.assertTrue(supervisor.enforce_deadlines())
@@ -2388,7 +2399,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(final["status"], "finalized")
         self.assertEqual(final["outcome"], "success")
         self.assertEqual(final["test_status"], "evaluated")
-        self.assertEqual(final["test_nll"], 1.5)
+        self.assertEqual(final["test_raw_metrics"]["mean_nll"], 1.5)
         self.assertEqual(final["analysis_status"], "incomplete")
         self.assertEqual(final["analysis_failure"], "hidden_dataset_resolution_failure")
         self.assertFalse(final["analysis_identity_verified"])
@@ -2415,7 +2426,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(public["status"], "finalized")
         self.assertEqual(public["outcome"], "success")
         self.assertEqual(public["test_status"], "evaluated")
-        self.assertEqual(public["test_nll"], 1.5)
+        self.assertEqual(public["test_raw_metrics"]["mean_nll"], 1.5)
         self.assertEqual(public["analysis_status"], "incomplete")
         self.assertEqual(public["analysis_failure"], "analysis_worker_teardown_failure")
         self.assertEqual(
@@ -2482,10 +2493,12 @@ class SupervisorTests(unittest.TestCase):
         self.assertTrue(supervisor.enforce_deadlines())
         self.assertEqual(supervisor.state["final_candidate_id"], first["candidate_id"])
         self.assertEqual(supervisor.state["status"], "closed")
-        self.assertIsNone(supervisor.state["test_nll"])
+        self.assertIsNone(supervisor.state["test_performance_score"])
         self.finalize_after_agent_stop(supervisor)
-        self.assertEqual(supervisor.state["test_nll"], 1.5)
-        self.assertAlmostEqual(supervisor.state["test_perplexity"], math.exp(1.5))
+        self.assertEqual(supervisor.state["test_raw_metrics"]["mean_nll"], 1.5)
+        self.assertAlmostEqual(
+            supervisor.state["test_raw_metrics"]["perplexity"], math.exp(1.5)
+        )
 
     def test_incumbent_history_is_ordered_by_supervisor_events(self):
         supervisor = self.supervisor()
@@ -2910,8 +2923,8 @@ class SupervisorTests(unittest.TestCase):
 
         self.assertEqual(supervisor.state["status"], "infrastructure_failure")
         self.assertEqual(supervisor.state["outcome"], "failed")
-        self.assertIsNone(supervisor.state["test_nll"])
-        self.assertIsNone(supervisor.state["test_perplexity"])
+        self.assertIsNone(supervisor.state["test_performance_score"])
+        self.assertIsNone(supervisor.state["test_raw_metrics"])
         self.assertEqual(
             supervisor.state["agent_control"]["cleanup_infrastructure_failures"],
             1,
@@ -3033,8 +3046,8 @@ class SupervisorTests(unittest.TestCase):
 
         self.assertEqual(supervisor.state["status"], "dnf")
         self.assertEqual(supervisor.state["outcome"], "failed")
-        self.assertIsNone(supervisor.state["test_nll"])
-        self.assertIsNone(supervisor.state["test_perplexity"])
+        self.assertIsNone(supervisor.state["test_performance_score"])
+        self.assertIsNone(supervisor.state["test_raw_metrics"])
         self.assertEqual(
             supervisor.state["agent_control"]["cleanup_policy_violations"],
             1,

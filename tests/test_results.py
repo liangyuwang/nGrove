@@ -11,6 +11,7 @@ from autotrain_bench.results import (
     AGENT_MODE_RESULT_SCHEMA_VERSION,
     POSTMORTEM_RESULT_SCHEMA_VERSION,
     PRE_HIDDEN_BUNDLE_IDENTITY_RESULT_SCHEMA_VERSION,
+    PRE_PERFORMANCE_SCORE_RESULT_SCHEMA_VERSION,
     PRE_RESOURCE_ALLOCATION_RESULT_SCHEMA_VERSION,
     PRE_SERVING_EFFICIENCY_RESULT_SCHEMA_VERSION,
     PRE_WORKLOAD_RESOLUTION_RESULT_SCHEMA_VERSION,
@@ -47,17 +48,23 @@ def _incumbent_declaration(candidate_id="sha256:candidate"):
     }
 
 
-def _analysis_point(candidate_id="sha256:candidate"):
-    return {
+def _analysis_point(candidate_id="sha256:candidate", *, legacy=False):
+    point = {
         **_candidate_commit(candidate_id),
         "declared_incumbent": True,
         "declaration_event_seqs": [2],
         "analysis_status": "evaluated",
-        "analysis_nll": 0.0,
-        "analysis_perplexity": 1.0,
+        "analysis_performance_score": 100.0,
+        "analysis_raw_metrics": {"mean_nll": 0.0, "perplexity": 1.0},
         "analysis_serving_metrics": _serving_metrics(),
         "analysis_error": None,
     }
+    if legacy:
+        point.pop("analysis_performance_score")
+        point.pop("analysis_raw_metrics")
+        point["analysis_nll"] = 0.0
+        point["analysis_perplexity"] = 1.0
+    return point
 
 
 def _serving_metrics():
@@ -129,6 +136,13 @@ def _resource_fields():
     }
     return {
         "episode_id": "episode-1",
+        "performance_score_contract": {
+            "definition_id": "uniform_normalized_log_score_v1",
+            "range": {"minimum": 0.0, "maximum": 100.0},
+            "direction": "maximize",
+            "comparison_scope": "benchmark_release",
+            "raw_metrics": ["mean_nll", "perplexity"],
+        },
         "artifact_identity_algorithms": {
             "candidate_tree": CANDIDATE_TREE_IDENTITY_ALGORITHM,
             "file": FILE_IDENTITY_ALGORITHM,
@@ -156,13 +170,12 @@ def _resource_fields():
 def _finalized(*, schema_version=RESULT_SCHEMA_VERSION, **overrides):
     """A minimal valid finalized result, so each test varies only one thing."""
 
+    legacy = schema_version < RESULT_SCHEMA_VERSION
     payload = {
         "result_schema_version": schema_version,
         "status": "finalized",
         "outcome": "success",
         "final_candidate_id": "sha256:candidate",
-        "test_nll": 0.0,
-        "test_perplexity": 1.0,
         "test_serving_metrics": _serving_metrics(),
         "failure": None,
         "research_sealed_at": "2026-01-01T00:00:00+00:00",
@@ -170,13 +183,19 @@ def _finalized(*, schema_version=RESULT_SCHEMA_VERSION, **overrides):
         "analysis_status": "complete",
         "analysis_failure": None,
         "analysis_identity_verified": True,
-        "analysis_trajectory": [_analysis_point()],
+        "analysis_trajectory": [_analysis_point(legacy=legacy)],
         "candidate_commits": [_candidate_commit()],
         "incumbent_declarations": [_incumbent_declaration()],
         "test_status": "evaluated",
         "workload_resolutions": _empty_workload_resolutions(),
         **_resource_fields(),
     }
+    if legacy:
+        payload["test_nll"] = 0.0
+        payload["test_perplexity"] = 1.0
+    else:
+        payload["test_performance_score"] = 100.0
+        payload["test_raw_metrics"] = {"mean_nll": 0.0, "perplexity": 1.0}
     payload.update(overrides)
     # Derive the summary counts from whatever trajectory the test ended up with,
     # so a test that varies the trajectory does not also have to restate them.
@@ -195,6 +214,18 @@ def _finalized(*, schema_version=RESULT_SCHEMA_VERSION, **overrides):
 
 
 class ResultMetricTests(unittest.TestCase):
+    def test_v10_migration_marks_performance_score_as_unavailable(self):
+        legacy = _finalized(schema_version=PRE_PERFORMANCE_SCORE_RESULT_SCHEMA_VERSION)
+
+        report = normalize_result_report(legacy)
+
+        self.assertIsNone(report["performance_score_contract"])
+        self.assertIsNone(report["test_performance_score"])
+        self.assertIsNone(report["test_raw_metrics"])
+        self.assertIsNone(
+            report["analysis_trajectory"][0]["analysis_performance_score"]
+        )
+
     def test_v9_migration_marks_hidden_bundle_algorithm_as_unavailable(self):
         legacy = _finalized(
             schema_version=PRE_HIDDEN_BUNDLE_IDENTITY_RESULT_SCHEMA_VERSION
@@ -294,8 +325,8 @@ class ResultMetricTests(unittest.TestCase):
             "terminal_without_outcome": {
                 "status": "finalized",
                 "outcome": None,
-                "test_nll": None,
-                "test_perplexity": None,
+                "test_performance_score": None,
+                "test_raw_metrics": None,
                 "failure": None,
                 "research_sealed_at": "2026-01-01T00:00:00+00:00",
                 "analysis_complete": False,
@@ -305,8 +336,8 @@ class ResultMetricTests(unittest.TestCase):
                 "status": "finalized",
                 "outcome": "success",
                 "final_candidate_id": None,
-                "test_nll": 0.0,
-                "test_perplexity": 1.0,
+                "test_performance_score": 100.0,
+                "test_raw_metrics": {"mean_nll": 0.0, "perplexity": 1.0},
                 "failure": None,
                 "research_sealed_at": "2026-01-01T00:00:00+00:00",
                 "analysis_complete": True,
@@ -315,15 +346,15 @@ class ResultMetricTests(unittest.TestCase):
             "active_failure": {
                 "status": "active",
                 "outcome": "failed",
-                "test_nll": None,
-                "test_perplexity": None,
+                "test_performance_score": None,
+                "test_raw_metrics": None,
                 "failure": "unexpected",
             },
             "pending_with_metrics": {
                 "status": "active",
                 "outcome": None,
-                "test_nll": 0.0,
-                "test_perplexity": 1.0,
+                "test_performance_score": 100.0,
+                "test_raw_metrics": {"mean_nll": 0.0, "perplexity": 1.0},
                 "test_serving_metrics": _serving_metrics(),
                 "failure": None,
                 "research_sealed_at": "2026-01-01T00:00:00+00:00",
@@ -344,8 +375,8 @@ class ResultMetricTests(unittest.TestCase):
                 "outcome": "success",
                 "final_candidate_id": "sha256:candidate",
                 "active_lease": {"lease_id": "lease-0001"},
-                "test_nll": 0.0,
-                "test_perplexity": 1.0,
+                "test_performance_score": 100.0,
+                "test_raw_metrics": {"mean_nll": 0.0, "perplexity": 1.0},
                 "test_serving_metrics": _serving_metrics(),
                 "failure": None,
             },
@@ -354,16 +385,16 @@ class ResultMetricTests(unittest.TestCase):
                 "outcome": "success",
                 "final_candidate_id": "sha256:candidate",
                 "pending_lease_teardowns": ["lease-0001"],
-                "test_nll": 0.0,
-                "test_perplexity": 1.0,
+                "test_performance_score": 100.0,
+                "test_raw_metrics": {"mean_nll": 0.0, "perplexity": 1.0},
                 "failure": None,
             },
             "finalized_with_empty_publication": {
                 "status": "finalized",
                 "outcome": "success",
                 "final_candidate_id": "sha256:candidate",
-                "test_nll": 0.0,
-                "test_perplexity": 1.0,
+                "test_performance_score": 100.0,
+                "test_raw_metrics": {"mean_nll": 0.0, "perplexity": 1.0},
                 "failure": None,
                 "result_publication": None,
             },
@@ -371,8 +402,8 @@ class ResultMetricTests(unittest.TestCase):
                 "status": "active",
                 "outcome": None,
                 "final_candidate_id": None,
-                "test_nll": None,
-                "test_perplexity": None,
+                "test_performance_score": None,
+                "test_raw_metrics": None,
                 "failure": None,
                 "result_publication": {
                     "publication_id": "publication",
@@ -394,8 +425,8 @@ class ResultMetricTests(unittest.TestCase):
                 "status": "closed",
                 "outcome": None,
                 "final_candidate_id": "sha256:candidate",
-                "test_nll": None,
-                "test_perplexity": None,
+                "test_performance_score": None,
+                "test_raw_metrics": None,
                 "failure": None,
                 "research_sealed_at": "2026-01-01T00:00:00+00:00",
                 "analysis_complete": False,
@@ -421,8 +452,8 @@ class ResultMetricTests(unittest.TestCase):
                 "status": "finalized",
                 "outcome": "success",
                 "final_candidate_id": "sha256:candidate",
-                "test_nll": 0.0,
-                "test_perplexity": 1.0,
+                "test_performance_score": 100.0,
+                "test_raw_metrics": {"mean_nll": 0.0, "perplexity": 1.0},
                 "test_serving_metrics": _serving_metrics(),
                 "failure": None,
                 "research_sealed_at": "2026-01-01T00:00:00+00:00",
@@ -448,17 +479,26 @@ class ResultMetricTests(unittest.TestCase):
 
     def test_current_result_rejects_a_malformed_analysis_trajectory(self):
         malformed = _analysis_point()
-        malformed["analysis_perplexity"] = 2.0
+        malformed["analysis_raw_metrics"] = {"unexpected": 2.0}
 
-        with self.assertRaisesRegex(ResultSchemaError, "ANALYSIS perplexity"):
+        with self.assertRaisesRegex(ResultSchemaError, "ANALYSIS performance"):
             normalize_result_report(_finalized(analysis_trajectory=[malformed]))
+
+    def test_current_result_rejects_legacy_metric_fields(self):
+        with self.assertRaisesRegex(ResultSchemaError, "legacy TEST metric"):
+            normalize_result_report(_finalized(test_nll=0.0))
+
+        point = _analysis_point()
+        point["analysis_nll"] = 0.0
+        with self.assertRaisesRegex(ResultSchemaError, "legacy metric"):
+            normalize_result_report(_finalized(analysis_trajectory=[point]))
 
     def test_successful_test_may_retain_incomplete_analysis_diagnostics(self):
         point = _analysis_point()
         point.update(
             analysis_status="infrastructure_failure",
-            analysis_nll=None,
-            analysis_perplexity=None,
+            analysis_performance_score=None,
+            analysis_raw_metrics=None,
             analysis_serving_metrics=None,
             analysis_error="worker_teardown_failure",
         )
@@ -582,8 +622,8 @@ class ResultMetricTests(unittest.TestCase):
                 "status": "closed",
                 "outcome": None,
                 "final_candidate_id": "sha256:candidate",
-                "test_nll": None,
-                "test_perplexity": None,
+                "test_performance_score": None,
+                "test_raw_metrics": None,
                 "failure": None,
                 "research_sealed_at": "2026-01-01T00:00:00+00:00",
                 "analysis_complete": False,
@@ -599,8 +639,11 @@ class ResultMetricTests(unittest.TestCase):
                 "workload_resolutions": _empty_workload_resolutions(),
                 "pending_result": {
                     "outcome": "success",
-                    "test_nll": 1.0,
-                    "test_perplexity": math.e,
+                    "test_performance_score": 50.0,
+                    "test_raw_metrics": {
+                        "mean_nll": 1.0,
+                        "perplexity": math.e,
+                    },
                     "failure": None,
                 },
             }
@@ -618,8 +661,8 @@ class ResultMetricTests(unittest.TestCase):
                     "status": "closed",
                     "outcome": "failed",
                     "final_candidate_id": "sha256:candidate",
-                    "test_nll": None,
-                    "test_perplexity": None,
+                    "test_performance_score": None,
+                    "test_raw_metrics": None,
                     "failure": "legacy_unscored_result",
                     "research_sealed_at": "2026-01-01T00:00:00+00:00",
                     "analysis_complete": False,
@@ -706,8 +749,8 @@ class ResultMetricTests(unittest.TestCase):
                 "status": "finalized",
                 "outcome": "success",
                 "final_candidate_id": "sha256:candidate",
-                "test_nll": 0.0,
-                "test_perplexity": 1.0,
+                "test_performance_score": 100.0,
+                "test_raw_metrics": {"mean_nll": 0.0, "perplexity": 1.0},
                 "test_serving_metrics": _serving_metrics(),
                 "failure": None,
                 "agent_system": {"runner": "container", "egress": "denied"},
@@ -805,8 +848,8 @@ class ResultMetricTests(unittest.TestCase):
         failed = _analysis_point()
         failed.update(
             analysis_status="failed",
-            analysis_nll=None,
-            analysis_perplexity=None,
+            analysis_performance_score=None,
+            analysis_raw_metrics=None,
             analysis_serving_metrics=None,
             analysis_error="evaluation_failed",
         )

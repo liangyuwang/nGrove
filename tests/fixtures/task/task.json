@@ -1,5 +1,5 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "task_id": "test-byte-lm-v1",
   "task_kind": "development_smoke",
   "leaderboard_eligible": false,
@@ -18,13 +18,15 @@
     "backend": "isolated_candidate",
     "candidate_protocol": "offline_next_token_logits_v3",
     "entrypoint": "evaluator.py",
-    "metric": "autoregressive_nll",
-    "leaderboard_metric": {
-      "name": "perplexity",
-      "field": "test_perplexity",
-      "derived_from": "autoregressive_nll",
-      "formula": "exp(mean_token_nll)",
-      "direction": "minimize"
+    "performance_score": {
+      "definition_id": "uniform_normalized_log_score_v1",
+      "range": {
+        "minimum": 0.0,
+        "maximum": 100.0
+      },
+      "direction": "maximize",
+      "comparison_scope": "benchmark_release",
+      "raw_metrics": ["mean_nll", "perplexity"]
     },
     "vocab_size": 3,
     "context_length": 3,

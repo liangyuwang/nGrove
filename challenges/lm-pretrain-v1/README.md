@@ -53,13 +53,15 @@ target. The Candidate receives the complete unlabeled context artifact, owns
 its serving schedule and batching, and writes one ordered logit vector per
 example. It never receives the target later through a longer prefix or another
 overlapping source window. The
-Evaluator preserves mean target NLL in the episode record. ANALYSIS produces a
-postmortem trajectory over frozen Candidates and is never Agent feedback. The
-primary leaderboard-style score is TEST perplexity, derived once as
-`exp(mean_token_nll)`; lower is better. This single-target context metric is not
-comparable with the former progressive all-prefix preview metric. A run without
-a successful finite TEST result has no NLL or perplexity score and is reported
-as a failed experiment.
+Evaluator preserves mean target NLL and perplexity as raw metrics. ANALYSIS
+produces a postmortem trajectory over frozen Candidates and is never Agent
+feedback. The primary result is a `[0, 100]` TEST performance score, where
+higher is better. This release defines it as
+`100 * max(0, 1 - mean_token_nll / log(vocab_size))`: 100 is perfect prediction
+and 0 is uniform-over-vocabulary performance or worse. The score definition and
+raw metric names are frozen by the release and are not comparable with another
+benchmark release. A run without a successful finite TEST measurement has no
+performance score or raw metrics and is reported as a failed experiment.
 
 The result also records Candidate serving wall time, examples, input tokens,
 prediction bytes, and derived throughput. The clock includes Candidate sandbox

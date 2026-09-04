@@ -23,7 +23,6 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 from .artifact_identity import HIDDEN_BUNDLE_FILENAMES, hidden_bundle_sha256
 from .config import AgentConfig, TaskConfig, TrainingResources
 from .host_agent import HostAgentProcess, start_host_agent_process
-from .results import validated_nll
 from .worker_protocol import (
     CANDIDATE_EVALUATOR_CHANNEL_ISOLATION,
     CANDIDATE_PREDICTION_ARTIFACT_LIFECYCLE,
@@ -1728,22 +1727,24 @@ class DockerRuntime:
         try:
             payload = json.loads(result_path.read_text(encoding="utf-8"))
             if set(payload) != {
-                "nll",
+                "performance_score",
+                "raw_metrics",
                 "examples",
                 "input_tokens",
                 "prediction_bytes",
             }:
                 raise ValueError("unexpected scorer result fields")
-            loss = validated_nll(payload["nll"])
             if serving_seconds is None:
                 raise ValueError("serving duration is unavailable")
             result = CandidateEvaluationResult(
-                nll=loss,
+                performance_score=payload["performance_score"],
+                raw_metrics=payload["raw_metrics"],
                 serving_seconds=serving_seconds,
                 examples=payload["examples"],
                 input_tokens=payload["input_tokens"],
                 prediction_bytes=payload["prediction_bytes"],
             )
+            result.performance_manifest(task.performance_score)
         except (
             FileNotFoundError,
             KeyError,
@@ -1753,7 +1754,7 @@ class DockerRuntime:
             json.JSONDecodeError,
         ) as exc:
             raise RuntimeFailure(
-                "evaluator did not produce a valid NLL result"
+                "evaluator did not produce a valid performance result"
             ) from exc
         return result
 
