@@ -11,6 +11,8 @@ from urllib.parse import urlsplit
 
 from .candidate_protocol import (
     PREDICTION_ARTIFACT_RETENTION,
+    candidate_helper_api_manifest,
+    prediction_manifest_contract,
     prediction_storage_manifest,
     serving_timing_manifest,
 )
@@ -34,7 +36,10 @@ class ConfigError(ValueError):
 # Version 4 removes organizer-owned validation feedback. Candidate commit now
 # returns artifact acceptance only; hidden ANALYSIS and TEST run after the
 # research phase is irreversibly sealed.
-AGENT_PROTOCOL_VERSION = 4
+#
+# Version 5 publishes the exact offline prediction-manifest contract and the
+# optional generated helper API in the Agent-visible task manifest.
+AGENT_PROTOCOL_VERSION = 5
 
 # Phases a release may declare as benchmark-owned rather than participant time.
 # `README.md` requires this boundary to be release-defined and identical across
@@ -814,8 +819,10 @@ class TaskConfig:
                     "target_artifact_mount": "none",
                     "context_artifact_access": "read_only",
                     "prediction_artifact_access": "candidate_read_write_isolated",
+                    "prediction_manifest": prediction_manifest_contract(),
                     "prediction_storage": prediction_storage_manifest(),
                     "prediction_artifact_retention": PREDICTION_ARTIFACT_RETENTION,
+                    "public_helper_api": candidate_helper_api_manifest(),
                     "channel_mechanism": "worker_materialized_files",
                     "candidate_egress": "denied",
                     "protocol": self.candidate_protocol,

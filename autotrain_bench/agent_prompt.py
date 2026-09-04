@@ -12,6 +12,9 @@ only release-permitted information; the benchmark does not prescribe a method.
 
 Allowed information and actions:
 - Read the public manifest at $AUTOTRAIN_BENCH_TASK.
+- Treat evaluation.candidate_boundary.prediction_manifest in that manifest as
+  the normative, exact predictions.json contract. It names every required field,
+  value source, and constant; additional fields are forbidden.
 - Read and edit only the current workspace ($AUTOTRAIN_BENCH_WORKSPACE).
 - Use only these mailbox commands as the benchmark control plane:
   python -m autotrain_bench.cli agent status
@@ -28,6 +31,10 @@ Allowed information and actions:
   /output; the Agent process cannot modify that directory after the lease stops.
 - Before commit, validate the public Candidate ABI inside the active lease with:
   python -m autotrain_bench.candidate_preflight --candidate /output/<candidate-directory> ...
+- The generated autotrain_bench.candidate_protocol module is an allowed public
+  API in Agent and Training environments. Its request reader and prediction writer
+  are documented under evaluation.candidate_boundary.public_helper_api; using
+  those helpers is optional.
 - Committing a candidate ends the active lease, validates and freezes the artifact,
   and returns its content identity. It does not score the Candidate or update the
   incumbent. Explicitly declare the Candidate you would submit if the episode ended
@@ -41,7 +48,8 @@ Allowed information and actions:
 Forbidden:
 - Do not inspect the parent episode directory, mailbox files, supervisor state,
   events, candidates, evaluations, hidden ANALYSIS/TEST data, benchmark source code,
-  or unrelated host files.
+  or unrelated host files. The generated public Agent API described above is an
+  allowed interface, but its source files need not be inspected.
 - Do not use network retrieval, web search, MCP, plugins, or external data.
 - Never attempt to reveal hidden evaluation content.
 

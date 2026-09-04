@@ -350,6 +350,77 @@ class IsolatedEvaluatorTests(unittest.TestCase):
                     vocab_size=3,
                 )
 
+    def test_prediction_manifest_errors_identify_the_invalid_contract_part(self):
+        with tempfile.TemporaryDirectory() as directory:
+            predictions = Path(directory) / "predictions"
+            write_prediction_artifact(
+                predictions,
+                dataset_id="test-split",
+                logits=[[0.0, 0.0, 0.0]],
+                examples=1,
+                vocab_size=3,
+            )
+            manifest_path = predictions / "predictions.json"
+            valid = json.loads(manifest_path.read_text(encoding="utf-8"))
+            cases = [
+                (
+                    "missing field",
+                    {key: value for key, value in valid.items() if key != "dtype"},
+                    r'missing fields \["dtype"\]',
+                ),
+                (
+                    "unexpected field",
+                    {**valid, "format": "row-major"},
+                    r'unexpected fields \["format"\]',
+                ),
+                (
+                    "schema version",
+                    {**valid, "schema_version": True},
+                    r'field "schema_version".*integer constant 1',
+                ),
+                (
+                    "protocol",
+                    {**valid, "candidate_protocol": "offline_logits_v2"},
+                    r'field "candidate_protocol".*offline_next_token_logits_v3',
+                ),
+                (
+                    "dataset",
+                    {**valid, "dataset_id": "guessed-split"},
+                    r'field "dataset_id".*contexts\.json\.dataset_id',
+                ),
+                (
+                    "example count",
+                    {**valid, "examples": 2},
+                    r'field "examples".*len\(contexts\.json\.examples\)',
+                ),
+                (
+                    "vocabulary",
+                    {**valid, "vocab_size": 4},
+                    r'field "vocab_size".*contexts\.json\.vocab_size',
+                ),
+                (
+                    "dtype",
+                    {**valid, "dtype": "float32"},
+                    r'field "dtype".*float32-le',
+                ),
+                (
+                    "logit filename",
+                    {**valid, "logits_file": "predictions.f32"},
+                    r'field "logits_file".*logits\.f32',
+                ),
+            ]
+
+            for name, manifest, message in cases:
+                with self.subTest(name=name):
+                    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                    with self.assertRaisesRegex(CandidateProtocolError, message):
+                        validate_prediction_artifact(
+                            predictions,
+                            dataset_id="test-split",
+                            examples=1,
+                            vocab_size=3,
+                        )
+
     def test_prediction_manifest_is_bounded_before_json_loading(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

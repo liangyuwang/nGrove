@@ -78,6 +78,14 @@ entries and `examples * vocab_size * 4 + 65536` bytes, then removes it after
 scoring or failure and confirmed teardown. The bundled local Docker preview
 reports its host bind mount quota as unsupported.
 
+The Agent-visible task manifest defines the exact output object at
+`evaluation.candidate_boundary.prediction_manifest`: `predictions.json` must
+contain only `schema_version`, `candidate_protocol`, `dataset_id`, `examples`,
+`vocab_size`, `dtype`, and `logits_file`, with constants and request-derived
+values specified there. JSON member order and whitespace are irrelevant;
+additional fields are rejected. The same section identifies the optional
+generated `autotrain_bench.candidate_protocol` reader and writer helpers.
+
 ## Prepare data
 
 Install the isolated preparation dependencies:

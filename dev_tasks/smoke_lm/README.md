@@ -178,8 +178,31 @@ contexts but no targets or split label. The serving system owns file reading, mo
 batching, ordering, and parallelism. It writes exactly `predictions.json` and
 `logits.f32` under `output_dir`; logits are finite row-major little-endian
 float32 vectors in request order, one `[vocabulary]` row per example. The
-public `autotrain_bench.candidate_protocol` helpers can read the request and
-write the output, but their use is optional.
+output manifest is a JSON object built from the request with exactly these
+fields; member order and whitespace do not matter, but additional fields are
+rejected:
+
+```python
+manifest = {
+  "schema_version": 1,
+  "candidate_protocol": "offline_next_token_logits_v3",
+  "dataset_id": request["dataset_id"],
+  "examples": len(request["examples"]),
+  "vocab_size": request["vocab_size"],
+  "dtype": "float32-le",
+  "logits_file": "logits.f32"
+}
+```
+
+The generated public task at `$AUTOTRAIN_BENCH_TASK` carries the same
+machine-readable contract under
+`evaluation.candidate_boundary.prediction_manifest`. The generated public
+`autotrain_bench.candidate_protocol` API is explicitly allowed in Agent and
+Training environments: `load_context_request(path)` reads the request and
+`write_prediction_artifact(output_dir, *, dataset_id, logits, examples,
+vocab_size)` writes both output files. These helpers are optional. The public
+preflight command reports the particular missing, unexpected, or invalid
+manifest field without exposing hidden evaluation feedback.
 
 A conforming Worker hard-limits this untrusted directory to two entries and
 `examples * vocab_size * 4 + 65536` bytes; the manifest itself is limited to

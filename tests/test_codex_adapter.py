@@ -49,6 +49,11 @@ class CodexAdapterTests(unittest.TestCase):
             "agent declare-incumbent <candidate-id>",
             HOST_CLI_PROMPT,
         )
+        self.assertIn(
+            "evaluation.candidate_boundary.prediction_manifest",
+            HOST_CLI_PROMPT,
+        )
+        self.assertIn("allowed public", HOST_CLI_PROMPT)
 
 
 if __name__ == "__main__":

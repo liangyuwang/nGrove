@@ -10,6 +10,7 @@ from pathlib import Path
 from .candidate_protocol import (
     CANDIDATE_PROTOCOL,
     DATASET_SCHEMA_VERSION,
+    CandidateProtocolError,
     load_candidate,
     validate_prediction_artifact,
 )
@@ -30,48 +31,53 @@ def main() -> None:
         length <= 0 for length in context_lengths
     ):
         parser.error("--context-lengths must be positive and strictly increasing")
-    module = load_candidate(args.candidate)
-    boundary = args.vocab_size - 1
-    alternative = (boundary - 1) % args.vocab_size
-    examples = []
-    for length in context_lengths:
-        for fill in (0, alternative):
-            examples.append(
-                {
-                    "example_id": f"preflight-{length}-{len(examples)}",
-                    "input_ids": [boundary, *([fill] * (length - 1))],
-                }
+    try:
+        module = load_candidate(args.candidate)
+        boundary = args.vocab_size - 1
+        alternative = (boundary - 1) % args.vocab_size
+        examples = []
+        for length in context_lengths:
+            for fill in (0, alternative):
+                examples.append(
+                    {
+                        "example_id": f"preflight-{length}-{len(examples)}",
+                        "input_ids": [boundary, *([fill] * (length - 1))],
+                    }
+                )
+        dataset_id = "autotrain-bench-candidate-preflight"
+        request = {
+            "schema_version": DATASET_SCHEMA_VERSION,
+            "candidate_protocol": CANDIDATE_PROTOCOL,
+            "dataset_id": dataset_id,
+            "vocab_size": args.vocab_size,
+            "context_lengths": list(context_lengths),
+            "examples": examples,
+        }
+        with tempfile.TemporaryDirectory(
+            prefix="autotrain-candidate-preflight-"
+        ) as root:
+            temporary = Path(root)
+            contexts_path = temporary / "contexts.json"
+            output_dir = temporary / "predictions"
+            output_dir.mkdir()
+            contexts_path.write_text(
+                json.dumps(request, separators=(",", ":"), sort_keys=True) + "\n",
+                encoding="utf-8",
             )
-    dataset_id = "autotrain-bench-candidate-preflight"
-    request = {
-        "schema_version": DATASET_SCHEMA_VERSION,
-        "candidate_protocol": CANDIDATE_PROTOCOL,
-        "dataset_id": dataset_id,
-        "vocab_size": args.vocab_size,
-        "context_lengths": list(context_lengths),
-        "examples": examples,
-    }
-    with tempfile.TemporaryDirectory(prefix="autotrain-candidate-preflight-") as root:
-        temporary = Path(root)
-        contexts_path = temporary / "contexts.json"
-        output_dir = temporary / "predictions"
-        output_dir.mkdir()
-        contexts_path.write_text(
-            json.dumps(request, separators=(",", ":"), sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        module.run_offline(
-            args.candidate.resolve(),
-            contexts_path,
-            output_dir,
-            args.device,
-        )
-        prediction_bytes = validate_prediction_artifact(
-            output_dir,
-            dataset_id=dataset_id,
-            examples=len(examples),
-            vocab_size=args.vocab_size,
-        )
+            module.run_offline(
+                args.candidate.resolve(),
+                contexts_path,
+                output_dir,
+                args.device,
+            )
+            prediction_bytes = validate_prediction_artifact(
+                output_dir,
+                dataset_id=dataset_id,
+                examples=len(examples),
+                vocab_size=args.vocab_size,
+            )
+    except CandidateProtocolError as exc:
+        parser.exit(status=1, message=f"candidate preflight failed: {exc}\n")
     print(
         json.dumps(
             {

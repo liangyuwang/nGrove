@@ -421,6 +421,15 @@ The output manifest is also exact:
 }
 ```
 
+The same contract is present in the Agent-visible public task manifest at
+`evaluation.candidate_boundary.prediction_manifest`, including the exact field
+set, JSON types, constants, request-derived values, and the prohibition on
+additional fields. JSON member order and whitespace are not significant. The
+adjacent `public_helper_api` entry names the optional generated request reader
+and prediction writer. Research-time public preflight diagnostics identify a
+bad field or field set; post-seal hidden-evaluation failures retain their fixed
+public failure codes and trusted-only details.
+
 The target rows must align one-for-one with context rows and IDs. Each protected
 span has `source_end - source_start == len(input_ids)`, spans for one source may
 not overlap, every declared context length must occur, and `logits.f32` must be

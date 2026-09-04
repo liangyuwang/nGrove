@@ -22,6 +22,50 @@ LOGITS_FILENAME = "logits.f32"
 PREDICTION_ARTIFACT_MAX_ENTRIES = 2
 PREDICTION_MANIFEST_MAX_BYTES = 64 * 1024
 PREDICTION_ARTIFACT_RETENTION = "ephemeral_until_evaluation_teardown"
+_PREDICTION_MANIFEST_FIELD_SPECS = (
+    ("schema_version", "integer", "constant", PREDICTION_SCHEMA_VERSION),
+    ("candidate_protocol", "string", "constant", CANDIDATE_PROTOCOL),
+    ("dataset_id", "string", "source", "contexts.json.dataset_id"),
+    ("examples", "integer", "source", "len(contexts.json.examples)"),
+    ("vocab_size", "integer", "source", "contexts.json.vocab_size"),
+    ("dtype", "string", "constant", "float32-le"),
+    ("logits_file", "string", "constant", LOGITS_FILENAME),
+)
+PREDICTION_MANIFEST_FIELDS = tuple(
+    field for field, _json_type, _value_kind, _value in _PREDICTION_MANIFEST_FIELD_SPECS
+)
+
+
+def prediction_manifest_contract() -> Dict[str, Any]:
+    """Return the exact Agent-facing ``predictions.json`` contract."""
+
+    return {
+        "filename": PREDICTIONS_FILENAME,
+        "format": "json_object",
+        "exact_fields": list(PREDICTION_MANIFEST_FIELDS),
+        "additional_fields_allowed": False,
+        "json_member_order_significant": False,
+        "fields": {
+            field: {"json_type": json_type, value_kind: value}
+            for field, json_type, value_kind, value in (
+                _PREDICTION_MANIFEST_FIELD_SPECS
+            )
+        },
+    }
+
+
+def candidate_helper_api_manifest() -> Dict[str, Any]:
+    """Describe the optional generated helper API available to Candidates."""
+
+    return {
+        "module": "autotrain_bench.candidate_protocol",
+        "request_reader": "load_context_request(path)",
+        "prediction_writer": (
+            "write_prediction_artifact(output_dir, *, dataset_id, logits, "
+            "examples, vocab_size)"
+        ),
+        "use": "optional",
+    }
 
 
 def prediction_storage_limit(*, examples: int, vocab_size: int) -> Dict[str, int]:
@@ -81,6 +125,73 @@ def serving_timing_manifest() -> Dict[str, Any]:
 
 class CandidateProtocolError(RuntimeError):
     """The Candidate bundle does not implement the public serving contract."""
+
+
+def _expected_prediction_manifest(
+    *, dataset_id: str, examples: int, vocab_size: int
+) -> Dict[str, Any]:
+    source_values = {
+        "contexts.json.dataset_id": dataset_id,
+        "len(contexts.json.examples)": examples,
+        "contexts.json.vocab_size": vocab_size,
+    }
+    return {
+        field: value if value_kind == "constant" else source_values[value]
+        for field, _json_type, value_kind, value in (_PREDICTION_MANIFEST_FIELD_SPECS)
+    }
+
+
+def _validate_prediction_manifest(
+    manifest: Any,
+    *,
+    dataset_id: str,
+    examples: int,
+    vocab_size: int,
+) -> None:
+    """Validate the public manifest with bounded, field-specific diagnostics."""
+
+    if not isinstance(manifest, dict):
+        raise CandidateProtocolError("prediction manifest must be a JSON object")
+
+    expected = _expected_prediction_manifest(
+        dataset_id=dataset_id,
+        examples=examples,
+        vocab_size=vocab_size,
+    )
+    expected_fields = set(PREDICTION_MANIFEST_FIELDS)
+    actual_fields = set(manifest)
+    missing = sorted(expected_fields - actual_fields)
+    unexpected = sorted(actual_fields - expected_fields)
+    if missing or unexpected:
+        details = []
+        if missing:
+            details.append(f"missing fields {json.dumps(missing)}")
+        if unexpected:
+            details.append(f"unexpected fields {json.dumps(unexpected)}")
+        raise CandidateProtocolError(
+            "prediction manifest fields do not match: " + "; ".join(details)
+        )
+
+    field_contract = prediction_manifest_contract()["fields"]
+    for field in PREDICTION_MANIFEST_FIELDS:
+        value = manifest[field]
+        expected_value = expected[field]
+        required_type = int if field_contract[field]["json_type"] == "integer" else str
+        if type(value) is required_type and value == expected_value:
+            continue
+        if "constant" in field_contract[field]:
+            requirement = (
+                f"the {field_contract[field]['json_type']} constant "
+                f"{json.dumps(field_contract[field]['constant'])}"
+            )
+        else:
+            requirement = (
+                f"a {field_contract[field]['json_type']} equal to "
+                f"{field_contract[field]['source']}"
+            )
+        raise CandidateProtocolError(
+            f"prediction manifest field {json.dumps(field)} must be {requirement}"
+        )
 
 
 def load_candidate(candidate_dir: Path) -> Any:
@@ -219,15 +330,11 @@ def write_prediction_artifact(
         raise CandidateProtocolError("prediction logits could not be written") from exc
     if rows != examples:
         raise CandidateProtocolError("prediction row count does not match the request")
-    manifest = {
-        "schema_version": PREDICTION_SCHEMA_VERSION,
-        "candidate_protocol": CANDIDATE_PROTOCOL,
-        "dataset_id": dataset_id,
-        "examples": examples,
-        "vocab_size": vocab_size,
-        "dtype": "float32-le",
-        "logits_file": LOGITS_FILENAME,
-    }
+    manifest = _expected_prediction_manifest(
+        dataset_id=dataset_id,
+        examples=examples,
+        vocab_size=vocab_size,
+    )
     try:
         (output_dir / PREDICTIONS_FILENAME).write_text(
             json.dumps(manifest, separators=(",", ":"), sort_keys=True) + "\n",
@@ -271,27 +378,12 @@ def validate_prediction_artifact(
         manifest = json.loads(entries[PREDICTIONS_FILENAME].read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise CandidateProtocolError("prediction manifest is invalid") from exc
-    expected = {
-        "schema_version": PREDICTION_SCHEMA_VERSION,
-        "candidate_protocol": CANDIDATE_PROTOCOL,
-        "dataset_id": dataset_id,
-        "examples": examples,
-        "vocab_size": vocab_size,
-        "dtype": "float32-le",
-        "logits_file": LOGITS_FILENAME,
-    }
-    if (
-        not isinstance(manifest, dict)
-        or set(manifest) != set(expected)
-        or isinstance(manifest.get("schema_version"), bool)
-        or not isinstance(manifest.get("schema_version"), int)
-        or isinstance(manifest.get("examples"), bool)
-        or not isinstance(manifest.get("examples"), int)
-        or isinstance(manifest.get("vocab_size"), bool)
-        or not isinstance(manifest.get("vocab_size"), int)
-        or manifest != expected
-    ):
-        raise CandidateProtocolError("prediction manifest does not match the request")
+    _validate_prediction_manifest(
+        manifest,
+        dataset_id=dataset_id,
+        examples=examples,
+        vocab_size=vocab_size,
+    )
     expected_bytes = storage_limit["logits_bytes"]
     if entries[LOGITS_FILENAME].stat().st_size != expected_bytes:
         raise CandidateProtocolError("prediction logits have the wrong byte length")

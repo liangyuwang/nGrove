@@ -400,7 +400,10 @@ field `agent_mode` to `agent_egress` and its `"sandboxed"` value to `"denied"`.
 An Agent that parses the version 1 field name must be updated; the benchmark
 does not emit both names. Version 3 corrected participant-time accounting for
 release-declared Worker preparation. Version 4 removes organizer validation
-feedback: Candidate commit returns artifact acceptance only.
+feedback: Candidate commit returns artifact acceptance only. Version 5 adds the
+exact `predictions.json` contract and optional generated helper signatures under
+`evaluation.candidate_boundary` so a Candidate can be implemented without
+reading benchmark source code.
 
 Training code writes Candidate artifacts into the lease-owned `/output` mount.
 `lease-commit` first stops the Training sandbox, validates and snapshots the
@@ -538,7 +541,11 @@ row-major little-endian float32 `logits.f32`. A second trusted scorer joins
 those outputs to the unmounted `targets.json`. Exactly one vector is required
 per context in request order; targets are never returned, and the hidden schema
 rejects overlapping protected source spans. Logits must be finite numeric
-values. Candidate failures return only fixed error codes to the Agent; private
+values. The Agent-visible task manifest publishes every exact manifest field,
+its constant or request-derived source, and the rule that additional fields are
+forbidden; it also names the optional public reader and writer helpers. Public
+preflight failures identify the invalid field or field set. Hidden Candidate
+failures still return only fixed error codes to the Agent; private
 diagnostics stay in the trusted episode directory. Candidate and scorer
 containers are destroyed after each evaluation. A conforming Evaluation Worker
 also imposes the release-derived hard byte and entry limits before Candidate

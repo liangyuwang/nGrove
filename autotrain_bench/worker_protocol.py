@@ -29,6 +29,8 @@ from typing import (
 from .artifact_identity import HIDDEN_BUNDLE_IDENTITY_ALGORITHM
 from .candidate_protocol import (
     PREDICTION_ARTIFACT_RETENTION,
+    candidate_helper_api_manifest,
+    prediction_manifest_contract,
     prediction_storage_manifest,
     serving_timing_manifest,
 )
@@ -210,8 +212,10 @@ class CandidateChannelRequirements:
             "predictions_per_context": self.predictions_per_context,
             "context_artifact_access": "read_only",
             "prediction_artifact_access": "candidate_read_write_isolated",
+            "prediction_manifest": prediction_manifest_contract(),
             "prediction_storage": prediction_storage_manifest(),
             "prediction_artifact_retention": self.prediction_artifact_retention,
+            "public_helper_api": candidate_helper_api_manifest(),
             "candidate_scheduling": "participant_controlled",
             "target_artifact_visibility": "denied",
             "current_target_visibility": "denied",

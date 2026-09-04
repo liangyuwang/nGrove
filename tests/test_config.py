@@ -56,6 +56,37 @@ class ConfigTests(unittest.TestCase):
             boundary["prediction_artifact_access"],
             "candidate_read_write_isolated",
         )
+        prediction_manifest = boundary["prediction_manifest"]
+        self.assertEqual(
+            prediction_manifest["exact_fields"],
+            [
+                "schema_version",
+                "candidate_protocol",
+                "dataset_id",
+                "examples",
+                "vocab_size",
+                "dtype",
+                "logits_file",
+            ],
+        )
+        self.assertFalse(prediction_manifest["additional_fields_allowed"])
+        self.assertFalse(prediction_manifest["json_member_order_significant"])
+        self.assertEqual(
+            prediction_manifest["fields"]["candidate_protocol"]["constant"],
+            "offline_next_token_logits_v3",
+        )
+        self.assertEqual(
+            prediction_manifest["fields"]["dataset_id"]["source"],
+            "contexts.json.dataset_id",
+        )
+        self.assertEqual(
+            prediction_manifest["fields"]["examples"]["source"],
+            "len(contexts.json.examples)",
+        )
+        self.assertEqual(
+            boundary["public_helper_api"]["module"],
+            "autotrain_bench.candidate_protocol",
+        )
         self.assertEqual(boundary["prediction_storage"]["max_entries"], 2)
         self.assertEqual(
             boundary["prediction_artifact_retention"],
@@ -232,7 +263,7 @@ class ConfigTests(unittest.TestCase):
         # The Agent reads this manifest and the `agent status` response.  A
         # rename in either surface must move this version with it.
         self.assertEqual(manifest["protocol_version"], AGENT_PROTOCOL_VERSION)
-        self.assertEqual(AGENT_PROTOCOL_VERSION, 4)
+        self.assertEqual(AGENT_PROTOCOL_VERSION, 5)
 
     def test_agent_egress_environment_and_host_runner_are_separate(self):
         with tempfile.TemporaryDirectory() as directory:

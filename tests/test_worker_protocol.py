@@ -312,6 +312,24 @@ class WorkerProtocolTests(unittest.TestCase):
             "candidate_read_write_isolated",
         )
         self.assertEqual(
+            manifest["prediction_manifest"]["exact_fields"],
+            [
+                "schema_version",
+                "candidate_protocol",
+                "dataset_id",
+                "examples",
+                "vocab_size",
+                "dtype",
+                "logits_file",
+            ],
+        )
+        self.assertFalse(manifest["prediction_manifest"]["additional_fields_allowed"])
+        self.assertEqual(
+            manifest["public_helper_api"]["prediction_writer"],
+            "write_prediction_artifact(output_dir, *, dataset_id, logits, "
+            "examples, vocab_size)",
+        )
+        self.assertEqual(
             manifest["prediction_storage"]["hard_limit"],
             "required_before_candidate_start",
         )
