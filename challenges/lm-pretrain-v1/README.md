@@ -63,7 +63,7 @@ example. It never receives the target later through a longer prefix or another
 overlapping source window. The
 Evaluator preserves mean target NLL as the canonical raw metric. ANALYSIS
 produces a postmortem trajectory over frozen Candidates and is never Agent
-feedback. The primary result is a `[0, 100]` TEST performance score, where
+feedback. The performance axis is a `[0, 100]` TEST performance score, where
 higher is better. This release defines it as
 `100 * max(0, min(1, 1 - mean_token_nll / log(vocab_size)))`: 100 is perfect
 prediction, while uniform-over-vocabulary prediction and worse map to 0. The
@@ -75,7 +75,7 @@ are frozen by the release and are not comparable with another benchmark
 release. A run without a successful finite TEST measurement has no performance
 score or raw metrics and is reported as a failed experiment.
 
-The second evaluation axis is Candidate `time_per_task`, defined as end-to-end
+The independent cost axis is Candidate `time_per_task`, defined as end-to-end
 Candidate wall time divided by the frozen number of next-token prediction
 tasks. Lower is better. The result retains total Candidate wall time, task
 count, input tokens, prediction bytes, and derived throughput as cost

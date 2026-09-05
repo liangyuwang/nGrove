@@ -348,6 +348,10 @@ complete formal receipt.
 
 Status: implemented in the development schemas.
 
+The current versions are Task schema v6, Challenge schema v2, Agent Protocol v10,
+Worker Protocol v14, and result schema v12. The entries below identify the
+versions that introduced each change.
+
 - Agent Protocol v4 makes Candidate commit return artifact acceptance only.
 - Task schema v2 and Challenge schema v2 replaced legacy VAL with hidden ANALYSIS and a
   release-frozen Candidate limit, selection rule, and result-visibility policy.
@@ -380,6 +384,14 @@ Status: implemented in the development schemas.
   total wall time, workload counts, output size, and throughput remain audited
   submetrics. Performance and cost are compared by Pareto dominance only when
   release, hidden-dataset identity, and runtime profile match.
+- Agent Protocol v7 publishes the existing Candidate entrypoint ABI; v8 publishes
+  the exact context input and binary prediction contracts. Optional public helpers
+  implement the file protocol without prescribing a validation workflow.
+- Agent Protocol v9 publishes the input bound and variable-length policy while
+  keeping exact evaluation sampling lengths in trusted configuration. Version 10
+  limits Agent-visible release metadata to declared identifiers; private manifest
+  hashes and audit extensions remain in trusted records. Public smoke/preview
+  recipes remain reproducible and do not provide secret formal evaluation data.
 - Research is durably sealed before Agent/Research teardown; hidden evaluation
   is rejected until teardown and Agent-control cleanup are confirmed.
 - The final Agent-declared incumbent is scored on TEST first. The TEST decision

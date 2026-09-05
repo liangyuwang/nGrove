@@ -272,9 +272,16 @@ The command starts with its working directory set to the private episode
 workspace and with stdin disconnected. It receives
 `AUTOTRAIN_BENCH_WORKSPACE`, `AUTOTRAIN_BENCH_TASK`, and
 `AUTOTRAIN_BENCH_CONTROL_DIR`; it must use the `autotrain-bench agent ...`
-mailbox commands, call `agent finish`, and exit without further user input. A
+mailbox commands for benchmark control and run without further user input. A
 custom wrapper may reuse the tool-independent prompt in
 `autotrain_bench.agent_prompt.HOST_CLI_PROMPT`.
+
+The supplied prompt describes the evaluation objective, allowed interfaces, and
+episode lifecycle. Research methods, experiment scheduling, status polling, and
+budget allocation belong to the participant. Track A seals automatically at its
+research deadline. To end an active episode voluntarily, the Agent commits or
+stops its active lease, calls `agent finish`, and exits; exiting while research
+is still active records an unfinished episode (DNF).
 
 Tool-specific adapters are optional conveniences, not part of the benchmark
 protocol. They translate the generic contract into a particular CLI's flags,
@@ -799,9 +806,10 @@ not a direct observation of latent research progress because Candidate commit
 and incumbent-declaration strategies are themselves Agent choices.
 
 ANALYSIS is never returned through Agent control, never selects an incumbent,
-and never replaces TEST as the primary score. A release freezes its Candidate
-selection limit and result-visibility policy before task reveal. Publication may
-be organizer-only or delayed to reduce cross-episode leakage. The local
+and never replaces the final TEST performance and cost measurements. A release
+freezes its Candidate selection limit and result-visibility policy before task
+reveal. Publication may be organizer-only or delayed to reduce cross-episode
+leakage. The local
 `report` command is a trusted Operator view and retains the complete audit
 record; an organizer's submission/publication layer must enforce the declared
 visibility policy when distributing that record.
@@ -810,7 +818,9 @@ visibility policy when distributing that record.
 
 ## TEST
 
-TEST is the benchmark's final generalization metric.
+TEST provides the final performance and cost measurements for the Agent-declared
+incumbent. Performance measures generalization; cost measures the complete
+Candidate invocation per prediction task.
 
 TEST is:
 
@@ -1099,15 +1109,19 @@ Candidate inventory are sealed. Benchmark-owned postmortem ANALYSIS and TEST
 time does not consume participant research time because the Agent can no longer
 act or benefit from it.
 
-The primary Track A score is:
+The Track A result is the final TEST performance–cost pair:
 
 $$
-\boxed{
-\operatorname{PPL}_{\mathrm{TEST}}(T_{\mathrm{total}})
-}
+R_{\mathrm{TEST}}(T_{\mathrm{total}})
+=\left(
+\operatorname{performance\_score}_{\mathrm{TEST}},
+\operatorname{time\_per\_task}_{\mathrm{TEST}}
+\right).
 $$
 
-for the system's final declared incumbent at the deadline.
+Both measurements use the final Agent-declared incumbent when research seals,
+under the total research budget $T_{\mathrm{total}}$. Higher performance and lower
+time per task are better; the two axes remain separate.
 
 ### What Track A measures
 
@@ -1179,15 +1193,19 @@ A lease that starts consumes one lease budget even if participant code crashes, 
 
 Failures that occur before the Training Container starts do not consume the participant's lease budget.
 
-The primary Track B score is:
+The Track B result uses the same TEST performance–cost pair:
 
 $$
-\boxed{
-\operatorname{PPL}_{\mathrm{TEST}}(N_{\mathrm{leases}})
-}
+R_{\mathrm{TEST}}(N_{\mathrm{leases}}, T_{\mathrm{lease}})
+=\left(
+\operatorname{performance\_score}_{\mathrm{TEST}},
+\operatorname{time\_per\_task}_{\mathrm{TEST}}
+\right).
 $$
 
-for the final incumbent selected by the AutoTrain system.
+Both measurements use the final Agent-declared incumbent under the selected
+lease-count and per-lease time limits. Higher performance and lower time per task
+are better; the two axes remain separate.
 
 ### What Track B measures
 
@@ -1224,25 +1242,30 @@ The two tracks constrain different scarce resources.
 | Number of leases    | Unlimited within deadline        | Fixed                                          |
 | Experiments in lease| Unlimited within time/environment| Unlimited within time/environment              |
 | Official feedback   | None during research             | None during research                           |
+| Evaluation axes     | TEST performance and cost        | TEST performance and cost                      |
 | Self-improvement    | Allowed                          | Allowed                                        |
 | Human intervention  | Forbidden                        | Forbidden                                      |
 | Primary question    | How fast can the system improve? | How well can it use bounded training access?    |
 
 Together they expose two different scaling behaviors.
 
-Track A measures:
+Across completed episodes at different budgets, Track A measures:
 
 $$
-L_{\mathrm{TEST}}(t).
+R_{\mathrm{TEST}}(t).
 $$
 
 Track B measures:
 
 $$
-L_{\mathrm{TEST}}(n).
+R_{\mathrm{TEST}}(n, T_{\mathrm{lease}}).
 $$
 
-where $t$ is autonomous research time and $n$ is the number of Training Leases and official feedback rounds.
+Here $R_{\mathrm{TEST}}$ is the performance–cost pair, $t$ is the research time
+budget, and $n$ is the Training Lease budget with per-lease duration
+$T_{\mathrm{lease}}$ held fixed. Neither track supplies organizer feedback during
+research. Each episode contributes one final TEST result; within-episode
+Candidate trajectories are measured afterward on ANALYSIS.
 
 ---
 
@@ -1328,13 +1351,16 @@ For multi-agent systems, usage is aggregated across the complete AutoTrain syste
 This makes it possible to study:
 
 $$
-\operatorname{PPL}_{\mathrm{TEST}}
+R_{\mathrm{TEST}}
 = f(
 \text{agent tokens},
 \text{research time},
 \text{lease and experiment interactions}
 ).
 $$
+
+Here $R_{\mathrm{TEST}}$ contains both final performance and time per task. Agent
+token usage is a separate research diagnostic; it is not Candidate serving cost.
 
 In Track A, agent reasoning naturally competes with training and engineering for the total wall-clock budget.
 
@@ -1398,7 +1424,8 @@ Discovering when and how to use them is part of the task.
 
 # Intermediate Incumbents and Research Curves
 
-The benchmark should not record only a single final score.
+The benchmark records the final performance–cost pair together with the submitted
+Candidate and incumbent history.
 
 Throughout an episode, the AutoTrain system may declare a **current incumbent**: the model it would submit if the benchmark ended immediately.
 
@@ -1445,8 +1472,9 @@ Agent redeclares an incumbent; it does not invent quality observations for work
 the Agent never committed. Scaling studies may compare such derived curves and
 final TEST results only when their complete comparison keys match.
 
-The submitted-Candidate ANALYSIS trace can reveal behavior that a final scalar
-cannot, without providing an official signal while the Agent can still act.
+The submitted-Candidate ANALYSIS trace shows how the committed artifacts changed
+before the final result, without providing an official signal while the Agent can
+still act.
 
 For example:
 
@@ -1461,7 +1489,8 @@ rapid autonomous improvement
 eventually surpasses A
 ```
 
-The second system may be more interesting from an RSI perspective even when the two systems have similar final scores.
+These histories distinguish research trajectories even when the two systems have
+similar final performance and cost.
 
 ---
 
@@ -2014,6 +2043,11 @@ Its value comes from providing a concrete environment in which improvement itsel
 
 # Research Questions
 
+These studies may use the release's raw mean NLL $L$ as a diagnostic alongside
+the final performance–cost pair. TEST scaling curves compare completed episodes
+at different budgets; within-episode Candidate trajectories use postmortem
+ANALYSIS.
+
 Beyond leaderboard ranking, AutoTrain-Bench is intended to support questions such as:
 
 ### Research-time scaling
@@ -2042,7 +2076,7 @@ $$
 
 ### Research gain
 
-How much better does a system become after receiving experimental feedback?
+How much better does a system become through evidence from its own experiments?
 
 $$
 \Delta L
