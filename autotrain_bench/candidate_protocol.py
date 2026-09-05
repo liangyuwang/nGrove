@@ -133,10 +133,15 @@ def context_manifest_contract() -> Dict[str, Any]:
             },
             "context_lengths": {
                 "json_type": "array",
-                "items": {"json_type": "integer", "minimum": 1},
+                "items": {
+                    "json_type": "integer",
+                    "minimum": 1,
+                    "maximum_source": "evaluation.max_context_tokens",
+                },
                 "min_items": 1,
                 "order": "strictly_increasing",
-                "source": "evaluation.context_lengths",
+                "meaning": "distinct input lengths present in this request",
+                "value_visibility": "candidate_only_after_research_sealing",
             },
             "examples": {
                 "json_type": "array",
@@ -153,6 +158,8 @@ def context_manifest_contract() -> Dict[str, Any]:
                         },
                         "input_ids": {
                             "json_type": "array",
+                            "min_items": 1,
+                            "max_items_source": "evaluation.max_context_tokens",
                             "length_member_of": "contexts.json.context_lengths",
                             "order": "oldest_to_newest",
                             "items": {
@@ -165,7 +172,6 @@ def context_manifest_contract() -> Dict[str, Any]:
                 },
             },
         },
-        "coverage": "every declared context length occurs in the evaluation request",
         "prediction_task": "one next-token logit vector per example, after its input_ids",
         "target_visibility": "no targets, split labels, or protected source metadata",
     }

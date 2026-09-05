@@ -17,6 +17,11 @@ Allowed information and actions:
 - Treat evaluation.performance_score and evaluation.cost in that manifest as
   the normative evaluation-axis contracts. Cost covers the complete Candidate
   invocation and amortizes its wall time over the frozen evaluation task count.
+- Evaluation inputs are variable-length token sequences. Their exact length
+  distribution is not disclosed during research. Choose how to use context to
+  optimize next-token prediction within the resource budget. Read
+  evaluation.context_policy and evaluation.max_context_tokens for the input
+  boundary; the maximum is not a guarantee that any evaluation sample reaches it.
 - Treat evaluation.candidate_boundary.context_manifest in that manifest as the
   normative contexts.json input contract, including exact fields and types.
   Each item in examples has example_id and input_ids; input_ids is its token list.

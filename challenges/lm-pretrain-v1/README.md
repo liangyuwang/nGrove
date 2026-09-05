@@ -47,8 +47,16 @@ keeps `targets.json` inside trusted scoring. A formal Worker may instead fetch,
 mount, or decrypt the same release-frozen identity at that point; Core does not
 prescribe the storage mechanism.
 
-The Evaluator uses balanced, non-overlapping contexts of 64, 128, 256, 512,
-1,024, and 2,048 tokens. Each context contributes exactly one hidden next-token
+Evaluation inputs are variable-length token sequences. The exact length
+distribution is not disclosed in the research-visible manifest. Participants
+choose how to use context to optimize next-token prediction within the resource
+budget. `evaluation.max_context_tokens` is 2,048 for this preview; it is an
+input bound, not a guarantee that any evaluation example reaches it. Sampling
+lengths and proportions remain in trusted evaluation configuration. The local
+builder is publicly reproducible, so its recipe is not secret; a formal release
+must use organizer-owned evaluation construction parameters and data.
+
+The Evaluator uses non-overlapping contexts. Each contributes one hidden next-token
 target. The Candidate receives the complete unlabeled context artifact, owns
 its serving schedule and batching, and writes one ordered logit vector per
 example. It never receives the target later through a longer prefix or another
@@ -98,8 +106,11 @@ The input object is specified at
 `context_lengths`, and `examples`. Every example has exactly `example_id`
 (a unique opaque string) and `input_ids` (integer tokens in oldest-to-newest
 order). Tokens are in `[0, vocab_size)` and each array length belongs to
-`context_lengths`. The declaration specifies every field's type, constants,
-and constraints. No targets or split labels are included. The optional
+`context_lengths` and is at most `evaluation.max_context_tokens`.
+`contexts.json.context_lengths` describes the actual request and becomes visible
+to the frozen Candidate only after research sealing; it is not published as a
+research-stage sampling plan. The declaration specifies every field's type,
+constants, and constraints. No targets or split labels are included. The optional
 `load_context_request()` helper returns this parsed dictionary unchanged.
 
 The same manifest defines the exact output object at

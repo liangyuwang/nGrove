@@ -51,7 +51,10 @@ class ConfigError(ValueError):
 #
 # Version 8 publishes the complete context input schema, reader return structure,
 # and binary logit layout for the existing offline Candidate ABI.
-AGENT_PROTOCOL_VERSION = 8
+#
+# Version 9 publishes a variable-length policy and max_context_tokens input bound
+# instead of the trusted evaluation sampling lengths.
+AGENT_PROTOCOL_VERSION = 9
 
 # Phases a release may declare as benchmark-owned rather than participant time.
 # `README.md` requires this boundary to be release-defined and identical across
@@ -707,10 +710,10 @@ class TaskConfig:
                 "evaluation.context_lengths must be positive, unique, and "
                 "strictly increasing"
             )
-        if self.context_lengths[-1] != self.context_length:
+        if self.context_lengths[-1] > self.context_length:
             raise ConfigError(
-                "evaluation.context_length must equal the largest declared "
-                "context_lengths value"
+                "evaluation.context_lengths must not exceed the "
+                "evaluation.context_length input limit"
             )
         if self.analysis_candidate_selection not in ANALYSIS_CANDIDATE_SELECTIONS:
             raise ConfigError("analysis.candidate_selection must be 'all_committed'")
@@ -818,8 +821,15 @@ class TaskConfig:
                 "performance_score": self.performance_score.public_manifest(),
                 "cost": self.cost.public_manifest(),
                 "vocab_size": self.vocab_size,
-                "context_length": self.context_length,
-                "context_lengths": list(self.context_lengths),
+                "max_context_tokens": self.context_length,
+                "context_policy": (
+                    "Evaluation inputs are variable-length token sequences. "
+                    "The exact length distribution is not disclosed during research. "
+                    "Participants choose how to use context to optimize next-token "
+                    "prediction within the resource budget. max_context_tokens is "
+                    "an input bound, not a guarantee that any evaluation example "
+                    "reaches it."
+                ),
                 "device": self.evaluator_device,
                 "candidate_artifact_limits": {
                     "max_bytes": self.candidate_max_bytes,

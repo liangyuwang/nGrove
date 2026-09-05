@@ -106,7 +106,9 @@ class ConfigTests(unittest.TestCase):
                 "raw_metrics": ["mean_nll"],
             },
         )
-        self.assertEqual(public["evaluation"]["context_lengths"], [1, 2, 3])
+        self.assertEqual(public["evaluation"]["max_context_tokens"], 3)
+        self.assertNotIn("context_lengths", public["evaluation"])
+        self.assertNotIn("context_length", public["evaluation"])
         self.assertEqual(
             public["evaluation"]["cost"],
             {
@@ -132,17 +134,34 @@ class ConfigTests(unittest.TestCase):
             },
         )
 
-    def test_context_lengths_are_frozen_and_end_at_the_context_limit(self):
+    def test_context_lengths_are_frozen_and_do_not_exceed_the_input_limit(self):
         with tempfile.TemporaryDirectory() as directory:
             task = self._write_task(directory)
             payload = json.loads(task.read_text(encoding="utf-8"))
 
-            for invalid in ([1, 1, 3], [2, 1, 3], [1, 2], [0, 2, 3]):
+            for invalid in ([1, 1, 3], [2, 1, 3], [1, 2, 4], [0, 2, 3]):
                 with self.subTest(invalid=invalid):
                     payload["evaluation"]["context_lengths"] = invalid
                     task.write_text(json.dumps(payload), encoding="utf-8")
                     with self.assertRaisesRegex(ConfigError, "context_length"):
                         TaskConfig.load(task)
+
+    def test_hidden_length_choices_do_not_change_the_public_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = self._write_task(directory)
+            payload = json.loads(task.read_text(encoding="utf-8"))
+            original = TaskConfig.load(task)
+            for lengths in ([1], [2], [1, 3], [1, 2, 3]):
+                with self.subTest(lengths=lengths):
+                    payload["evaluation"]["context_lengths"] = lengths
+                    task.write_text(json.dumps(payload), encoding="utf-8")
+                    config = TaskConfig.load(task)
+                    self.assertEqual(config.context_lengths, tuple(lengths))
+                    for track in ("A", "B"):
+                        self.assertEqual(
+                            config.public_manifest(track),
+                            original.public_manifest(track),
+                        )
 
     def test_task_rejects_participant_owned_fields(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -293,7 +312,7 @@ class ConfigTests(unittest.TestCase):
         # The Agent reads this manifest and the `agent status` response.  A
         # rename in either surface must move this version with it.
         self.assertEqual(manifest["protocol_version"], AGENT_PROTOCOL_VERSION)
-        self.assertEqual(AGENT_PROTOCOL_VERSION, 8)
+        self.assertEqual(AGENT_PROTOCOL_VERSION, 9)
 
     def test_agent_egress_environment_and_host_runner_are_separate(self):
         with tempfile.TemporaryDirectory() as directory:

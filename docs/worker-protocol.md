@@ -443,6 +443,19 @@ and token values in `[0, vocab_size)`. IDs are opaque, nonempty strings of at
 most 512 characters without NUL; example IDs are unique within the request.
 The request contains no targets, split labels, or protected source metadata.
 
+The research-visible task manifest publishes `evaluation.max_context_tokens`
+as an input bound and `evaluation.context_policy` as the variable-length
+declaration. Participants choose how to use context within their resource
+budget. No sample is guaranteed to reach that bound. Exact sampling lengths,
+proportions, and construction parameters stay in trusted evaluation
+configuration, frozen before research begins. `EvaluationTaskSpec.context_lengths`
+remains trusted Worker input and every length must fit `context_length`, the
+trusted configuration's input bound. The `context_lengths` values inside
+`contexts.json` describe that request and are visible to the frozen Candidate
+only after research sealing. Publishing their schema does not publish their
+values during research. This distinction is independent of the Worker sandbox
+or storage mechanism.
+
 The output contract is present in the Agent-visible public task manifest at
 `evaluation.candidate_boundary.prediction_manifest`, including the exact field
 set, JSON types, constants, request-derived values, and the prohibition on

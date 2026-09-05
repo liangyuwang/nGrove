@@ -41,9 +41,15 @@ class CandidateEntrypointTests(unittest.TestCase):
             ).public_manifest()
             for track in ("A", "B"):
                 with self.subTest(task=task, track=track):
-                    boundary = config.public_manifest(track)["evaluation"][
-                        "candidate_boundary"
-                    ]
+                    evaluation = config.public_manifest(track)["evaluation"]
+                    self.assertEqual(
+                        evaluation["max_context_tokens"], config.context_length
+                    )
+                    self.assertNotIn("context_lengths", evaluation)
+                    self.assertNotIn(
+                        "evaluation.context_lengths", json.dumps(evaluation)
+                    )
+                    boundary = evaluation["candidate_boundary"]
                     for section in (
                         "entrypoint",
                         "context_manifest",
@@ -64,6 +70,11 @@ class CandidateEntrypointTests(unittest.TestCase):
                         ],
                     )
                     self.assertFalse(context["additional_fields_allowed"])
+                    self.assertNotIn("coverage", context)
+                    self.assertEqual(
+                        context["fields"]["context_lengths"]["value_visibility"],
+                        "candidate_only_after_research_sealing",
+                    )
                     example = context["fields"]["examples"]["items"]
                     self.assertEqual(
                         example["exact_fields"], ["example_id", "input_ids"]
@@ -71,6 +82,10 @@ class CandidateEntrypointTests(unittest.TestCase):
                     self.assertFalse(example["additional_fields_allowed"])
                     self.assertEqual(
                         example["fields"]["input_ids"]["json_type"], "array"
+                    )
+                    self.assertEqual(
+                        example["fields"]["input_ids"]["max_items_source"],
+                        "evaluation.max_context_tokens",
                     )
                     self.assertEqual(
                         boundary["public_helper_api"]["request_reader_return"][

@@ -42,7 +42,7 @@ incumbent.
 | TRAIN | 1,000 documents, about 818K target bytes |
 | ANALYSIS / TEST | 512 hidden next-token targets each |
 | Token representation | UTF-8 bytes plus BOS, vocabulary 257 |
-| Evaluation context lengths | 8, 16, 32, 64, and 128 tokens |
+| Evaluation input bound | 128 tokens; variable lengths, no guarantee of a sample at the bound |
 | Track A | 300 seconds total wall clock |
 | Track B | Three leases, at most 75 seconds each |
 | Evaluation axes | Performance score and end-to-end time per task |
@@ -55,6 +55,14 @@ approach supported by the selected Training Environment and must export a
 Candidate that satisfies the public ABI. Concrete runtime provenance and Worker
 capability evidence belong to the episode result. A development deployment
 cannot become leaderboard eligible merely by reporting the expected hardware.
+
+The Agent receives the same variable-length declaration as the challenge:
+evaluation inputs are variable-length token sequences, the exact length
+distribution is not disclosed during research, and participants choose how to
+use context to optimize next-token prediction within the resource budget.
+`evaluation.max_context_tokens` publishes only the input bound. The local smoke
+recipe remains reproducible from its public source; this visibility convention
+does not make that recipe suitable as a secret formal evaluation.
 
 Training resources are selected from the finite map in `challenge.json`, never
 by `task.json` or ad-hoc launch flags. `cpu-local` keeps the smoke path cheap;
@@ -153,8 +161,9 @@ bundles may contain only regular files and directories,
 may not contain symbolic or hard links, and must fit the task-defined file and
 byte limits.
 
-Hidden evaluation uses balanced, non-overlapping context windows at the five
-release-declared lengths above. Each window contributes exactly one prediction:
+Hidden evaluation uses non-overlapping context windows within the input bound.
+The actual sampling lengths and proportions stay in trusted task configuration.
+Each window contributes exactly one prediction:
 the Candidate receives the context and returns next-token logits, while the
 target remains permanently inside the trusted Evaluator. A target is never
 revealed later through a longer prefix or reused inside another context from
@@ -187,7 +196,10 @@ read-only JSON object with exactly `schema_version` (integer 2),
 integer array), and `examples` (nonempty array). Each example contains exactly
 `example_id` (unique opaque string) and `input_ids` (integer token array in
 oldest-to-newest order). Context lengths belong to `context_lengths`; token IDs
-are in `[0, vocab_size)`. No targets or split label are included.
+are in `[0, vocab_size)`. Input lengths must not exceed
+`evaluation.max_context_tokens`. The `context_lengths` values describe the
+actual request, visible to the frozen Candidate only after research sealing.
+No targets or split label are included.
 The serving system owns file reading, model loading,
 batching, ordering, and parallelism. It writes exactly `predictions.json` and
 `logits.f32` under `output_dir`; logits are finite row-major little-endian

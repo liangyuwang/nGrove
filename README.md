@@ -428,6 +428,20 @@ Version 8 publishes `evaluation.candidate_boundary.context_manifest`, the exact
 the parsed dictionary with unchanged keys and values, and publishes the binary
 logit encoding, shape, and row/column order under
 `evaluation.candidate_boundary.prediction_manifest.logits_artifact`.
+Version 9 removes `evaluation.context_lengths` from the research-visible
+manifest and renames its `evaluation.context_length` limit to
+`evaluation.max_context_tokens`. `evaluation.context_policy` declares:
+
+> Evaluation inputs are variable-length token sequences. The exact length
+> distribution is not disclosed during research. Participants choose how to use
+> context to optimize next-token prediction within the resource budget.
+
+The maximum is an input bound, not a guarantee that any evaluation sample
+reaches it. Exact sampling lengths, proportions, and construction parameters
+stay in trusted evaluation configuration. The `contexts.json.context_lengths`
+values describe only the actual request received by the frozen Candidate after
+research sealing; this field is not a research-stage sampling plan. The
+Candidate ABI and hidden dataset format are unchanged.
 
 Training code writes Candidate artifacts into the lease-owned `/output` mount.
 `lease-commit` first stops the Training sandbox, validates and snapshots the
@@ -836,7 +850,11 @@ A benchmark release specifies:
 * loss implementation.
 
 The evaluator contains a release-frozen set of separately scored examples
-$(c_i, y_i)$ at several declared context lengths. It exposes the complete,
+$(c_i, y_i)$ with variable context lengths within the public input bound.
+The research-visible contract publishes that bound and the scoring rules;
+the actual length distribution and sampling parameters belong to trusted
+evaluation configuration frozen before research starts. Participants choose
+how much context to use. After research sealing, the Worker exposes the complete,
 target-free context collection to the Candidate and requires exactly one output
 vector for each $c_i$, while keeping the corresponding next-token target $y_i$
 permanently private. The Candidate controls ordering, batching, parallelism,
@@ -1891,6 +1909,14 @@ initial workspace are participant-owned launch inputs and are intentionally
 absent from the task. Hardware/device allocation is absent from `task.json` and
 selected through a named runtime profile in
 `dev_tasks/smoke_lm/challenge.json`.
+This example is trusted task configuration. Its `context_length` is the input
+bound and `context_lengths` selects the local evaluation lengths, all of which
+must fit that bound. The Agent receives a filtered manifest with
+`max_context_tokens` and the variable-length declaration instead of that list.
+The reproducible smoke/preview builders expose their local recipes in source;
+filtering the episode manifest does not make those public recipes secret. A
+formal release must keep its actual evaluation construction parameters and
+datasets organizer-owned and outside participant-visible artifacts.
 
 ---
 
