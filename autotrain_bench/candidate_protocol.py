@@ -38,6 +38,57 @@ PREDICTION_MANIFEST_FIELDS = tuple(
 )
 
 
+def candidate_entrypoint_contract() -> Dict[str, Any]:
+    """Declare the existing Python entrypoint without prescribing a workflow."""
+
+    return {
+        "module_file": "candidate.py",
+        "module_location": "candidate_artifact_root",
+        "function": "run_offline",
+        "signature": "run_offline(candidate_dir, contexts_path, output_dir, device)",
+        "invocation": "python_module_import_then_synchronous_function_call",
+        "argument_passing": "positional_in_declared_order",
+        "arguments": [
+            {
+                "name": "candidate_dir",
+                "python_type": "pathlib.Path",
+                "value": "absolute path to the immutable Candidate artifact directory",
+                "access": "read_only",
+            },
+            {
+                "name": "contexts_path",
+                "python_type": "pathlib.Path",
+                "value": (
+                    "absolute path to contexts.json containing all requested "
+                    "example IDs and token contexts, without targets or split labels"
+                ),
+                "access": "read_only",
+            },
+            {
+                "name": "output_dir",
+                "python_type": "pathlib.Path",
+                "value": "absolute path to isolated prediction output storage",
+                "access": "read_write",
+            },
+            {
+                "name": "device",
+                "python_type": "str",
+                "value_source": "evaluation.device",
+                "allowed_values": ["cpu", "cuda"],
+            },
+        ],
+        "module_import": (
+            "module-level code executes during import; __name__ is not '__main__'"
+        ),
+        "process_arguments": "sys.argv is Worker-owned and is not part of the Candidate ABI",
+        "completion": (
+            "return after writing predictions.json and logits.f32 under output_dir "
+            "according to candidate_boundary.prediction_manifest"
+        ),
+        "return_value": "ignored; predictions are read from output files",
+    }
+
+
 def prediction_manifest_contract() -> Dict[str, Any]:
     """Return the exact Agent-facing ``predictions.json`` contract."""
 

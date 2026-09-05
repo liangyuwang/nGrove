@@ -330,8 +330,19 @@ artifact. The Worker validates both before untrusted code starts, mounts only
 the context artifact read-only into the Candidate, and retains targets for the
 trusted scorer. Protected spans may not overlap.
 
-The Candidate exports
-`run_offline(candidate_dir, contexts_path, output_dir, device)`. It owns input
+The Agent-visible task manifest declares the Candidate entrypoint at
+`evaluation.candidate_boundary.entrypoint`; the Worker channel manifest carries
+the same declaration. The Worker imports `candidate.py` from the artifact root
+as a Python module, then synchronously calls
+`run_offline(candidate_dir, contexts_path, output_dir, device)` with four
+positional arguments. The first three are absolute `pathlib.Path` objects:
+the read-only Candidate directory, the read-only target-free `contexts.json`,
+and isolated writable prediction storage. The fourth is the selected evaluation
+device string (`cpu` or `cuda`). Module-level code runs during import with
+`__name__ != '__main__'`; `sys.argv` is not part of the Candidate ABI. The return
+value is ignored; predictions must be written before the function returns.
+
+The Candidate owns input
 reading, model lifetime, ordering, batching, and parallel scheduling, and emits
 exactly `predictions.json` plus a row-major little-endian float32 `logits.f32`.
 There is one vocabulary-sized row per context in request order. A trusted

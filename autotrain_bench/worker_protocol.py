@@ -29,6 +29,7 @@ from typing import (
 from .artifact_identity import HIDDEN_BUNDLE_IDENTITY_ALGORITHM
 from .candidate_protocol import (
     PREDICTION_ARTIFACT_RETENTION,
+    candidate_entrypoint_contract,
     candidate_helper_api_manifest,
     prediction_manifest_contract,
     prediction_storage_manifest,
@@ -221,6 +222,7 @@ class CandidateChannelRequirements:
     def public_manifest(self) -> Dict[str, Any]:
         return {
             "protocol": self.protocol,
+            "entrypoint": candidate_entrypoint_contract(),
             "mechanism": "worker_materialized_files",
             "request_content": self.request_content,
             "predictions_per_context": self.predictions_per_context,

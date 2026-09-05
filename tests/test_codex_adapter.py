@@ -53,6 +53,7 @@ class CodexAdapterTests(unittest.TestCase):
             "evaluation.candidate_boundary.prediction_manifest",
             HOST_CLI_PROMPT,
         )
+        self.assertIn("evaluation.candidate_boundary.entrypoint", HOST_CLI_PROMPT)
         self.assertIn("maximize performance_score", HOST_CLI_PROMPT)
         self.assertIn("minimizing time_per_task", HOST_CLI_PROMPT)
         self.assertIn("Pareto-competitive", HOST_CLI_PROMPT)

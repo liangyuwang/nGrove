@@ -163,11 +163,21 @@ maps it to the release's generic `[0, 100]` performance score. Perplexity can be
 derived for display when representable. This development result is not
 comparable with a different benchmark release.
 
-`candidate.py` defines one offline entry point:
+The public task manifest declares the invocation contract under
+`evaluation.candidate_boundary.entrypoint`. The Worker imports `candidate.py`
+from the artifact root and calls its synchronous function with four positional
+arguments:
 
 ```python
 def run_offline(candidate_dir, contexts_path, output_dir, device): ...
 ```
+
+`candidate_dir`, `contexts_path`, and `output_dir` are absolute `pathlib.Path`
+objects naming the immutable artifact directory, the context JSON file, and
+isolated writable prediction storage. `device` is the string in
+`evaluation.device` (`cpu` or `cuda`). Module-level code executes during import;
+`__name__` is not `__main__`, and `sys.argv` is not a Candidate interface. The
+return value is ignored; the output files must be written before returning.
 
 `contexts_path` is a read-only JSON artifact containing example IDs and token
 contexts but no targets or split label. The serving system owns file reading, model loading,

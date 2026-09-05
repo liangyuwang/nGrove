@@ -412,7 +412,16 @@ release-declared Worker preparation. Version 4 removes organizer validation
 feedback: Candidate commit returns artifact acceptance only. Version 5 adds the
 exact `predictions.json` contract and optional generated helper signatures under
 `evaluation.candidate_boundary` so a Candidate can be implemented without
-reading benchmark source code.
+reading benchmark source code. Version 6 promotes Candidate cost to an
+independent evaluation axis. Version 7 adds the existing Candidate invocation
+contract at `evaluation.candidate_boundary.entrypoint`: `candidate.py` in the
+artifact root is imported as a Python module, then
+`run_offline(candidate_dir, contexts_path, output_dir, device)` is called
+synchronously with positional arguments. The first three arguments are absolute
+`pathlib.Path` objects for the immutable artifact directory, target-free context
+JSON, and writable prediction output directory; `device` is the string from
+`evaluation.device`. The return value is ignored; output files carry predictions.
+`sys.argv` belongs to the Worker launcher and is not a Candidate interface.
 
 Training code writes Candidate artifacts into the lease-owned `/output` mount.
 `lease-commit` first stops the Training sandbox, validates and snapshots the

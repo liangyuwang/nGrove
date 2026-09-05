@@ -17,6 +17,10 @@ Allowed information and actions:
 - Treat evaluation.performance_score and evaluation.cost in that manifest as
   the normative evaluation-axis contracts. Cost covers the complete Candidate
   invocation and amortizes its wall time over the frozen evaluation task count.
+- Treat evaluation.candidate_boundary.entrypoint in that manifest as the normative
+  Candidate invocation contract: module file, function, ordered arguments, and
+  their types and meanings. The module is imported and its function is called;
+  sys.argv is not part of the Candidate ABI.
 - Treat evaluation.candidate_boundary.prediction_manifest in that manifest as
   the normative, exact predictions.json contract. It names every required field,
   value source, and constant; additional fields are forbidden.

@@ -81,7 +81,18 @@ prediction storage to two entries and
 failure and confirmed teardown. The bundled local Docker preview reports its
 host bind mount quota as unsupported.
 
-The Agent-visible task manifest defines the exact output object at
+The Agent-visible task manifest declares the invocation contract at
+`evaluation.candidate_boundary.entrypoint`: the Worker imports `candidate.py`
+from the artifact root and synchronously calls
+`run_offline(candidate_dir, contexts_path, output_dir, device)` with positional
+arguments. The first three are absolute `pathlib.Path` objects for the immutable
+Candidate directory, read-only target-free context JSON, and writable prediction
+storage. The fourth is the `evaluation.device` string (`cpu` or `cuda`).
+`sys.argv` is not a Candidate interface; the module is imported with
+`__name__ != '__main__'`. The return value is ignored; predictions are written
+to the output directory before the function returns.
+
+The same manifest defines the exact output object at
 `evaluation.candidate_boundary.prediction_manifest`: `predictions.json` must
 contain only `schema_version`, `candidate_protocol`, `dataset_id`, `examples`,
 `vocab_size`, `dtype`, and `logits_file`, with constants and request-derived

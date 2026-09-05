@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 
 from .candidate_protocol import (
     PREDICTION_ARTIFACT_RETENTION,
+    candidate_entrypoint_contract,
     candidate_helper_api_manifest,
     prediction_manifest_contract,
     prediction_storage_manifest,
@@ -43,7 +44,10 @@ class ConfigError(ValueError):
 # Version 6 promotes Candidate cost to an independent, release-scoped axis. Its
 # primary metric is end-to-end Candidate wall time amortized over the frozen
 # number of evaluation tasks.
-AGENT_PROTOCOL_VERSION = 6
+#
+# Version 7 publishes the existing Candidate module/function invocation contract,
+# including ordered argument types and meanings, without adding a self-check.
+AGENT_PROTOCOL_VERSION = 7
 
 # Phases a release may declare as benchmark-owned rather than participant time.
 # `README.md` requires this boundary to be release-defined and identical across
@@ -819,6 +823,7 @@ class TaskConfig:
                 },
                 "policy_compliant": self.evaluator_policy_compliant,
                 "candidate_boundary": {
+                    "entrypoint": candidate_entrypoint_contract(),
                     "target_artifact_mount": "none",
                     "context_artifact_access": "read_only",
                     "prediction_artifact_access": "candidate_read_write_isolated",
