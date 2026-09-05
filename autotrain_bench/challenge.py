@@ -15,6 +15,10 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
+from .artifact_identity import (
+    FILE_IDENTITY_ALGORITHM,
+    HIDDEN_BUNDLE_IDENTITY_ALGORITHM,
+)
 from .config import ConfigError, TaskConfig, TrainingResources
 from .worker_protocol import (
     EnforcementLevel,
@@ -35,6 +39,28 @@ FORMAL_ARTIFACT_DIGEST_FIELDS = (
     "analysis_sha256",
     "test_sha256",
 )
+FORMAL_ARTIFACT_IDENTITY_ALGORITHMS = {
+    "file": FILE_IDENTITY_ALGORITHM,
+    "hidden_evaluation": HIDDEN_BUNDLE_IDENTITY_ALGORITHM,
+}
+
+
+def agent_release_manifest(release: Mapping[str, Any]) -> Dict[str, Any]:
+    """Expose release identifiers without fingerprints of private configuration."""
+
+    # Private release records retain full file identities and verification
+    # evidence. New audit fields must not silently enter the Agent boundary.
+    return {
+        name: release[name]
+        for name in (
+            "challenge_id",
+            "release_stage",
+            "leaderboard_eligible",
+            "track_config_id",
+            "runtime_profile_id",
+        )
+        if name in release
+    }
 
 
 def _sha256_file(path: Path) -> str:
@@ -360,6 +386,7 @@ class ReleaseVerificationReceipt:
     release_id: str
     core_revision: str
     artifact_sha256: Mapping[str, str]
+    artifact_identity_algorithms: Mapping[str, str]
     workload_resolution_acceptance: Mapping[str, WorkloadResolutionAcceptance] = field(
         default_factory=dict
     )
@@ -397,6 +424,13 @@ class ReleaseVerificationReceipt:
                 "release verification requires SHA-256 identities for: "
                 + ", ".join(details)
             )
+        if dict(self.artifact_identity_algorithms) != (
+            FORMAL_ARTIFACT_IDENTITY_ALGORITHMS
+        ):
+            raise ConfigError(
+                "release verification artifact identity algorithms must match "
+                "the active protocol"
+            )
         for role, acceptance in self.workload_resolution_acceptance.items():
             if role not in {"training", "candidate", "evaluator"}:
                 raise ConfigError(
@@ -421,6 +455,7 @@ class ReleaseVerificationReceipt:
             "release_id": self.release_id,
             "core_revision": self.core_revision,
             "artifact_sha256": dict(self.artifact_sha256),
+            "artifact_identity_algorithms": dict(self.artifact_identity_algorithms),
             "workload_resolution_acceptance": {
                 role: acceptance.public_manifest()
                 for role, acceptance in sorted(
@@ -634,8 +669,6 @@ class ChallengeRelease:
         return {
             "schema_version": self.schema_version,
             "challenge_id": self.challenge_id,
-            "challenge_manifest_sha256": self.manifest_sha256,
-            "task_manifest_sha256": self.task_manifest_sha256,
             "task_id": self.task_id,
             "task": self.task_file,
             "release_stage": self.release_stage,

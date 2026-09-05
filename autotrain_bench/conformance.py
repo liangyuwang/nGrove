@@ -101,7 +101,7 @@ class ResolutionProbeReport:
 
     @property
     def passed(self) -> bool:
-        """Whether this probe passed, not whether the Worker is v9 conformant."""
+        """Whether this probe passed, not whether the Worker is conformant."""
 
         return bool(self.checks) and all(item.satisfied for item in self.checks)
 
@@ -212,9 +212,14 @@ def verify_hidden_dataset_resolution(
             continue
         log.expect(
             f"{prefix}.binds_release_identity",
-            value.name == name and value.sha256 == expected_sha256,
+            value.name == name
+            and value.sha256 == expected_sha256
+            and value.identity_algorithm == request.identity_algorithm,
             code="resolution_identity_mismatch",
-            private_detail=f"name={value.name!r}, sha256={value.sha256}",
+            private_detail=(
+                f"name={value.name!r}, sha256={value.sha256}, "
+                f"identity_algorithm={value.identity_algorithm!r}"
+            ),
         )
 
         wrong_request = HiddenDatasetRequest(name, _corrupt_sha256(expected_sha256))
@@ -228,7 +233,9 @@ def verify_hidden_dataset_resolution(
         except HiddenDatasetIdentityMismatch as exc:
             log.expect(
                 f"{prefix}.rejects_wrong_identity",
-                exc.receipt.name == name and exc.receipt.sha256 == expected_sha256,
+                exc.receipt.name == name
+                and exc.receipt.sha256 == expected_sha256
+                and exc.receipt.identity_algorithm == wrong_request.identity_algorithm,
                 code="invalid_mismatch_evidence",
                 private_detail=repr(exc.receipt),
             )

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from autotrain_bench.challenge import (
     FORMAL_ARTIFACT_DIGEST_FIELDS,
+    FORMAL_ARTIFACT_IDENTITY_ALGORITHMS,
     ChallengeRelease,
     ReleaseVerificationReceipt,
 )
@@ -75,6 +76,25 @@ class ChallengeReleaseTests(unittest.TestCase):
         )
         self.assertEqual(len(public["track_configs"]), 2)
         self.assertEqual(len(public["runtime_profiles"]), 4)
+
+    def test_public_catalog_does_not_fingerprint_private_manifest_content(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._write_release(directory)
+            original = ChallengeRelease.load(path)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["organizer_only"] = {"context_lengths": [1, 3]}
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            (Path(directory) / "task.json").write_text(
+                '{"evaluation": {"context_lengths": [1, 3]}}', encoding="utf-8"
+            )
+            changed = ChallengeRelease.load(path)
+            self.assertNotEqual(original.manifest_sha256, changed.manifest_sha256)
+            self.assertNotEqual(
+                original.task_manifest_sha256, changed.task_manifest_sha256
+            )
+            self.assertEqual(original.public_manifest(), changed.public_manifest())
+            self.assertNotIn("task_manifest_sha256", changed.public_manifest())
+            self.assertNotIn("challenge_manifest_sha256", changed.public_manifest())
 
     def test_release_resolves_budget_resources_and_comparison_key(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -387,13 +407,26 @@ class ChallengeReleaseTests(unittest.TestCase):
             release_id="test-byte-lm-v1",
             core_revision="b" * 40,
             artifact_sha256=digests,
+            artifact_identity_algorithms=FORMAL_ARTIFACT_IDENTITY_ALGORITHMS,
         )
         self.assertIs(receipt.validate(), receipt)
+        self.assertEqual(
+            receipt.private_manifest()["artifact_identity_algorithms"],
+            FORMAL_ARTIFACT_IDENTITY_ALGORITHMS,
+        )
 
         missing = dict(digests)
         missing.pop("test_sha256")
         with self.assertRaisesRegex(ConfigError, "test_sha256"):
             replace(receipt, artifact_sha256=missing).validate()
+        with self.assertRaisesRegex(ConfigError, "identity algorithms"):
+            replace(
+                receipt,
+                artifact_identity_algorithms={
+                    "file": "sha256",
+                    "hidden_evaluation": "sha256",
+                },
+            ).validate()
 
     def test_formal_release_receipt_binds_accepted_workload_transformation(self):
         acceptance = WorkloadResolutionAcceptance(
@@ -410,6 +443,7 @@ class ChallengeReleaseTests(unittest.TestCase):
             artifact_sha256={
                 field: "a" * 64 for field in FORMAL_ARTIFACT_DIGEST_FIELDS
             },
+            artifact_identity_algorithms=FORMAL_ARTIFACT_IDENTITY_ALGORITHMS,
             workload_resolution_acceptance={"training": acceptance},
         )
 

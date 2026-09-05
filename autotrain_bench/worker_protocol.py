@@ -26,15 +26,44 @@ from typing import (
     runtime_checkable,
 )
 
+from .artifact_identity import HIDDEN_BUNDLE_IDENTITY_ALGORITHM
+from .candidate_protocol import (
+    PREDICTION_ARTIFACT_RETENTION,
+    candidate_entrypoint_contract,
+    candidate_helper_api_manifest,
+    context_manifest_contract,
+    prediction_manifest_contract,
+    prediction_storage_manifest,
+    serving_timing_manifest,
+)
+
 if TYPE_CHECKING:
     from .config import TaskConfig, TrainingResources
 
 
-WORKER_PROTOCOL_VERSION = 9
+WORKER_PROTOCOL_VERSION = 14
 WORKER_CONFORMANCE_SUITE_VERSION = f"worker-v{WORKER_PROTOCOL_VERSION}"
 CONFORMANCE_RECEIPT_VERSION = 1
 RESOURCE_ENVELOPE_SCHEMA_VERSION = 1
 RESOURCE_ALLOCATION_RECEIPT_VERSION = 1
+PERFORMANCE_SCORE_MINIMUM = 0.0
+PERFORMANCE_SCORE_MAXIMUM = 100.0
+PERFORMANCE_SCORE_DIRECTION = "maximize"
+PERFORMANCE_SCORE_COMPARISON_SCOPE = "benchmark_release"
+COST_PRIMARY_METRIC = "time_per_task"
+COST_PRIMARY_UNIT = "seconds_per_task"
+COST_DIRECTION = "minimize"
+COST_AGGREGATION = "candidate_wall_seconds_divided_by_task_count"
+COST_COMPARISON_SCOPE = "benchmark_release"
+COST_COMPARISON_REQUIRES = ("hidden_dataset_identity", "runtime_profile")
+COST_SUBMETRICS = (
+    "candidate_wall_seconds",
+    "task_count",
+    "input_tokens",
+    "prediction_bytes",
+    "tasks_per_second",
+    "input_tokens_per_second",
+)
 
 
 class WorkerFailure(RuntimeError):
@@ -135,38 +164,379 @@ class ResearchTaskSpec:
 
 @dataclass(frozen=True)
 class CandidateChannelRequirements:
-    """Release-owned application semantics, not a transport selection."""
+    """Release-owned application and artifact semantics."""
 
     protocol: str
-    request_content: str = "token_prefixes"
-    hidden_artifact_visible: bool = False
+    request_content: str = "target_free_context_artifact"
+    predictions_per_context: int = 1
+    context_artifact_read_only: bool = True
+    prediction_artifact_isolated: bool = True
+    prediction_storage_hard_limit_required: bool = True
+    prediction_artifact_retention: str = PREDICTION_ARTIFACT_RETENTION
+    candidate_controls_scheduling: bool = True
+    target_artifact_visible: bool = False
     current_target_visible: bool = False
     future_tokens_visible: bool = False
+    target_feedback_visible: bool = False
+    cross_context_target_overlap_allowed: bool = False
     candidate_egress_allowed: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.protocol, str) or not self.protocol.strip():
             raise ValueError("Candidate channel protocol must not be empty")
-        if self.request_content != "token_prefixes":
-            raise ValueError("Candidate channel must carry token prefixes")
-        if self.hidden_artifact_visible is not False:
-            raise ValueError("Candidate channel may not expose the hidden artifact")
+        if self.request_content != "target_free_context_artifact":
+            raise ValueError(
+                "Candidate channel must carry a target-free context artifact"
+            )
+        if (
+            isinstance(self.predictions_per_context, bool)
+            or self.predictions_per_context != 1
+        ):
+            raise ValueError(
+                "Candidate channel must request one prediction per context"
+            )
+        if self.context_artifact_read_only is not True:
+            raise ValueError("Candidate context artifacts must be read-only")
+        if self.prediction_artifact_isolated is not True:
+            raise ValueError("Candidate prediction storage must be isolated")
+        if self.prediction_storage_hard_limit_required is not True:
+            raise ValueError("Candidate prediction storage must have hard limits")
+        if self.prediction_artifact_retention != PREDICTION_ARTIFACT_RETENTION:
+            raise ValueError("Candidate prediction retention must be release-owned")
+        if self.candidate_controls_scheduling is not True:
+            raise ValueError("Candidate must control its inference scheduling")
+        if self.target_artifact_visible is not False:
+            raise ValueError("Candidate channel may not expose the target artifact")
         if self.current_target_visible is not False:
             raise ValueError("Candidate channel may not expose the current target")
         if self.future_tokens_visible is not False:
             raise ValueError("Candidate channel may not expose future tokens")
+        if self.target_feedback_visible is not False:
+            raise ValueError("Candidate channel may not return target feedback")
+        if self.cross_context_target_overlap_allowed is not False:
+            raise ValueError(
+                "Candidate channel may not re-expose a target in another context"
+            )
         if self.candidate_egress_allowed is not False:
             raise ValueError("Candidate channel may not grant Candidate egress")
 
     def public_manifest(self) -> Dict[str, Any]:
         return {
             "protocol": self.protocol,
-            "mechanism": "worker_defined",
+            "entrypoint": candidate_entrypoint_contract(),
+            "context_manifest": context_manifest_contract(),
+            "mechanism": "worker_materialized_files",
             "request_content": self.request_content,
-            "hidden_artifact_visibility": "denied",
+            "predictions_per_context": self.predictions_per_context,
+            "context_artifact_access": "read_only",
+            "prediction_artifact_access": "candidate_read_write_isolated",
+            "prediction_manifest": prediction_manifest_contract(),
+            "prediction_storage": prediction_storage_manifest(),
+            "prediction_artifact_retention": self.prediction_artifact_retention,
+            "public_helper_api": candidate_helper_api_manifest(),
+            "candidate_scheduling": "participant_controlled",
+            "target_artifact_visibility": "denied",
             "current_target_visibility": "denied",
             "future_token_visibility": "denied",
+            "target_feedback_visibility": "denied",
+            "cross_context_target_overlap": "denied",
             "candidate_egress": "denied",
+            "serving_timing": serving_timing_manifest(),
+        }
+
+
+@dataclass(frozen=True)
+class PerformanceScoreContract:
+    """Release-owned, task-independent primary score interface."""
+
+    definition_id: str
+    raw_metrics: Tuple[str, ...]
+    minimum: float = PERFORMANCE_SCORE_MINIMUM
+    maximum: float = PERFORMANCE_SCORE_MAXIMUM
+    direction: str = PERFORMANCE_SCORE_DIRECTION
+    comparison_scope: str = PERFORMANCE_SCORE_COMPARISON_SCOPE
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.definition_id, str)
+            or not self.definition_id
+            or len(self.definition_id) > 128
+            or not self.definition_id[0].isalnum()
+            or any(
+                character not in "abcdefghijklmnopqrstuvwxyz0123456789._-"
+                for character in self.definition_id
+            )
+        ):
+            raise ValueError("performance score definition_id is invalid")
+        if (
+            not isinstance(self.raw_metrics, tuple)
+            or not self.raw_metrics
+            or len(self.raw_metrics) > 64
+        ):
+            raise ValueError("performance score raw_metrics must be a bounded tuple")
+        for name in self.raw_metrics:
+            if (
+                not isinstance(name, str)
+                or not name
+                or len(name) > 64
+                or not name[0].isalpha()
+                or any(
+                    character not in "abcdefghijklmnopqrstuvwxyz0123456789_"
+                    for character in name
+                )
+            ):
+                raise ValueError("performance score raw metric name is invalid")
+        if tuple(sorted(set(self.raw_metrics))) != self.raw_metrics:
+            raise ValueError("performance score raw_metrics must be unique and sorted")
+        if (
+            isinstance(self.minimum, bool)
+            or not isinstance(self.minimum, (int, float))
+            or isinstance(self.maximum, bool)
+            or not isinstance(self.maximum, (int, float))
+        ):
+            raise ValueError("performance score range must be exactly 0 to 100")
+        try:
+            minimum = float(self.minimum)
+            maximum = float(self.maximum)
+        except OverflowError as exc:
+            raise ValueError(
+                "performance score range must be exactly 0 to 100"
+            ) from exc
+        if minimum != PERFORMANCE_SCORE_MINIMUM or maximum != PERFORMANCE_SCORE_MAXIMUM:
+            raise ValueError("performance score range must be exactly 0 to 100")
+        if self.direction != PERFORMANCE_SCORE_DIRECTION:
+            raise ValueError("performance score direction must be maximize")
+        if self.comparison_scope != PERFORMANCE_SCORE_COMPARISON_SCOPE:
+            raise ValueError(
+                "performance scores are comparable only within one benchmark release"
+            )
+
+    @classmethod
+    def from_manifest(cls, value: Any) -> "PerformanceScoreContract":
+        if not isinstance(value, dict) or set(value) != {
+            "definition_id",
+            "range",
+            "direction",
+            "comparison_scope",
+            "raw_metrics",
+        }:
+            raise ValueError("performance score contract has unexpected fields")
+        score_range = value["range"]
+        if not isinstance(score_range, dict) or set(score_range) != {
+            "minimum",
+            "maximum",
+        }:
+            raise ValueError("performance score range must declare minimum and maximum")
+        raw_metrics = value["raw_metrics"]
+        if not isinstance(raw_metrics, list):
+            raise ValueError("performance score raw_metrics must be an array")
+        return cls(
+            definition_id=value["definition_id"],
+            raw_metrics=tuple(raw_metrics),
+            minimum=score_range["minimum"],
+            maximum=score_range["maximum"],
+            direction=value["direction"],
+            comparison_scope=value["comparison_scope"],
+        )
+
+    def public_manifest(self) -> Dict[str, Any]:
+        return {
+            "definition_id": self.definition_id,
+            "range": {
+                "minimum": float(self.minimum),
+                "maximum": float(self.maximum),
+            },
+            "direction": self.direction,
+            "comparison_scope": self.comparison_scope,
+            "raw_metrics": list(self.raw_metrics),
+        }
+
+    def validate_measurement(
+        self, performance_score: Any, raw_metrics: Any
+    ) -> Tuple[float, Dict[str, float]]:
+        if isinstance(performance_score, bool) or not isinstance(
+            performance_score, (int, float)
+        ):
+            raise ValueError("performance_score must be finite and between 0 and 100")
+        try:
+            score = float(performance_score)
+        except OverflowError as exc:
+            raise ValueError(
+                "performance_score must be finite and between 0 and 100"
+            ) from exc
+        if not math.isfinite(score) or not self.minimum <= score <= self.maximum:
+            raise ValueError("performance_score must be finite and between 0 and 100")
+        if not isinstance(raw_metrics, Mapping) or set(raw_metrics) != set(
+            self.raw_metrics
+        ):
+            raise ValueError(
+                "raw_metrics must exactly match the performance score contract"
+            )
+        normalized: Dict[str, float] = {}
+        for name in self.raw_metrics:
+            value = raw_metrics[name]
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"raw metric {name} must be finite")
+            try:
+                metric = float(value)
+            except OverflowError as exc:
+                raise ValueError(f"raw metric {name} must be finite") from exc
+            if not math.isfinite(metric):
+                raise ValueError(f"raw metric {name} must be finite")
+            normalized[name] = metric
+        return score, normalized
+
+
+@dataclass(frozen=True)
+class CostContract:
+    """Release-owned interface for the independent evaluation-cost axis."""
+
+    definition_id: str
+    task_unit: str
+    primary_metric: str = COST_PRIMARY_METRIC
+    unit: str = COST_PRIMARY_UNIT
+    direction: str = COST_DIRECTION
+    aggregation: str = COST_AGGREGATION
+    comparison_scope: str = COST_COMPARISON_SCOPE
+    comparison_requires: Tuple[str, ...] = COST_COMPARISON_REQUIRES
+    submetrics: Tuple[str, ...] = COST_SUBMETRICS
+
+    def __post_init__(self) -> None:
+        for field_name, value in (
+            ("definition_id", self.definition_id),
+            ("task_unit", self.task_unit),
+        ):
+            if (
+                not isinstance(value, str)
+                or not value
+                or len(value) > 128
+                or not value[0].isalnum()
+                or any(
+                    character not in "abcdefghijklmnopqrstuvwxyz0123456789._-"
+                    for character in value
+                )
+            ):
+                raise ValueError(f"cost {field_name} is invalid")
+        if self.primary_metric != COST_PRIMARY_METRIC:
+            raise ValueError("cost primary_metric must be time_per_task")
+        if self.unit != COST_PRIMARY_UNIT:
+            raise ValueError("cost unit must be seconds_per_task")
+        if self.direction != COST_DIRECTION:
+            raise ValueError("cost direction must be minimize")
+        if self.aggregation != COST_AGGREGATION:
+            raise ValueError(
+                "cost aggregation must divide Candidate wall time by task count"
+            )
+        if self.comparison_scope != COST_COMPARISON_SCOPE:
+            raise ValueError("cost comparison_scope must be benchmark_release")
+        if self.comparison_requires != COST_COMPARISON_REQUIRES:
+            raise ValueError(
+                "cost comparisons must require hidden dataset identity and "
+                "runtime profile"
+            )
+        if self.submetrics != COST_SUBMETRICS:
+            raise ValueError("cost submetrics do not match the active protocol")
+
+    @classmethod
+    def from_manifest(cls, value: Any) -> "CostContract":
+        if not isinstance(value, dict) or set(value) != {
+            "definition_id",
+            "task_unit",
+            "primary_metric",
+            "unit",
+            "direction",
+            "aggregation",
+            "comparison_scope",
+            "comparison_requires",
+            "submetrics",
+        }:
+            raise ValueError("cost contract has unexpected fields")
+        comparison_requires = value["comparison_requires"]
+        submetrics = value["submetrics"]
+        if not isinstance(comparison_requires, list):
+            raise ValueError("cost comparison_requires must be an array")
+        if not isinstance(submetrics, list):
+            raise ValueError("cost submetrics must be an array")
+        return cls(
+            definition_id=value["definition_id"],
+            task_unit=value["task_unit"],
+            primary_metric=value["primary_metric"],
+            unit=value["unit"],
+            direction=value["direction"],
+            aggregation=value["aggregation"],
+            comparison_scope=value["comparison_scope"],
+            comparison_requires=tuple(comparison_requires),
+            submetrics=tuple(submetrics),
+        )
+
+    def public_manifest(self) -> Dict[str, Any]:
+        return {
+            "definition_id": self.definition_id,
+            "task_unit": self.task_unit,
+            "primary_metric": self.primary_metric,
+            "unit": self.unit,
+            "direction": self.direction,
+            "aggregation": self.aggregation,
+            "comparison_scope": self.comparison_scope,
+            "comparison_requires": list(self.comparison_requires),
+            "submetrics": list(self.submetrics),
+        }
+
+    def validate_measurement(self, value: Any) -> Dict[str, float | int]:
+        if not isinstance(value, Mapping) or set(value) != {
+            COST_PRIMARY_METRIC,
+            *COST_SUBMETRICS,
+        }:
+            raise ValueError("cost must exactly match the cost contract")
+        normalized: Dict[str, float | int] = {}
+        for name in ("task_count", "input_tokens", "prediction_bytes"):
+            count = value[name]
+            if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+                raise ValueError(f"cost {name} must be a positive integer")
+            normalized[name] = count
+        for name in (
+            COST_PRIMARY_METRIC,
+            "candidate_wall_seconds",
+            "tasks_per_second",
+            "input_tokens_per_second",
+        ):
+            measurement = value[name]
+            if isinstance(measurement, bool) or not isinstance(
+                measurement, (int, float)
+            ):
+                raise ValueError(f"cost {name} must be finite and positive")
+            try:
+                number = float(measurement)
+            except OverflowError as exc:
+                raise ValueError(f"cost {name} must be finite and positive") from exc
+            if not math.isfinite(number) or number <= 0:
+                raise ValueError(f"cost {name} must be finite and positive")
+            normalized[name] = number
+
+        seconds = normalized["candidate_wall_seconds"]
+        task_count = normalized["task_count"]
+        input_tokens = normalized["input_tokens"]
+        try:
+            expected = {
+                COST_PRIMARY_METRIC: seconds / task_count,
+                "tasks_per_second": task_count / seconds,
+                "input_tokens_per_second": input_tokens / seconds,
+            }
+        except OverflowError as exc:
+            raise ValueError("cost derived metrics cannot be represented") from exc
+        for name, expected_value in expected.items():
+            if not math.isfinite(expected_value) or expected_value <= 0:
+                raise ValueError(f"cost {name} cannot be represented")
+            if not math.isclose(normalized[name], expected_value, rel_tol=1e-12):
+                raise ValueError(f"cost {name} does not match its source measurements")
+        return {
+            COST_PRIMARY_METRIC: normalized[COST_PRIMARY_METRIC],
+            "candidate_wall_seconds": normalized["candidate_wall_seconds"],
+            "task_count": normalized["task_count"],
+            "input_tokens": normalized["input_tokens"],
+            "prediction_bytes": normalized["prediction_bytes"],
+            "tasks_per_second": normalized["tasks_per_second"],
+            "input_tokens_per_second": normalized["input_tokens_per_second"],
         }
 
 
@@ -179,10 +549,11 @@ class EvaluationTaskSpec:
     candidate_image: str
     evaluator_image: str
     evaluator_entrypoint: Path
-    metric: str
+    performance_score: PerformanceScoreContract
+    cost: CostContract
     vocab_size: int
     context_length: int
-    batch_size: int
+    context_lengths: Tuple[int, ...]
     device: str
     timeout_seconds: int
     candidate_channel: CandidateChannelRequirements
@@ -195,16 +566,136 @@ class EvaluationTaskSpec:
             candidate_image=task.candidate_image,
             evaluator_image=task.evaluator_image,
             evaluator_entrypoint=task.evaluator_entrypoint,
-            metric=task.metric,
+            performance_score=task.performance_score,
+            cost=task.cost,
             vocab_size=task.vocab_size,
             context_length=task.context_length,
-            batch_size=task.evaluator_batch_size,
+            context_lengths=task.context_lengths,
             device=task.evaluator_device,
             timeout_seconds=task.evaluator_timeout_seconds,
             candidate_channel=CandidateChannelRequirements(
                 protocol=task.candidate_protocol
             ),
         )
+
+
+@dataclass(frozen=True)
+class CandidateEvaluationResult:
+    """Trusted performance and end-to-end cost evidence from one evaluation."""
+
+    performance_score: float
+    raw_metrics: Mapping[str, float]
+    candidate_wall_seconds: float
+    task_count: int
+    input_tokens: int
+    prediction_bytes: int
+
+    def __post_init__(self) -> None:
+        if isinstance(self.performance_score, bool) or not isinstance(
+            self.performance_score, (int, float)
+        ):
+            raise ValueError(
+                "Candidate evaluation performance_score must be finite and "
+                "between 0 and 100"
+            )
+        try:
+            score = float(self.performance_score)
+        except OverflowError as exc:
+            raise ValueError(
+                "Candidate evaluation performance_score must be finite and "
+                "between 0 and 100"
+            ) from exc
+        if not math.isfinite(score) or not 0.0 <= score <= 100.0:
+            raise ValueError(
+                "Candidate evaluation performance_score must be finite and "
+                "between 0 and 100"
+            )
+        if not isinstance(self.raw_metrics, Mapping) or not self.raw_metrics:
+            raise ValueError("Candidate evaluation raw_metrics must be an object")
+        for name, value in self.raw_metrics.items():
+            if not isinstance(name, str) or not name:
+                raise ValueError("Candidate evaluation raw metric name is invalid")
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(
+                    f"Candidate evaluation raw metric {name} must be finite"
+                )
+            try:
+                normalized_metric = float(value)
+            except OverflowError as exc:
+                raise ValueError(
+                    f"Candidate evaluation raw metric {name} must be finite"
+                ) from exc
+            if not math.isfinite(normalized_metric):
+                raise ValueError(
+                    f"Candidate evaluation raw metric {name} must be finite"
+                )
+        value = self.candidate_wall_seconds
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(
+                "Candidate evaluation candidate_wall_seconds must be finite and "
+                "non-negative"
+            )
+        try:
+            normalized = float(value)
+        except OverflowError as exc:
+            raise ValueError(
+                "Candidate evaluation candidate_wall_seconds must be finite and "
+                "non-negative"
+            ) from exc
+        if not math.isfinite(normalized) or normalized < 0:
+            raise ValueError(
+                "Candidate evaluation candidate_wall_seconds must be finite and "
+                "non-negative"
+            )
+        if self.candidate_wall_seconds <= 0:
+            raise ValueError(
+                "Candidate evaluation candidate_wall_seconds must be positive"
+            )
+        for name, value in (
+            ("task_count", self.task_count),
+            ("input_tokens", self.input_tokens),
+            ("prediction_bytes", self.prediction_bytes),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(
+                    f"Candidate evaluation {name} must be a positive integer"
+                )
+        seconds = float(self.candidate_wall_seconds)
+        try:
+            derived = (
+                seconds / self.task_count,
+                self.task_count / seconds,
+                self.input_tokens / seconds,
+            )
+        except OverflowError as exc:
+            raise ValueError("Candidate evaluation cost must be finite") from exc
+        if not all(math.isfinite(item) and item > 0 for item in derived):
+            raise ValueError("Candidate evaluation cost must be finite and positive")
+
+    def performance_manifest(
+        self, contract: PerformanceScoreContract
+    ) -> Dict[str, Any]:
+        score, raw_metrics = contract.validate_measurement(
+            self.performance_score,
+            self.raw_metrics,
+        )
+        return {
+            "performance_score": score,
+            "raw_metrics": raw_metrics,
+        }
+
+    def cost_manifest(self, contract: CostContract) -> Dict[str, Any]:
+        seconds = float(self.candidate_wall_seconds)
+        cost = {
+            "time_per_task": seconds / self.task_count,
+            "candidate_wall_seconds": seconds,
+            "task_count": self.task_count,
+            "input_tokens": self.input_tokens,
+            "prediction_bytes": self.prediction_bytes,
+            "tasks_per_second": self.task_count / seconds,
+            "input_tokens_per_second": self.input_tokens / seconds,
+        }
+        return contract.validate_measurement(cost)
 
 
 def _validate_sha256(value: str, field: str) -> None:
@@ -932,6 +1423,7 @@ class HiddenDatasetRequest:
 
     name: str
     expected_sha256: Optional[str] = None
+    identity_algorithm: str = HIDDEN_BUNDLE_IDENTITY_ALGORITHM
 
     def __post_init__(self) -> None:
         if self.name not in {"analysis", "test"}:
@@ -941,6 +1433,8 @@ class HiddenDatasetRequest:
                 self.expected_sha256,
                 "hidden dataset expected_sha256",
             )
+        if self.identity_algorithm != HIDDEN_BUNDLE_IDENTITY_ALGORITHM:
+            raise ValueError("unsupported hidden dataset identity algorithm")
 
 
 @dataclass(frozen=True)
@@ -950,6 +1444,7 @@ class ResolvedHiddenDataset:
     name: str
     sha256: str
     resolution_id: str
+    identity_algorithm: str = HIDDEN_BUNDLE_IDENTITY_ALGORITHM
 
     def __post_init__(self) -> None:
         if self.name not in {"analysis", "test"}:
@@ -959,6 +1454,8 @@ class ResolvedHiddenDataset:
             self.resolution_id,
             "hidden dataset resolution_id",
         )
+        if self.identity_algorithm != HIDDEN_BUNDLE_IDENTITY_ALGORITHM:
+            raise ValueError("unsupported hidden dataset identity algorithm")
 
 
 class HiddenDatasetIdentityMismatch(HiddenDatasetResolutionFailure):
@@ -1126,6 +1623,8 @@ TRAINING_NETWORK_ISOLATION = "training_network_isolation"
 HIDDEN_DATASET_ISOLATION = "hidden_dataset_isolation"
 HIDDEN_DATASET_IDENTITY_VERIFICATION = "hidden_dataset_identity_verification"
 CANDIDATE_EVALUATOR_CHANNEL_ISOLATION = "candidate_evaluator_channel_isolation"
+CANDIDATE_PREDICTION_STORAGE_QUOTA = "candidate_prediction_storage_quota"
+CANDIDATE_PREDICTION_ARTIFACT_LIFECYCLE = "candidate_prediction_artifact_lifecycle"
 DEADLINE_TERMINATION = "deadline_termination"
 IMMUTABLE_CANDIDATE_ARTIFACT = "immutable_candidate_artifact"
 
@@ -1148,6 +1647,8 @@ EVALUATION_REQUIREMENTS: Tuple[CapabilityRequirement, ...] = tuple(
         HIDDEN_DATASET_ISOLATION,
         HIDDEN_DATASET_IDENTITY_VERIFICATION,
         CANDIDATE_EVALUATOR_CHANNEL_ISOLATION,
+        CANDIDATE_PREDICTION_STORAGE_QUOTA,
+        CANDIDATE_PREDICTION_ARTIFACT_LIFECYCLE,
     )
 )
 
@@ -1277,7 +1778,7 @@ class EvaluationWorker(Protocol):
         candidate_workload: ResolvedWorkload,
         evaluator_workload: ResolvedWorkload,
         timeout_seconds: Optional[float] = None,
-    ) -> float: ...
+    ) -> CandidateEvaluationResult: ...
 
 
 @runtime_checkable

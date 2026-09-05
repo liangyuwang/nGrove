@@ -1,3 +1,8 @@
+import json
+import os
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,6 +14,59 @@ from autotrain_bench.agent_api_bundle import (
 
 
 class AgentApiBundleTests(unittest.TestCase):
+    def test_published_protocol_helpers_work_without_the_core_package(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            published = publish_agent_api_bundle(root / "agent-api")
+            candidate = root / "candidate"
+            candidate.mkdir()
+            fixture = Path(__file__).parent / "fixtures/task/agent/candidate.py"
+            shutil.copyfile(fixture, candidate / "candidate.py")
+            (root / "contexts.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "candidate_protocol": "offline_next_token_logits_v3",
+                        "dataset_id": "public-api-test",
+                        "vocab_size": 10,
+                        "context_lengths": [1, 2],
+                        "examples": [
+                            {"example_id": "one", "input_ids": [1]},
+                            {"example_id": "two", "input_ids": [1, 2]},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            environment = dict(os.environ)
+            environment["PYTHONPATH"] = str(published)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "from pathlib import Path\n"
+                    "from autotrain_bench.candidate_protocol import load_candidate\n"
+                    "candidate = Path('candidate').resolve()\n"
+                    "load_candidate(candidate).run_offline(\n"
+                    "    candidate, Path('contexts.json').resolve(),\n"
+                    "    Path('predictions').resolve(), 'cpu')\n",
+                ],
+                cwd=root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            predictions = root / "predictions"
+            manifest = json.loads(
+                (predictions / "predictions.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["dataset_id"], "public-api-test")
+            self.assertEqual(manifest["examples"], 2)
+            self.assertEqual(manifest["vocab_size"], 10)
+            self.assertEqual((predictions / "logits.f32").stat().st_size, 2 * 10 * 4)
+
     def test_publishes_only_the_explicit_public_allowlist(self):
         with tempfile.TemporaryDirectory() as temporary:
             destination = Path(temporary) / "agent-api"

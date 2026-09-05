@@ -24,8 +24,12 @@ data/generated/
 │   │   └── manifest.json
 │   └── manifest.json
 ├── private/                   mounted only in trusted Evaluator containers
-│   ├── analysis.json
-│   └── test.json
+│   ├── analysis/
+│   │   ├── contexts.json      Candidate-visible only during ANALYSIS serving
+│   │   └── targets.json       trusted scorer only
+│   └── test/
+│       ├── contexts.json      Candidate-visible only during TEST serving
+│       └── targets.json       trusted scorer only
 └── manifest.json
 ```
 
@@ -36,22 +40,96 @@ selected for preview ANALYSIS/TEST are not copied into the Agent-visible directo
 Evaluation always sends and scores GPT-2 vocabulary IDs.
 
 The local preview builder pre-stages ANALYSIS/TEST under the trusted task root,
-but neither path is mounted into the Agent or Research Worker. A formal Worker
-may instead fetch, mount, or decrypt the same release-frozen identities only
-after research sealing; Core does not prescribe that mechanism.
+but neither path is mounted into the Agent or Research Worker. After research
+sealing, the Evaluation Worker may materialize the frozen pair. It validates
+both files first, mounts only `contexts.json` read-only into the Candidate, and
+keeps `targets.json` inside trusted scoring. A formal Worker may instead fetch,
+mount, or decrypt the same release-frozen identity at that point; Core does not
+prescribe the storage mechanism.
 
-The Evaluator computes token-weighted mean autoregressive NLL and preserves it
-in the episode record. ANALYSIS produces a postmortem trajectory over frozen
-Candidates and is never Agent feedback. The primary leaderboard-style score is TEST perplexity,
-derived once as `exp(mean_token_nll)`; lower is better. A run without a
-successful finite TEST result has no NLL or perplexity score and is reported as
-a failed experiment.
+Evaluation inputs are variable-length token sequences. The exact length
+distribution is not disclosed in the research-visible manifest. Participants
+choose how to use context to optimize next-token prediction within the resource
+budget. `evaluation.max_context_tokens` is 2,048 for this preview; it is an
+input bound, not a guarantee that any evaluation example reaches it. Sampling
+lengths and proportions remain in trusted evaluation configuration. The local
+builder is publicly reproducible, so its recipe is not secret; a formal release
+must use organizer-owned evaluation construction parameters and data.
+
+The Evaluator uses non-overlapping contexts. Each contributes one hidden next-token
+target. The Candidate receives the complete unlabeled context artifact, owns
+its serving schedule and batching, and writes one ordered logit vector per
+example. It never receives the target later through a longer prefix or another
+overlapping source window. The
+Evaluator preserves mean target NLL as the canonical raw metric. ANALYSIS
+produces a postmortem trajectory over frozen Candidates and is never Agent
+feedback. The performance axis is a `[0, 100]` TEST performance score, where
+higher is better. This release defines it as
+`100 * max(0, min(1, 1 - mean_token_nll / log(vocab_size)))`: 100 is perfect
+prediction, while uniform-over-vocabulary prediction and worse map to 0. The
+canonical mean NLL raw metric retains distinctions among results at that floor.
+The frozen trusted Evaluator owns this formula; Core validates only the generic
+score contract and result shape. Perplexity may be derived for display but is
+not a required finite result field. The score definition and raw metric names
+are frozen by the release and are not comparable with another benchmark
+release. A run without a successful finite TEST measurement has no performance
+score or raw metrics and is reported as a failed experiment.
+
+The independent cost axis is Candidate `time_per_task`, defined as end-to-end
+Candidate wall time divided by the frozen number of next-token prediction
+tasks. Lower is better. The result retains total Candidate wall time, task
+count, input tokens, prediction bytes, and derived throughput as cost
+submetrics. The clock includes Candidate sandbox startup, model loading, file
+I/O, scheduling, and inference, but excludes hidden-data materialization and
+trusted validation/scoring. Results form a Performance–Cost Pareto frontier;
+the axes are not collapsed into a scalar. Cost comparisons require the same
+hidden input identity and runtime profile. A conforming Worker hard-limits
+prediction storage to two entries and
+`examples * vocab_size * 4 + 65536` bytes, then removes it after scoring or
+failure and confirmed teardown. The bundled local Docker preview reports its
+host bind mount quota as unsupported.
+
+The Agent-visible task manifest declares the invocation contract at
+`evaluation.candidate_boundary.entrypoint`: the Worker imports `candidate.py`
+from the artifact root and synchronously calls
+`run_offline(candidate_dir, contexts_path, output_dir, device)` with positional
+arguments. The first three are absolute `pathlib.Path` objects for the immutable
+Candidate directory, read-only target-free context JSON, and writable prediction
+storage. The fourth is the `evaluation.device` string (`cpu` or `cuda`).
+`sys.argv` is not a Candidate interface; the module is imported with
+`__name__ != '__main__'`. The return value is ignored; predictions are written
+to the output directory before the function returns.
+
+The input object is specified at
+`evaluation.candidate_boundary.context_manifest`: its exact fields are
+`schema_version`, `candidate_protocol`, `dataset_id`, `vocab_size`,
+`context_lengths`, and `examples`. Every example has exactly `example_id`
+(a unique opaque string) and `input_ids` (integer tokens in oldest-to-newest
+order). Tokens are in `[0, vocab_size)` and each array length belongs to
+`context_lengths` and is at most `evaluation.max_context_tokens`.
+`contexts.json.context_lengths` describes the actual request and becomes visible
+to the frozen Candidate only after research sealing; it is not published as a
+research-stage sampling plan. The declaration specifies every field's type,
+constants, and constraints. No targets or split labels are included. The optional
+`load_context_request()` helper returns this parsed dictionary unchanged.
+
+The same manifest defines the exact output object at
+`evaluation.candidate_boundary.prediction_manifest`: `predictions.json` must
+contain only `schema_version`, `candidate_protocol`, `dataset_id`, `examples`,
+`vocab_size`, `dtype`, and `logits_file`, with constants and request-derived
+values specified there. JSON member order and whitespace are irrelevant;
+additional fields are rejected. The same section identifies the optional
+generated `autotrain_bench.candidate_protocol` reader and writer helpers.
+`prediction_manifest.logits_artifact` declares the binary file as headerless,
+row-major, little-endian IEEE-754 float32. Row `i` corresponds to `examples[i]`,
+column `j` to token ID `j`, and every value must be finite.
 
 ## Prepare data
 
-Install the isolated preparation dependencies:
+Install Core and the isolated preparation dependencies:
 
 ```bash
+python3 -m pip install -e .
 python3 -m pip install -r challenges/lm-pretrain-v1/data/requirements.txt
 ```
 
@@ -70,15 +148,38 @@ python3 challenges/lm-pretrain-v1/prepare_data.py \
   --source-dir /path/to/fineweb-edu-sample-10BT
 ```
 
+Both downloaded and local sources must match all 14 Parquet identities in
+[`data/source-files.json`](data/source-files.json), frozen from the pinned
+revision's upstream LFS metadata. Verification checks file names, byte lengths,
+and SHA-256 before tokenization. `--source-dir` accepts either the `sample/10BT/`
+layout or a flat directory containing those files. Missing, extra, duplicated,
+or changed Parquet files are rejected; materialize ordinary files instead of
+passing a cache's symbolic or hard links. Arbitrary local corpora cannot be
+labeled as this release's source.
+
 The builder records the exact resulting token count, GPT-2 encoding
 fingerprint, raw and tokenized shard checksums, document mapping, dependency
-versions, and preview hidden-dataset checksums. It does not force the canonical stream
-to contain exactly 10,000,000,000 tokens.
+versions, balanced hidden context-length histograms, and preview hidden-dataset
+checksums. It does not force the canonical stream to contain exactly
+10,000,000,000 tokens.
+
+The root `public/manifest.json` also inventories every public TRAIN file,
+including the document index and nested tokenized manifest. Paths in both
+manifests are relative to the public TRAIN root; the nested manifest carries
+task metadata, while the root carries the authoritative integrity inventory.
+`prepare` and each episode startup read and verify the complete TRAIN view
+before the Agent starts. Source verification reads roughly 28.5 GB once; TRAIN
+verification adds a full read of the generated public data at each check.
+See [TRAIN integrity](../../docs/training-data.md) for the format and Worker
+immutability responsibilities. Older builds lacking the inventory must be
+rebuilt with `--force`.
 
 `--force` replaces only a recognized build of this exact task. The builder
 inventories every existing entry before and immediately around an atomic
 directory swap; if validation or installation fails, it restores the old
 build or preserves it under a named backup path instead of deleting it first.
+An existing build using the former progressive-prefix dataset must be rebuilt
+with `--force`; its scores are not comparable with this single-target metric.
 
 ## Supported preview lanes
 

@@ -46,6 +46,21 @@ when all four comparison-key fields match:
 challenge_id + track + track_config + runtime_profile
 ```
 
+Agent-visible release metadata contains only the public release and selected
+profile identifiers, release stage, and eligibility setting. `challenge-info`
+publishes the profile catalog without full task/challenge file hashes. Those
+hashes bind trusted release verification and remain in the organizer's episode
+audit records, not the participant-facing manifest. New private release fields
+are not implicitly public. The public task manifest separately declares the
+selected budget and Training resources.
+
+`state.json` and the `report` command retain complete organizer audit evidence.
+They are not participant-facing or publication-safe exports: exposing a digest
+of private configuration can enable enumeration, including from an earlier
+episode when that configuration is reused. Public release identifiers must be
+independent of private configuration fingerprints; formal verification still
+checks the complete trusted file identities.
+
 Runtime-profile preflight confirms that the execution environment satisfies
 the hardware requirements declared by the selected profile, including host
 count and accelerator vendor, model, count, and minimum memory.

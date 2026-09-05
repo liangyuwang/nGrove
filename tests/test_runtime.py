@@ -1,4 +1,3 @@
-import hashlib
 import io
 import json
 import os
@@ -10,6 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+from autotrain_bench.artifact_identity import hidden_bundle_sha256
 from autotrain_bench.config import (
     AgentConfig,
     InferenceConfig,
@@ -23,9 +23,17 @@ from autotrain_bench.host_agent import (
     start_host_agent_process,
     summarize_host_agent_trace,
 )
-from autotrain_bench.runtime import DockerRuntime, RuntimeFailure
+from autotrain_bench.runtime import (
+    DockerRuntime,
+    RuntimeFailure,
+    MAX_RUNTIME_STREAM_BYTES,
+    _capture_diagnostic_command,
+)
 from autotrain_bench.worker_protocol import (
+    CANDIDATE_PREDICTION_ARTIFACT_LIFECYCLE,
+    CANDIDATE_PREDICTION_STORAGE_QUOTA,
     DEADLINE_TERMINATION,
+    CandidateEvaluationResult,
     EnforcementLevel,
     EvaluationTaskSpec,
     HiddenDatasetRequest,
@@ -44,12 +52,23 @@ TASK = ROOT / "tests/fixtures/task/task.json"
 RESOLUTION_TIMEOUT = 30.0
 
 
+def write_hidden_bundle(path: Path, *, marker: str = "original") -> Path:
+    path.mkdir(parents=True)
+    (path / "contexts.json").write_text(
+        json.dumps({"marker": marker, "visible": True}), encoding="utf-8"
+    )
+    (path / "targets.json").write_text(
+        json.dumps({"marker": marker, "hidden": True}), encoding="utf-8"
+    )
+    return path
+
+
 def publish_agent_api(public_task: Path) -> None:
     package = public_task.parent / "agent_api/autotrain_bench"
     package.mkdir(parents=True)
     (package / "client.py").write_text("class Client: pass\n", encoding="utf-8")
-    (package / "candidate_preflight.py").write_text(
-        "def main(): pass\n", encoding="utf-8"
+    (package / "candidate_protocol.py").write_text(
+        "def load_context_request(path): pass\n", encoding="utf-8"
     )
 
 
@@ -69,6 +88,9 @@ def resolve_evaluation_workloads(runtime, task, episode_id):
 
 
 class CapturingDockerRuntime(DockerRuntime):
+    def _candidate_failure_diagnostics(self, name):
+        return {"logs_unavailable": True, "state_unavailable": True}
+
     def __init__(self, *, monotonic=None, hidden_datasets=None):
         super().__init__(
             docker_binary="docker",
@@ -83,10 +105,161 @@ class CapturingDockerRuntime(DockerRuntime):
         self.call_kwargs.append(dict(kwargs))
         if args[:2] == ["image", "inspect"] and "{{.Id}}" in args:
             return subprocess.CompletedProcess(args, 0, "sha256:" + "a" * 64 + "\n", "")
+        if args and args[0] == "wait":
+            return subprocess.CompletedProcess(args, 0, "0\n", "")
         return subprocess.CompletedProcess(args, 0, "container-id\n", "")
 
 
 class RuntimeBoundaryTests(unittest.TestCase):
+    def test_failure_diagnostics_stop_execution_before_reading_logs(self):
+        for running in (False, True):
+            order = []
+            runtime = DockerRuntime(docker_binary="docker")
+
+            def run(args, **kwargs):
+                order.append(args[0])
+                return subprocess.CompletedProcess(
+                    args,
+                    0,
+                    json.dumps(
+                        {
+                            "ExitCode": 137,
+                            "OOMKilled": True,
+                            "Running": running,
+                            "Error": "private runtime error",
+                        }
+                    ),
+                    "",
+                )
+
+            def capture(command, **kwargs):
+                order.append("logs")
+                return {"stdout": "", "stderr": "private trace"}
+
+            with patch.object(runtime, "_require_docker"), patch.object(
+                runtime, "_run", side_effect=run
+            ), patch(
+                "autotrain_bench.runtime._capture_diagnostic_command",
+                side_effect=capture,
+            ):
+                result = runtime._candidate_failure_diagnostics("candidate")
+            self.assertEqual(
+                order, ["kill", "inspect"] if running else ["kill", "inspect", "logs"]
+            )
+            self.assertEqual(result["state"]["oom_killed"], True)
+            self.assertNotIn("private runtime error", json.dumps(result))
+            if running:
+                self.assertTrue(result["logs_skipped_while_running"])
+
+    def test_diagnostic_streams_are_bounded_and_excess_output_is_drained(self):
+        result = _capture_diagnostic_command(
+            [
+                sys.executable,
+                "-c",
+                "import os; os.write(1, b'x' * 3000000); os.write(2, b'y' * 3000000)",
+            ],
+            timeout_seconds=10,
+        )
+        self.assertEqual(result["exit_code"], 0)
+        self.assertTrue(result["drain_complete"])
+        for stream in ("stdout", "stderr"):
+            self.assertLessEqual(len(result[stream].encode()), MAX_RUNTIME_STREAM_BYTES)
+            self.assertTrue(result[f"{stream}_truncated"])
+
+    def test_diagnostic_timeout_terminates_the_log_client(self):
+        result = _capture_diagnostic_command(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            timeout_seconds=0.1,
+        )
+        self.assertTrue(result["timed_out"])
+        self.assertIsNotNone(result["exit_code"])
+        self.assertTrue(result["drain_complete"])
+
+    def test_candidate_exit_failure_saves_private_logs_before_removal(self):
+        order = []
+
+        class FailedCandidate(CapturingDockerRuntime):
+            def _run(self, args, **kwargs):
+                if args and args[0] == "wait":
+                    return subprocess.CompletedProcess(args, 0, "1\n", "")
+                return super()._run(args, **kwargs)
+
+            def _candidate_failure_diagnostics(self, name):
+                order.append("capture")
+                return {
+                    "state": {"exit_code": 1, "oom_killed": False, "running": False},
+                    "logs": {
+                        "stdout": "hidden context printed here",
+                        "stderr": "Traceback: participant failure",
+                        "stdout_truncated": False,
+                        "stderr_truncated": False,
+                    },
+                }
+
+            def stop_container(self, name):
+                order.append("remove")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = FailedCandidate()
+            output = Path(temporary) / "evaluation"
+            with self.assertRaisesRegex(RuntimeFailure, "^isolated evaluation failed$"):
+                runtime.run_evaluator(
+                    config=TaskConfig.load(TASK),
+                    resources=TrainingResources(),
+                    candidate_dir=TASK.parent / "agent",
+                    split="test",
+                    output_dir=output,
+                )
+            self.assertEqual(order, ["capture", "remove", "remove"])
+            self.assertIn(
+                "Traceback", (output / "test.candidate.stderr.log").read_text()
+            )
+            metadata = json.loads((output / "test.failure.json").read_text())
+            self.assertEqual(metadata["phase"], "candidate_execution")
+            self.assertEqual(metadata["state"]["exit_code"], 1)
+            self.assertNotIn("hidden context", json.dumps(metadata))
+            for path in output.glob("test.*"):
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(list(output.glob("predictions-*")), [])
+
+    def test_diagnostic_failure_never_skips_teardown_or_changes_public_error(self):
+        class FailedCandidate(CapturingDockerRuntime):
+            def _run(self, args, **kwargs):
+                if args and args[0] == "wait":
+                    return subprocess.CompletedProcess(args, 0, "1\n", "")
+                return super()._run(args, **kwargs)
+
+        for failure in ("capture", "persistence"):
+            with self.subTest(
+                failure=failure
+            ), tempfile.TemporaryDirectory() as temporary:
+                runtime = FailedCandidate()
+                output = Path(temporary) / "evaluation"
+                target = (
+                    patch.object(
+                        runtime,
+                        "_candidate_failure_diagnostics",
+                        side_effect=OSError("unavailable"),
+                    )
+                    if failure == "capture"
+                    else patch(
+                        "autotrain_bench.runtime._write_private_diagnostic",
+                        side_effect=OSError("disk full"),
+                    )
+                )
+                with target, self.assertRaisesRegex(
+                    RuntimeFailure, "^isolated evaluation failed$"
+                ):
+                    runtime.run_evaluator(
+                        config=TaskConfig.load(TASK),
+                        resources=TrainingResources(),
+                        candidate_dir=TASK.parent / "agent",
+                        split="test",
+                        output_dir=output,
+                    )
+                self.assertEqual(runtime._pending_evaluations, {})
+                self.assertEqual(list(output.glob("predictions-*")), [])
+
     def test_local_gpu_receipt_reports_workload_visible_values_but_not_exact_binding(
         self,
     ):
@@ -161,10 +334,22 @@ class RuntimeBoundaryTests(unittest.TestCase):
             descriptor.capabilities[DEADLINE_TERMINATION].level,
             EnforcementLevel.BEST_EFFORT,
         )
+        self.assertEqual(
+            descriptor.capabilities[CANDIDATE_PREDICTION_STORAGE_QUOTA].level,
+            EnforcementLevel.UNSUPPORTED,
+        )
+        self.assertIn(
+            "no hard byte or inode quota",
+            descriptor.capabilities[CANDIDATE_PREDICTION_STORAGE_QUOTA].mechanism,
+        )
+        self.assertEqual(
+            descriptor.capabilities[CANDIDATE_PREDICTION_ARTIFACT_LIFECYCLE].level,
+            EnforcementLevel.ENFORCED,
+        )
 
     def test_hidden_dataset_source_is_resolved_only_when_requested(self):
         with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "private" / "test.json"
+            source = Path(directory) / "private" / "test"
             runtime = CapturingDockerRuntime(hidden_datasets={"test": source})
             request = HiddenDatasetRequest("test")
             task = EvaluationTaskSpec.from_task(TaskConfig.load(TASK))
@@ -178,8 +363,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                     timeout_seconds=RESOLUTION_TIMEOUT,
                 )
 
-            source.parent.mkdir()
-            source.write_text('{"sequences":[[0,1]]}', encoding="utf-8")
+            write_hidden_bundle(source)
             resolved = runtime.resolve_hidden_dataset(
                 episode_id="episode-1",
                 task=task,
@@ -189,7 +373,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
 
             self.assertEqual(
                 resolved.sha256,
-                hashlib.sha256(source.read_bytes()).hexdigest(),
+                hidden_bundle_sha256(source),
             )
             self.assertFalse(hasattr(resolved, "path"))
 
@@ -316,9 +500,11 @@ class RuntimeBoundaryTests(unittest.TestCase):
 
     def test_resolved_hidden_dataset_uses_the_receipted_immutable_snapshot(self):
         with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "test.json"
-            original = b'{"sequences":[[0,1]]}'
-            source.write_bytes(original)
+            source = write_hidden_bundle(Path(directory) / "test")
+            original = {
+                name: (source / name).read_bytes()
+                for name in ("contexts.json", "targets.json")
+            }
             runtime = CapturingDockerRuntime(hidden_datasets={"test": source})
             task = EvaluationTaskSpec.from_task(TaskConfig.load(TASK))
             resolved = runtime.resolve_hidden_dataset(
@@ -329,21 +515,35 @@ class RuntimeBoundaryTests(unittest.TestCase):
             )
             workloads = resolve_evaluation_workloads(runtime, task, "episode-1")
             runtime.calls.clear()
-            source.write_text('{"sequences":[[0,2]]}', encoding="utf-8")
+            (source / "contexts.json").write_text(
+                '{"marker":"mutated"}', encoding="utf-8"
+            )
 
             evaluated_bytes = []
 
             def evaluate_snapshot(**kwargs):
-                evaluated_bytes.append(kwargs["data_path"].read_bytes())
+                evaluated_bytes.append(
+                    {
+                        name: (kwargs["data_path"] / name).read_bytes()
+                        for name in ("contexts.json", "targets.json")
+                    }
+                )
                 self.assertNotEqual(kwargs["data_path"], source)
-                return 1.25
+                return CandidateEvaluationResult(
+                    72.5,
+                    {"mean_nll": 1.25},
+                    2.0,
+                    2,
+                    3,
+                    64,
+                )
 
             with patch.object(
                 runtime,
                 "_run_isolated_evaluator",
                 side_effect=evaluate_snapshot,
             ):
-                nll = runtime.evaluate_candidate(
+                result = runtime.evaluate_candidate(
                     episode_id="episode-1",
                     task=task,
                     resources=TrainingResources(),
@@ -353,9 +553,12 @@ class RuntimeBoundaryTests(unittest.TestCase):
                     **workloads,
                 )
 
-            self.assertEqual(nll, 1.25)
+            self.assertEqual(result.performance_score, 72.5)
             self.assertEqual(evaluated_bytes, [original])
-            self.assertEqual(resolved.sha256, hashlib.sha256(original).hexdigest())
+            snapshot = runtime._resolved_hidden_datasets[
+                ("episode-1", resolved.resolution_id)
+            ][2]
+            self.assertEqual(resolved.sha256, hidden_bundle_sha256(snapshot))
 
             snapshot_root = runtime._hidden_snapshot_root
             self.assertIsNotNone(snapshot_root)
@@ -365,8 +568,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
 
     def test_private_hidden_snapshots_wait_for_confirmed_evaluation_teardown(self):
         with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "test.json"
-            source.write_text('{"sequences":[[0,1]]}', encoding="utf-8")
+            source = write_hidden_bundle(Path(directory) / "test")
             runtime = CapturingDockerRuntime(hidden_datasets={"test": source})
             task = EvaluationTaskSpec.from_task(TaskConfig.load(TASK))
             runtime.resolve_hidden_dataset(
@@ -378,7 +580,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             runtime._pending_evaluations[("episode", "test", "candidate")] = (
                 "candidate",
                 "evaluator",
-                "network",
+                Path(directory) / "predictions",
             )
 
             with self.assertRaisesRegex(
@@ -393,8 +595,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
 
     def test_hidden_dataset_resolution_is_bound_to_one_episode(self):
         with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "test.json"
-            source.write_text('{"sequences":[[0,1]]}', encoding="utf-8")
+            source = write_hidden_bundle(Path(directory) / "test")
             runtime = CapturingDockerRuntime(hidden_datasets={"test": source})
             task = EvaluationTaskSpec.from_task(TaskConfig.load(TASK))
             resolved = runtime.resolve_hidden_dataset(
@@ -1256,40 +1457,52 @@ class RuntimeBoundaryTests(unittest.TestCase):
                     output_dir=output,
                     timeout_seconds=7,
                 )
-            create = next(
-                call for call in runtime.calls if call[:2] == ["network", "create"]
-            )
             run_calls = [call for call in runtime.calls if call and call[0] == "run"]
             candidate = next(
-                call for call in run_calls if "candidate_server" in " ".join(call)
+                call
+                for call in run_calls
+                if "candidate_offline_runner" in " ".join(call)
             )
-            evaluator = next(call for call in run_calls if "/opt/evaluator.py" in call)
-            self.assertIn("--internal", create)
+            evaluators = [
+                call for call in run_calls if "/opt/docker-scorer-adapter.py" in call
+            ]
+            self.assertEqual(len(evaluators), 2)
+            validation, evaluator = evaluators
             self.assertIn("dst=/candidate,readonly", "\n".join(candidate))
             self.assertIn("dst=/opt/candidate-api,readonly", "\n".join(candidate))
             self.assertNotIn(str(ROOT / "autotrain_bench"), "\n".join(candidate))
             self.assertNotIn(str(config.analysis_path), "\n".join(candidate))
+            self.assertIn(
+                "dst=/eval-input/contexts.json,readonly", "\n".join(candidate)
+            )
+            self.assertNotIn("targets.json", "\n".join(candidate))
+            self.assertIn("dst=/predictions", "\n".join(candidate))
             self.assertNotIn("dst=/candidate", "\n".join(evaluator))
             evaluator_command = "\n".join(evaluator)
             self.assertNotIn(str(config.analysis_path), evaluator_command)
             self.assertIn("autotrain-bench-hidden-", evaluator_command)
-            self.assertIn("dst=/eval-data/split.json,readonly", evaluator_command)
+            self.assertIn("dst=/eval-data/contexts.json,readonly", evaluator_command)
+            self.assertIn("dst=/eval-data/targets.json,readonly", evaluator_command)
             self.assertIn(str(config.evaluator_entrypoint), "\n".join(evaluator))
-            self.assertIn("http://candidate:8766", evaluator)
+            lengths_index = evaluator.index("--context-lengths")
+            self.assertEqual(
+                evaluator[lengths_index + 1 : lengths_index + 4],
+                ["1", "2", "3"],
+            )
             self.assertIn("--gpus", candidate)
             self.assertNotIn("--gpus", evaluator)
-            network = create[-1]
-            self.assertEqual(candidate[candidate.index("--network") + 1], network)
-            self.assertEqual(evaluator[evaluator.index("--network") + 1], network)
-            self.assertIn(["network", "rm", network], runtime.calls)
+            self.assertEqual(candidate[candidate.index("--network") + 1], "none")
+            self.assertEqual(evaluator[evaluator.index("--network") + 1], "none")
+            self.assertEqual(validation[validation.index("--mode") + 1], "validate")
+            self.assertEqual(evaluator[evaluator.index("--mode") + 1], "score")
             evaluator_index = next(
                 index
                 for index, call in enumerate(runtime.calls)
-                if "/opt/evaluator.py" in call
+                if "/opt/docker-scorer-adapter.py" in call
             )
             self.assertEqual(runtime.call_kwargs[evaluator_index]["timeout"], 7)
 
-    def test_evaluator_deadline_includes_network_and_candidate_startup(self):
+    def test_evaluator_deadline_includes_validation_and_candidate_serving(self):
         class FakeClock:
             value = 100.0
 
@@ -1304,9 +1517,9 @@ class RuntimeBoundaryTests(unittest.TestCase):
         class AdvancingRuntime(CapturingDockerRuntime):
             def _run(self, args, **kwargs):
                 result = super()._run(args, **kwargs)
-                if args[:2] == ["network", "create"]:
+                if "--mode" in args and args[args.index("--mode") + 1] == "validate":
                     clock.advance(2)
-                elif "candidate_server" in " ".join(args):
+                elif "candidate_offline_runner" in " ".join(args):
                     clock.advance(3)
                 return result
 
@@ -1323,24 +1536,90 @@ class RuntimeBoundaryTests(unittest.TestCase):
                     timeout_seconds=7,
                 )
 
-            network_index = next(
+            validation_index = next(
                 index
                 for index, call in enumerate(runtime.calls)
-                if call[:2] == ["network", "create"]
+                if "--mode" in call and call[call.index("--mode") + 1] == "validate"
             )
             candidate_index = next(
                 index
                 for index, call in enumerate(runtime.calls)
-                if "candidate_server" in " ".join(call)
+                if "candidate_offline_runner" in " ".join(call)
             )
             evaluator_index = next(
                 index
                 for index, call in enumerate(runtime.calls)
-                if "/opt/evaluator.py" in call
+                if "--mode" in call and call[call.index("--mode") + 1] == "score"
             )
-            self.assertEqual(runtime.call_kwargs[network_index]["timeout"], 7)
+            self.assertEqual(runtime.call_kwargs[validation_index]["timeout"], 7)
             self.assertEqual(runtime.call_kwargs[candidate_index]["timeout"], 5)
             self.assertEqual(runtime.call_kwargs[evaluator_index]["timeout"], 2)
+
+    def test_serving_clock_excludes_trusted_validation_and_scoring(self):
+        class FakeClock:
+            value = 100.0
+
+            def __call__(self):
+                return self.value
+
+            def advance(self, seconds):
+                self.value += seconds
+
+        clock = FakeClock()
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "evaluation"
+
+            class ResultRuntime(CapturingDockerRuntime):
+                def _run(self, args, **kwargs):
+                    result = super()._run(args, **kwargs)
+                    joined = " ".join(args)
+                    if "--mode" in args:
+                        mode = args[args.index("--mode") + 1]
+                        if mode == "validate":
+                            clock.advance(5)
+                        else:
+                            output.mkdir(parents=True, exist_ok=True)
+                            (output / "analysis.json").write_text(
+                                json.dumps(
+                                    {
+                                        "performance_score": 72.5,
+                                        "raw_metrics": {"mean_nll": 1.25},
+                                        "examples": 3,
+                                        "input_tokens": 6,
+                                        "prediction_bytes": 64,
+                                    }
+                                ),
+                                encoding="utf-8",
+                            )
+                            clock.advance(7)
+                    elif "candidate_offline_runner" in joined:
+                        clock.advance(3)
+                    return result
+
+            runtime = ResultRuntime(monotonic=clock)
+            result = runtime.run_evaluator(
+                config=TaskConfig.load(TASK),
+                resources=TrainingResources(),
+                candidate_dir=TASK.parent / "agent",
+                split="analysis",
+                output_dir=output,
+                timeout_seconds=20,
+            )
+
+            self.assertEqual(result.performance_score, 72.5)
+            self.assertEqual(result.raw_metrics["mean_nll"], 1.25)
+            self.assertEqual(result.candidate_wall_seconds, 3.0)
+            self.assertEqual(result.task_count, 3)
+            self.assertEqual(result.input_tokens, 6)
+            self.assertEqual(result.prediction_bytes, 64)
+            candidate = next(
+                call
+                for call in runtime.calls
+                if "candidate_offline_runner" in " ".join(call)
+            )
+            self.assertNotIn("--rm", candidate)
+            self.assertEqual(list(output.glob("predictions-*")), [])
 
     def test_evaluator_teardown_attempts_every_isolated_resource(self):
         class FailingTeardownRuntime(CapturingDockerRuntime):
@@ -1354,10 +1633,6 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 if role == "evaluator":
                     raise RuntimeFailure("evaluator termination not confirmed")
 
-            def remove_network(self, name):
-                del name
-                self.teardown.append("network")
-
         with tempfile.TemporaryDirectory() as directory:
             runtime = FailingTeardownRuntime()
             with self.assertRaisesRegex(
@@ -1370,34 +1645,65 @@ class RuntimeBoundaryTests(unittest.TestCase):
                     split="analysis",
                     output_dir=Path(directory) / "output",
                 )
+            self.assertEqual(runtime.teardown, ["candidate", "evaluator"])
+            self.assertEqual(len(runtime._pending_evaluations), 1)
+            prediction_dir = next(iter(runtime._pending_evaluations.values()))[2]
+            self.assertTrue(prediction_dir.exists())
 
-        self.assertEqual(runtime.teardown, ["candidate", "evaluator", "network"])
-        self.assertEqual(len(runtime._pending_evaluations), 1)
+            runtime.stop_container = lambda name: runtime.teardown.append(
+                "retry-container"
+            )
+            runtime.teardown_pending_evaluations()
+            runtime.close_private_materializations()
 
-        runtime.stop_container = lambda name: runtime.teardown.append("retry-container")
-        runtime.remove_network = lambda name: runtime.teardown.append("retry-network")
-        runtime.teardown_pending_evaluations()
-        runtime.close_private_materializations()
+            self.assertFalse(prediction_dir.exists())
+            self.assertEqual(runtime._pending_evaluations, {})
+            self.assertEqual(
+                runtime.teardown[-2:],
+                [
+                    "retry-container",
+                    "retry-container",
+                ],
+            )
 
-        self.assertEqual(runtime._pending_evaluations, {})
-        self.assertEqual(
-            runtime.teardown[-3:],
-            [
-                "retry-container",
-                "retry-container",
-                "retry-network",
-            ],
-        )
+    def test_prediction_cleanup_failure_remains_pending_teardown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = CapturingDockerRuntime()
+            prediction_dir = Path(directory) / "predictions"
+            prediction_dir.mkdir()
+            key = ("episode", "evaluation")
+            runtime._pending_evaluations[key] = (
+                "candidate",
+                "evaluator",
+                prediction_dir,
+            )
+
+            with patch.object(
+                runtime,
+                "_remove_prediction_artifact",
+                side_effect=OSError("storage unavailable"),
+            ), self.assertRaisesRegex(
+                WorkerTeardownFailure, "prediction artifact cleanup failed"
+            ):
+                runtime._teardown_evaluation(key)
+
+            self.assertIn(key, runtime._pending_evaluations)
+            self.assertTrue(prediction_dir.exists())
+            runtime._teardown_evaluation(key)
+            self.assertNotIn(key, runtime._pending_evaluations)
+            self.assertFalse(prediction_dir.exists())
 
     def test_evaluator_never_accepts_a_stale_result_file(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "output"
             output.mkdir()
             result = output / "analysis.json"
-            result.write_text('{"nll": 0.01}', encoding="utf-8")
+            result.write_text('{"performance_score": 99.0}', encoding="utf-8")
             runtime = CapturingDockerRuntime()
 
-            with self.assertRaisesRegex(RuntimeFailure, "valid NLL result"):
+            with self.assertRaisesRegex(
+                RuntimeFailure, "valid performance or cost result"
+            ):
                 runtime.run_evaluator(
                     config=TaskConfig.load(TASK),
                     resources=TrainingResources(),
@@ -1407,6 +1713,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 )
 
             self.assertFalse(result.exists())
+            self.assertEqual(list(output.glob("predictions-*")), [])
 
     def test_candidate_logs_are_private_and_never_enter_runtime_error(self):
         class FailingRuntime(CapturingDockerRuntime):
@@ -1415,12 +1722,8 @@ class RuntimeBoundaryTests(unittest.TestCase):
                     return super()._run(args, **kwargs)
                 self.calls.append(list(args))
                 self.call_kwargs.append(dict(kwargs))
-                if args and args[0] == "logs":
-                    return subprocess.CompletedProcess(
-                        args, 0, "hidden input_ids: [0, 1, 2]\n", ""
-                    )
-                if "/opt/evaluator.py" in args:
-                    raise RuntimeFailure("secret evaluator detail")
+                if "candidate_offline_runner" in " ".join(args):
+                    raise RuntimeFailure("hidden input_ids: [0, 1, 2]")
                 return subprocess.CompletedProcess(args, 0, "container-id\n", "")
 
         with tempfile.TemporaryDirectory() as directory:
@@ -1441,25 +1744,40 @@ class RuntimeBoundaryTests(unittest.TestCase):
             diagnostic = output / "analysis.failure.log"
             self.assertEqual(diagnostic.stat().st_mode & 0o777, 0o600)
             self.assertIn("hidden input_ids", diagnostic.read_text(encoding="utf-8"))
+            self.assertEqual(list(output.glob("predictions-*")), [])
 
-    def test_evaluator_rejects_boolean_and_string_nll_values(self):
-        for raw_nll in (True, "1.25"):
-            with self.subTest(raw_nll=raw_nll):
+    def test_evaluator_rejects_boolean_and_string_performance_scores(self):
+        for raw_score in (True, "72.5"):
+            with self.subTest(raw_score=raw_score):
                 with tempfile.TemporaryDirectory() as directory:
                     output = Path(directory) / "evaluation"
 
                     class ResultRuntime(CapturingDockerRuntime):
                         def _run(self, args, **kwargs):
                             result = super()._run(args, **kwargs)
-                            if "/opt/evaluator.py" in args:
+                            if (
+                                "--mode" in args
+                                and args[args.index("--mode") + 1] == "score"
+                            ):
                                 output.mkdir(parents=True, exist_ok=True)
                                 (output / "analysis.json").write_text(
-                                    json.dumps({"nll": raw_nll}), encoding="utf-8"
+                                    json.dumps(
+                                        {
+                                            "performance_score": raw_score,
+                                            "raw_metrics": {"mean_nll": 1.25},
+                                            "examples": 3,
+                                            "input_tokens": 6,
+                                            "prediction_bytes": 64,
+                                        }
+                                    ),
+                                    encoding="utf-8",
                                 )
                             return result
 
                     runtime = ResultRuntime()
-                    with self.assertRaisesRegex(RuntimeFailure, "valid NLL result"):
+                    with self.assertRaisesRegex(
+                        RuntimeFailure, "valid performance or cost result"
+                    ):
                         runtime.run_evaluator(
                             config=TaskConfig.load(TASK),
                             resources=TrainingResources(),

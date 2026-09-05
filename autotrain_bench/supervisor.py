@@ -24,9 +24,15 @@ from .agent_control import (
     ProtocolError,
 )
 from .agent_execution import AgentExecutionEvidence
+from .artifact_identity import (
+    CANDIDATE_TREE_IDENTITY_ALGORITHM,
+    FILE_IDENTITY_ALGORITHM,
+    HIDDEN_BUNDLE_IDENTITY_ALGORITHM,
+)
 from .challenge import (
     FORMAL_ARTIFACT_DIGEST_FIELDS,
     ReleaseVerificationReceipt,
+    agent_release_manifest,
 )
 from .config import (
     AGENT_PROTOCOL_VERSION,
@@ -39,14 +45,13 @@ from .inference import summarize_inference_trace
 from .results import (
     RESULT_SCHEMA_VERSION,
     normalize_result_report,
-    perplexity_from_nll,
-    validated_nll,
 )
 from .worker_protocol import (
     EVALUATION_REQUIREMENTS,
     GPU_DEVICE_ISOLATION,
     RESEARCH_REQUIREMENTS,
     CapabilityRequirement,
+    CandidateEvaluationResult,
     CommandResult,
     ConformanceReceipt,
     EvaluationWorker,
@@ -247,6 +252,7 @@ class Supervisor:
         config: TaskConfig,
         agent: AgentConfig,
         resources: TrainingResources,
+        training_data_verification: Dict[str, Any],
         resource_envelope: Optional[ResourceEnvelope] = None,
         track: str,
         episode_dir: Path,
@@ -272,6 +278,21 @@ class Supervisor:
         if normalized not in {"A", "B"}:
             raise ValueError("track must be A or B")
         self.config = config.validate()
+        # The trusted launcher verifies the data view and the Worker keeps it
+        # immutable. Core binds that evidence to its small manifest identity;
+        # it does not inventory or read the dataset files.
+        train_manifest_sha256 = _sha256_file(self.config.train_dir / "manifest.json")
+        if (
+            not isinstance(training_data_verification, dict)
+            or training_data_verification.get("status") != "verified"
+            or train_manifest_sha256 is None
+            or training_data_verification.get("manifest_sha256")
+            != train_manifest_sha256
+        ):
+            raise ValueError(
+                "training data verification must bind the current TRAIN manifest"
+            )
+        training_data_verification = copy.deepcopy(training_data_verification)
         self.agent = agent.validate()
         if agent_execution.mechanism != self.agent.runner:
             raise ValueError("Agent execution mechanism does not match Agent config")
@@ -347,6 +368,9 @@ class Supervisor:
                 release_id=verified_release.release_id,
                 core_revision=verified_release.core_revision,
                 artifact_sha256=dict(verified_release.artifact_sha256),
+                artifact_identity_algorithms=dict(
+                    verified_release.artifact_identity_algorithms
+                ),
                 workload_resolution_acceptance=dict(
                     verified_release.workload_resolution_acceptance
                 ),
@@ -427,7 +451,7 @@ class Supervisor:
             "task_manifest_sha256": _sha256_file(config.source),
             "policy_sha256": _sha256_file(config.source.parent / "POLICY.md"),
             "evaluator_sha256": _sha256_file(config.evaluator_entrypoint),
-            "train_manifest_sha256": _sha256_file(config.train_dir / "manifest.json"),
+            "train_manifest_sha256": train_manifest_sha256,
             # Hidden identities are deliberately resolved only after the
             # research phase is irreversibly sealed. A same-host deployment
             # may keep the bytes physically absent until then.
@@ -538,7 +562,7 @@ class Supervisor:
             eligibility_violations.append("agent_workload_identity_not_immutable")
         if not agent_execution.leaderboard_eligible:
             eligibility_violations.append("agent_execution_not_certified")
-        # Worker Protocol v9 covers Worker-owned training/Candidate/Evaluator
+        # Worker Protocol v14 covers Worker-owned training/Candidate/Evaluator
         # workloads. AgentExecutionEvidence v0 binds the Agent image itself but
         # has no trusted field for an inference Gateway workload. Fail closed
         # instead of treating the task's configured Gateway reference as proof
@@ -619,6 +643,7 @@ class Supervisor:
                 if self.release_verification
                 else None
             ),
+            "training_data_verification": training_data_verification,
             "artifact_identities": {
                 "core_git": core_identity,
                 "challenge_manifest_sha256": artifact_identities[
@@ -634,8 +659,9 @@ class Supervisor:
                 },
             },
             "artifact_identity_algorithms": {
-                "candidate_tree": "autotrain-bench-tree-v2-sha256",
-                "file": "sha256",
+                "candidate_tree": CANDIDATE_TREE_IDENTITY_ALGORITHM,
+                "file": FILE_IDENTITY_ALGORITHM,
+                "hidden_evaluation": HIDDEN_BUNDLE_IDENTITY_ALGORITHM,
             },
             "workload_resolutions": {
                 "training": None,
@@ -755,8 +781,11 @@ class Supervisor:
             "analysis_selected_points": 0,
             "analysis_evaluated_points": 0,
             "test_status": None,
-            "test_nll": None,
-            "test_perplexity": None,
+            "performance_score_contract": config.performance_score.public_manifest(),
+            "cost_contract": config.cost.public_manifest(),
+            "test_performance_score": None,
+            "test_raw_metrics": None,
+            "test_cost": None,
             "pending_result": None,
             "result_publication": None,
             "closure_reason": None,
@@ -796,7 +825,9 @@ class Supervisor:
         )
         public_manifest["comparison_key"] = self.state["comparison_key"]
         if challenge_release is not None:
-            public_manifest["challenge_release"] = dict(challenge_release)
+            public_manifest["challenge_release"] = agent_release_manifest(
+                challenge_release
+            )
         self.public_task_path.write_text(
             json.dumps(public_manifest, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
@@ -1047,8 +1078,9 @@ class Supervisor:
         }:
             raise RuntimeError("a staged result requires a completed TEST decision")
         if outcome == "failed" and (
-            self.state.get("test_nll") is not None
-            or self.state.get("test_perplexity") is not None
+            self.state.get("test_performance_score") is not None
+            or self.state.get("test_raw_metrics") is not None
+            or self.state.get("test_cost") is not None
         ):
             raise RuntimeError("a failed outcome cannot retain TEST metrics")
         if cleanup_complete is True and termination is None:
@@ -1187,8 +1219,9 @@ class Supervisor:
                 ]
                 status["final_candidate_id"] = self.state["final_candidate_id"]
                 status["test_status"] = self.state["test_status"]
-                status["test_nll"] = self.state["test_nll"]
-                status["test_perplexity"] = self.state["test_perplexity"]
+                status["test_performance_score"] = self.state["test_performance_score"]
+                status["test_raw_metrics"] = self.state["test_raw_metrics"]
+                status["test_cost"] = self.state["test_cost"]
                 status["failure"] = self.state["failure"]
             return status
 
@@ -1247,7 +1280,7 @@ class Supervisor:
         """Resolve and accept one workload before passing it to an operation.
 
         The returned opaque handle is the only workload authorization accepted
-        by Worker Protocol v9 operations. Core records semantic evidence but
+        by Worker Protocol v14 operations. Core records semantic evidence but
         never learns the Worker's path, scheduler job, image cache, or runtime
         handle.
         """
@@ -2203,8 +2236,9 @@ class Supervisor:
                     "source_leases": [lease_id],
                     "declared_incumbent": False,
                     "analysis_status": "pending",
-                    "analysis_nll": None,
-                    "analysis_perplexity": None,
+                    "analysis_performance_score": None,
+                    "analysis_raw_metrics": None,
+                    "analysis_cost": None,
                     "analysis_error": None,
                 }
                 self.state["candidates"][candidate_id] = metadata
@@ -2457,6 +2491,18 @@ class Supervisor:
                 ),
             )
             return False
+        if resolved.identity_algorithm != request.identity_algorithm:
+            self._hidden_dataset_resolution_failed(
+                request.name,
+                primary=primary,
+                code="hidden_dataset_receipt_invalid",
+                private_detail=(
+                    "Evaluation Worker used hidden dataset identity algorithm "
+                    f"{resolved.identity_algorithm!r}, expected "
+                    f"{request.identity_algorithm!r}"
+                ),
+            )
+            return False
 
         field = f"{request.name}_sha256"
         identities = self.state["artifact_identities"]["hidden_evaluation"]
@@ -2493,6 +2539,7 @@ class Supervisor:
                 "HIDDEN_DATASET_RESOLVED",
                 dataset=request.name,
                 sha256=resolved.sha256,
+                identity_algorithm=resolved.identity_algorithm,
             )
         self._save_state()
         return True
@@ -2514,6 +2561,7 @@ class Supervisor:
         if (
             not isinstance(receipt, ResolvedHiddenDataset)
             or receipt.name != request.name
+            or receipt.identity_algorithm != request.identity_algorithm
             or expected is None
             or receipt.sha256 == expected
         ):
@@ -2626,8 +2674,11 @@ class Supervisor:
                 {
                     **commit,
                     "analysis_status": status,
-                    "analysis_nll": metadata["analysis_nll"],
-                    "analysis_perplexity": metadata["analysis_perplexity"],
+                    "analysis_performance_score": metadata[
+                        "analysis_performance_score"
+                    ],
+                    "analysis_raw_metrics": metadata["analysis_raw_metrics"],
+                    "analysis_cost": metadata["analysis_cost"],
                     "analysis_error": error,
                     "declared_incumbent": metadata["declared_incumbent"],
                     "declaration_event_seqs": list(
@@ -2685,7 +2736,9 @@ class Supervisor:
         resolved: Optional[ResolvedHiddenDataset] = None
         candidate_workload: Optional[ResolvedWorkload] = None
         evaluator_workload: Optional[ResolvedWorkload] = None
-        test_nll: Optional[float] = None
+        test_performance_score: Optional[float] = None
+        test_raw_metrics: Optional[Dict[str, float]] = None
+        test_cost: Optional[Dict[str, Any]] = None
         test_failure: Optional[str] = None
         test_infrastructure_failure: Optional[str] = None
         test_infrastructure_failure_code = "test_evaluation_infrastructure_failure"
@@ -2705,7 +2758,7 @@ class Supervisor:
             if resolved is not None:
                 assert candidate_workload is not None
                 assert evaluator_workload is not None
-                raw_test_nll = self.evaluation_worker.evaluate_candidate(
+                evaluation_result = self.evaluation_worker.evaluate_candidate(
                     episode_id=self.state["episode_id"],
                     task=self.evaluation_task,
                     resources=self.resources,
@@ -2718,7 +2771,16 @@ class Supervisor:
                 )
                 if self.monotonic() >= evaluation_deadline:
                     raise WorkerFailure("TEST evaluation operation deadline reached")
-                test_nll = validated_nll(raw_test_nll)
+                if not isinstance(evaluation_result, CandidateEvaluationResult):
+                    raise WorkerFailure(
+                        "Evaluation Worker returned an invalid result type"
+                    )
+                performance = evaluation_result.performance_manifest(
+                    self.evaluation_task.performance_score
+                )
+                test_performance_score = performance["performance_score"]
+                test_raw_metrics = performance["raw_metrics"]
+                test_cost = evaluation_result.cost_manifest(self.evaluation_task.cost)
         except HiddenDatasetIdentityMismatch as exc:
             self._record_hidden_dataset_mismatch(
                 request,
@@ -2791,33 +2853,30 @@ class Supervisor:
         if resolved is None or self.state["status"] != "closed":
             self._save_state()
             return
-        if test_failure is not None or test_nll is None:
+        if (
+            test_failure is not None
+            or test_performance_score is None
+            or test_raw_metrics is None
+            or test_cost is None
+        ):
             self._stage_failed_test(test_failure or "test_evaluation_failed")
-            return
-        try:
-            test_perplexity = perplexity_from_nll(test_nll)
-        except ValueError:
-            self._event(
-                "TEST_EVALUATION_FAILED",
-                candidate_id=candidate_id,
-                code="perplexity_overflow",
-            )
-            self._stage_failed_test("perplexity_overflow")
             return
 
         self.state["test_status"] = "evaluated"
         self.state["pending_result"] = {
             "outcome": "success",
             "failure": None,
-            "test_nll": test_nll,
-            "test_perplexity": test_perplexity,
+            "test_performance_score": test_performance_score,
+            "test_raw_metrics": test_raw_metrics,
+            "test_cost": test_cost,
             "publication_id": uuid.uuid4().hex,
         }
         self._event(
             "TEST_EVALUATED",
             candidate_id=candidate_id,
-            nll=test_nll,
-            perplexity=test_perplexity,
+            performance_score=test_performance_score,
+            raw_metrics=test_raw_metrics,
+            cost=test_cost,
         )
         self._save_state()
 
@@ -2845,7 +2904,7 @@ class Supervisor:
                     self.config.evaluator_timeout_seconds
                 )
                 try:
-                    raw_nll = self.evaluation_worker.evaluate_candidate(
+                    evaluation_result = self.evaluation_worker.evaluate_candidate(
                         episode_id=self.state["episode_id"],
                         task=self.evaluation_task,
                         resources=self.resources,
@@ -2860,8 +2919,14 @@ class Supervisor:
                         raise WorkerFailure(
                             "ANALYSIS evaluation operation deadline reached"
                         )
-                    nll = validated_nll(raw_nll)
-                    perplexity = perplexity_from_nll(nll)
+                    if not isinstance(evaluation_result, CandidateEvaluationResult):
+                        raise WorkerFailure(
+                            "Evaluation Worker returned an invalid result type"
+                        )
+                    performance = evaluation_result.performance_manifest(
+                        self.evaluation_task.performance_score
+                    )
+                    cost = evaluation_result.cost_manifest(self.evaluation_task.cost)
                 except HiddenDatasetIdentityMismatch as exc:
                     self._record_hidden_dataset_mismatch(
                         request,
@@ -2924,13 +2989,17 @@ class Supervisor:
                     break
                 else:
                     metadata["analysis_status"] = "evaluated"
-                    metadata["analysis_nll"] = nll
-                    metadata["analysis_perplexity"] = perplexity
+                    metadata["analysis_performance_score"] = performance[
+                        "performance_score"
+                    ]
+                    metadata["analysis_raw_metrics"] = performance["raw_metrics"]
+                    metadata["analysis_cost"] = cost
                     self._event(
                         "ANALYSIS_EVALUATED",
                         candidate_id=candidate_id,
-                        nll=nll,
-                        perplexity=perplexity,
+                        performance_score=performance["performance_score"],
+                        raw_metrics=performance["raw_metrics"],
+                        cost=cost,
                     )
                 self._store_analysis_trajectory()
                 self._save_state()
@@ -3027,8 +3096,9 @@ class Supervisor:
         self.state["pending_result"] = {
             "outcome": "failed",
             "failure": failure,
-            "test_nll": None,
-            "test_perplexity": None,
+            "test_performance_score": None,
+            "test_raw_metrics": None,
+            "test_cost": None,
             "publication_id": uuid.uuid4().hex,
         }
         self._save_state()
@@ -3085,8 +3155,9 @@ class Supervisor:
         self.state["status"] = "finalized"
         self.state["outcome"] = outcome
         self.state["failure"] = failure
-        self.state["test_nll"] = pending["test_nll"]
-        self.state["test_perplexity"] = pending["test_perplexity"]
+        self.state["test_performance_score"] = pending["test_performance_score"]
+        self.state["test_raw_metrics"] = pending["test_raw_metrics"]
+        self.state["test_cost"] = pending["test_cost"]
         self.state["pending_result"] = None
         self.state["result_publication"] = {
             "publication_id": publication_id,
@@ -3169,8 +3240,9 @@ class Supervisor:
             self.state["outcome"] = "failed"
             self.state["closure_reason"] = "infrastructure_failure"
             self.state["failure"] = code
-            self.state["test_nll"] = None
-            self.state["test_perplexity"] = None
+            self.state["test_performance_score"] = None
+            self.state["test_raw_metrics"] = None
+            self.state["test_cost"] = None
             self.state["pending_result"] = None
             event = {"code": code}
             if private_detail is not None:
@@ -3232,8 +3304,9 @@ class Supervisor:
         self.state["outcome"] = "failed"
         self.state["closure_reason"] = "agent_policy_violation"
         self.state["failure"] = "agent_control_policy_violation"
-        self.state["test_nll"] = None
-        self.state["test_perplexity"] = None
+        self.state["test_performance_score"] = None
+        self.state["test_raw_metrics"] = None
+        self.state["test_cost"] = None
         self.state["pending_result"] = None
         self._event("EPISODE_DNF", reason="agent_control_policy_violation")
         self._save_state()

@@ -1,6 +1,12 @@
 import json
 import unittest
 
+from autotrain_bench.artifact_identity import HIDDEN_BUNDLE_IDENTITY_ALGORITHM
+from autotrain_bench.candidate_protocol import (
+    PREDICTION_ARTIFACT_RETENTION,
+    PREDICTION_MANIFEST_MAX_BYTES,
+    prediction_storage_limit,
+)
 from autotrain_bench.worker_protocol import (
     BASELINE_REQUIREMENTS,
     CONFORMANCE_RECEIPT_VERSION,
@@ -8,11 +14,14 @@ from autotrain_bench.worker_protocol import (
     Capability,
     CapabilityRequirement,
     CandidateChannelRequirements,
+    CandidateEvaluationResult,
     CommandResult,
     ConformanceReceipt,
+    CostContract,
     EnforcementLevel,
     HiddenDatasetIdentityMismatch,
     HiddenDatasetRequest,
+    PerformanceScoreContract,
     ResourceAllocationReceipt,
     ResourceEnvelope,
     ResourceObservation,
@@ -290,16 +299,203 @@ class WorkerProtocolTests(unittest.TestCase):
         )
         self.assertEqual(assessment.mismatched, ("host.count",))
 
-    def test_candidate_channel_describes_prefix_visibility_precisely(self):
+    def test_candidate_channel_denies_target_feedback_and_reexposure(self):
         manifest = CandidateChannelRequirements(
-            protocol="next_token_logits_v1"
+            protocol="offline_next_token_logits_v3"
         ).public_manifest()
 
-        self.assertEqual(manifest["request_content"], "token_prefixes")
-        self.assertEqual(manifest["hidden_artifact_visibility"], "denied")
+        self.assertEqual(manifest["mechanism"], "worker_materialized_files")
+        self.assertEqual(manifest["request_content"], "target_free_context_artifact")
+        self.assertEqual(manifest["predictions_per_context"], 1)
+        self.assertEqual(manifest["context_artifact_access"], "read_only")
+        self.assertEqual(
+            manifest["prediction_artifact_access"],
+            "candidate_read_write_isolated",
+        )
+        self.assertEqual(
+            manifest["prediction_manifest"]["exact_fields"],
+            [
+                "schema_version",
+                "candidate_protocol",
+                "dataset_id",
+                "examples",
+                "vocab_size",
+                "dtype",
+                "logits_file",
+            ],
+        )
+        self.assertFalse(manifest["prediction_manifest"]["additional_fields_allowed"])
+        self.assertEqual(
+            manifest["public_helper_api"]["prediction_writer"],
+            "write_prediction_artifact(output_dir, *, dataset_id, logits, "
+            "examples, vocab_size)",
+        )
+        self.assertEqual(
+            manifest["prediction_storage"]["hard_limit"],
+            "required_before_candidate_start",
+        )
+        self.assertEqual(manifest["prediction_storage"]["max_entries"], 2)
+        self.assertEqual(
+            manifest["prediction_storage"]["manifest_max_bytes"],
+            PREDICTION_MANIFEST_MAX_BYTES,
+        )
+        self.assertEqual(
+            manifest["prediction_artifact_retention"],
+            PREDICTION_ARTIFACT_RETENTION,
+        )
+        self.assertEqual(manifest["candidate_scheduling"], "participant_controlled")
+        self.assertEqual(
+            manifest["serving_timing"]["start"],
+            "immediately_before_candidate_process_invocation",
+        )
+        self.assertIn("model_loading", manifest["serving_timing"]["includes"])
+        self.assertIn("metric_computation", manifest["serving_timing"]["excludes"])
+        self.assertEqual(manifest["target_artifact_visibility"], "denied")
         self.assertEqual(manifest["current_target_visibility"], "denied")
         self.assertEqual(manifest["future_token_visibility"], "denied")
+        self.assertEqual(manifest["target_feedback_visibility"], "denied")
+        self.assertEqual(manifest["cross_context_target_overlap"], "denied")
         self.assertEqual(manifest["candidate_egress"], "denied")
+        with self.assertRaisesRegex(ValueError, "hard limits"):
+            CandidateChannelRequirements(
+                protocol="offline_next_token_logits_v3",
+                prediction_storage_hard_limit_required=False,
+            )
+        with self.assertRaisesRegex(ValueError, "retention"):
+            CandidateChannelRequirements(
+                protocol="offline_next_token_logits_v3",
+                prediction_artifact_retention="retain",
+            )
+
+    def test_candidate_evaluation_result_exposes_average_cost_and_evidence(self):
+        result = CandidateEvaluationResult(
+            performance_score=72.5,
+            raw_metrics={"loss": 1.25},
+            candidate_wall_seconds=2.0,
+            task_count=4,
+            input_tokens=20,
+            prediction_bytes=128,
+        )
+
+        self.assertEqual(result.performance_score, 72.5)
+        self.assertEqual(
+            result.performance_manifest(
+                PerformanceScoreContract("example_score_v1", ("loss",))
+            ),
+            {
+                "performance_score": 72.5,
+                "raw_metrics": {"loss": 1.25},
+            },
+        )
+        self.assertEqual(
+            result.cost_manifest(
+                CostContract(
+                    "candidate_end_to_end_time_per_task_v1",
+                    "next_token_prediction",
+                )
+            ),
+            {
+                "time_per_task": 0.5,
+                "candidate_wall_seconds": 2.0,
+                "task_count": 4,
+                "input_tokens": 20,
+                "prediction_bytes": 128,
+                "tasks_per_second": 2.0,
+                "input_tokens_per_second": 10.0,
+            },
+        )
+        with self.assertRaisesRegex(ValueError, "candidate_wall_seconds"):
+            CandidateEvaluationResult(50.0, {"loss": 1.0}, 0.0, 1, 1, 1)
+        with self.assertRaisesRegex(ValueError, "cost"):
+            CandidateEvaluationResult(50.0, {"loss": 1.0}, 5e-324, 1, 1, 1)
+
+    def test_cost_contract_fixes_average_time_semantics(self):
+        contract = CostContract(
+            "candidate_end_to_end_time_per_task_v1",
+            "next_token_prediction",
+        )
+
+        self.assertEqual(
+            CostContract.from_manifest(contract.public_manifest()),
+            contract,
+        )
+        with self.assertRaisesRegex(ValueError, "primary_metric"):
+            CostContract(
+                "candidate_end_to_end_time_per_task_v1",
+                "next_token_prediction",
+                primary_metric="candidate_wall_seconds",
+            )
+
+    def test_cost_contract_rejects_unrepresentable_counts(self):
+        contract = CostContract(
+            "candidate_end_to_end_time_per_task_v1",
+            "next_token_prediction",
+        )
+        cost = {
+            "time_per_task": 1.0,
+            "candidate_wall_seconds": 1.0,
+            "task_count": 10**10000,
+            "input_tokens": 1,
+            "prediction_bytes": 1,
+            "tasks_per_second": 1.0,
+            "input_tokens_per_second": 1.0,
+        }
+
+        with self.assertRaisesRegex(ValueError, "cannot be represented"):
+            contract.validate_measurement(cost)
+
+    def test_performance_score_contract_is_generic_and_release_scoped(self):
+        contract = PerformanceScoreContract("accuracy_v2", ("accuracy",))
+
+        self.assertEqual(
+            contract.validate_measurement(84.5, {"accuracy": 0.845}),
+            (84.5, {"accuracy": 0.845}),
+        )
+        with self.assertRaisesRegex(ValueError, "exactly match"):
+            contract.validate_measurement(84.5, {"loss": 0.2})
+        with self.assertRaisesRegex(ValueError, "between 0 and 100"):
+            contract.validate_measurement(101.0, {"accuracy": 0.845})
+        with self.assertRaisesRegex(ValueError, "raw metric name"):
+            PerformanceScoreContract("accuracy_v2", (1,))
+        with self.assertRaisesRegex(ValueError, "range"):
+            PerformanceScoreContract(
+                "accuracy_v2",
+                ("accuracy",),
+                minimum=10**1000,
+            )
+
+    def test_candidate_evaluation_rejects_unrepresentable_numbers(self):
+        with self.assertRaisesRegex(ValueError, "performance_score"):
+            CandidateEvaluationResult(
+                10**1000,
+                {"loss": 1.0},
+                1.0,
+                1,
+                1,
+                1,
+            )
+        with self.assertRaisesRegex(ValueError, "raw metric loss"):
+            CandidateEvaluationResult(
+                50.0,
+                {"loss": 10**1000},
+                1.0,
+                1,
+                1,
+                1,
+            )
+
+    def test_prediction_storage_limit_is_derived_from_the_request_shape(self):
+        self.assertEqual(
+            prediction_storage_limit(examples=2048, vocab_size=50257),
+            {
+                "max_bytes": 2048 * 50257 * 4 + PREDICTION_MANIFEST_MAX_BYTES,
+                "max_entries": 2,
+                "logits_bytes": 2048 * 50257 * 4,
+                "manifest_max_bytes": PREDICTION_MANIFEST_MAX_BYTES,
+            },
+        )
+        with self.assertRaisesRegex(ValueError, "positive integer"):
+            prediction_storage_limit(examples=True, vocab_size=3)
 
     def test_command_result_types_are_strict(self):
         with self.assertRaisesRegex(TypeError, "exit_code"):
@@ -314,6 +510,7 @@ class WorkerProtocolTests(unittest.TestCase):
 
         self.assertEqual(request.name, "test")
         self.assertEqual(request.expected_sha256, "a" * 64)
+        self.assertEqual(request.identity_algorithm, HIDDEN_BUNDLE_IDENTITY_ALGORITHM)
         self.assertFalse(hasattr(request, "path"))
         self.assertFalse(hasattr(request, "url"))
 
@@ -322,10 +519,14 @@ class WorkerProtocolTests(unittest.TestCase):
             HiddenDatasetRequest("val")
         with self.assertRaisesRegex(ValueError, "SHA-256"):
             HiddenDatasetRequest("test", "not-a-digest")
+        with self.assertRaisesRegex(ValueError, "identity algorithm"):
+            HiddenDatasetRequest("test", "a" * 64, "sha256")
         with self.assertRaisesRegex(ValueError, "resolution_id"):
             ResolvedHiddenDataset("test", "a" * 64, "")
         with self.assertRaisesRegex(ValueError, "opaque identifier"):
             ResolvedHiddenDataset("test", "a" * 64, "/private/test.json")
+        with self.assertRaisesRegex(ValueError, "identity algorithm"):
+            ResolvedHiddenDataset("test", "a" * 64, "opaque", "sha256")
 
     def test_identity_mismatch_carries_only_a_semantic_resolution(self):
         resolved = ResolvedHiddenDataset("analysis", "b" * 64, "opaque-1")
@@ -477,7 +678,7 @@ class WorkerProtocolTests(unittest.TestCase):
 
     def test_descriptor_manifest_contains_no_platform_schema(self):
         manifest = descriptor().public_manifest()
-        self.assertEqual(manifest["protocol_version"], 9)
+        self.assertEqual(manifest["protocol_version"], 14)
         self.assertEqual(manifest["roles"], ["research", "evaluation"])
         self.assertNotIn("conformance", manifest)
         serialized = json.dumps(manifest).lower()
@@ -489,7 +690,7 @@ class WorkerProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "protocol version"):
             WorkerDescriptor(
                 worker_id="future-worker",
-                protocol_version=10,
+                protocol_version=15,
                 trust_level=TrustLevel.DEVELOPMENT,
                 roles=("research",),
                 capabilities={},

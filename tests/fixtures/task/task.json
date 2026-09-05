@@ -1,12 +1,12 @@
 {
-  "schema_version": 2,
+  "schema_version": 6,
   "task_id": "test-byte-lm-v1",
   "task_kind": "development_smoke",
   "leaderboard_eligible": false,
   "paths": {
     "train": "train",
-    "analysis": "private/analysis.json",
-    "test": "private/test.json"
+    "analysis": "private/analysis",
+    "test": "private/test"
   },
   "images": {
     "training": "python@sha256:test-training",
@@ -16,19 +16,42 @@
   },
   "evaluation": {
     "backend": "isolated_candidate",
-    "candidate_protocol": "next_token_logits_v1",
+    "candidate_protocol": "offline_next_token_logits_v3",
     "entrypoint": "evaluator.py",
-    "metric": "autoregressive_nll",
-    "leaderboard_metric": {
-      "name": "perplexity",
-      "field": "test_perplexity",
-      "derived_from": "autoregressive_nll",
-      "formula": "exp(mean_token_nll)",
-      "direction": "minimize"
+    "performance_score": {
+      "definition_id": "uniform_normalized_log_score_v1",
+      "range": {
+        "minimum": 0.0,
+        "maximum": 100.0
+      },
+      "direction": "maximize",
+      "comparison_scope": "benchmark_release",
+      "raw_metrics": ["mean_nll"]
+    },
+    "cost": {
+      "definition_id": "candidate_end_to_end_time_per_task_v1",
+      "task_unit": "next_token_prediction",
+      "primary_metric": "time_per_task",
+      "unit": "seconds_per_task",
+      "direction": "minimize",
+      "aggregation": "candidate_wall_seconds_divided_by_task_count",
+      "comparison_scope": "benchmark_release",
+      "comparison_requires": [
+        "hidden_dataset_identity",
+        "runtime_profile"
+      ],
+      "submetrics": [
+        "candidate_wall_seconds",
+        "task_count",
+        "input_tokens",
+        "prediction_bytes",
+        "tasks_per_second",
+        "input_tokens_per_second"
+      ]
     },
     "vocab_size": 3,
     "context_length": 3,
-    "batch_size": 2,
+    "context_lengths": [1, 2, 3],
     "device": "cpu",
     "max_candidate_bytes": 1048576,
     "max_candidate_files": 100,

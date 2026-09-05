@@ -1,0 +1,1 @@
+{"schema_version":2,"candidate_protocol":"offline_next_token_logits_v3","dataset_id":"fixture-offline-v3","vocab_size":3,"context_lengths":[1,2,3],"examples":[{"example_id":"example-00000000","input_ids":[0]},{"example_id":"example-00000001","input_ids":[1,2]},{"example_id":"example-00000002","input_ids":[2,1,0]}]}

@@ -55,13 +55,17 @@ There is no reference `train.py` that participants are expected to tune.
 
 The AutoTrain system is responsible for building the training system itself.
 
-The primary objective is simple:
+The evaluation objective is two-dimensional:
 
 $$
-\boxed{\text{Minimize hidden TEST perplexity}}
+\boxed{\text{maximize hidden TEST performance score}}
+\qquad
+\boxed{\text{minimize hidden TEST time per task}}
 $$
 
-under the resource constraints of the selected benchmark track.
+under the resource constraints of the selected benchmark track. Results are
+compared on a Performance–Cost Pareto frontier rather than collapsed into an
+opaque scalar.
 
 The architectural model is **sandbox-style workload semantics**, not “Docker
 semantics”: workloads have fixed identities, bounded visibility and resources,
@@ -76,7 +80,7 @@ sandbox without adding platform branches to Core.
 
 The repository now contains an executable, single-host Docker prototype of the benchmark protocol. It is intended to validate episode lifecycle, Training Lease accounting, hidden evaluation, and the agent-facing control surface before the first official benchmark instance is selected.
 
-The current development snapshot uses Worker Protocol v9 but does not carry a
+The current development snapshot uses Worker Protocol v14 but does not carry a
 release package version yet. Protocol v7 introduced a breaking Worker API
 revision: every successful Training Lease startup returns operation-bound
 resource allocation evidence. The Release selects an extensible semantic resource
@@ -95,12 +99,30 @@ version 5 hidden-data contract: external Evaluation Workers must resolve a
 path-free `HiddenDatasetRequest` after research sealing, return a
 content-identity-bearing `ResolvedHiddenDataset`, accept TEST before ANALYSIS,
 and use the precise
-prefix/target/artifact visibility fields in the transport-neutral
+context/target/artifact visibility fields in the transport-neutral
 `CandidateChannelRequirements` contract. Version 9 removes conformance evidence
 from the Worker's self-description: a trusted Operator composition supplies a
 versioned receipt independently, bound to the assessed Worker ID, issuing
-authority, and organizer-owned report digest. The Python package itself remains
-`0.0.0` while unreleased.
+authority, and organizer-owned report digest. Version 10 replaced progressive
+all-prefix scoring with a single-target context contract. Version 11 replaces
+the request-at-a-time channel with `offline_next_token_logits_v3`: after
+research sealing, the Worker materializes target-free `contexts.json` for the
+Candidate and retains a separately bound `targets.json` for trusted scoring.
+The Candidate serving system reads the complete context artifact, chooses its
+own batching and scheduling, and writes one ordered logit vector per context.
+Trusted timing records that complete serving invocation independently from
+NLL. Version 12 standardizes the two-file hidden-bundle digest, requires a hard
+byte-and-entry quota for untrusted prediction storage, and makes prediction
+artifacts ephemeral once evaluation ends and workload teardown is confirmed.
+Version 13 replaces the LM-specific Worker result with a generic `[0, 100]`,
+maximize-oriented performance score, exact release-declared raw metrics, and a
+score definition that is comparable only within one benchmark release.
+Version 14 promotes end-to-end Candidate cost to a release-scoped second axis.
+Its primary metric is `time_per_task`: Candidate wall time divided by the
+frozen task count. Total wall time and throughput remain auditable cost
+submetrics, and comparisons additionally require the same hidden dataset
+identity and runtime profile.
+The Python package itself remains `0.0.0` while unreleased.
 
 Docker is the bundled v0 compatibility implementation, not a general platform
 abstraction. The benchmark Supervisor now depends on the semantic
@@ -119,7 +141,7 @@ being hidden behind application-level mailbox limits.
 
 The bundled `autotrain-bench prepare` and `autotrain-bench start` commands are
 the composition root for that local Docker implementation; they are not a
-generic backend loader. Worker Protocol v9 is currently a synchronous,
+generic backend loader. Worker Protocol v14 is currently a synchronous,
 in-process Python contract. Resolution calls receive explicit deadlines, and
 TEST workload/data resolution consumes the same operation budget as evaluation;
 those deadlines are cooperative, so a future asynchronous operation/cancellation
@@ -196,8 +218,16 @@ python3 dev_tasks/smoke_lm/prepare_data.py
 autotrain-bench prepare --task dev_tasks/smoke_lm/task.json
 ```
 
-The smoke task downloads about 0.98 MB of real text and uses hidden 8K-token
-ANALYSIS/TEST datasets. By default the selected Agent receives an empty workspace and
+Preparation writes a complete public TRAIN file inventory. The local `prepare`
+and `start` launchers verify file names, byte lengths, and SHA-256 before task reveal;
+old data without this inventory must be prepared again. These checks do not
+read hidden evaluation data. Core receives the trusted verification result and
+checks its binding to the root manifest without scanning the dataset. See
+[TRAIN integrity](docs/training-data.md) for
+the manifest format and the Worker's responsibility to keep TRAIN immutable.
+
+The smoke task downloads about 0.98 MB of real text and uses 512 hidden
+single-target contexts per ANALYSIS/TEST split. By default the selected Agent receives an empty workspace and
 must create its own training system. See `dev_tasks/smoke_lm/README.md` for the
 development workflow, Candidate ABI, Policy, and reproducibility details.
 Smoke-task scores are not benchmark results.
@@ -250,9 +280,16 @@ The command starts with its working directory set to the private episode
 workspace and with stdin disconnected. It receives
 `AUTOTRAIN_BENCH_WORKSPACE`, `AUTOTRAIN_BENCH_TASK`, and
 `AUTOTRAIN_BENCH_CONTROL_DIR`; it must use the `autotrain-bench agent ...`
-mailbox commands, call `agent finish`, and exit without further user input. A
+mailbox commands for benchmark control and run without further user input. A
 custom wrapper may reuse the tool-independent prompt in
 `autotrain_bench.agent_prompt.HOST_CLI_PROMPT`.
+
+The supplied prompt describes the evaluation objective, allowed interfaces, and
+episode lifecycle. Research methods, experiment scheduling, status polling, and
+budget allocation belong to the participant. Track A seals automatically at its
+research deadline. To end an active episode voluntarily, the Agent commits or
+stops its active lease, calls `agent finish`, and exits; exiting while research
+is still active records an unfinished episode (DNF).
 
 Tool-specific adapters are optional conveniences, not part of the benchmark
 protocol. They translate the generic contract into a particular CLI's flags,
@@ -387,7 +424,49 @@ field `agent_mode` to `agent_egress` and its `"sandboxed"` value to `"denied"`.
 An Agent that parses the version 1 field name must be updated; the benchmark
 does not emit both names. Version 3 corrected participant-time accounting for
 release-declared Worker preparation. Version 4 removes organizer validation
-feedback: Candidate commit returns artifact acceptance only.
+feedback: Candidate commit returns artifact acceptance only. Version 5 adds the
+exact `predictions.json` contract and optional generated helper signatures under
+`evaluation.candidate_boundary` so a Candidate can be implemented without
+reading benchmark source code. Version 6 promotes Candidate cost to an
+independent evaluation axis. Version 7 adds the existing Candidate invocation
+contract at `evaluation.candidate_boundary.entrypoint`: `candidate.py` in the
+artifact root is imported as a Python module, then
+`run_offline(candidate_dir, contexts_path, output_dir, device)` is called
+synchronously with positional arguments. The first three arguments are absolute
+`pathlib.Path` objects for the immutable artifact directory, target-free context
+JSON, and writable prediction output directory; `device` is the string from
+`evaluation.device`. The return value is ignored; output files carry predictions.
+`sys.argv` belongs to the Worker launcher and is not a Candidate interface.
+Version 8 publishes `evaluation.candidate_boundary.context_manifest`, the exact
+`contexts.json` schema, including `examples[].example_id` and
+`examples[].input_ids`. It also declares that `load_context_request()` returns
+the parsed dictionary with unchanged keys and values, and publishes the binary
+logit encoding, shape, and row/column order under
+`evaluation.candidate_boundary.prediction_manifest.logits_artifact`.
+Version 9 removes `evaluation.context_lengths` from the research-visible
+manifest and renames its `evaluation.context_length` limit to
+`evaluation.max_context_tokens`. `evaluation.context_policy` declares:
+
+> Evaluation inputs are variable-length token sequences. The exact length
+> distribution is not disclosed during research. Participants choose how to use
+> context to optimize next-token prediction within the resource budget.
+
+The maximum is an input bound, not a guarantee that any evaluation sample
+reaches it. Exact sampling lengths, proportions, and construction parameters
+stay in trusted evaluation configuration. The `contexts.json.context_lengths`
+values describe only the actual request received by the frozen Candidate after
+research sealing; this field is not a research-stage sampling plan. The
+Candidate ABI and hidden dataset format are unchanged.
+Version 10 restricts the Agent-visible `challenge_release` to `challenge_id`,
+`release_stage`, `leaderboard_eligible`, `track_config_id`, and
+`runtime_profile_id`. Full task/challenge manifest hashes and other trusted
+release metadata are not copied into the Agent manifest. The public budget and
+Training resource contract remain in `budget` and `training_environment`.
+`challenge-info` likewise omits full task/challenge file hashes. Release IDs are
+public labels; complete file identities remain in trusted verification and
+episode audit records. An unsalted hash of an enumerable private configuration
+can reveal it through offline guessing even when the configuration itself is
+absent from the public manifest.
 
 Training code writes Candidate artifacts into the lease-owned `/output` mount.
 `lease-commit` first stops the Training sandbox, validates and snapshots the
@@ -414,31 +493,19 @@ autotrain-bench report \
   --episode /path/to/autotrain-bench-runs/episodes/<episode-id>
 ```
 
-New episode states declare `result_schema_version: 8`. Reporting an older state
-performs a read-only migration. An unversioned v1 state receives the v2
-outcome fields: a completed result with a valid TEST NLL receives
-`outcome: "success"` and a derived `test_perplexity`, while an unscored
-terminal result receives `outcome: "failed"` with both TEST metrics left
-`null`. A v1 or v2 state additionally has its `agent_system.mode` field renamed
-to `agent_system.egress`, with the value `"sandboxed"` mapped to `"denied"`, so
-one schema version always identifies one structure. A migrated report records
-`migrated_from_result_schema_version`. The persisted historical `state.json` is
-never rewritten, and unknown future result-schema versions are rejected rather
-than guessed. Legacy VAL fields remain explicitly labelled legacy; reporting
-never relabels an old Agent-visible VAL trajectory as postmortem ANALYSIS.
-An existing v4 postmortem result remains readable, but migration explicitly
-reports that its complete ordered incumbent-declaration history is unavailable
-rather than reconstructing that history from an Agent log or a final boolean.
-A v5 result gains its ANALYSIS summary counts by deriving them from the
-trajectory it already carried, so migration invents nothing. A v6 result gains
-an explicit three-role workload-resolution structure whose values are `null`;
-the reader does not invent evidence that the older episode never recorded. A
-v7 result similarly gains `resource_envelope: null` and an empty allocation
-list rather than fabricated effective-resource evidence.
+Episode states declare `result_schema_version: 12`. This repository is still
+pre-preview, so unpublished development schemas are not a compatibility surface:
+`report` accepts only the current result schema and rejects unversioned, older,
+and unknown future versions rather than guessing their meaning. The first
+published preview establishes the result-compatibility baseline; later schema
+changes must then define an explicit compatibility policy.
 
-In v8, `outcome: "success"` requires a finalized episode, a non-empty final
-Candidate ID, and both consistent TEST metrics. A failed outcome requires a
-failure reason and keeps both TEST metrics `null`. A null outcome is allowed
+In v12, `outcome: "success"` requires a finalized episode, a non-empty final
+Candidate ID, a valid TEST performance score with the exact release-declared raw
+metrics, and a complete trusted TEST cost measurement. Current reports identify hidden split digests with
+`artifact_identity_algorithms.hidden_evaluation` and a formal organizer receipt
+must declare the same algorithm. A failed outcome requires a failure reason and
+keeps performance and cost measurements `null`. A null outcome is allowed
 only before a result exists (`created`, `active`, or the transient `closed`
 state while postmortem TEST, ANALYSIS, and trusted finalization are running),
 and may not carry TEST metrics or a failure reason. Research is first sealed
@@ -461,11 +528,12 @@ summarize, so the summary cannot drift from its own detail.
 
 `state.json` is the authoritative result commit point. Immediately before that
 atomic commit, the Supervisor appends a non-terminal
-`RESULT_PUBLICATION_PREPARED` audit record. A finalized v8 state created by the
+`RESULT_PUBLICATION_PREPARED` audit record. A finalized v11 state created by the
 current implementation includes `result_publication`, which binds the result
 to that record's publication ID and sequence number. An unreferenced prepared
-record documents an interrupted attempt and is not a terminal result. Older
-states without this optional reference remain readable through migration.
+record documents an interrupted attempt and is not a terminal result. The
+reference remains optional within the current development schema so an
+interrupted publication rollout does not manufacture a terminal result.
 
 Deployment cleanup can still fail after an episode has already reached DNF or
 an infrastructure-failure state. Those failures do not rewrite the original
@@ -505,11 +573,12 @@ task reveal
 The reference implementation uses an official host-side Supervisor, a
 development Agent Container or host CLI process, a thin trusted Inference
 Gateway when registered, disposable Training Containers, and separate trusted
-Evaluator and untrusted Candidate containers. Agent, Training, and Candidate
-containers receive neither the Docker socket nor ANALYSIS/TEST mounts. Sandboxed
-Agent and Training networking is disabled; Candidate evaluation uses only an
-ephemeral internal network shared with its Evaluator. The Gateway handles only
-frozen researcher-inference endpoints. The bundled launcher nevertheless
+Evaluator and untrusted Candidate containers. Agent and Training containers
+receive neither the Docker socket nor ANALYSIS/TEST mounts. The Candidate
+receives only the target-free context file, never the hidden split directory or
+target file. Sandboxed Agent, Training, Candidate, and scoring networking is
+disabled. The Gateway handles only frozen researcher-inference endpoints. The
+bundled launcher nevertheless
 reports `policy_compliant: false` because its writable host bind mounts lack a
 deployment-enforced quota. In this local compatibility path the Supervisor
 process also enforces episode and Training-Lease deadlines; an external
@@ -526,16 +595,29 @@ reference boundary and is not presented as protection against kernel,
 container-runtime, or GPU-driver exploits. Official adversarial evaluation may
 require stronger worker or VM isolation.
 
-The `isolated_candidate` backend starts a fresh internal Docker network per
-query. The trusted Evaluator mounts only the selected hidden dataset and output;
-the untrusted Candidate mounts only its content-addressed artifact. The
-Evaluator sends same-length, prefix-free batches over `next_token_logits_v1`
-and validates a bounded `[batch, vocabulary]` response. It scores each response
-before revealing longer prefixes. Logits must be finite numeric values;
-booleans and numeric strings are rejected. Candidate failures return only fixed
-error codes to the Agent; raw Candidate logs stay in the trusted episode
-directory. Candidate and Evaluator are destroyed after each query. This backend
-satisfies the v0 reference isolation contract.
+The `isolated_candidate` backend first validates both halves of one selected
+hidden split in a trusted, network-disabled scorer. It then launches the
+untrusted Candidate with only its content-addressed artifact, a read-only
+`contexts.json`, and isolated writable prediction storage. The Candidate reads
+and schedules the full request itself and writes `predictions.json` plus a
+row-major little-endian float32 `logits.f32`. A second trusted scorer joins
+those outputs to the unmounted `targets.json`. Exactly one vector is required
+per context in request order; targets are never returned, and the hidden schema
+rejects overlapping protected source spans. Logits must be finite numeric
+values. The Agent-visible task manifest publishes every exact manifest field,
+its constant or request-derived source, and the rule that additional fields are
+forbidden; it also names the optional public reader and writer helpers. Hidden
+Candidate failures still return only fixed error codes to the Agent; private
+diagnostics stay in the trusted episode directory. Candidate and scorer
+containers are destroyed after each evaluation. A conforming Evaluation Worker
+also imposes the release-derived hard byte and entry limits before Candidate
+startup. The bundled Docker Worker uses an ordinary host bind mount and cannot
+enforce those limits, so it reports
+`candidate_prediction_storage_quota: unsupported` and remains a non-compliant
+development preview. After scoring or failure and confirmed workload teardown,
+it removes the ephemeral prediction directory. If teardown is
+unconfirmed, it retains that directory as pending cleanup rather than deleting
+storage that an untrusted process may still be able to mutate.
 
 The Agent Container receives a generated, minimal `autotrain_bench.client`
 package rather than the Core source tree. Its mailbox inbox and outbox are
@@ -633,9 +715,10 @@ User-owned host
 └── trusted AutoTrain-Bench Supervisor
     ├── untrusted Agent Container
     ├── disposable Training Container
-    └── ephemeral internal evaluation network
-        ├── trusted Evaluator Container with one hidden dataset
-        └── untrusted Candidate Container without hidden files or public network
+    └── offline evaluation sequence
+        ├── trusted validation with contexts + targets
+        ├── untrusted Candidate with contexts only, no network
+        └── trusted scoring with targets + Candidate predictions
 ```
 
 The Supervisor records task reveal time, owns Track A/B policy and lease
@@ -651,8 +734,9 @@ Only after research is durably sealed and those workloads are confirmed stopped
 may an Evaluation Worker materialize either hidden dataset. It communicates with
 a separate Candidate sandbox through the release-owned next-token application
 protocol. Core fixes the information-flow and isolation requirements; the Worker
-chooses the channel mechanism. The bundled Docker Worker uses a private HTTP/TCP
-network, but that mechanism is not part of the benchmark contract.
+also fixes the offline file ABI, while the Worker chooses how to materialize
+and isolate those files. The bundled Docker Worker uses bind-mounted artifacts
+and no evaluation network.
 
 Core requests a hidden split by logical name and, for a verified release, its
 expected SHA-256 identity. The Evaluation Worker privately maps that request to
@@ -668,9 +752,9 @@ the bytes physically absent from the host trust domain until evaluation provide
 stronger defense in depth; Core requires the visibility boundary and frozen
 identity, not one materialization mechanism.
 
-Task schema v2 still retains `paths.analysis` and `paths.test` as compatibility
+Task schema v6 still retains `paths.analysis` and `paths.test` as compatibility
 inputs for the bundled local CLI. The Supervisor neither reads them nor sends
-them through Worker Protocol v9. An external launcher supplies its Evaluation
+them through Worker Protocol v14. An external launcher supplies its Evaluation
 Worker's private source mapping independently; the configured local paths may
 remain absent for that deployment. Replacing these compatibility fields in a
 future task schema is separate from the now path-free Worker boundary.
@@ -730,9 +814,10 @@ not a direct observation of latent research progress because Candidate commit
 and incumbent-declaration strategies are themselves Agent choices.
 
 ANALYSIS is never returned through Agent control, never selects an incumbent,
-and never replaces TEST as the primary score. A release freezes its Candidate
-selection limit and result-visibility policy before task reveal. Publication may
-be organizer-only or delayed to reduce cross-episode leakage. The local
+and never replaces the final TEST performance and cost measurements. A release
+freezes its Candidate selection limit and result-visibility policy before task
+reveal. Publication may be organizer-only or delayed to reduce cross-episode
+leakage. The local
 `report` command is a trusted Operator view and retains the complete audit
 record; an organizer's submission/publication layer must enforce the declared
 visibility policy when distributing that record.
@@ -741,7 +826,9 @@ visibility policy when distributing that record.
 
 ## TEST
 
-TEST is the benchmark's final generalization metric.
+TEST provides the final performance and cost measurements for the Agent-declared
+incumbent. Performance measures generalization; cost measures the complete
+Candidate invocation per prediction task.
 
 TEST is:
 
@@ -790,26 +877,58 @@ A benchmark release specifies:
 * evaluation dataset;
 * loss implementation.
 
-The evaluator first computes aggregate autoregressive token negative
-log-likelihood:
+The evaluator contains a release-frozen set of separately scored examples
+$(c_i, y_i)$ with variable context lengths within the public input bound.
+The research-visible contract publishes that bound and the scoring rules;
+the actual length distribution and sampling parameters belong to trusted
+evaluation configuration frozen before research starts. Participants choose
+how much context to use. After research sealing, the Worker exposes the complete,
+target-free context collection to the Candidate and requires exactly one output
+vector for each $c_i$, while keeping the corresponding next-token target $y_i$
+permanently private. The Candidate controls ordering, batching, parallelism,
+and model lifetime internally, but restores request order in its output.
+Protected source spans may not overlap, so a target
+cannot be recovered later from a longer or neighboring context. Each span
+covers the source tokens represented in a context plus that example's target
+occurrence. If $q_i=\operatorname{softmax}(z_i)$ is the distribution formed from
+the logit vector returned for context $c_i$, the aggregate target negative
+log-likelihood is:
 
 $$
 L
 =
 -\frac{1}{N}
-\sum_t
-\log p(x_t \mid x_{<t}).
+\sum_i
+\log q_i[y_i].
 $$
 
-The primary leaderboard metric is token perplexity:
+The current LM release retains mean NLL as its canonical raw metric. Token
+perplexity can be derived for display when representable:
 
 $$
 \operatorname{PPL}=\exp(L).
 $$
 
-NLL is retained in every successful result as the canonical additive
-measurement. Perplexity is derived once from the token-weighted mean NLL; the
-benchmark never averages per-sequence or per-batch perplexities.
+Perplexity is derived once from the mean of the single-target losses; the
+evaluator never averages per-sequence or per-batch perplexities. This release
+maps the raw measurement into the generic performance interface:
+
+$$
+\operatorname{performance\_score}
+=100\max\left(0,\min\left(1,1-\frac{L}{\log V}\right)\right).
+$$
+
+The score is finite, bounded to `[0, 100]`, and higher is better. A score of 100
+represents perfect prediction; uniform-over-vocabulary prediction and worse map
+to 0. The canonical `mean_nll` raw metric retains distinctions among results at
+that floor. The definition ID, range, direction, raw metric names, and
+`benchmark_release` comparison scope are part of the task manifest. Core
+validates this generic contract and its result shape; the frozen trusted task
+evaluator owns the formula. Another benchmark release may use a different
+dataset, raw metric, or formula without changing the result interface, and its
+score is not comparable with this one. Perplexity is not a required raw field,
+so overflow in that derived display value cannot invalidate an otherwise finite
+measurement.
 
 The internal architecture is unrestricted.
 
@@ -998,15 +1117,19 @@ Candidate inventory are sealed. Benchmark-owned postmortem ANALYSIS and TEST
 time does not consume participant research time because the Agent can no longer
 act or benefit from it.
 
-The primary Track A score is:
+The Track A result is the final TEST performance–cost pair:
 
 $$
-\boxed{
-\operatorname{PPL}_{\mathrm{TEST}}(T_{\mathrm{total}})
-}
+R_{\mathrm{TEST}}(T_{\mathrm{total}})
+=\left(
+\operatorname{performance\_score}_{\mathrm{TEST}},
+\operatorname{time\_per\_task}_{\mathrm{TEST}}
+\right).
 $$
 
-for the system's final declared incumbent at the deadline.
+Both measurements use the final Agent-declared incumbent when research seals,
+under the total research budget $T_{\mathrm{total}}$. Higher performance and lower
+time per task are better; the two axes remain separate.
 
 ### What Track A measures
 
@@ -1078,15 +1201,19 @@ A lease that starts consumes one lease budget even if participant code crashes, 
 
 Failures that occur before the Training Container starts do not consume the participant's lease budget.
 
-The primary Track B score is:
+The Track B result uses the same TEST performance–cost pair:
 
 $$
-\boxed{
-\operatorname{PPL}_{\mathrm{TEST}}(N_{\mathrm{leases}})
-}
+R_{\mathrm{TEST}}(N_{\mathrm{leases}}, T_{\mathrm{lease}})
+=\left(
+\operatorname{performance\_score}_{\mathrm{TEST}},
+\operatorname{time\_per\_task}_{\mathrm{TEST}}
+\right).
 $$
 
-for the final incumbent selected by the AutoTrain system.
+Both measurements use the final Agent-declared incumbent under the selected
+lease-count and per-lease time limits. Higher performance and lower time per task
+are better; the two axes remain separate.
 
 ### What Track B measures
 
@@ -1123,25 +1250,30 @@ The two tracks constrain different scarce resources.
 | Number of leases    | Unlimited within deadline        | Fixed                                          |
 | Experiments in lease| Unlimited within time/environment| Unlimited within time/environment              |
 | Official feedback   | None during research             | None during research                           |
+| Evaluation axes     | TEST performance and cost        | TEST performance and cost                      |
 | Self-improvement    | Allowed                          | Allowed                                        |
 | Human intervention  | Forbidden                        | Forbidden                                      |
 | Primary question    | How fast can the system improve? | How well can it use bounded training access?    |
 
 Together they expose two different scaling behaviors.
 
-Track A measures:
+Across completed episodes at different budgets, Track A measures:
 
 $$
-L_{\mathrm{TEST}}(t).
+R_{\mathrm{TEST}}(t).
 $$
 
 Track B measures:
 
 $$
-L_{\mathrm{TEST}}(n).
+R_{\mathrm{TEST}}(n, T_{\mathrm{lease}}).
 $$
 
-where $t$ is autonomous research time and $n$ is the number of Training Leases and official feedback rounds.
+Here $R_{\mathrm{TEST}}$ is the performance–cost pair, $t$ is the research time
+budget, and $n$ is the Training Lease budget with per-lease duration
+$T_{\mathrm{lease}}$ held fixed. Neither track supplies organizer feedback during
+research. Each episode contributes one final TEST result; within-episode
+Candidate trajectories are measured afterward on ANALYSIS.
 
 ---
 
@@ -1227,13 +1359,16 @@ For multi-agent systems, usage is aggregated across the complete AutoTrain syste
 This makes it possible to study:
 
 $$
-\operatorname{PPL}_{\mathrm{TEST}}
+R_{\mathrm{TEST}}
 = f(
 \text{agent tokens},
 \text{research time},
 \text{lease and experiment interactions}
 ).
 $$
+
+Here $R_{\mathrm{TEST}}$ contains both final performance and time per task. Agent
+token usage is a separate research diagnostic; it is not Candidate serving cost.
 
 In Track A, agent reasoning naturally competes with training and engineering for the total wall-clock budget.
 
@@ -1297,7 +1432,8 @@ Discovering when and how to use them is part of the task.
 
 # Intermediate Incumbents and Research Curves
 
-The benchmark should not record only a single final score.
+The benchmark records the final performance–cost pair together with the submitted
+Candidate and incumbent history.
 
 Throughout an episode, the AutoTrain system may declare a **current incumbent**: the model it would submit if the benchmark ended immediately.
 
@@ -1344,8 +1480,9 @@ Agent redeclares an incumbent; it does not invent quality observations for work
 the Agent never committed. Scaling studies may compare such derived curves and
 final TEST results only when their complete comparison keys match.
 
-The submitted-Candidate ANALYSIS trace can reveal behavior that a final scalar
-cannot, without providing an official signal while the Agent can still act.
+The submitted-Candidate ANALYSIS trace shows how the committed artifacts changed
+before the final result, without providing an official signal while the Agent can
+still act.
 
 For example:
 
@@ -1360,25 +1497,59 @@ rapid autonomous improvement
 eventually surpasses A
 ```
 
-The second system may be more interesting from an RSI perspective even when the two systems have similar final scores.
+These histories distinguish research trajectories even when the two systems have
+similar final performance and cost.
 
 ---
 
-# Primary and Secondary Metrics
+# Evaluation Axes
 
-## Primary metric
+## Performance
 
-The primary leaderboard metric is:
+The performance axis is:
 
 $$
-\boxed{\text{final hidden TEST perplexity}}
+\boxed{\text{final hidden TEST performance score}}
 $$
 
 under the selected track's resource constraint.
 
-Lower is better.
+Higher is better. The score is always finite and lies in `[0, 100]`; its
+release-owned definition converts the task's raw metrics into that interface.
+Scores from different benchmark releases are not comparable.
 
-The benchmark should avoid combining many metrics into a complicated scoring formula.
+The performance-score mapping must not combine unrelated axes into an opaque
+formula.
+
+## Cost
+
+The independent cost axis is:
+
+$$
+\boxed{\operatorname{time\_per\_task}
+=\frac{\operatorname{candidate\_wall\_seconds}}
+{\operatorname{task\_count}}}
+$$
+
+Lower is better. For `lm-pretrain-v1`, one task is one next-token prediction
+from one hidden prefix. This is an amortized workload cost, not the latency of
+an individual request: the Candidate controls batching and scheduling across
+the complete hidden context file. The denominator is the release-required task
+count, never a participant-selected count of successful outputs. Missing or
+malformed predictions fail the evaluation instead of reducing reported cost.
+
+Candidate wall time starts immediately before the isolated Candidate
+invocation and stops after process exit and prediction-file flush. It includes
+sandbox startup, Candidate import, model loading, input-file reading,
+participant-controlled scheduling and inference, and output-file writing.
+Hidden-data materialization, trusted input validation, target joining, and
+metric computation are excluded.
+
+Performance–Cost comparison uses Pareto dominance: result A dominates result B
+when A has no lower performance and no higher time per task, with at least one
+strict improvement. The leaderboard frontier contains the non-dominated
+results. The two axes are never collapsed into a scalar. Comparisons require
+the same benchmark release, hidden input identity, and runtime profile.
 
 ---
 
@@ -1386,9 +1557,11 @@ The benchmark should avoid combining many metrics into a complicated scoring for
 
 The benchmark also records:
 
-* postmortem ANALYSIS NLL;
-* final TEST NLL;
-* postmortem ANALYSIS NLL trajectory;
+* postmortem ANALYSIS performance score and release-declared raw metrics;
+* final TEST performance score and release-declared raw metrics;
+* Candidate wall time, task count, tasks/second, input tokens/second, and
+  prediction bytes as cost submetrics for TEST and each measured ANALYSIS point;
+* postmortem ANALYSIS performance-score trajectory;
 * final ANALYSIS–TEST disagreement as a distribution diagnostic, not a measure
   of overfitting to ANALYSIS;
 * agent input/output tokens;
@@ -1405,7 +1578,8 @@ The benchmark also records:
 * run failures;
 * incumbent changes.
 
-These metrics are intended for scientific analysis rather than replacing the primary objective.
+These metrics support scientific analysis without replacing either evaluation
+axis.
 
 ---
 
@@ -1494,11 +1668,16 @@ The Training Environment:
 * has no privileged deployment control, public network, ANALYSIS, or TEST access;
 * is forcibly terminated by the Worker at Lease expiry even if Core disconnects.
 
-The trusted Eval Environment receives only the selected hidden dataset. A separate
-read-only Candidate Environment receives only the immutable Candidate artifact;
-the two communicate through the restricted inference protocol. Both are
-inaccessible to Agent and Training Containers, and the Evaluator returns only
-benchmark-permitted aggregate metrics.
+The trusted scoring environment receives only the selected hidden split and
+isolated output location. A separate Candidate environment receives the
+immutable Candidate artifact, the target-free context file read-only, and a
+private writable prediction directory with a release-derived hard byte and
+entry budget. The Worker runs these environments sequentially and transfers
+only the prescribed files; neither has a network. Both are inaccessible to
+Agent and Training Containers, and the scorer returns only
+benchmark-permitted aggregate performance and cost evidence. Prediction files
+are not episode audit artifacts: they are removed after scoring or failure and
+confirmed evaluation teardown.
 
 ---
 
@@ -1559,11 +1738,14 @@ Benchmark infrastructure failures are excluded and may be rerun.
 
 The infrastructure-failure policy must be deterministic and auditable.
 
-An episode succeeds only when post-mortem TEST evaluation produces a finite,
-non-negative mean NLL and a finite perplexity derived as `exp(mean_token_nll)`.
+An episode succeeds only when post-mortem TEST evaluation produces a finite
+performance score in `[0, 100]`, the exact finite raw metrics declared by the
+release, and a complete trusted Candidate cost measurement.
 An episode with no declared incumbent, a failed TEST evaluation, an invalid TEST
-metric, or an unrepresentable perplexity is finalized with `outcome: "failed"`;
-both `test_nll` and `test_perplexity` remain `null`. Infrastructure failures are
+performance measurement, or an invalid raw metric is finalized with
+`outcome: "failed"`; `test_performance_score`, `test_raw_metrics`, and
+`test_cost` remain `null`.
+Infrastructure failures are
 also failed episodes, but remain separately classified for retry policy.
 
 Post-TEST ANALYSIS is diagnostic. Ordinary point failures or incomplete
@@ -1595,6 +1777,7 @@ postmortem ANALYSIS trajectory
 incumbent declarations
 final artifact
 post-mortem TEST results
+per-evaluation Candidate time per task and supporting cost measurements
 ```
 
 Where possible, official candidates and episode traces should be reproducible from immutable artifacts.
@@ -1615,10 +1798,11 @@ AutoTrain-Bench should maintain separate leaderboards for the two tracks.
 
 ## Track A
 
-Ranked primarily by:
+Published as a Performance–Cost Pareto frontier at:
 
 ```text
-final TEST perplexity at fixed total wall-clock
+final TEST performance score vs. TEST time per task
+at fixed research wall-clock
 ```
 
 Reported alongside:
@@ -1629,14 +1813,16 @@ agent tokens
 Training Leases
 training compute
 model size
+Candidate cost submetrics
 ```
 
 ## Track B
 
-Ranked primarily by:
+Published as a Performance–Cost Pareto frontier at:
 
 ```text
-final TEST perplexity after at most N Training Leases
+final TEST performance score vs. TEST time per task
+after at most N Training Leases
 ```
 
 with fixed maximum duration per lease and no organizer feedback during research.
@@ -1644,12 +1830,13 @@ with fixed maximum duration per lease and no organizer feedback during research.
 Reported alongside:
 
 ```text
-postmortem ANALYSIS NLL by Candidate commit
-final TEST perplexity
+postmortem ANALYSIS performance score and raw metrics by Candidate commit
+final TEST performance score and raw metrics
 agent tokens
 agent reasoning between leases
 training compute
 model size
+Candidate cost submetrics
 ```
 
 Results from materially different runtime profiles or budget scales should not
@@ -1702,14 +1889,14 @@ contract as a challenge preview:
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 6,
   "task_id": "tinystories-byte-lm-smoke-v1",
   "task_kind": "development_smoke",
   "leaderboard_eligible": false,
   "paths": {
     "train": "data/train",
-    "analysis": "data/private/analysis.json",
-    "test": "data/private/test.json"
+    "analysis": "data/private/analysis",
+    "test": "data/private/test"
   },
   "images": {
     "training": "pytorch/pytorch@sha256:<digest>",
@@ -1726,19 +1913,36 @@ contract as a challenge preview:
   "track_b": { "max_leases": 3, "lease_seconds": 75 },
   "evaluation": {
     "backend": "isolated_candidate",
-    "candidate_protocol": "next_token_logits_v1",
+    "candidate_protocol": "offline_next_token_logits_v3",
     "entrypoint": "evaluator/evaluator.py",
-    "metric": "autoregressive_nll",
-    "leaderboard_metric": {
-      "name": "perplexity",
-      "field": "test_perplexity",
-      "derived_from": "autoregressive_nll",
-      "formula": "exp(mean_token_nll)",
-      "direction": "minimize"
+    "performance_score": {
+      "definition_id": "uniform_normalized_log_score_v1",
+      "range": {"minimum": 0.0, "maximum": 100.0},
+      "direction": "maximize",
+      "comparison_scope": "benchmark_release",
+      "raw_metrics": ["mean_nll"]
+    },
+    "cost": {
+      "definition_id": "candidate_end_to_end_time_per_task_v1",
+      "task_unit": "next_token_prediction",
+      "primary_metric": "time_per_task",
+      "unit": "seconds_per_task",
+      "direction": "minimize",
+      "aggregation": "candidate_wall_seconds_divided_by_task_count",
+      "comparison_scope": "benchmark_release",
+      "comparison_requires": ["hidden_dataset_identity", "runtime_profile"],
+      "submetrics": [
+        "candidate_wall_seconds",
+        "task_count",
+        "input_tokens",
+        "prediction_bytes",
+        "tasks_per_second",
+        "input_tokens_per_second"
+      ]
     },
     "vocab_size": 257,
     "context_length": 128,
-    "batch_size": 16,
+    "context_lengths": [8, 16, 32, 64, 128],
     "device": "cpu",
     "max_candidate_bytes": 2147483648,
     "max_candidate_files": 10000
@@ -1752,6 +1956,14 @@ initial workspace are participant-owned launch inputs and are intentionally
 absent from the task. Hardware/device allocation is absent from `task.json` and
 selected through a named runtime profile in
 `dev_tasks/smoke_lm/challenge.json`.
+This example is trusted task configuration. Its `context_length` is the input
+bound and `context_lengths` selects the local evaluation lengths, all of which
+must fit that bound. The Agent receives a filtered manifest with
+`max_context_tokens` and the variable-length declaration instead of that list.
+The reproducible smoke/preview builders expose their local recipes in source;
+filtering the episode manifest does not make those public recipes secret. A
+formal release must keep its actual evaluation construction parameters and
+datasets organizer-owned and outside participant-visible artifacts.
 
 ---
 
@@ -1787,9 +1999,10 @@ The initial system is fixed. Its autonomous trajectory is not.
 
 The system should succeed or fail based on its own actions after task reveal.
 
-### 7. Keep the primary objective simple
+### 7. Keep evaluation axes explicit
 
-The final objective is hidden TEST perplexity.
+The final objective is the release-defined hidden TEST Performance–Cost Pareto
+frontier. Performance and time per task remain independently interpretable.
 
 ### 8. Record trajectories, not only endpoints
 
@@ -1838,6 +2051,11 @@ Its value comes from providing a concrete environment in which improvement itsel
 
 # Research Questions
 
+These studies may use the release's raw mean NLL $L$ as a diagnostic alongside
+the final performance–cost pair. TEST scaling curves compare completed episodes
+at different budgets; within-episode Candidate trajectories use postmortem
+ANALYSIS.
+
 Beyond leaderboard ranking, AutoTrain-Bench is intended to support questions such as:
 
 ### Research-time scaling
@@ -1866,7 +2084,7 @@ $$
 
 ### Research gain
 
-How much better does a system become after receiving experimental feedback?
+How much better does a system become through evidence from its own experiments?
 
 $$
 \Delta L
@@ -1926,9 +2144,10 @@ No frozen benchmark challenge has been released. The `lm-pretrain-v1` preview un
 `challenges/` now defines provisional track configurations, a deliberately
 small set of single-host A100/H100 runtime profiles, the four-field comparison
 key, the initial external-resource policy, a task/evaluator, and a builder that
-retains both raw TRAIN documents and GPT-2 token shards. Full-scale validation
-of participant-side 10B data preparation, including scale receipts and checksum
-manifests, remains open release work alongside organizer-owned hidden datasets,
+retains both raw TRAIN documents and GPT-2 token shards. Source bytes are checked
+against a pinned upstream inventory, and TRAIN files are fully verified before
+task reveal. Full-scale validation of the 10B build and its actual scale remains
+open release work alongside organizer-owned hidden datasets,
 final pinned task images, calibrated budgets, submission services, and
 leaderboard infrastructure. Additional
 inference-provider adapters and isolation beyond the v0 Docker threat model

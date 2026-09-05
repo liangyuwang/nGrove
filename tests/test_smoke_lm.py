@@ -1,10 +1,14 @@
 import importlib.util
+import json
+import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from autotrain_bench.challenge import ChallengeRelease
 from autotrain_bench.config import TaskConfig
+from autotrain_bench.training_data import verify_training_data
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +23,46 @@ SPEC.loader.exec_module(PREPARE)
 
 
 class SmokeLmPreparationTests(unittest.TestCase):
+    def test_preparation_writes_public_inventory_and_invalidates_damaged_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            train = root / "train/train.json"
+            with patch.multiple(
+                PREPARE,
+                DATA_DIR=root,
+                TRAIN_PATH=train,
+                ANALYSIS_PATH=root / "private/analysis",
+                TEST_PATH=root / "private/test",
+                METADATA_PATH=root / "metadata.json",
+                TRAIN_DOCUMENTS=2,
+                ANALYSIS_DOCUMENTS=2,
+                TEST_DOCUMENTS=2,
+                EVAL_EXAMPLES=2,
+                EVAL_CONTEXT_LENGTHS=(1, 2),
+            ):
+                with patch.object(
+                    PREPARE, "download_documents", return_value=["abcdefgh"] * 6
+                ), patch("builtins.print"):
+                    PREPARE.prepare()
+                self.assertEqual(verify_training_data(train.parent)["files"], 1)
+                public = json.loads((train.parent / "manifest.json").read_bytes())
+                self.assertEqual(
+                    set(public), {"source", "tokenizer", "train", "integrity"}
+                )
+                self.assertNotIn("context_lengths", json.dumps(public))
+                self.assertTrue(PREPARE._existing_data_is_valid())
+                with patch.object(PREPARE, "download_documents") as download, patch(
+                    "builtins.print"
+                ):
+                    PREPARE.prepare()
+                    download.assert_not_called()
+                original = train.read_bytes()
+                train.write_bytes(bytes([original[0] ^ 1]) + original[1:])
+                self.assertFalse(PREPARE._existing_data_is_valid())
+                train.write_bytes(original)
+                (train.parent / "manifest.json").unlink()
+                self.assertFalse(PREPARE._existing_data_is_valid())
+
     def test_release_uses_the_profile_bound_challenge_start_contract(self):
         release = ChallengeRelease.load(SMOKE_ROOT / "challenge.json")
         task = replace(
@@ -60,9 +104,44 @@ class SmokeLmPreparationTests(unittest.TestCase):
         )
         self.assertEqual(sum(len(row) - 1 for row in sequences), len(long_text))
 
-    def test_eval_token_cap_is_exact(self):
-        sequences = PREPARE.make_sequences(["abcdef"], max_target_tokens=4)
-        self.assertEqual(sequences, [[PREPARE.BOS_TOKEN_ID, 97, 98, 99, 100]])
+    def test_evaluation_examples_are_balanced_single_target_and_non_overlapping(self):
+        collector = PREPARE.EvaluationCollector(
+            target_examples=5,
+            context_lengths=(1, 2),
+            boundary_token_id=PREPARE.BOS_TOKEN_ID,
+        )
+        collector.add_document("doc-1", b"abcdefghijk")
+
+        self.assertTrue(collector.complete)
+        self.assertEqual(collector.context_length_histogram(), {"1": 3, "2": 2})
+        self.assertEqual(
+            [example["target"] for example in collector.examples],
+            [ord("a"), ord("c"), ord("d"), ord("f"), ord("g")],
+        )
+        spans = [
+            (example["source_start"], example["source_end"])
+            for example in collector.examples
+        ]
+        self.assertEqual(spans, [(0, 1), (1, 3), (3, 4), (4, 6), (6, 7)])
+        self.assertTrue(
+            all(
+                len(example["context"])
+                == example["source_end"] - example["source_start"]
+                for example in collector.examples
+            )
+        )
+        self.assertEqual(
+            collector.context_payload("smoke-test")["candidate_protocol"],
+            "offline_next_token_logits_v3",
+        )
+
+    def test_evaluation_requires_at_least_one_example_per_context_length(self):
+        with self.assertRaisesRegex(ValueError, "cover every"):
+            PREPARE.EvaluationCollector(
+                target_examples=1,
+                context_lengths=(1, 2),
+                boundary_token_id=PREPARE.BOS_TOKEN_ID,
+            )
 
     def test_ordered_document_digest_has_unambiguous_boundaries(self):
         self.assertNotEqual(

@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 import struct
 import tempfile
@@ -7,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from autotrain_bench.config import TaskConfig
+from autotrain_bench.training_data import verify_training_data
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,7 +40,95 @@ def recognized_manifest():
     }
 
 
+def source_manifest(path, files=None):
+    payload = {
+        "schema_version": 1,
+        "dataset": MODULE.DATASET,
+        "revision": MODULE.DATASET_REVISION,
+        "upstream_sample": MODULE.UPSTREAM_SAMPLE,
+        "files": [
+            {
+                "file": f"sample/10BT/{name}",
+                "bytes": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(),
+            }
+            for name, data in (files or {"part.parquet": b"source"}).items()
+        ],
+    }
+    path.write_text(json.dumps(payload))
+    return path
+
+
 class PretrainV1Tests(unittest.TestCase):
+    def test_pinned_manifest_covers_all_upstream_shards(self):
+        payload = json.loads(MODULE.SOURCE_MANIFEST_PATH.read_bytes())
+        self.assertEqual(payload["revision"], MODULE.DATASET_REVISION)
+        self.assertEqual(
+            [item["file"] for item in payload["files"]],
+            [f"sample/10BT/{index:03d}_00000.parquet" for index in range(14)],
+        )
+
+    def test_local_source_requires_exact_pinned_bytes_and_inventory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            source.mkdir()
+            pinned = source_manifest(root / "source-files.json")
+            path = source / "part.parquet"
+            with patch.object(MODULE, "SOURCE_MANIFEST_PATH", pinned):
+                for layout in (source, source / "sample/10BT"):
+                    layout.mkdir(parents=True, exist_ok=True)
+                    if path.exists():
+                        path.unlink()
+                    path = layout / "part.parquet"
+                    path.write_bytes(b"source")
+                    files, receipt, _ = MODULE.verify_source(source)
+                    self.assertEqual(files, [path])
+                    self.assertEqual(receipt["status"], "verified")
+                for content in (b"sourc", b"SOURCE"):
+                    path.write_bytes(content)
+                    with self.assertRaisesRegex(MODULE.PreparationError, "mismatch"):
+                        MODULE.verify_source(source)
+                path.write_bytes(b"source")
+                extra = source / "extra.parquet"
+                extra.write_bytes(b"source")
+                with self.assertRaisesRegex(MODULE.PreparationError, "unexpected"):
+                    MODULE.verify_source(source)
+                extra.unlink()
+                duplicate = source / "part.parquet"
+                duplicate.write_bytes(b"source")
+                with self.assertRaisesRegex(MODULE.PreparationError, "duplicate"):
+                    MODULE.verify_source(source)
+                duplicate.unlink()
+                path.unlink()
+                with self.assertRaises(MODULE.PreparationError):
+                    MODULE.verify_source(source)
+
+    def test_bad_source_fails_before_loading_dependencies_or_creating_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            source.mkdir()
+            (source / "part.parquet").write_bytes(b"SOURCE")
+            pinned = source_manifest(root / "source-files.json")
+            with patch.object(MODULE, "SOURCE_MANIFEST_PATH", pinned):
+                with patch.object(MODULE, "_load_dependencies") as dependencies:
+                    with self.assertRaisesRegex(MODULE.PreparationError, "checksum"):
+                        MODULE.prepare(
+                            source_dir=source,
+                            output_dir=root / "output",
+                            target_train_tokens=1,
+                            shard_tokens=1,
+                            eval_examples=1,
+                            eval_context_lengths=(1,),
+                            accept_large_download=False,
+                            force=False,
+                        )
+                    dependencies.assert_not_called()
+            self.assertEqual(
+                {p.name for p in root.iterdir()}, {"source", "source-files.json"}
+            )
+
     def test_force_refuses_unrecognized_or_overlapping_targets(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -51,8 +141,8 @@ class PretrainV1Tests(unittest.TestCase):
                 "source_dir": source,
                 "target_train_tokens": 1,
                 "shard_tokens": 1,
-                "eval_target_tokens": 1,
-                "eval_sequence_targets": 1,
+                "eval_examples": 1,
+                "eval_context_lengths": (1,),
                 "accept_large_download": False,
                 "force": True,
             }
@@ -90,8 +180,8 @@ class PretrainV1Tests(unittest.TestCase):
                     output_dir=link,
                     target_train_tokens=1,
                     shard_tokens=1,
-                    eval_target_tokens=1,
-                    eval_sequence_targets=1,
+                    eval_examples=1,
+                    eval_context_lengths=(1,),
                     accept_large_download=False,
                     force=True,
                 )
@@ -187,10 +277,10 @@ class PretrainV1Tests(unittest.TestCase):
             private = root / "private"
             public.mkdir()
             private.mkdir()
-            analysis = private / "analysis.json"
-            test = private / "test.json"
-            analysis.write_text('{"sequences":[[50256,1]]}', encoding="utf-8")
-            test.write_text('{"sequences":[[50256,2]]}', encoding="utf-8")
+            analysis = private / "analysis"
+            test = private / "test"
+            analysis.mkdir()
+            test.mkdir()
             payload = json.loads(TASK.read_text(encoding="utf-8"))
             payload["paths"] = {
                 "train": str(public),
@@ -207,6 +297,10 @@ class PretrainV1Tests(unittest.TestCase):
             self.assertEqual(task.task_kind, "benchmark_challenge")
             self.assertEqual(task.vocab_size, 50_257)
             self.assertEqual(task.context_length, 2_048)
+            self.assertEqual(
+                task.context_lengths,
+                (64, 128, 256, 512, 1_024, 2_048),
+            )
             self.assertEqual(task.train_dir, public.resolve())
 
     def test_uint16_shards_preserve_document_spans(self):
@@ -229,14 +323,28 @@ class PretrainV1Tests(unittest.TestCase):
             self.assertEqual(struct.unpack("<2H", second.read_bytes()), (3, 4))
             self.assertEqual([shard["tokens"] for shard in shards], [3, 2])
 
-    def test_preview_evaluation_cap_is_exact(self):
-        collector = MODULE.EvaluationCollector(target_tokens=7, sequence_targets=3)
-        collector.add_document([50_256, 1, 2, 3, 4, 5, 6, 7, 8])
+    def test_preview_evaluation_is_balanced_and_non_overlapping(self):
+        collector = MODULE.EvaluationCollector(
+            target_examples=5,
+            context_lengths=(1, 3),
+            boundary_token_id=50_256,
+        )
+        collector.add_document("doc-1", [50_256, 1, 2, 3, 4, 5, 6, 7, 8, 9])
         self.assertTrue(collector.complete)
-        self.assertEqual(collector.token_count, 7)
         self.assertEqual(
-            collector.sequences,
-            [[50_256, 1, 2, 3], [50_256, 4, 5, 6], [50_256, 7]],
+            collector.context_length_histogram(),
+            {"1": 3, "3": 2},
+        )
+        self.assertEqual(
+            [example["target"] for example in collector.examples],
+            [1, 4, 5, 8, 9],
+        )
+        self.assertEqual(
+            [
+                (example["source_start"], example["source_end"])
+                for example in collector.examples
+            ],
+            [(0, 1), (1, 4), (4, 5), (5, 8), (8, 9)],
         )
 
     def test_builder_keeps_raw_and_tokenized_train_but_not_holdouts(self):
@@ -321,6 +429,7 @@ class PretrainV1Tests(unittest.TestCase):
             source = root / "source"
             source.mkdir()
             (source / "part.parquet").write_bytes(b"source")
+            pinned = source_manifest(root / "source-files.json")
             output = root / "generated"
             dependencies = (
                 None,
@@ -328,7 +437,9 @@ class PretrainV1Tests(unittest.TestCase):
                 FakeParquet(),
                 FakeTiktoken(),
             )
-            with patch.object(MODULE, "_load_dependencies", return_value=dependencies):
+            with patch.object(MODULE, "SOURCE_MANIFEST_PATH", pinned), patch.object(
+                MODULE, "_load_dependencies", return_value=dependencies
+            ):
                 with patch.object(MODULE, "iter_documents", return_value=iter(rows)):
                     with patch.object(MODULE, "preview_split", side_effect=split):
                         with patch("builtins.print"):
@@ -337,8 +448,8 @@ class PretrainV1Tests(unittest.TestCase):
                                 output_dir=output,
                                 target_train_tokens=4,
                                 shard_tokens=4,
-                                eval_target_tokens=2,
-                                eval_sequence_targets=2,
+                                eval_examples=2,
+                                eval_context_lengths=(1,),
                                 accept_large_download=False,
                                 force=False,
                             )
@@ -350,10 +461,19 @@ class PretrainV1Tests(unittest.TestCase):
                 ["train-1", "train-2"],
             )
             self.assertTrue((output / "public/tokenized/tokens-00000.bin").is_file())
-            self.assertTrue((output / "private/analysis.json").is_file())
-            self.assertTrue((output / "private/test.json").is_file())
+            for split in ("analysis", "test"):
+                self.assertTrue((output / f"private/{split}/contexts.json").is_file())
+                self.assertTrue((output / f"private/{split}/targets.json").is_file())
             self.assertEqual(manifest["raw_train"]["documents"], 2)
             self.assertEqual(manifest["tokenized_train"]["documents"], 2)
+            verified = verify_training_data(output / "public")
+            self.assertEqual(verified["files"], 5)
+            public = json.loads((output / "public/manifest.json").read_bytes())
+            self.assertEqual(public["source"]["verification"]["status"], "verified")
+            self.assertNotIn("preview_hidden_evaluation", public)
+            self.assertFalse(
+                any("private" in item["file"] for item in public["integrity"]["files"])
+            )
 
 
 if __name__ == "__main__":

@@ -19,7 +19,13 @@ from autotrain_bench.agent_control import AgentControlStepResult
 from autotrain_bench.agent_api_bundle import publish_agent_api_bundle
 from autotrain_bench.challenge import (
     FORMAL_ARTIFACT_DIGEST_FIELDS,
+    FORMAL_ARTIFACT_IDENTITY_ALGORITHMS,
+    ChallengeRelease,
     ReleaseVerificationReceipt,
+)
+from autotrain_bench.artifact_identity import (
+    HIDDEN_BUNDLE_IDENTITY_ALGORITHM,
+    hidden_bundle_sha256,
 )
 from autotrain_bench.config import (
     AgentConfig,
@@ -35,6 +41,7 @@ from autotrain_bench.local_mailbox import (
 )
 from autotrain_bench.local_agent_execution import describe_local_agent_execution
 from autotrain_bench.results import RESULT_SCHEMA_VERSION
+from autotrain_bench.training_data import verify_training_data, write_training_manifest
 from autotrain_bench.supervisor import (
     MAX_COMMAND_STREAM_BYTES,
     MAX_INCUMBENT_DECLARATIONS,
@@ -44,11 +51,13 @@ from autotrain_bench.supervisor import (
 )
 from autotrain_bench.worker_protocol import (
     BASELINE_REQUIREMENTS,
+    CANDIDATE_PREDICTION_STORAGE_QUOTA,
     CONFORMANCE_RECEIPT_VERSION,
     GPU_DEVICE_ISOLATION,
     HIDDEN_DATASET_IDENTITY_VERIFICATION,
     HIDDEN_DATASET_ISOLATION,
     Capability,
+    CandidateEvaluationResult,
     CommandResult,
     ConformanceReceipt,
     EnforcementLevel,
@@ -301,7 +310,7 @@ class FakeWorker:
         evaluator_workload,
         timeout_seconds=None,
     ):
-        del episode_id, task, resources, candidate_dir, output_dir
+        del episode_id, resources, candidate_dir, output_dir
         if not isinstance(candidate_workload, ResolvedWorkload):
             raise AssertionError("Candidate workload is not resolved")
         if not isinstance(evaluator_workload, ResolvedWorkload):
@@ -322,8 +331,22 @@ class FakeWorker:
         if self.evaluation_failure is not None:
             raise WorkerFailure(self.evaluation_failure)
         if split == "analysis" and self.analysis_nlls:
-            return self.analysis_nlls.pop(0)
-        return 1.25 if split == "analysis" else self.test_nll
+            nll = self.analysis_nlls.pop(0)
+        else:
+            nll = 1.25 if split == "analysis" else self.test_nll
+        performance_score = (
+            100.0
+            if task.vocab_size == 1
+            else 100.0 * max(0.0, min(1.0, 1.0 - nll / math.log(task.vocab_size)))
+        )
+        return CandidateEvaluationResult(
+            performance_score=performance_score,
+            raw_metrics={"mean_nll": nll},
+            candidate_wall_seconds=2.0,
+            task_count=3,
+            input_tokens=6,
+            prediction_bytes=64,
+        )
 
 
 class SupervisorTests(unittest.TestCase):
@@ -335,8 +358,8 @@ class SupervisorTests(unittest.TestCase):
         candidate = workspace / "candidate"
         candidate.mkdir()
         (candidate / "candidate.py").write_text(
-            "def load(candidate_dir, device): return None\n"
-            "def next_token_logits(model, input_ids): return []\n",
+            "def run_offline(candidate_dir, contexts_path, output_dir, device): "
+            "return None\n",
             encoding="utf-8",
         )
         self.config = TaskConfig.load(TASK)
@@ -352,16 +375,65 @@ class SupervisorTests(unittest.TestCase):
         self.workspace = workspace
         self.worker = FakeWorker()
         self.worker.hidden_dataset_digests = {
-            "analysis": hashlib.sha256(
-                self.config.analysis_path.read_bytes()
-            ).hexdigest(),
-            "test": hashlib.sha256(self.config.test_path.read_bytes()).hexdigest(),
+            "analysis": hidden_bundle_sha256(self.config.analysis_path),
+            "test": hidden_bundle_sha256(self.config.test_path),
         }
         self.clock = FakeClock()
         self.episode = root / "episode"
 
     def tearDown(self):
         self.temporary.cleanup()
+
+    def test_verification_evidence_must_bind_train_before_task_reveal(self):
+        valid = verify_training_data(self.config.train_dir)
+        root = self.episode.parent
+        for index, invalid in enumerate(
+            (
+                {},
+                {**valid, "status": "not_verified"},
+                {**valid, "manifest_sha256": "0" * 64},
+            )
+        ):
+            with self.subTest(evidence=invalid):
+                self.episode = root / f"episode-{index}"
+                with patch.object(self.worker, "describe_capabilities") as worker:
+                    with self.assertRaisesRegex(ValueError, "verification must bind"):
+                        self.supervisor(training_data_verification=invalid)
+                    worker.assert_not_called()
+                self.assertFalse((self.episode / "public/task.json").exists())
+                self.assertFalse((self.episode / "state.json").exists())
+
+    def test_verified_identity_is_recorded_without_reading_dataset_files(self):
+        supplied = verify_training_data(self.config.train_dir)
+        # Only the manifest is accessible here. A deployment can verify and
+        # expose the actual dataset on the Worker side.
+        train = self.episode.parent / "train-manifest-only"
+        train.mkdir()
+        (train / "manifest.json").write_bytes(
+            (self.config.train_dir / "manifest.json").read_bytes()
+        )
+        config = replace(
+            self.config,
+            train_dir=train,
+            analysis_path=self.episode.parent / "absent-analysis",
+            test_path=self.episode.parent / "absent-test",
+        )
+        with patch(
+            "autotrain_bench.training_data.verify_training_data",
+            side_effect=AssertionError("Core must not scan TRAIN"),
+        ):
+            supervisor = self.supervisor(
+                config=config, training_data_verification=supplied
+            )
+        receipt = supervisor.state["training_data_verification"]
+        self.assertEqual(receipt, supplied)
+        supplied["status"] = "changed by caller"
+        self.assertEqual(receipt["status"], "verified")
+        self.assertEqual(receipt["files"], 1)
+        self.assertEqual(
+            supervisor.state["artifact_identities"]["train_manifest_sha256"],
+            receipt["manifest_sha256"],
+        )
 
     def supervisor(
         self,
@@ -373,15 +445,20 @@ class SupervisorTests(unittest.TestCase):
         release_verification=None,
         agent_execution=None,
         worker_conformance=None,
+        training_data_verification=None,
     ):
+        resolved_config = config or self.config
+        if training_data_verification is None:
+            training_data_verification = verify_training_data(resolved_config.train_dir)
         resolved_agent = agent or self.agent
         agent_api_dir = publish_agent_api_bundle(self.episode / "public" / "agent_api")
         self.mailbox = LocalFileMailbox(self.episode / "control")
         self.mailbox.initialize()
         supervisor = Supervisor(
-            config=config or self.config,
+            config=resolved_config,
             agent=resolved_agent,
             resources=self.resources,
+            training_data_verification=training_data_verification,
             track=track,
             episode_dir=self.episode,
             agent_api_dir=agent_api_dir,
@@ -432,6 +509,7 @@ class SupervisorTests(unittest.TestCase):
                 config=self.config,
                 agent=self.agent,
                 resources=self.resources,
+                training_data_verification=verify_training_data(self.config.train_dir),
                 track="B",
                 episode_dir=self.episode,
                 agent_api_dir=self.episode / "public" / "agent_api",
@@ -441,17 +519,29 @@ class SupervisorTests(unittest.TestCase):
             )
         self.assertFalse((self.episode / "control").exists())
 
-    def test_comparison_key_and_release_are_recorded_publicly(self):
+    def test_public_release_contains_only_declared_identifiers(self):
         comparison_key = {
             "challenge_id": "lm-pretrain-v1",
             "track": "B",
             "track_config": "preview-b-6x1h",
             "runtime_profile": "h100-sxm-80gb-x4",
         }
-        release = {
+        public_release = {
             "challenge_id": "lm-pretrain-v1",
             "release_stage": "preview",
             "leaderboard_eligible": False,
+            "track_config_id": comparison_key["track_config"],
+            "runtime_profile_id": comparison_key["runtime_profile"],
+        }
+        release = {
+            **public_release,
+            "challenge_manifest_sha256": "b" * 64,
+            "task_manifest_sha256": hashlib.sha256(
+                self.config.source.read_bytes()
+            ).hexdigest(),
+            "private_evaluation": {"context_lengths": [1, 3]},
+            "track_config": {"private_extension": "not-for-the-agent"},
+            "runtime_profile": {"private_extension": "not-for-the-agent"},
         }
         supervisor = self.supervisor(
             comparison_key=comparison_key,
@@ -464,7 +554,73 @@ class SupervisorTests(unittest.TestCase):
             supervisor.public_task_path.read_text(encoding="utf-8")
         )
         self.assertEqual(public_task["comparison_key"], comparison_key)
-        self.assertEqual(public_task["challenge_release"], release)
+        self.assertEqual(public_task["challenge_release"], public_release)
+        self.assertEqual(supervisor.state["challenge_release"], release)
+
+    def test_full_agent_manifest_does_not_identify_hidden_length_choices(self):
+        root = self.episode.parent
+        task_path = root / "task.json"
+        challenge_path = root / "challenge.json"
+        task_payload = json.loads(self.config.source.read_text(encoding="utf-8"))
+        task_payload["paths"] = {
+            name: str((self.config.source.parent / value).resolve())
+            for name, value in task_payload["paths"].items()
+        }
+        task_payload["evaluation"]["entrypoint"] = str(self.config.evaluator_entrypoint)
+        challenge_payload = json.loads(
+            (ROOT / "dev_tasks/smoke_lm/challenge.json").read_text(encoding="utf-8")
+        )
+        challenge_payload["task_id"] = self.config.task_id
+        challenge_payload["challenge_id"] = "hidden-lengths-regression"
+        challenge_path.write_text(json.dumps(challenge_payload), encoding="utf-8")
+        public_manifests = {}
+        private_digests = set()
+        for index, lengths in enumerate(([1], [2], [1, 3], [1, 2, 3])):
+            task_payload["evaluation"]["context_lengths"] = lengths
+            task_path.write_text(json.dumps(task_payload), encoding="utf-8")
+            task = TaskConfig.load(task_path)
+            release = ChallengeRelease.load(challenge_path)
+            private_digests.add(release.task_manifest_sha256)
+            for track_config in ("smoke-a-5m", "smoke-b-3x75s"):
+                with self.subTest(lengths=lengths, track_config=track_config):
+                    resolved = release.resolve(
+                        task,
+                        track_config_id=track_config,
+                        runtime_profile_id="cpu-local",
+                    )
+                    self.episode = root / f"episode-{track_config}-{index}"
+                    supervisor = self.supervisor(
+                        track=resolved.track,
+                        config=resolved.task,
+                        comparison_key=resolved.comparison_key.public_manifest(),
+                        challenge_release=resolved.release_manifest,
+                    )
+                    public = json.loads(
+                        supervisor.public_task_path.read_text(encoding="utf-8")
+                    )
+                    self.assertEqual(
+                        public, public_manifests.setdefault(track_config, public)
+                    )
+                    audit = json.loads(
+                        supervisor.state_path.read_text(encoding="utf-8")
+                    )
+                    for record in (
+                        audit["challenge_release"],
+                        audit["artifact_identities"],
+                    ):
+                        self.assertEqual(
+                            record["task_manifest_sha256"],
+                            release.task_manifest_sha256,
+                        )
+                    self.assertNotIn(
+                        release.task_manifest_sha256,
+                        json.dumps(supervisor.public_status()),
+                    )
+        self.assertEqual(len(private_digests), 4)
+        for public in public_manifests.values():
+            serialized = json.dumps(public)
+            for digest in private_digests:
+                self.assertNotIn(digest, serialized)
 
     def test_leaderboard_eligibility_requires_the_complete_formal_contract(self):
         digest = "@sha256:" + "a" * 64
@@ -477,9 +633,10 @@ class SupervisorTests(unittest.TestCase):
         )
         formal_train_dir = formal_task_dir / "train"
         formal_train_dir.mkdir()
-        (formal_train_dir / "manifest.json").write_text(
-            '{"frozen":true}\n', encoding="utf-8"
+        (formal_train_dir / "train.json").write_bytes(
+            (self.config.train_dir / "train.json").read_bytes()
         )
+        write_training_manifest(formal_train_dir, {"frozen": True})
         config = replace(
             self.config,
             source=formal_task,
@@ -536,10 +693,8 @@ class SupervisorTests(unittest.TestCase):
             "train_manifest_sha256": hashlib.sha256(
                 (config.train_dir / "manifest.json").read_bytes()
             ).hexdigest(),
-            "analysis_sha256": hashlib.sha256(
-                config.analysis_path.read_bytes()
-            ).hexdigest(),
-            "test_sha256": hashlib.sha256(config.test_path.read_bytes()).hexdigest(),
+            "analysis_sha256": hidden_bundle_sha256(config.analysis_path),
+            "test_sha256": hidden_bundle_sha256(config.test_path),
         }
         core_revision = "d" * 40
         receipt = ReleaseVerificationReceipt(
@@ -547,6 +702,7 @@ class SupervisorTests(unittest.TestCase):
             release_id="test-byte-lm-v1",
             core_revision=core_revision,
             artifact_sha256=artifacts,
+            artifact_identity_algorithms=FORMAL_ARTIFACT_IDENTITY_ALGORITHMS,
         )
         with patch(
             "autotrain_bench.supervisor._core_identity",
@@ -681,6 +837,7 @@ class SupervisorTests(unittest.TestCase):
             artifact_sha256={
                 field: "a" * 64 for field in FORMAL_ARTIFACT_DIGEST_FIELDS
             },
+            artifact_identity_algorithms=FORMAL_ARTIFACT_IDENTITY_ALGORITHMS,
             workload_resolution_acceptance={"training": acceptance},
         )
         supervisor = self.supervisor(config=config, release_verification=receipt)
@@ -787,7 +944,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(final["status"], "finalized")
         self.assertEqual(final["outcome"], "failed")
         self.assertEqual(final["failure"], "test_evaluation_failed")
-        self.assertIsNone(final["test_nll"])
+        self.assertIsNone(final["test_performance_score"])
 
     def test_formal_inference_fails_closed_without_gateway_execution_evidence(self):
         digest = "@sha256:" + "a" * 64
@@ -930,7 +1087,6 @@ class SupervisorTests(unittest.TestCase):
                 "cli.py",
                 "client.py",
                 "candidate_protocol.py",
-                "candidate_preflight.py",
             },
         )
         environment = os.environ.copy()
@@ -1018,7 +1174,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(command["exit_code"], 0)
         committed = supervisor.commit_lease("/output/candidate")
         self.assertNotIn("val_nll", committed)
-        self.assertNotIn("analysis_nll", committed)
+        self.assertNotIn("analysis_performance_score", committed)
         self.assertEqual(self.worker.evaluations, [])
         self.assertIsNone(supervisor.state["active_lease"])
         self.assertIsNone(supervisor.state["incumbent_id"])
@@ -1036,7 +1192,7 @@ class SupervisorTests(unittest.TestCase):
         staged = supervisor.finish()
         self.assertEqual(staged["status"], "closed")
         self.assertIsNone(staged["outcome"])
-        self.assertIsNone(staged["test_nll"])
+        self.assertIsNone(staged["test_performance_score"])
         self.assertIsNone(supervisor.state["agent_control"]["cleanup_complete"])
         self.assertNotIn(
             "RESULT_PUBLICATION_PREPARED",
@@ -1047,8 +1203,24 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(final["status"], "finalized")
         self.assertEqual(final["result_schema_version"], RESULT_SCHEMA_VERSION)
         self.assertEqual(final["outcome"], "success")
-        self.assertEqual(final["test_nll"], 1.5)
-        self.assertAlmostEqual(final["test_perplexity"], math.exp(1.5))
+        self.assertEqual(final["test_performance_score"], 0.0)
+        self.assertEqual(final["test_raw_metrics"]["mean_nll"], 1.5)
+        self.assertEqual(
+            final["test_cost"],
+            {
+                "time_per_task": 2.0 / 3.0,
+                "candidate_wall_seconds": 2.0,
+                "task_count": 3,
+                "input_tokens": 6,
+                "prediction_bytes": 64,
+                "tasks_per_second": 1.5,
+                "input_tokens_per_second": 3.0,
+            },
+        )
+        self.assertEqual(
+            final["analysis_trajectory"][0]["analysis_cost"],
+            final["test_cost"],
+        )
         self.assertIsNone(final["failure"])
         self.assertTrue(final["agent_finish_observed"])
         self.assertEqual(self.worker.evaluations, ["test", "analysis"])
@@ -1098,8 +1270,8 @@ class SupervisorTests(unittest.TestCase):
         hidden = self.episode.parent / "late-hidden"
         config = replace(
             self.config,
-            analysis_path=hidden / "analysis.json",
-            test_path=hidden / "test.json",
+            analysis_path=hidden / "analysis",
+            test_path=hidden / "test",
         ).validate()
         supervisor = self.supervisor(config=config)
         supervisor.start_lease()
@@ -1117,16 +1289,19 @@ class SupervisorTests(unittest.TestCase):
         self.assertTrue(supervisor.cleanup_agent_control())
 
         def materialize(request):
-            hidden.mkdir(exist_ok=True)
-            path = hidden / f"{request.name}.json"
+            path = hidden / request.name
+            path.mkdir(parents=True)
             token = 1 if request.name == "analysis" else 2
-            path.write_text(
-                json.dumps({"sequences": [[0, token]]}),
+            (path / "contexts.json").write_text(
+                json.dumps({"contexts": [[0]]}),
                 encoding="utf-8",
             )
-            self.worker.hidden_dataset_digests[request.name] = hashlib.sha256(
-                path.read_bytes()
-            ).hexdigest()
+            (path / "targets.json").write_text(
+                json.dumps({"targets": [token]}), encoding="utf-8"
+            )
+            self.worker.hidden_dataset_digests[request.name] = hidden_bundle_sha256(
+                path
+            )
 
         self.worker.hidden_dataset_resolution_hook = materialize
 
@@ -1136,11 +1311,18 @@ class SupervisorTests(unittest.TestCase):
 
         self.assertEqual(final["status"], "finalized")
         self.assertEqual(self.worker.evaluations, ["test", "analysis"])
-        self.assertTrue(config.analysis_path.is_file())
-        self.assertTrue(config.test_path.is_file())
+        self.assertTrue(config.analysis_path.is_dir())
+        self.assertTrue(config.test_path.is_dir())
+        for path in (config.analysis_path, config.test_path):
+            self.assertTrue((path / "contexts.json").is_file())
+            self.assertTrue((path / "targets.json").is_file())
         identities = supervisor.state["artifact_identities"]["hidden_evaluation"]
         self.assertEqual(set(identities), {"analysis_sha256", "test_sha256"})
         self.assertTrue(all(identities.values()))
+        self.assertEqual(
+            supervisor.state["artifact_identity_algorithms"]["hidden_evaluation"],
+            HIDDEN_BUNDLE_IDENTITY_ALGORITHM,
+        )
 
     def test_postmortem_result_is_not_published_before_deployment_cleanup(self):
         supervisor = self.supervisor()
@@ -1337,8 +1519,8 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(final["status"], "finalized")
         self.assertEqual(final["outcome"], "failed")
         self.assertEqual(final["failure"], "no_candidate")
-        self.assertIsNone(final["test_nll"])
-        self.assertIsNone(final["test_perplexity"])
+        self.assertIsNone(final["test_performance_score"])
+        self.assertIsNone(final["test_raw_metrics"])
         self.assertEqual(self.worker.evaluations, [])
 
     def test_failed_test_evaluation_has_no_metric(self):
@@ -1354,8 +1536,8 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(final["status"], "finalized")
         self.assertEqual(final["outcome"], "failed")
         self.assertEqual(final["failure"], "test_evaluation_failed")
-        self.assertIsNone(final["test_nll"])
-        self.assertIsNone(final["test_perplexity"])
+        self.assertIsNone(final["test_performance_score"])
+        self.assertIsNone(final["test_raw_metrics"])
 
     def test_test_worker_teardown_failure_is_infrastructure_failure(self):
         supervisor = self.supervisor()
@@ -1397,8 +1579,8 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(final["status"], "infrastructure_failure")
         self.assertEqual(final["outcome"], "failed")
         self.assertEqual(final["failure"], "test_evaluation_infrastructure_failure")
-        self.assertIsNone(final["test_nll"])
-        self.assertIsNone(final["test_perplexity"])
+        self.assertIsNone(final["test_performance_score"])
+        self.assertIsNone(final["test_raw_metrics"])
 
     def test_nonfinite_test_nll_is_a_failed_experiment(self):
         supervisor = self.supervisor()
@@ -1412,10 +1594,10 @@ class SupervisorTests(unittest.TestCase):
 
         self.assertEqual(final["outcome"], "failed")
         self.assertEqual(final["failure"], "invalid_test_metric")
-        self.assertIsNone(final["test_nll"])
-        self.assertIsNone(final["test_perplexity"])
+        self.assertIsNone(final["test_performance_score"])
+        self.assertIsNone(final["test_raw_metrics"])
 
-    def test_perplexity_overflow_is_a_failed_experiment(self):
+    def test_large_finite_nll_still_produces_a_finite_score(self):
         supervisor = self.supervisor()
         supervisor.start_lease()
         committed = supervisor.commit_lease("/output/candidate")
@@ -1425,10 +1607,35 @@ class SupervisorTests(unittest.TestCase):
         supervisor.finish()
         final = self.finalize_after_agent_stop(supervisor)
 
-        self.assertEqual(final["outcome"], "failed")
-        self.assertEqual(final["failure"], "perplexity_overflow")
-        self.assertIsNone(final["test_nll"])
-        self.assertIsNone(final["test_perplexity"])
+        self.assertEqual(final["outcome"], "success")
+        self.assertEqual(
+            final["test_performance_score"],
+            0.0,
+        )
+        self.assertEqual(final["test_raw_metrics"], {"mean_nll": 710.0})
+
+    def test_nonzero_performance_score_is_persisted_in_the_final_result(self):
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+        committed = supervisor.commit_lease("/output/candidate")
+        supervisor.declare_incumbent(committed["candidate_id"])
+        self.worker.test_nll = 0.5
+
+        supervisor.finish()
+        final = self.finalize_after_agent_stop(supervisor)
+        persisted = json.loads(supervisor.state_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(final["outcome"], "success")
+        self.assertAlmostEqual(
+            final["test_performance_score"],
+            54.488038668658135,
+        )
+        self.assertEqual(final["test_raw_metrics"], {"mean_nll": 0.5})
+        self.assertEqual(
+            persisted["test_performance_score"],
+            final["test_performance_score"],
+        )
+        self.assertEqual(persisted["test_raw_metrics"], {"mean_nll": 0.5})
 
     def test_agent_text_cannot_turn_local_encoding_errors_into_infrastructure(self):
         supervisor = self.supervisor()
@@ -2014,6 +2221,19 @@ class SupervisorTests(unittest.TestCase):
             supervisor.state["policy_violations"],
         )
 
+    def test_prediction_storage_quota_is_a_required_capability(self):
+        self.worker.capability_overrides[CANDIDATE_PREDICTION_STORAGE_QUOTA] = (
+            Capability(EnforcementLevel.UNSUPPORTED, "unbounded bind mount")
+        )
+
+        supervisor = self.supervisor()
+
+        self.assertIn(
+            "evaluation_worker_capability_insufficient:"
+            "candidate_prediction_storage_quota",
+            supervisor.state["policy_violations"],
+        )
+
     def test_worker_descriptor_must_declare_its_assigned_roles(self):
         self.worker.roles = ("research",)
         supervisor = self.supervisor()
@@ -2287,7 +2507,7 @@ class SupervisorTests(unittest.TestCase):
 
         self.assertEqual(self.worker.evaluation_timeouts, [])
         self.assertNotIn("val_nll", committed)
-        self.assertNotIn("analysis_nll", committed)
+        self.assertNotIn("analysis_performance_score", committed)
         self.assertEqual(supervisor.state["status"], "active")
         self.clock.advance(2)
         self.assertTrue(supervisor.enforce_deadlines())
@@ -2337,7 +2557,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(final["status"], "finalized")
         self.assertEqual(final["outcome"], "success")
         self.assertEqual(final["test_status"], "evaluated")
-        self.assertEqual(final["test_nll"], 1.5)
+        self.assertEqual(final["test_raw_metrics"]["mean_nll"], 1.5)
         self.assertEqual(final["analysis_status"], "incomplete")
         self.assertEqual(final["analysis_failure"], "hidden_dataset_resolution_failure")
         self.assertFalse(final["analysis_identity_verified"])
@@ -2364,7 +2584,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(public["status"], "finalized")
         self.assertEqual(public["outcome"], "success")
         self.assertEqual(public["test_status"], "evaluated")
-        self.assertEqual(public["test_nll"], 1.5)
+        self.assertEqual(public["test_raw_metrics"]["mean_nll"], 1.5)
         self.assertEqual(public["analysis_status"], "incomplete")
         self.assertEqual(public["analysis_failure"], "analysis_worker_teardown_failure")
         self.assertEqual(
@@ -2431,10 +2651,9 @@ class SupervisorTests(unittest.TestCase):
         self.assertTrue(supervisor.enforce_deadlines())
         self.assertEqual(supervisor.state["final_candidate_id"], first["candidate_id"])
         self.assertEqual(supervisor.state["status"], "closed")
-        self.assertIsNone(supervisor.state["test_nll"])
+        self.assertIsNone(supervisor.state["test_performance_score"])
         self.finalize_after_agent_stop(supervisor)
-        self.assertEqual(supervisor.state["test_nll"], 1.5)
-        self.assertAlmostEqual(supervisor.state["test_perplexity"], math.exp(1.5))
+        self.assertEqual(supervisor.state["test_raw_metrics"]["mean_nll"], 1.5)
 
     def test_incumbent_history_is_ordered_by_supervisor_events(self):
         supervisor = self.supervisor()
@@ -2551,6 +2770,7 @@ class SupervisorTests(unittest.TestCase):
             config=self.config,
             agent=self.agent,
             resources=self.resources,
+            training_data_verification=verify_training_data(self.config.train_dir),
             track="B",
             episode_dir=self.episode,
             agent_api_dir=agent_api_dir,
@@ -2859,8 +3079,8 @@ class SupervisorTests(unittest.TestCase):
 
         self.assertEqual(supervisor.state["status"], "infrastructure_failure")
         self.assertEqual(supervisor.state["outcome"], "failed")
-        self.assertIsNone(supervisor.state["test_nll"])
-        self.assertIsNone(supervisor.state["test_perplexity"])
+        self.assertIsNone(supervisor.state["test_performance_score"])
+        self.assertIsNone(supervisor.state["test_raw_metrics"])
         self.assertEqual(
             supervisor.state["agent_control"]["cleanup_infrastructure_failures"],
             1,
@@ -2982,8 +3202,8 @@ class SupervisorTests(unittest.TestCase):
 
         self.assertEqual(supervisor.state["status"], "dnf")
         self.assertEqual(supervisor.state["outcome"], "failed")
-        self.assertIsNone(supervisor.state["test_nll"])
-        self.assertIsNone(supervisor.state["test_perplexity"])
+        self.assertIsNone(supervisor.state["test_performance_score"])
+        self.assertIsNone(supervisor.state["test_raw_metrics"])
         self.assertEqual(
             supervisor.state["agent_control"]["cleanup_policy_violations"],
             1,

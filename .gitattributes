@@ -1,0 +1,2 @@
+# These fixture bytes are bound by train/manifest.json on every platform.
+/tests/fixtures/task/train/*.json text eol=lf

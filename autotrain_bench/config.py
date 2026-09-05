@@ -9,6 +9,17 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
 
+from .candidate_protocol import (
+    PREDICTION_ARTIFACT_RETENTION,
+    candidate_entrypoint_contract,
+    candidate_helper_api_manifest,
+    context_manifest_contract,
+    prediction_manifest_contract,
+    prediction_storage_manifest,
+    serving_timing_manifest,
+)
+from .worker_protocol import CostContract, PerformanceScoreContract
+
 
 class ConfigError(ValueError):
     """Raised when a task configuration is invalid."""
@@ -27,7 +38,26 @@ class ConfigError(ValueError):
 # Version 4 removes organizer-owned validation feedback. Candidate commit now
 # returns artifact acceptance only; hidden ANALYSIS and TEST run after the
 # research phase is irreversibly sealed.
-AGENT_PROTOCOL_VERSION = 4
+#
+# Version 5 publishes the exact offline prediction-manifest contract and the
+# optional generated helper API in the Agent-visible task manifest.
+#
+# Version 6 promotes Candidate cost to an independent, release-scoped axis. Its
+# primary metric is end-to-end Candidate wall time amortized over the frozen
+# number of evaluation tasks.
+#
+# Version 7 publishes the existing Candidate module/function invocation contract,
+# including ordered argument types and meanings, without adding a self-check.
+#
+# Version 8 publishes the complete context input schema, reader return structure,
+# and binary logit layout for the existing offline Candidate ABI.
+#
+# Version 9 publishes a variable-length policy and max_context_tokens input bound
+# instead of the trusted evaluation sampling lengths.
+#
+# Version 10 limits Agent-visible release metadata to declared identifiers;
+# private manifest digests and audit extensions remain in trusted records.
+AGENT_PROTOCOL_VERSION = 10
 
 # Phases a release may declare as benchmark-owned rather than participant time.
 # `README.md` requires this boundary to be release-defined and identical across
@@ -105,6 +135,17 @@ def _string_list(value: Any, field: str) -> Tuple[str, ...]:
     return tuple(result)
 
 
+def _positive_int_list(value: Any, field: str) -> Tuple[int, ...]:
+    if not isinstance(value, list) or not value:
+        raise ConfigError(f"{field} must be a non-empty integer array")
+    result = tuple(
+        _positive_int(item, f"{field}[{index}]") for index, item in enumerate(value)
+    )
+    if tuple(sorted(set(result))) != result:
+        raise ConfigError(f"{field} must be unique and strictly increasing")
+    return result
+
+
 def agent_environment_names(value: Any, field: str = "agent.environment") -> List[str]:
     if value is None:
         return []
@@ -165,6 +206,22 @@ def evaluator_backend(value: Any, field: str = "evaluation.backend") -> str:
         allowed = ", ".join(sorted(EVALUATOR_BACKENDS))
         raise ConfigError(f"{field} must be one of: {allowed}")
     return value
+
+
+def _performance_score_contract(
+    value: Any, field: str = "evaluation.performance_score"
+) -> PerformanceScoreContract:
+    try:
+        return PerformanceScoreContract.from_manifest(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"{field} is invalid: {exc}") from exc
+
+
+def _cost_contract(value: Any, field: str = "evaluation.cost") -> CostContract:
+    try:
+        return CostContract.from_manifest(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"{field} is invalid: {exc}") from exc
 
 
 def task_kind(value: Any, field: str = "task_kind") -> str:
@@ -440,56 +497,6 @@ class TrainingResources:
 
 
 @dataclass(frozen=True)
-class LeaderboardMetricConfig:
-    """Primary score frozen into the immutable task definition."""
-
-    name: str
-    field: str
-    derived_from: str
-    formula: str
-    direction: str
-
-    @classmethod
-    def load(
-        cls,
-        value: Any,
-        field: str = "evaluation.leaderboard_metric",
-    ) -> "LeaderboardMetricConfig":
-        raw = _mapping(value, field)
-        return cls(
-            name=_string(raw.get("name"), f"{field}.name"),
-            field=_string(raw.get("field"), f"{field}.field"),
-            derived_from=_string(raw.get("derived_from"), f"{field}.derived_from"),
-            formula=_string(raw.get("formula"), f"{field}.formula"),
-            direction=_string(raw.get("direction"), f"{field}.direction"),
-        ).validate()
-
-    def validate(self) -> "LeaderboardMetricConfig":
-        expected = {
-            "name": "perplexity",
-            "field": "test_perplexity",
-            "derived_from": "autoregressive_nll",
-            "formula": "exp(mean_token_nll)",
-            "direction": "minimize",
-        }
-        if self.public_manifest() != expected:
-            raise ConfigError(
-                "v0 requires evaluation.leaderboard_metric to declare "
-                "test_perplexity = exp(mean_token_nll), minimized"
-            )
-        return self
-
-    def public_manifest(self) -> Dict[str, str]:
-        return {
-            "name": self.name,
-            "field": self.field,
-            "derived_from": self.derived_from,
-            "formula": self.formula,
-            "direction": self.direction,
-        }
-
-
-@dataclass(frozen=True)
 class TaskConfig:
     """Fully resolved benchmark task configuration.
 
@@ -510,16 +517,16 @@ class TaskConfig:
     candidate_image: str
     evaluator_image: str
     inference_gateway_image: str
-    metric: str
-    leaderboard_metric: LeaderboardMetricConfig
+    performance_score: PerformanceScoreContract
+    cost: CostContract
     vocab_size: int
     context_length: int
+    context_lengths: Tuple[int, ...]
     benchmark_owned_preparation: Tuple[str, ...]
     track_a_total_seconds: int
     track_b_max_leases: int
     track_b_lease_seconds: int
     evaluator_timeout_seconds: int
-    evaluator_batch_size: int
     evaluator_device: str
     candidate_max_bytes: int
     candidate_max_files: int
@@ -602,9 +609,9 @@ class TaskConfig:
             # after research sealing. Loading a task must not require either
             # file to exist in the research execution environment.
             analysis_path=resolved_path(
-                "analysis", directory=False, require_exists=False
+                "analysis", directory=True, require_exists=False
             ),
-            test_path=resolved_path("test", directory=False, require_exists=False),
+            test_path=resolved_path("test", directory=True, require_exists=False),
             training_image=_string(images.get("training"), "images.training"),
             candidate_image=_string(images.get("candidate"), "images.candidate"),
             evaluator_image=_string(images.get("evaluator"), "images.evaluator"),
@@ -612,15 +619,18 @@ class TaskConfig:
                 images.get("inference_gateway", "python:3.11-slim"),
                 "images.inference_gateway",
             ),
-            metric=_string(evaluation.get("metric"), "evaluation.metric"),
-            leaderboard_metric=LeaderboardMetricConfig.load(
-                evaluation.get("leaderboard_metric")
+            performance_score=_performance_score_contract(
+                evaluation.get("performance_score")
             ),
+            cost=_cost_contract(evaluation.get("cost")),
             vocab_size=_positive_int(
                 evaluation.get("vocab_size"), "evaluation.vocab_size"
             ),
             context_length=_positive_int(
                 evaluation.get("context_length"), "evaluation.context_length"
+            ),
+            context_lengths=_positive_int_list(
+                evaluation.get("context_lengths"), "evaluation.context_lengths"
             ),
             benchmark_owned_preparation=benchmark_owned_preparation(
                 None if timing is None else timing.get("benchmark_owned_preparation")
@@ -638,10 +648,6 @@ class TaskConfig:
                 evaluation.get("timeout_seconds", 120),
                 "evaluation.timeout_seconds",
             ),
-            evaluator_batch_size=_positive_int(
-                evaluation.get("batch_size", 1),
-                "evaluation.batch_size",
-            ),
             evaluator_device=_string(
                 evaluation.get("device", "cpu"),
                 "evaluation.device",
@@ -657,7 +663,7 @@ class TaskConfig:
             evaluator_backend=evaluator_backend(evaluation.get("backend")),
             evaluator_entrypoint=evaluator_entrypoint,
             candidate_protocol=_string(
-                evaluation.get("candidate_protocol", "next_token_logits_v1"),
+                evaluation.get("candidate_protocol", "offline_next_token_logits_v3"),
                 "evaluation.candidate_protocol",
             ),
             analysis_candidate_selection=_string(
@@ -678,28 +684,39 @@ class TaskConfig:
 
     def validate(self) -> "TaskConfig":
         """Validate the immutable task definition and its release classification."""
-        if self.schema_version != 2:
-            raise ConfigError("task schema_version must be 2")
+        if self.schema_version != 6:
+            raise ConfigError("task schema_version must be 6")
         task_kind(self.task_kind)
         if self.task_kind == "development_smoke" and self.leaderboard_eligible:
             raise ConfigError("development smoke tasks may not be leaderboard eligible")
-        if self.metric != "autoregressive_nll":
-            raise ConfigError(
-                "v0 only implements evaluation.metric='autoregressive_nll'"
-            )
-        self.leaderboard_metric.validate()
-        if self.leaderboard_metric.derived_from != self.metric:
-            raise ConfigError(
-                "evaluation.leaderboard_metric.derived_from must match "
-                "evaluation.metric"
-            )
+        if not isinstance(self.performance_score, PerformanceScoreContract):
+            raise ConfigError("evaluation.performance_score is invalid")
+        if not isinstance(self.cost, CostContract):
+            raise ConfigError("evaluation.cost is invalid")
         if self.evaluator_device not in {"cpu", "cuda"}:
             raise ConfigError("evaluation.device must be 'cpu' or 'cuda'")
         evaluator_backend(self.evaluator_backend)
-        if self.candidate_protocol != "next_token_logits_v1":
+        if self.candidate_protocol != "offline_next_token_logits_v3":
             raise ConfigError(
                 "v0 only implements evaluation.candidate_protocol="
-                "'next_token_logits_v1'"
+                "'offline_next_token_logits_v3'"
+            )
+        if (
+            not self.context_lengths
+            or any(
+                isinstance(length, bool) or not isinstance(length, int) or length <= 0
+                for length in self.context_lengths
+            )
+            or tuple(sorted(set(self.context_lengths))) != self.context_lengths
+        ):
+            raise ConfigError(
+                "evaluation.context_lengths must be positive, unique, and "
+                "strictly increasing"
+            )
+        if self.context_lengths[-1] > self.context_length:
+            raise ConfigError(
+                "evaluation.context_lengths must not exceed the "
+                "evaluation.context_length input limit"
             )
         if self.analysis_candidate_selection not in ANALYSIS_CANDIDATE_SELECTIONS:
             raise ConfigError("analysis.candidate_selection must be 'all_committed'")
@@ -804,11 +821,18 @@ class TaskConfig:
                 "backend": self.evaluator_backend,
                 "candidate_image": self.candidate_image,
                 "candidate_protocol": self.candidate_protocol,
-                "metric": self.metric,
-                "leaderboard_metric": self.leaderboard_metric.public_manifest(),
+                "performance_score": self.performance_score.public_manifest(),
+                "cost": self.cost.public_manifest(),
                 "vocab_size": self.vocab_size,
-                "context_length": self.context_length,
-                "batch_size": self.evaluator_batch_size,
+                "max_context_tokens": self.context_length,
+                "context_policy": (
+                    "Evaluation inputs are variable-length token sequences. "
+                    "The exact length distribution is not disclosed during research. "
+                    "Participants choose how to use context to optimize next-token "
+                    "prediction within the resource budget. max_context_tokens is "
+                    "an input bound, not a guarantee that any evaluation example "
+                    "reaches it."
+                ),
                 "device": self.evaluator_device,
                 "candidate_artifact_limits": {
                     "max_bytes": self.candidate_max_bytes,
@@ -816,10 +840,19 @@ class TaskConfig:
                 },
                 "policy_compliant": self.evaluator_policy_compliant,
                 "candidate_boundary": {
-                    "hidden_data_mount": "none",
-                    "channel_mechanism": "worker_defined",
+                    "entrypoint": candidate_entrypoint_contract(),
+                    "context_manifest": context_manifest_contract(),
+                    "target_artifact_mount": "none",
+                    "context_artifact_access": "read_only",
+                    "prediction_artifact_access": "candidate_read_write_isolated",
+                    "prediction_manifest": prediction_manifest_contract(),
+                    "prediction_storage": prediction_storage_manifest(),
+                    "prediction_artifact_retention": PREDICTION_ARTIFACT_RETENTION,
+                    "public_helper_api": candidate_helper_api_manifest(),
+                    "channel_mechanism": "worker_materialized_files",
                     "candidate_egress": "denied",
                     "protocol": self.candidate_protocol,
+                    "serving_timing": serving_timing_manifest(),
                 },
             },
             "budget": budget,

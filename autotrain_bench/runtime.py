@@ -20,11 +20,13 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from .artifact_identity import HIDDEN_BUNDLE_FILENAMES, hidden_bundle_sha256
 from .config import AgentConfig, TaskConfig, TrainingResources
 from .host_agent import HostAgentProcess, start_host_agent_process
-from .results import validated_nll
 from .worker_protocol import (
     CANDIDATE_EVALUATOR_CHANNEL_ISOLATION,
+    CANDIDATE_PREDICTION_ARTIFACT_LIFECYCLE,
+    CANDIDATE_PREDICTION_STORAGE_QUOTA,
     DEADLINE_TERMINATION,
     GPU_DEVICE_ISOLATION,
     HIDDEN_DATASET_IDENTITY_VERIFICATION,
@@ -34,6 +36,7 @@ from .worker_protocol import (
     TRAINING_DATA_READ_ONLY,
     TRAINING_NETWORK_ISOLATION,
     Capability,
+    CandidateEvaluationResult,
     CommandResult,
     EnforcementLevel,
     EvaluationTaskSpec,
@@ -64,6 +67,7 @@ RuntimeFailure = WorkerFailure
 ExecResult = CommandResult
 MAX_RUNTIME_STREAM_BYTES = 1024 * 1024
 _TRUNCATION_MARKER = b"\n[output truncated by AutoTrain-Bench]\n"
+EVALUATION_DIAGNOSTIC_TIMEOUT_SECONDS = 5.0
 
 
 def _sha256_file(path: Path) -> str:
@@ -131,6 +135,52 @@ class _BoundedCapture:
         return payload.decode("utf-8", errors="replace")
 
 
+def _capture_diagnostic_command(
+    command: Sequence[str], *, timeout_seconds: float
+) -> Dict[str, Any]:
+    """Drain diagnostic streams with fixed memory and wall-time limits."""
+
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout = _BoundedCapture()
+    stderr = _BoundedCapture()
+    threads = [
+        threading.Thread(target=stdout.drain, args=(process.stdout,), daemon=True),
+        threading.Thread(target=stderr.drain, args=(process.stderr,), daemon=True),
+    ]
+    timed_out = False
+    try:
+        for thread in threads:
+            thread.start()
+        try:
+            process.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        for thread in threads:
+            if thread.ident is not None:
+                thread.join(timeout=1)
+    return {
+        "stdout": stdout.text(),
+        "stderr": stderr.text(),
+        "stdout_truncated": stdout.truncated,
+        "stderr_truncated": stderr.truncated,
+        "timed_out": timed_out,
+        "exit_code": process.returncode,
+        "drain_complete": not any(thread.is_alive() for thread in threads),
+    }
+
+
+def _write_private_diagnostic(path: Path, text: str) -> None:
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "wb") as stream:
+        os.chmod(path, 0o600)
+        encoded = text.encode("utf-8", errors="replace")[:MAX_RUNTIME_STREAM_BYTES]
+        stream.write(encoded.decode("utf-8", errors="ignore").encode("utf-8"))
+
+
 class DockerRuntime:
     """Minimal Docker implementation for the local reference prototype."""
 
@@ -157,7 +207,7 @@ class DockerRuntime:
             tuple[str, str], tuple[ResolvedWorkload, str]
         ] = {}
         self._worker_leases: Dict[tuple, str] = {}
-        self._pending_evaluations: Dict[tuple, Tuple[str, str, str]] = {}
+        self._pending_evaluations: Dict[tuple, Tuple[str, str, Path]] = {}
 
     def describe_capabilities(self) -> WorkerDescriptor:
         """Describe the bundled development Worker without certifying its host."""
@@ -182,10 +232,19 @@ class DockerRuntime:
                     enforced, "separate candidate and evaluator workloads"
                 ),
                 HIDDEN_DATASET_IDENTITY_VERIFICATION: Capability(
-                    enforced, "SHA-256 verified before Candidate startup"
+                    enforced,
+                    "hidden-bundle-v1 SHA-256 verified before Candidate startup",
                 ),
                 CANDIDATE_EVALUATOR_CHANNEL_ISOLATION: Capability(
-                    enforced, "episode-private evaluation channel"
+                    enforced, "target-free read-only input and isolated output mounts"
+                ),
+                CANDIDATE_PREDICTION_STORAGE_QUOTA: Capability(
+                    EnforcementLevel.UNSUPPORTED,
+                    "host bind mount has no hard byte or inode quota",
+                ),
+                CANDIDATE_PREDICTION_ARTIFACT_LIFECYCLE: Capability(
+                    enforced,
+                    "ephemeral removal after scoring and confirmed workload teardown",
                 ),
                 DEADLINE_TERMINATION: Capability(
                     EnforcementLevel.BEST_EFFORT,
@@ -848,7 +907,7 @@ class DockerRuntime:
         workload_image: Optional[str] = None,
     ) -> None:
         public_helper = (
-            task.public_api_dir / "autotrain_bench" / "candidate_preflight.py"
+            task.public_api_dir / "autotrain_bench" / "candidate_protocol.py"
         )
         if not public_helper.is_file():
             raise RuntimeFailure(
@@ -1218,6 +1277,101 @@ class DockerRuntime:
         parts = [value for value in (result.stdout, result.stderr) if value]
         return "".join(parts)
 
+    def _candidate_failure_diagnostics(self, name: str) -> Dict[str, Any]:
+        """Capture before removal; all streams are potentially hidden data."""
+
+        self._require_docker()
+        result: Dict[str, Any] = {}
+        try:
+            # A wait/start timeout may leave participant code running. Stop
+            # execution before collecting logs, retaining the container until
+            # the ordinary finally block removes it. Killing an exited or
+            # absent container is harmless; the following inspect is decisive.
+            self._run(
+                ["kill", name],
+                check=False,
+                timeout=EVALUATION_DIAGNOSTIC_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            result["termination_before_diagnostics_unconfirmed"] = True
+            return result
+        try:
+            inspected = self._run(
+                ["inspect", "--format", "{{json .State}}", name],
+                timeout=EVALUATION_DIAGNOSTIC_TIMEOUT_SECONDS,
+            )
+            state = json.loads(inspected.stdout)
+            if (
+                not isinstance(state["ExitCode"], int)
+                or isinstance(state["ExitCode"], bool)
+                or not isinstance(state["OOMKilled"], bool)
+                or not isinstance(state["Running"], bool)
+            ):
+                raise ValueError("invalid container state")
+            result["state"] = {
+                "exit_code": state["ExitCode"],
+                "oom_killed": state["OOMKilled"],
+                "running": state["Running"],
+            }
+        except Exception:
+            result["state_unavailable"] = True
+            return result
+        if result["state"]["running"]:
+            result["logs_skipped_while_running"] = True
+            return result
+        try:
+            result["logs"] = _capture_diagnostic_command(
+                [self.docker, "logs", "--tail", "10000", name],
+                timeout_seconds=EVALUATION_DIAGNOSTIC_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            result["logs_unavailable"] = True
+        return result
+
+    def _record_evaluation_failure(
+        self,
+        *,
+        output_dir: Path,
+        split: str,
+        phase: str,
+        error: Exception,
+        candidate_name: str,
+        candidate_attempted: bool,
+    ) -> None:
+        """Best-effort diagnostics must never prevent workload teardown."""
+
+        metadata = {"phase": phase, "candidate_attempted": candidate_attempted}
+        try:
+            _write_private_diagnostic(
+                output_dir / f"{split}.failure.log", f"Runtime failure: {error}\n"
+            )
+        except Exception:
+            pass
+        if candidate_attempted:
+            try:
+                captured = self._candidate_failure_diagnostics(candidate_name)
+                logs = captured.pop("logs", None)
+                if logs is not None:
+                    for stream in ("stdout", "stderr"):
+                        try:
+                            _write_private_diagnostic(
+                                output_dir / f"{split}.candidate.{stream}.log",
+                                logs.pop(stream),
+                            )
+                        except Exception:
+                            metadata[f"{stream}_persistence_failed"] = True
+                    captured["log_capture"] = logs
+                metadata.update(captured)
+            except Exception:
+                metadata["diagnostics_unavailable"] = True
+        try:
+            _write_private_diagnostic(
+                output_dir / f"{split}.failure.json",
+                json.dumps(metadata, sort_keys=True) + "\n",
+            )
+        except Exception:
+            pass
+
     def stop_container(self, name: str) -> None:
         """Force-remove a container and fail unless its absence is confirmed."""
 
@@ -1252,7 +1406,7 @@ class DockerRuntime:
         split: str,
         output_dir: Path,
         timeout_seconds: Optional[float] = None,
-    ) -> float:
+    ) -> CandidateEvaluationResult:
         resources.validate_for(config)
         if split not in {"analysis", "test"}:
             raise RuntimeFailure(f"invalid evaluator split: {split}")
@@ -1320,7 +1474,7 @@ class DockerRuntime:
         data_path: Path,
         timeout_seconds: float,
     ) -> ResolvedHiddenDataset:
-        """Materialize one immutable private snapshot behind an opaque ID."""
+        """Materialize one two-part private snapshot behind an opaque ID."""
 
         if not isinstance(request, HiddenDatasetRequest):
             raise TypeError("hidden_dataset must be a HiddenDatasetRequest")
@@ -1342,50 +1496,62 @@ class DockerRuntime:
                 ) from exc
         snapshot = self._hidden_snapshot_root / f"{resolution_id}.snapshot"
         staged = self._hidden_snapshot_root / f".{resolution_id}.tmp"
-        digest = hashlib.sha256()
         try:
-            if not data_path.is_file():
-                raise FileNotFoundError(data_path)
-            with data_path.open("rb") as source, staged.open("xb") as destination:
-                while True:
-                    if self.monotonic() >= deadline:
-                        raise HiddenDatasetResolutionFailure(
-                            "hidden dataset resolution deadline reached"
-                        )
-                    chunk = source.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    destination.write(chunk)
-                    digest.update(chunk)
-                destination.flush()
-                os.fsync(destination.fileno())
-            staged.chmod(0o400)
+            if data_path.is_symlink() or not data_path.is_dir():
+                raise OSError("hidden dataset must be a directory")
+            source_entries = {entry.name: entry for entry in data_path.iterdir()}
+            if set(source_entries) != set(HIDDEN_BUNDLE_FILENAMES):
+                raise OSError(
+                    "hidden dataset must contain only contexts.json and targets.json"
+                )
+            staged.mkdir(mode=0o700)
+            for name in HIDDEN_BUNDLE_FILENAMES:
+                source_path = source_entries[name]
+                if source_path.is_symlink() or not source_path.is_file():
+                    raise OSError(f"hidden dataset entry is not a regular file: {name}")
+                destination_path = staged / name
+                with source_path.open("rb") as source, destination_path.open(
+                    "xb"
+                ) as destination:
+                    while True:
+                        if self.monotonic() >= deadline:
+                            raise HiddenDatasetResolutionFailure(
+                                "hidden dataset resolution deadline reached"
+                            )
+                        chunk = source.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        destination.write(chunk)
+                    destination.flush()
+                    os.fsync(destination.fileno())
+                destination_path.chmod(0o400)
+            digest_hex = hidden_bundle_sha256(staged)
             os.replace(staged, snapshot)
             if self.monotonic() >= deadline:
                 raise HiddenDatasetResolutionFailure(
                     "hidden dataset resolution deadline reached"
                 )
         except HiddenDatasetResolutionFailure:
-            staged.unlink(missing_ok=True)
-            snapshot.unlink(missing_ok=True)
+            shutil.rmtree(staged, ignore_errors=True)
+            shutil.rmtree(snapshot, ignore_errors=True)
             raise
         except OSError as exc:
-            staged.unlink(missing_ok=True)
-            snapshot.unlink(missing_ok=True)
+            shutil.rmtree(staged, ignore_errors=True)
+            shutil.rmtree(snapshot, ignore_errors=True)
             raise HiddenDatasetResolutionFailure(
                 f"failed to resolve hidden dataset {request.name}: {exc}"
             ) from exc
-        digest_hex = digest.hexdigest()
         resolved = ResolvedHiddenDataset(
             request.name,
             digest_hex,
             resolution_id,
+            request.identity_algorithm,
         )
         if (
             request.expected_sha256 is not None
             and digest_hex != request.expected_sha256
         ):
-            snapshot.unlink(missing_ok=True)
+            shutil.rmtree(snapshot, ignore_errors=True)
             raise HiddenDatasetIdentityMismatch(resolved)
         self._resolved_hidden_datasets[(episode_id, resolved.resolution_id)] = (
             task_id,
@@ -1453,36 +1619,44 @@ class DockerRuntime:
         candidate_image: str,
         evaluator_image: str,
         timeout_seconds: Optional[float] = None,
-    ) -> float:
+    ) -> CandidateEvaluationResult:
         resources.validate()
         if split not in {"analysis", "test"}:
             raise RuntimeFailure(f"invalid evaluator split: {split}")
         if task.backend != "isolated_candidate":
             raise RuntimeFailure(f"unsupported evaluator backend: {task.backend}")
-        if task.candidate_channel.protocol != "next_token_logits_v1":
+        if task.candidate_channel.protocol != "offline_next_token_logits_v3":
             raise RuntimeFailure("unsupported Candidate application protocol")
-        if not data_path.is_file():
-            raise RuntimeFailure(f"hidden evaluator split is not a file: {data_path}")
+        if not data_path.is_dir():
+            raise RuntimeFailure(
+                f"hidden evaluator split is not a directory: {data_path}"
+            )
+        contexts_path = data_path / "contexts.json"
+        targets_path = data_path / "targets.json"
+        if not contexts_path.is_file() or not targets_path.is_file():
+            raise RuntimeFailure("hidden evaluator split is incomplete")
         output_dir.mkdir(parents=True, exist_ok=True)
         result_path = output_dir / f"{split}.json"
+        validation_path = output_dir / f"{split}.validation.json"
         try:
             result_path.unlink(missing_ok=True)
+            validation_path.unlink(missing_ok=True)
         except OSError as exc:
             raise RuntimeFailure("failed to clear the prior evaluator result") from exc
         runtime_id = uuid.uuid4().hex[:12]
         candidate_name = f"atb-candidate-{runtime_id}"
         evaluator_name = f"atb-evaluator-{runtime_id}"
-        network_name = f"atb-evaluation-{runtime_id}"
         evaluation_key = (episode_id, runtime_id)
         candidate_api_dir = output_dir / ".candidate_api"
-        docker_evaluator_adapter = (
-            Path(__file__).resolve().parent / "docker_evaluator_adapter.py"
+        prediction_dir = output_dir / f"predictions-{runtime_id}"
+        docker_scorer_adapter = (
+            Path(__file__).resolve().parent / "docker_scorer_adapter.py"
         )
         package = candidate_api_dir / "autotrain_bench"
         if not candidate_api_dir.exists():
             package.mkdir(parents=True)
             core_package = Path(__file__).resolve().parent
-            for filename in ("candidate_protocol.py", "candidate_server.py"):
+            for filename in ("candidate_protocol.py", "candidate_offline_runner.py"):
                 shutil.copy2(core_package / filename, package / filename)
                 (package / filename).chmod(0o444)
             (package / "__init__.py").write_text("", encoding="utf-8")
@@ -1496,9 +1670,7 @@ class DockerRuntime:
             "--name",
             candidate_name,
             "--network",
-            network_name,
-            "--network-alias",
-            "candidate",
+            "none",
             "--cap-drop",
             "ALL",
             "--security-opt",
@@ -1518,6 +1690,10 @@ class DockerRuntime:
             self._mount(candidate_dir, "/candidate", read_only=True),
             "--mount",
             self._mount(candidate_api_dir, "/opt/candidate-api", read_only=True),
+            "--mount",
+            self._mount(contexts_path, "/eval-input/contexts.json", read_only=True),
+            "--mount",
+            self._mount(prediction_dir, "/predictions", read_only=False),
             "--env",
             "HOME=/candidate-home",
             "--env",
@@ -1534,73 +1710,96 @@ class DockerRuntime:
                 candidate_image,
                 "python",
                 "-m",
-                "autotrain_bench.candidate_server",
+                "autotrain_bench.candidate_offline_runner",
                 "--candidate",
                 "/candidate",
+                "--contexts",
+                "/eval-input/contexts.json",
+                "--output",
+                "/predictions",
                 "--device",
                 task.device,
-                "--vocab-size",
-                str(task.vocab_size),
-                "--context-length",
-                str(task.context_length),
-                "--maximum-batch-size",
-                str(task.batch_size),
             ]
         )
-        evaluator_args: List[str] = [
-            "run",
-            "--rm",
-            "--name",
-            evaluator_name,
-            "--network",
-            network_name,
-            "--cap-drop",
-            "ALL",
-            "--security-opt",
-            "no-new-privileges:true",
-            "--pids-limit",
-            "256",
-            "--read-only",
-            "--tmpfs",
-            "/tmp:rw,nosuid,size=128m",
-            "--log-opt",
-            "max-size=10m",
-            "--log-opt",
-            "max-file=1",
-            "--mount",
-            self._mount(data_path, "/eval-data/split.json", read_only=True),
-            "--mount",
-            self._mount(
-                task.evaluator_entrypoint,
-                "/opt/evaluator.py",
-                read_only=True,
-            ),
-            "--mount",
-            self._mount(
-                docker_evaluator_adapter,
-                "/opt/docker-evaluator-adapter.py",
-                read_only=True,
-            ),
-            "--mount",
-            self._mount(output_dir, "/output", read_only=False),
-            "--env",
-            "PYTHONDONTWRITEBYTECODE=1",
-            evaluator_image,
-            "python",
-            "/opt/docker-evaluator-adapter.py",
-            "--evaluator",
-            "/opt/evaluator.py",
-            "--candidate-url",
-            "http://candidate:8766",
-            "--data",
-            "/eval-data/split.json",
-            "--output",
-            f"/output/{split}.json",
-            "--vocab-size",
-            str(task.vocab_size),
-            "--batch-size",
-            str(task.batch_size),
-        ]
+
+        def scorer_args(mode: str) -> List[str]:
+            args = [
+                "run",
+                "--rm",
+                "--name",
+                evaluator_name,
+                "--network",
+                "none",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges:true",
+                "--pids-limit",
+                "256",
+                "--read-only",
+                "--tmpfs",
+                "/tmp:rw,nosuid,size=128m",
+                "--log-opt",
+                "max-size=10m",
+                "--log-opt",
+                "max-file=1",
+                "--mount",
+                self._mount(contexts_path, "/eval-data/contexts.json", read_only=True),
+                "--mount",
+                self._mount(targets_path, "/eval-data/targets.json", read_only=True),
+                "--mount",
+                self._mount(
+                    task.evaluator_entrypoint,
+                    "/opt/evaluator.py",
+                    read_only=True,
+                ),
+                "--mount",
+                self._mount(
+                    docker_scorer_adapter,
+                    "/opt/docker-scorer-adapter.py",
+                    read_only=True,
+                ),
+                "--mount",
+                self._mount(output_dir, "/output", read_only=False),
+            ]
+            if mode == "score":
+                args.extend(
+                    [
+                        "--mount",
+                        self._mount(prediction_dir, "/predictions", read_only=True),
+                    ]
+                )
+            args.extend(
+                [
+                    "--env",
+                    "PYTHONDONTWRITEBYTECODE=1",
+                    evaluator_image,
+                    "python",
+                    "/opt/docker-scorer-adapter.py",
+                    "--mode",
+                    mode,
+                    "--evaluator",
+                    "/opt/evaluator.py",
+                    "--contexts",
+                    "/eval-data/contexts.json",
+                    "--targets",
+                    "/eval-data/targets.json",
+                    "--output",
+                    (
+                        f"/output/{split}.validation.json"
+                        if mode == "validate"
+                        else f"/output/{split}.json"
+                    ),
+                    "--vocab-size",
+                    str(task.vocab_size),
+                    "--context-lengths",
+                    *(str(length) for length in task.context_lengths),
+                ]
+            )
+            if mode == "score":
+                args.extend(["--predictions", "/predictions"])
+            return args
+
         effective_timeout = float(task.timeout_seconds)
         if timeout_seconds is not None:
             if timeout_seconds <= 0:
@@ -1614,50 +1813,84 @@ class DockerRuntime:
                 raise RuntimeFailure("evaluation deadline reached")
             return remaining
 
+        try:
+            prediction_dir.mkdir()
+        except OSError as exc:
+            raise RuntimeFailure(
+                "failed to create Candidate prediction storage"
+            ) from exc
         self._pending_evaluations[evaluation_key] = (
             candidate_name,
             evaluator_name,
-            network_name,
+            prediction_dir,
         )
+        candidate_wall_seconds: Optional[float] = None
+        phase = "trusted_input_validation"
+        candidate_attempted = False
         try:
-            self.create_network(
-                network_name,
-                internal=True,
-                timeout_seconds=remaining_seconds(),
-            )
-            self._run(candidate_args, timeout=remaining_seconds())
             self._run(
-                evaluator_args,
+                scorer_args("validate"),
+                timeout=remaining_seconds(),
+            )
+            candidate_started = self.monotonic()
+            phase = "candidate_startup"
+            candidate_attempted = True
+            self._run(candidate_args, timeout=remaining_seconds())
+            phase = "candidate_execution"
+            wait_result = self._run(
+                ["wait", candidate_name],
+                timeout=remaining_seconds(),
+            )
+            try:
+                candidate_exit_code = int(wait_result.stdout.strip())
+            except ValueError as exc:
+                raise RuntimeFailure(
+                    "Candidate process returned an invalid exit status"
+                ) from exc
+            if candidate_exit_code != 0:
+                raise RuntimeFailure(
+                    f"Candidate process exited with status {candidate_exit_code}"
+                )
+            candidate_wall_seconds = max(0.0, self.monotonic() - candidate_started)
+            phase = "trusted_scoring"
+            self._run(
+                scorer_args("score"),
                 timeout=remaining_seconds(),
             )
         except RuntimeFailure as exc:
-            # Candidate output may contain hidden evaluator inputs.  Preserve it
-            # only in the trusted episode directory and never include it in the
-            # exception that crosses the Agent-facing Supervisor API.
-            try:
-                candidate_logs = self.container_logs(
-                    candidate_name,
-                    timeout_seconds=remaining_seconds(),
-                ).strip()[-4000:]
-            except RuntimeFailure:
-                candidate_logs = "<candidate logs unavailable>"
-            diagnostic_path = output_dir / f"{split}.failure.log"
-            try:
-                diagnostic_path.write_text(
-                    f"Runtime failure: {exc}\nCandidate logs:\n{candidate_logs}\n",
-                    encoding="utf-8",
-                )
-                diagnostic_path.chmod(0o600)
-            except OSError:
-                # Diagnostic persistence must never change the fixed public
-                # failure returned across the untrusted boundary.
-                pass
+            self._record_evaluation_failure(
+                output_dir=output_dir,
+                split=split,
+                phase=phase,
+                error=exc,
+                candidate_name=candidate_name,
+                candidate_attempted=candidate_attempted,
+            )
             raise RuntimeFailure("isolated evaluation failed") from None
         finally:
             self._teardown_evaluation(evaluation_key)
         try:
             payload = json.loads(result_path.read_text(encoding="utf-8"))
-            loss = validated_nll(payload["nll"])
+            if set(payload) != {
+                "performance_score",
+                "raw_metrics",
+                "examples",
+                "input_tokens",
+                "prediction_bytes",
+            }:
+                raise ValueError("unexpected scorer result fields")
+            if candidate_wall_seconds is None:
+                raise ValueError("Candidate wall time is unavailable")
+            result = CandidateEvaluationResult(
+                performance_score=payload["performance_score"],
+                raw_metrics=payload["raw_metrics"],
+                candidate_wall_seconds=candidate_wall_seconds,
+                task_count=payload["examples"],
+                input_tokens=payload["input_tokens"],
+                prediction_bytes=payload["prediction_bytes"],
+            )
+            result.performance_manifest(task.performance_score)
+            result.cost_manifest(task.cost)
         except (
             FileNotFoundError,
             KeyError,
@@ -1667,9 +1900,9 @@ class DockerRuntime:
             json.JSONDecodeError,
         ) as exc:
             raise RuntimeFailure(
-                "evaluator did not produce a valid NLL result"
+                "evaluator did not produce a valid performance or cost result"
             ) from exc
-        return loss
+        return result
 
     def evaluate_candidate(
         self,
@@ -1683,7 +1916,7 @@ class DockerRuntime:
         candidate_workload: ResolvedWorkload,
         evaluator_workload: ResolvedWorkload,
         timeout_seconds: Optional[float] = None,
-    ) -> float:
+    ) -> CandidateEvaluationResult:
         """Map the semantic evaluation operation to the reference runtime."""
 
         if not isinstance(hidden_dataset, ResolvedHiddenDataset):
@@ -1701,7 +1934,7 @@ class DockerRuntime:
                 "hidden dataset resolution evidence does not match the opaque ID"
             )
         try:
-            actual_digest = _sha256_file(data_path)
+            actual_digest = hidden_bundle_sha256(data_path)
         except OSError as exc:
             raise HiddenDatasetResolutionFailure(
                 f"resolved hidden dataset became unavailable: {exc}"
@@ -1712,6 +1945,7 @@ class DockerRuntime:
                     hidden_dataset.name,
                     actual_digest,
                     hidden_dataset.resolution_id,
+                    hidden_dataset.identity_algorithm,
                 )
             )
         candidate_image = self._workload_reference(
@@ -1743,15 +1977,27 @@ class DockerRuntime:
         resources = self._pending_evaluations.get(evaluation_key)
         if resources is None:
             return
-        candidate_name, evaluator_name, network_name = resources
+        candidate_name, evaluator_name, prediction_dir = resources
         _run_runtime_teardown_steps(
             [
                 ("candidate", lambda: self.stop_container(candidate_name)),
                 ("evaluator", lambda: self.stop_container(evaluator_name)),
-                ("evaluation network", lambda: self.remove_network(network_name)),
             ]
         )
+        try:
+            self._remove_prediction_artifact(prediction_dir)
+        except OSError as exc:
+            raise WorkerTeardownFailure(
+                f"prediction artifact cleanup failed: {exc}"
+            ) from exc
         self._pending_evaluations.pop(evaluation_key, None)
+
+    @staticmethod
+    def _remove_prediction_artifact(prediction_dir: Path) -> None:
+        if prediction_dir.is_symlink():
+            raise OSError("prediction artifact root became a symlink")
+        if prediction_dir.exists():
+            shutil.rmtree(prediction_dir)
 
     def teardown_pending_evaluations(self) -> None:
         """Retry every local evaluation cleanup whose result was uncertain."""

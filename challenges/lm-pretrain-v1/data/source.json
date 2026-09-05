@@ -25,9 +25,12 @@
     "asset_fingerprint": "generated-by-prepare_data.py"
   },
   "hidden_evaluation": {
-    "preview_analysis_target_tokens": 4096,
-    "preview_test_target_tokens": 4096,
-    "construction": "deterministic local preview holdout excluded from both public representations",
+    "candidate_protocol": "offline_next_token_logits_v3",
+    "dataset_schema_version": 2,
+    "preview_analysis_target_predictions": 2048,
+    "preview_test_target_predictions": 2048,
+    "context_lengths": [64, 128, 256, 512, 1024, 2048],
+    "construction": "balanced non-overlapping single-target contexts from a deterministic local preview holdout excluded from both public representations",
     "verified_release": "organizer-owned replacement pending"
   }
 }
