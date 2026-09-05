@@ -77,6 +77,25 @@ class ChallengeReleaseTests(unittest.TestCase):
         self.assertEqual(len(public["track_configs"]), 2)
         self.assertEqual(len(public["runtime_profiles"]), 4)
 
+    def test_public_catalog_does_not_fingerprint_private_manifest_content(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._write_release(directory)
+            original = ChallengeRelease.load(path)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["organizer_only"] = {"context_lengths": [1, 3]}
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            (Path(directory) / "task.json").write_text(
+                '{"evaluation": {"context_lengths": [1, 3]}}', encoding="utf-8"
+            )
+            changed = ChallengeRelease.load(path)
+            self.assertNotEqual(original.manifest_sha256, changed.manifest_sha256)
+            self.assertNotEqual(
+                original.task_manifest_sha256, changed.task_manifest_sha256
+            )
+            self.assertEqual(original.public_manifest(), changed.public_manifest())
+            self.assertNotIn("task_manifest_sha256", changed.public_manifest())
+            self.assertNotIn("challenge_manifest_sha256", changed.public_manifest())
+
     def test_release_resolves_budget_resources_and_comparison_key(self):
         with tempfile.TemporaryDirectory() as directory:
             release = ChallengeRelease.load(self._write_release(directory))

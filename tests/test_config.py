@@ -312,7 +312,7 @@ class ConfigTests(unittest.TestCase):
         # The Agent reads this manifest and the `agent status` response.  A
         # rename in either surface must move this version with it.
         self.assertEqual(manifest["protocol_version"], AGENT_PROTOCOL_VERSION)
-        self.assertEqual(AGENT_PROTOCOL_VERSION, 9)
+        self.assertEqual(AGENT_PROTOCOL_VERSION, 10)
 
     def test_agent_egress_environment_and_host_runner_are_separate(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -442,6 +442,16 @@ stay in trusted evaluation configuration. The `contexts.json.context_lengths`
 values describe only the actual request received by the frozen Candidate after
 research sealing; this field is not a research-stage sampling plan. The
 Candidate ABI and hidden dataset format are unchanged.
+Version 10 restricts the Agent-visible `challenge_release` to `challenge_id`,
+`release_stage`, `leaderboard_eligible`, `track_config_id`, and
+`runtime_profile_id`. Full task/challenge manifest hashes and other trusted
+release metadata are not copied into the Agent manifest. The public budget and
+Training resource contract remain in `budget` and `training_environment`.
+`challenge-info` likewise omits full task/challenge file hashes. Release IDs are
+public labels; complete file identities remain in trusted verification and
+episode audit records. An unsalted hash of an enumerable private configuration
+can reveal it through offline guessing even when the configuration itself is
+absent from the public manifest.
 
 Training code writes Candidate artifacts into the lease-owned `/output` mount.
 `lease-commit` first stops the Training sandbox, validates and snapshots the

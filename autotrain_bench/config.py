@@ -54,7 +54,10 @@ class ConfigError(ValueError):
 #
 # Version 9 publishes a variable-length policy and max_context_tokens input bound
 # instead of the trusted evaluation sampling lengths.
-AGENT_PROTOCOL_VERSION = 9
+#
+# Version 10 limits Agent-visible release metadata to declared identifiers;
+# private manifest digests and audit extensions remain in trusted records.
+AGENT_PROTOCOL_VERSION = 10
 
 # Phases a release may declare as benchmark-owned rather than participant time.
 # `README.md` requires this boundary to be release-defined and identical across

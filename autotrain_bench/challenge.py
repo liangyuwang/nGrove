@@ -45,6 +45,24 @@ FORMAL_ARTIFACT_IDENTITY_ALGORITHMS = {
 }
 
 
+def agent_release_manifest(release: Mapping[str, Any]) -> Dict[str, Any]:
+    """Expose release identifiers without fingerprints of private configuration."""
+
+    # Private release records retain full file identities and verification
+    # evidence. New audit fields must not silently enter the Agent boundary.
+    return {
+        name: release[name]
+        for name in (
+            "challenge_id",
+            "release_stage",
+            "leaderboard_eligible",
+            "track_config_id",
+            "runtime_profile_id",
+        )
+        if name in release
+    }
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -651,8 +669,6 @@ class ChallengeRelease:
         return {
             "schema_version": self.schema_version,
             "challenge_id": self.challenge_id,
-            "challenge_manifest_sha256": self.manifest_sha256,
-            "task_manifest_sha256": self.task_manifest_sha256,
             "task_id": self.task_id,
             "task": self.task_file,
             "release_stage": self.release_stage,

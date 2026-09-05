@@ -20,6 +20,7 @@ from autotrain_bench.agent_api_bundle import publish_agent_api_bundle
 from autotrain_bench.challenge import (
     FORMAL_ARTIFACT_DIGEST_FIELDS,
     FORMAL_ARTIFACT_IDENTITY_ALGORITHMS,
+    ChallengeRelease,
     ReleaseVerificationReceipt,
 )
 from autotrain_bench.artifact_identity import (
@@ -460,17 +461,29 @@ class SupervisorTests(unittest.TestCase):
             )
         self.assertFalse((self.episode / "control").exists())
 
-    def test_comparison_key_and_release_are_recorded_publicly(self):
+    def test_public_release_contains_only_declared_identifiers(self):
         comparison_key = {
             "challenge_id": "lm-pretrain-v1",
             "track": "B",
             "track_config": "preview-b-6x1h",
             "runtime_profile": "h100-sxm-80gb-x4",
         }
-        release = {
+        public_release = {
             "challenge_id": "lm-pretrain-v1",
             "release_stage": "preview",
             "leaderboard_eligible": False,
+            "track_config_id": comparison_key["track_config"],
+            "runtime_profile_id": comparison_key["runtime_profile"],
+        }
+        release = {
+            **public_release,
+            "challenge_manifest_sha256": "b" * 64,
+            "task_manifest_sha256": hashlib.sha256(
+                self.config.source.read_bytes()
+            ).hexdigest(),
+            "private_evaluation": {"context_lengths": [1, 3]},
+            "track_config": {"private_extension": "not-for-the-agent"},
+            "runtime_profile": {"private_extension": "not-for-the-agent"},
         }
         supervisor = self.supervisor(
             comparison_key=comparison_key,
@@ -483,7 +496,73 @@ class SupervisorTests(unittest.TestCase):
             supervisor.public_task_path.read_text(encoding="utf-8")
         )
         self.assertEqual(public_task["comparison_key"], comparison_key)
-        self.assertEqual(public_task["challenge_release"], release)
+        self.assertEqual(public_task["challenge_release"], public_release)
+        self.assertEqual(supervisor.state["challenge_release"], release)
+
+    def test_full_agent_manifest_does_not_identify_hidden_length_choices(self):
+        root = self.episode.parent
+        task_path = root / "task.json"
+        challenge_path = root / "challenge.json"
+        task_payload = json.loads(self.config.source.read_text(encoding="utf-8"))
+        task_payload["paths"] = {
+            name: str((self.config.source.parent / value).resolve())
+            for name, value in task_payload["paths"].items()
+        }
+        task_payload["evaluation"]["entrypoint"] = str(self.config.evaluator_entrypoint)
+        challenge_payload = json.loads(
+            (ROOT / "dev_tasks/smoke_lm/challenge.json").read_text(encoding="utf-8")
+        )
+        challenge_payload["task_id"] = self.config.task_id
+        challenge_payload["challenge_id"] = "hidden-lengths-regression"
+        challenge_path.write_text(json.dumps(challenge_payload), encoding="utf-8")
+        public_manifests = {}
+        private_digests = set()
+        for index, lengths in enumerate(([1], [2], [1, 3], [1, 2, 3])):
+            task_payload["evaluation"]["context_lengths"] = lengths
+            task_path.write_text(json.dumps(task_payload), encoding="utf-8")
+            task = TaskConfig.load(task_path)
+            release = ChallengeRelease.load(challenge_path)
+            private_digests.add(release.task_manifest_sha256)
+            for track_config in ("smoke-a-5m", "smoke-b-3x75s"):
+                with self.subTest(lengths=lengths, track_config=track_config):
+                    resolved = release.resolve(
+                        task,
+                        track_config_id=track_config,
+                        runtime_profile_id="cpu-local",
+                    )
+                    self.episode = root / f"episode-{track_config}-{index}"
+                    supervisor = self.supervisor(
+                        track=resolved.track,
+                        config=resolved.task,
+                        comparison_key=resolved.comparison_key.public_manifest(),
+                        challenge_release=resolved.release_manifest,
+                    )
+                    public = json.loads(
+                        supervisor.public_task_path.read_text(encoding="utf-8")
+                    )
+                    self.assertEqual(
+                        public, public_manifests.setdefault(track_config, public)
+                    )
+                    audit = json.loads(
+                        supervisor.state_path.read_text(encoding="utf-8")
+                    )
+                    for record in (
+                        audit["challenge_release"],
+                        audit["artifact_identities"],
+                    ):
+                        self.assertEqual(
+                            record["task_manifest_sha256"],
+                            release.task_manifest_sha256,
+                        )
+                    self.assertNotIn(
+                        release.task_manifest_sha256,
+                        json.dumps(supervisor.public_status()),
+                    )
+        self.assertEqual(len(private_digests), 4)
+        for public in public_manifests.values():
+            serialized = json.dumps(public)
+            for digest in private_digests:
+                self.assertNotIn(digest, serialized)
 
     def test_leaderboard_eligibility_requires_the_complete_formal_contract(self):
         digest = "@sha256:" + "a" * 64

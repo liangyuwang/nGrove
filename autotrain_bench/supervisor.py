@@ -32,6 +32,7 @@ from .artifact_identity import (
 from .challenge import (
     FORMAL_ARTIFACT_DIGEST_FIELDS,
     ReleaseVerificationReceipt,
+    agent_release_manifest,
 )
 from .config import (
     AGENT_PROTOCOL_VERSION,
@@ -807,7 +808,9 @@ class Supervisor:
         )
         public_manifest["comparison_key"] = self.state["comparison_key"]
         if challenge_release is not None:
-            public_manifest["challenge_release"] = dict(challenge_release)
+            public_manifest["challenge_release"] = agent_release_manifest(
+                challenge_release
+            )
         self.public_task_path.write_text(
             json.dumps(public_manifest, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
