@@ -44,7 +44,9 @@ EVALUATION_DATASET_SCHEMA_VERSION = 2
 CANDIDATE_PROTOCOL = "offline_next_token_logits_v3"
 CONTEXTS_FILENAME = "contexts.json"
 TARGETS_FILENAME = "targets.json"
-SPLIT_BUCKETS = 4_096
+# The 4096-bucket preview could exhaust the pinned source before filling the
+# longest-context quotas. Enlarge the candidate pool without changing sampling.
+SPLIT_BUCKETS = 2_048
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
@@ -475,6 +477,25 @@ class EvaluationCollector:
         return {str(length): self.counts[length] for length in self.context_lengths}
 
 
+def _require_complete_holdouts(
+    analysis: EvaluationCollector, test: EvaluationCollector
+) -> None:
+    shortfalls = {
+        name: {
+            str(length): {"actual": collector.counts[length], "required": required}
+            for length, required in collector.quotas.items()
+            if collector.counts[length] < required
+        }
+        for name, collector in (("analysis", analysis), ("test", test))
+        if not collector.complete
+    }
+    if shortfalls:
+        raise PreparationError(
+            "source sample did not fill preview ANALYSIS/TEST; shortfalls="
+            + json.dumps(shortfalls, sort_keys=True)
+        )
+
+
 class TokenShardWriter:
     """Write a document-aware little-endian uint16 token store."""
 
@@ -898,8 +919,7 @@ def prepare(
                 train_documents += 1
         shards = writer.close()
         raw_train_shards = raw_writer.close()
-        if not analysis.complete or not test.complete:
-            raise PreparationError("source sample did not fill preview ANALYSIS/TEST")
+        _require_complete_holdouts(analysis, test)
 
         analysis_dir = private_dir / "analysis"
         test_dir = private_dir / "test"
@@ -969,6 +989,7 @@ def prepare(
                 "candidate_protocol": CANDIDATE_PROTOCOL,
                 "dataset_schema_version": EVALUATION_DATASET_SCHEMA_VERSION,
                 "construction": ("balanced_non_overlapping_single_target_contexts"),
+                "split_buckets": SPLIT_BUCKETS,
                 "context_lengths": list(normalized_context_lengths),
                 "analysis_target_predictions": len(analysis.examples),
                 "test_target_predictions": len(test.examples),

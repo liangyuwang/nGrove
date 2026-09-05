@@ -157,6 +157,22 @@ or changed Parquet files are rejected; materialize ordinary files instead of
 passing a cache's symbolic or hard links. Arbitrary local corpora cannot be
 labeled as this release's source.
 
+The preview hashes each source row identity into 2,048 buckets, reserving bucket
+0 for ANALYSIS and bucket 1 for TEST while their quotas remain unfilled. This
+enlarges the candidate pool from the earlier 4,096-bucket recipe, which could
+exhaust the source before filling the longest-context quotas. The non-overlapping
+round-robin window algorithm and per-length quotas are unchanged. A build still
+fails if any quota is short; the error reports the actual and required counts
+for each affected split and context length.
+
+The trusted root build manifest records `preview_hidden_evaluation.split_buckets`
+alongside the actual histograms and hidden artifact checksums. Older manifests
+without this field do not establish which split recipe was used. Rebuild an old
+preview with `--force` when adopting this recipe, and compare results only when
+their release and data identities match. Doubling the nominal holdout sampling
+rate does not imply a fixed percentage change in TRAIN tokens: document lengths,
+quota completion, and the TRAIN target also affect the final size.
+
 The builder records the exact resulting token count, GPT-2 encoding
 fingerprint, raw and tokenized shard checksums, document mapping, dependency
 versions, balanced hidden context-length histograms, and preview hidden-dataset
@@ -180,6 +196,16 @@ directory swap; if validation or installation fails, it restores the old
 build or preserves it under a named backup path instead of deleting it first.
 An existing build using the former progressive-prefix dataset must be rebuilt
 with `--force`; its scores are not comparable with this single-target metric.
+
+Challenge-local regression checks use the real hash split and default context
+quotas on synthetic documents, without downloading or rebuilding the corpus:
+
+```bash
+python3 -m unittest discover -s challenges/lm-pretrain-v1 -p 'test_prepare_data.py' -v
+```
+
+These checks exercise the pool-sizing failure and shortage diagnostics; a full
+pinned-source build is still required to verify real corpus capacity and scale.
 
 ## Supported preview lanes
 
