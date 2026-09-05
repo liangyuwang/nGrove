@@ -92,6 +92,16 @@ storage. The fourth is the `evaluation.device` string (`cpu` or `cuda`).
 `__name__ != '__main__'`. The return value is ignored; predictions are written
 to the output directory before the function returns.
 
+The input object is specified at
+`evaluation.candidate_boundary.context_manifest`: its exact fields are
+`schema_version`, `candidate_protocol`, `dataset_id`, `vocab_size`,
+`context_lengths`, and `examples`. Every example has exactly `example_id`
+(a unique opaque string) and `input_ids` (integer tokens in oldest-to-newest
+order). Tokens are in `[0, vocab_size)` and each array length belongs to
+`context_lengths`. The declaration specifies every field's type, constants,
+and constraints. No targets or split labels are included. The optional
+`load_context_request()` helper returns this parsed dictionary unchanged.
+
 The same manifest defines the exact output object at
 `evaluation.candidate_boundary.prediction_manifest`: `predictions.json` must
 contain only `schema_version`, `candidate_protocol`, `dataset_id`, `examples`,
@@ -99,6 +109,9 @@ contain only `schema_version`, `candidate_protocol`, `dataset_id`, `examples`,
 values specified there. JSON member order and whitespace are irrelevant;
 additional fields are rejected. The same section identifies the optional
 generated `autotrain_bench.candidate_protocol` reader and writer helpers.
+`prediction_manifest.logits_artifact` declares the binary file as headerless,
+row-major, little-endian IEEE-754 float32. Row `i` corresponds to `examples[i]`,
+column `j` to token ID `j`, and every value must be finite.
 
 ## Prepare data
 

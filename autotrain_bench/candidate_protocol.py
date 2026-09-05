@@ -24,6 +24,15 @@ PREDICTION_ARTIFACT_MAX_ENTRIES = 2
 PREDICTION_MANIFEST_MAX_BYTES = 64 * 1024
 PREDICTION_ARTIFACT_RETENTION = "ephemeral_until_evaluation_teardown"
 PathInput = Union[str, os.PathLike]
+CONTEXT_MANIFEST_FIELDS = (
+    "schema_version",
+    "candidate_protocol",
+    "dataset_id",
+    "vocab_size",
+    "context_lengths",
+    "examples",
+)
+CONTEXT_EXAMPLE_FIELDS = ("example_id", "input_ids")
 _PREDICTION_MANIFEST_FIELD_SPECS = (
     ("schema_version", "integer", "constant", PREDICTION_SCHEMA_VERSION),
     ("candidate_protocol", "string", "constant", CANDIDATE_PROTOCOL),
@@ -58,6 +67,7 @@ def candidate_entrypoint_contract() -> Dict[str, Any]:
             {
                 "name": "contexts_path",
                 "python_type": "pathlib.Path",
+                "content_contract": "evaluation.candidate_boundary.context_manifest",
                 "value": (
                     "absolute path to contexts.json containing all requested "
                     "example IDs and token contexts, without targets or split labels"
@@ -89,6 +99,78 @@ def candidate_entrypoint_contract() -> Dict[str, Any]:
     }
 
 
+def context_manifest_contract() -> Dict[str, Any]:
+    """Describe the complete target-free input object visible to a Candidate."""
+
+    identifier = {
+        "json_type": "string",
+        "min_length": 1,
+        "max_length": 512,
+        "nul_allowed": False,
+        "meaning": "opaque correlation identifier; no split label or source metadata",
+    }
+    return {
+        "filename": "contexts.json",
+        "format": "json_object",
+        "encoding": "utf-8",
+        "exact_fields": list(CONTEXT_MANIFEST_FIELDS),
+        "additional_fields_allowed": False,
+        "json_member_order_significant": False,
+        "fields": {
+            "schema_version": {
+                "json_type": "integer",
+                "constant": DATASET_SCHEMA_VERSION,
+            },
+            "candidate_protocol": {
+                "json_type": "string",
+                "constant": CANDIDATE_PROTOCOL,
+            },
+            "dataset_id": dict(identifier),
+            "vocab_size": {
+                "json_type": "integer",
+                "minimum": 1,
+                "source": "evaluation.vocab_size",
+            },
+            "context_lengths": {
+                "json_type": "array",
+                "items": {"json_type": "integer", "minimum": 1},
+                "min_items": 1,
+                "order": "strictly_increasing",
+                "source": "evaluation.context_lengths",
+            },
+            "examples": {
+                "json_type": "array",
+                "min_items": 1,
+                "order": "prediction_row_order",
+                "items": {
+                    "json_type": "object",
+                    "exact_fields": list(CONTEXT_EXAMPLE_FIELDS),
+                    "additional_fields_allowed": False,
+                    "fields": {
+                        "example_id": {
+                            **identifier,
+                            "unique_across": "contexts.json.examples",
+                        },
+                        "input_ids": {
+                            "json_type": "array",
+                            "length_member_of": "contexts.json.context_lengths",
+                            "order": "oldest_to_newest",
+                            "items": {
+                                "json_type": "integer",
+                                "minimum": 0,
+                                "exclusive_maximum_source": "contexts.json.vocab_size",
+                            },
+                        },
+                    },
+                },
+            },
+        },
+        "coverage": "every declared context length occurs in the evaluation request",
+        "prediction_task": "one next-token logit vector per example, after its input_ids",
+        "target_visibility": "no targets, split labels, or protected source metadata",
+    }
+
+
 def prediction_manifest_contract() -> Dict[str, Any]:
     """Return the exact Agent-facing ``predictions.json`` contract."""
 
@@ -104,6 +186,17 @@ def prediction_manifest_contract() -> Dict[str, Any]:
                 _PREDICTION_MANIFEST_FIELD_SPECS
             )
         },
+        "logits_artifact": {
+            "filename": LOGITS_FILENAME,
+            "encoding": "ieee754_float32_little_endian",
+            "layout": "row_major",
+            "header_bytes": 0,
+            "shape": ["len(contexts.json.examples)", "contexts.json.vocab_size"],
+            "row_order": "contexts.json.examples array order",
+            "column_order": "ascending token ID from 0 to vocab_size - 1",
+            "values": "finite next-token logits; NaN and infinity are forbidden",
+            "byte_length": "len(contexts.json.examples) * contexts.json.vocab_size * 4",
+        },
     }
 
 
@@ -113,6 +206,11 @@ def candidate_helper_api_manifest() -> Dict[str, Any]:
     return {
         "module": "autotrain_bench.candidate_protocol",
         "request_reader": "load_context_request(path)",
+        "request_reader_return": {
+            "python_type": "dict",
+            "contents": "parsed contexts.json with unchanged keys and values",
+            "contract": "evaluation.candidate_boundary.context_manifest",
+        },
         "path_parameters": "str or os.PathLike (including pathlib.Path)",
         "prediction_writer": (
             "write_prediction_artifact(output_dir, *, dataset_id, logits, "
@@ -278,16 +376,13 @@ def load_context_request(path: PathInput) -> Dict[str, Any]:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError, json.JSONDecodeError) as exc:
         raise CandidateProtocolError("context request is invalid") from exc
-    if not isinstance(payload, dict) or set(payload) != {
-        "schema_version",
-        "candidate_protocol",
-        "dataset_id",
-        "vocab_size",
-        "context_lengths",
-        "examples",
-    }:
+    if not isinstance(payload, dict) or set(payload) != set(CONTEXT_MANIFEST_FIELDS):
         raise CandidateProtocolError("context request has an invalid schema")
-    if payload["schema_version"] != DATASET_SCHEMA_VERSION:
+    if (
+        isinstance(payload["schema_version"], bool)
+        or not isinstance(payload["schema_version"], int)
+        or payload["schema_version"] != DATASET_SCHEMA_VERSION
+    ):
         raise CandidateProtocolError("context request has an unsupported schema")
     if payload["candidate_protocol"] != CANDIDATE_PROTOCOL:
         raise CandidateProtocolError("context request uses a different protocol")
@@ -322,7 +417,7 @@ def load_context_request(path: PathInput) -> Dict[str, Any]:
         raise CandidateProtocolError("context request has no examples")
     seen_ids = set()
     for example in examples:
-        if not isinstance(example, dict) or set(example) != {"example_id", "input_ids"}:
+        if not isinstance(example, dict) or set(example) != set(CONTEXT_EXAMPLE_FIELDS):
             raise CandidateProtocolError("context example has an invalid schema")
         example_id = example["example_id"]
         input_ids = example["input_ids"]

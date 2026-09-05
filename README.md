@@ -422,6 +422,12 @@ synchronously with positional arguments. The first three arguments are absolute
 JSON, and writable prediction output directory; `device` is the string from
 `evaluation.device`. The return value is ignored; output files carry predictions.
 `sys.argv` belongs to the Worker launcher and is not a Candidate interface.
+Version 8 publishes `evaluation.candidate_boundary.context_manifest`, the exact
+`contexts.json` schema, including `examples[].example_id` and
+`examples[].input_ids`. It also declares that `load_context_request()` returns
+the parsed dictionary with unchanged keys and values, and publishes the binary
+logit encoding, shape, and row/column order under
+`evaluation.candidate_boundary.prediction_manifest.logits_artifact`.
 
 Training code writes Candidate artifacts into the lease-owned `/output` mount.
 `lease-commit` first stops the Training sandbox, validates and snapshots the

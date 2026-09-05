@@ -31,6 +31,7 @@ from .candidate_protocol import (
     PREDICTION_ARTIFACT_RETENTION,
     candidate_entrypoint_contract,
     candidate_helper_api_manifest,
+    context_manifest_contract,
     prediction_manifest_contract,
     prediction_storage_manifest,
     serving_timing_manifest,
@@ -223,6 +224,7 @@ class CandidateChannelRequirements:
         return {
             "protocol": self.protocol,
             "entrypoint": candidate_entrypoint_contract(),
+            "context_manifest": context_manifest_contract(),
             "mechanism": "worker_materialized_files",
             "request_content": self.request_content,
             "predictions_per_context": self.predictions_per_context,

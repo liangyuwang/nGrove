@@ -179,8 +179,16 @@ isolated writable prediction storage. `device` is the string in
 `__name__` is not `__main__`, and `sys.argv` is not a Candidate interface. The
 return value is ignored; the output files must be written before returning.
 
-`contexts_path` is a read-only JSON artifact containing example IDs and token
-contexts but no targets or split label. The serving system owns file reading, model loading,
+The exact input schema is declared at
+`evaluation.candidate_boundary.context_manifest`. `contexts_path` contains a
+read-only JSON object with exactly `schema_version` (integer 2),
+`candidate_protocol` (string `offline_next_token_logits_v3`), `dataset_id`
+(opaque string), `vocab_size` (integer), `context_lengths` (increasing positive
+integer array), and `examples` (nonempty array). Each example contains exactly
+`example_id` (unique opaque string) and `input_ids` (integer token array in
+oldest-to-newest order). Context lengths belong to `context_lengths`; token IDs
+are in `[0, vocab_size)`. No targets or split label are included.
+The serving system owns file reading, model loading,
 batching, ordering, and parallelism. It writes exactly `predictions.json` and
 `logits.f32` under `output_dir`; logits are finite row-major little-endian
 float32 vectors in request order, one `[vocabulary]` row per example. The
@@ -206,7 +214,12 @@ machine-readable contract under
 `autotrain_bench.candidate_protocol` API is explicitly allowed in Agent and
 Training environments: `load_context_request(path)` reads the request and
 `write_prediction_artifact(output_dir, *, dataset_id, logits, examples,
-vocab_size)` writes both output files. These helpers are optional.
+vocab_size)` writes both output files. The reader returns the parsed dictionary
+without renaming keys or wrapping values; its return schema is the same
+`context_manifest`. These helpers are optional. The prediction declaration's
+`logits_artifact` specifies finite IEEE-754 float32 values in little-endian,
+headerless row-major order: row `i` corresponds to `examples[i]`, and column `j`
+corresponds to token ID `j`.
 
 A conforming Worker hard-limits this untrusted directory to two entries and
 `examples * vocab_size * 4 + 65536` bytes; the manifest itself is limited to

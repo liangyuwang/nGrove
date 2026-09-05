@@ -2,6 +2,9 @@ import hashlib
 import importlib.util
 import json
 import math
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +19,7 @@ from autotrain_bench.candidate_protocol import (
     write_prediction_artifact,
 )
 from autotrain_bench.worker_protocol import PerformanceScoreContract
+from autotrain_bench.config import TaskConfig
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +32,172 @@ SPEC.loader.exec_module(MODULE)
 
 
 class IsolatedEvaluatorTests(unittest.TestCase):
+    def test_context_fields_and_reader_return_match_the_public_declaration(self):
+        boundary = TaskConfig.load(
+            ROOT / "tests/fixtures/task/task.json"
+        ).public_manifest("B")["evaluation"]["candidate_boundary"]
+        contract = boundary["context_manifest"]
+        with tempfile.TemporaryDirectory() as temporary:
+            contexts, targets = self._examples()
+            path, target_path = self._write_split(
+                Path(temporary) / "split", contexts, targets
+            )
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(load_context_request(path), payload)
+            self.assertEqual(set(payload), set(contract["exact_fields"]))
+            for name, spec in contract["fields"].items():
+                self.assertIs(
+                    type(payload[name]),
+                    {"integer": int, "string": str, "array": list}[spec["json_type"]],
+                )
+                if "constant" in spec:
+                    self.assertEqual(payload[name], spec["constant"])
+            example_contract = contract["fields"]["examples"]["items"]
+            for example in payload["examples"]:
+                self.assertEqual(set(example), set(example_contract["exact_fields"]))
+                self.assertIsInstance(example["example_id"], str)
+                self.assertIsInstance(example["input_ids"], list)
+                self.assertIn(len(example["input_ids"]), payload["context_lengths"])
+            self.assertEqual(
+                MODULE.validate_inputs(
+                    path, target_path, 10, context_lengths=(1, 2, 3)
+                )["examples"],
+                len(payload["examples"]),
+            )
+
+    def test_reader_and_evaluator_reject_undeclared_context_keys_and_values(self):
+        invalid_examples = [
+            {"example_id": "one", "context": [0]},
+            {"example_id": "one", "tokens": [0]},
+            {"example_id": "one", "input_ids": None},
+            {"example_id": "one", "input_ids": [True]},
+            {"example_id": "one", "input_ids": [-1]},
+            {"example_id": "one", "input_ids": [10]},
+            {"example_id": "one", "input_ids": [0], "target": 1},
+        ]
+        for invalid in invalid_examples:
+            with self.subTest(
+                example=invalid
+            ), tempfile.TemporaryDirectory() as temporary:
+                contexts, targets = self._examples()
+                contexts[0] = invalid
+                path, target_path = self._write_split(
+                    Path(temporary) / "split", contexts, targets
+                )
+                with self.assertRaises(CandidateProtocolError):
+                    load_context_request(path)
+                with self.assertRaises(MODULE.EvaluationError):
+                    MODULE.validate_inputs(
+                        path, target_path, 10, context_lengths=(1, 2, 3)
+                    )
+
+    def test_reader_and_evaluator_require_an_integer_context_schema_version(self):
+        for invalid in (2.0, True, "2"):
+            with self.subTest(
+                version=invalid
+            ), tempfile.TemporaryDirectory() as temporary:
+                contexts, targets = self._examples()
+                path, target_path = self._write_split(
+                    Path(temporary) / "split", contexts, targets
+                )
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                payload["schema_version"] = invalid
+                path.write_text(json.dumps(payload), encoding="utf-8")
+                with self.assertRaisesRegex(CandidateProtocolError, "schema"):
+                    load_context_request(path)
+                with self.assertRaisesRegex(MODULE.EvaluationError, "schema"):
+                    MODULE.validate_inputs(
+                        path, target_path, 10, context_lengths=(1, 2, 3)
+                    )
+
+    def test_public_contract_files_round_trip_through_runner_and_both_scorers(self):
+        boundary = TaskConfig.load(
+            ROOT / "tests/fixtures/task/task.json"
+        ).public_manifest("B")["evaluation"]["candidate_boundary"]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            contexts, targets = self._examples()
+            for context, target in zip(contexts, targets):
+                target["target"] = context["input_ids"][-1]
+            context_path, target_path = self._write_split(
+                root / "split", contexts, targets
+            )
+            candidate = root / "candidate"
+            candidate.mkdir()
+            (candidate / "contract.json").write_text(
+                json.dumps(boundary), encoding="utf-8"
+            )
+            (candidate / boundary["entrypoint"]["module_file"]).write_text(
+                """
+import json, struct
+def run_offline(candidate_dir, contexts_path, output_dir, device):
+    contract = json.loads((candidate_dir / "contract.json").read_text())
+    request = json.loads(contexts_path.read_text())
+    fields = contract["context_manifest"]["fields"]
+    examples_key = next(name for name, spec in fields.items()
+                        if spec["json_type"] == "array" and spec["items"]["json_type"] == "object")
+    example_fields = fields[examples_key]["items"]["fields"]
+    input_key = next(name for name, spec in example_fields.items() if spec["json_type"] == "array")
+    rows = request[examples_key]
+    vocab = request["vocab_size"]
+    prediction = contract["prediction_manifest"]
+    sources = {
+        "contexts.json.dataset_id": request["dataset_id"],
+        "len(contexts.json.examples)": len(rows),
+        "contexts.json.vocab_size": vocab,
+    }
+    manifest = {name: spec["constant"] if "constant" in spec else sources[spec["source"]]
+                for name, spec in prediction["fields"].items()}
+    output_dir.mkdir(exist_ok=True)
+    (output_dir / prediction["filename"]).write_text(json.dumps(manifest))
+    layout = prediction["logits_artifact"]
+    assert layout["layout"] == "row_major" and layout["header_bytes"] == 0
+    encoding = {"ieee754_float32_little_endian": "<f"}[layout["encoding"]]
+    with (output_dir / layout["filename"]).open("wb") as stream:
+        for row in rows:
+            for token in range(vocab):
+                stream.write(struct.pack(encoding, 2.0 if token == row[input_key][-1] else 0.0))
+""",
+                encoding="utf-8",
+            )
+            output = root / "predictions"
+            environment = dict(os.environ)
+            environment["PYTHONPATH"] = str(ROOT)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "autotrain_bench.candidate_offline_runner",
+                    "--candidate",
+                    str(candidate),
+                    "--contexts",
+                    str(context_path),
+                    "--output",
+                    str(output),
+                    "--device",
+                    "cpu",
+                ],
+                cwd=root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for task in ("dev_tasks/smoke_lm", "challenges/lm-pretrain-v1"):
+                with self.subTest(task=task):
+                    spec = importlib.util.spec_from_file_location(
+                        "contract_scorer", ROOT / task / "evaluator/evaluator.py"
+                    )
+                    evaluator = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(evaluator)
+                    score = evaluator.evaluate(
+                        context_path, target_path, output, 10, context_lengths=(1, 2, 3)
+                    )
+                    self.assertAlmostEqual(
+                        score["raw_metrics"]["mean_nll"], math.log(math.exp(2) + 9) - 2
+                    )
+
     def test_uniform_scores_are_invariant_to_large_finite_logit_offsets(self):
         for task in ("dev_tasks/smoke_lm", "challenges/lm-pretrain-v1"):
             spec = importlib.util.spec_from_file_location(

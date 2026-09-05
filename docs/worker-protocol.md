@@ -433,12 +433,28 @@ The output manifest is also exact:
 }
 ```
 
-The same contract is present in the Agent-visible public task manifest at
+The input contract is published at
+`evaluation.candidate_boundary.context_manifest`, with exact root and example
+field sets, JSON types, constants, and bounds. The root has `schema_version`,
+`candidate_protocol`, `dataset_id`, `vocab_size`, `context_lengths`, and
+`examples`; each example has only `example_id` and `input_ids`. `input_ids` is
+an integer array in oldest-to-newest order, with length in `context_lengths`
+and token values in `[0, vocab_size)`. IDs are opaque, nonempty strings of at
+most 512 characters without NUL; example IDs are unique within the request.
+The request contains no targets, split labels, or protected source metadata.
+
+The output contract is present in the Agent-visible public task manifest at
 `evaluation.candidate_boundary.prediction_manifest`, including the exact field
 set, JSON types, constants, request-derived values, and the prohibition on
-additional fields. JSON member order and whitespace are not significant. The
-adjacent `public_helper_api` entry names the optional generated request reader
-and prediction writer. Post-seal hidden-evaluation failures retain their fixed
+additional fields. Its `logits_artifact` declares a headerless, row-major,
+little-endian IEEE-754 float32 matrix: row `i` matches `examples[i]`, column `j`
+matches token ID `j`, and all values must be finite. JSON member order and
+whitespace are not significant. The adjacent `public_helper_api` entry names
+the optional generated request reader and prediction writer. The reader's
+declared return type is a dictionary with the parsed context object's keys
+and values unchanged, referencing `context_manifest` for the full structure.
+Both declarations are shared with the Worker channel manifest.
+Post-seal hidden-evaluation failures retain their fixed
 public failure codes and trusted-only details.
 
 The target rows must align one-for-one with context rows and IDs. Each protected

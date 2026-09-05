@@ -13,6 +13,7 @@ from .candidate_protocol import (
     PREDICTION_ARTIFACT_RETENTION,
     candidate_entrypoint_contract,
     candidate_helper_api_manifest,
+    context_manifest_contract,
     prediction_manifest_contract,
     prediction_storage_manifest,
     serving_timing_manifest,
@@ -47,7 +48,10 @@ class ConfigError(ValueError):
 #
 # Version 7 publishes the existing Candidate module/function invocation contract,
 # including ordered argument types and meanings, without adding a self-check.
-AGENT_PROTOCOL_VERSION = 7
+#
+# Version 8 publishes the complete context input schema, reader return structure,
+# and binary logit layout for the existing offline Candidate ABI.
+AGENT_PROTOCOL_VERSION = 8
 
 # Phases a release may declare as benchmark-owned rather than participant time.
 # `README.md` requires this boundary to be release-defined and identical across
@@ -824,6 +828,7 @@ class TaskConfig:
                 "policy_compliant": self.evaluator_policy_compliant,
                 "candidate_boundary": {
                     "entrypoint": candidate_entrypoint_contract(),
+                    "context_manifest": context_manifest_contract(),
                     "target_artifact_mount": "none",
                     "context_artifact_access": "read_only",
                     "prediction_artifact_access": "candidate_read_write_isolated",

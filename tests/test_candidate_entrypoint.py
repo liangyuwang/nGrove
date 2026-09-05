@@ -31,7 +31,9 @@ class CandidateEntrypointTests(unittest.TestCase):
             manifest.write_text(json.dumps(payload), encoding="utf-8")
             return TaskConfig.load(manifest)
 
-    def test_public_entrypoint_agrees_with_worker_for_both_tasks_and_tracks(self):
+    def test_public_candidate_contracts_agree_with_worker_for_both_tasks_and_tracks(
+        self,
+    ):
         for task in ("dev_tasks/smoke_lm", "challenges/lm-pretrain-v1"):
             config = self._task_config(task)
             worker = CandidateChannelRequirements(
@@ -42,8 +44,41 @@ class CandidateEntrypointTests(unittest.TestCase):
                     boundary = config.public_manifest(track)["evaluation"][
                         "candidate_boundary"
                     ]
+                    for section in (
+                        "entrypoint",
+                        "context_manifest",
+                        "prediction_manifest",
+                        "public_helper_api",
+                    ):
+                        self.assertEqual(boundary[section], worker[section])
+                    context = boundary["context_manifest"]
+                    self.assertEqual(
+                        context["exact_fields"],
+                        [
+                            "schema_version",
+                            "candidate_protocol",
+                            "dataset_id",
+                            "vocab_size",
+                            "context_lengths",
+                            "examples",
+                        ],
+                    )
+                    self.assertFalse(context["additional_fields_allowed"])
+                    example = context["fields"]["examples"]["items"]
+                    self.assertEqual(
+                        example["exact_fields"], ["example_id", "input_ids"]
+                    )
+                    self.assertFalse(example["additional_fields_allowed"])
+                    self.assertEqual(
+                        example["fields"]["input_ids"]["json_type"], "array"
+                    )
+                    self.assertEqual(
+                        boundary["public_helper_api"]["request_reader_return"][
+                            "contract"
+                        ],
+                        "evaluation.candidate_boundary.context_manifest",
+                    )
                     entrypoint = boundary["entrypoint"]
-                    self.assertEqual(entrypoint, worker["entrypoint"])
                     self.assertEqual(entrypoint["module_file"], "candidate.py")
                     self.assertEqual(
                         entrypoint["module_location"], "candidate_artifact_root"

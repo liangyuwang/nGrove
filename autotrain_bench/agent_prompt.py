@@ -17,13 +17,17 @@ Allowed information and actions:
 - Treat evaluation.performance_score and evaluation.cost in that manifest as
   the normative evaluation-axis contracts. Cost covers the complete Candidate
   invocation and amortizes its wall time over the frozen evaluation task count.
+- Treat evaluation.candidate_boundary.context_manifest in that manifest as the
+  normative contexts.json input contract, including exact fields and types.
+  Each item in examples has example_id and input_ids; input_ids is its token list.
 - Treat evaluation.candidate_boundary.entrypoint in that manifest as the normative
   Candidate invocation contract: module file, function, ordered arguments, and
   their types and meanings. The module is imported and its function is called;
   sys.argv is not part of the Candidate ABI.
 - Treat evaluation.candidate_boundary.prediction_manifest in that manifest as
   the normative, exact predictions.json contract. It names every required field,
-  value source, and constant; additional fields are forbidden.
+  value source, and constant; additional fields are forbidden. Its logits_artifact
+  declares the binary encoding, shape, and row/column order of logits.f32.
 - Read and edit only the current workspace ($AUTOTRAIN_BENCH_WORKSPACE).
 - Use only these mailbox commands as the benchmark control plane:
   python -m autotrain_bench.cli agent status
