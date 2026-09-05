@@ -485,6 +485,8 @@ def run_offline(candidate_dir, contexts_path, output_dir, device):
                 lengths=(1, 2),
                 vocab=3,
             )
+            with self.assertRaisesRegex(CandidateProtocolError, "cover"):
+                load_context_request(context_path)
             with self.assertRaisesRegex(MODULE.EvaluationError, "cover"):
                 MODULE.validate_inputs(
                     context_path, target_path, 3, context_lengths=(1, 2)

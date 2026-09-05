@@ -422,6 +422,7 @@ def load_context_request(path: PathInput) -> Dict[str, Any]:
     if not isinstance(examples, list) or not examples:
         raise CandidateProtocolError("context request has no examples")
     seen_ids = set()
+    observed_lengths = set()
     for example in examples:
         if not isinstance(example, dict) or set(example) != set(CONTEXT_EXAMPLE_FIELDS):
             raise CandidateProtocolError("context example has an invalid schema")
@@ -445,6 +446,11 @@ def load_context_request(path: PathInput) -> Dict[str, Any]:
             for token in input_ids
         ):
             raise CandidateProtocolError("context token is outside the vocabulary")
+        observed_lengths.add(len(input_ids))
+    if observed_lengths != set(lengths):
+        raise CandidateProtocolError(
+            "context request does not cover every context length"
+        )
     return payload
 
 
