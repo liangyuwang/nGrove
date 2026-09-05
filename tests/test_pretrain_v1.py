@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 import struct
 import tempfile
@@ -7,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from autotrain_bench.config import TaskConfig
+from autotrain_bench.training_data import verify_training_data
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,7 +40,95 @@ def recognized_manifest():
     }
 
 
+def source_manifest(path, files=None):
+    payload = {
+        "schema_version": 1,
+        "dataset": MODULE.DATASET,
+        "revision": MODULE.DATASET_REVISION,
+        "upstream_sample": MODULE.UPSTREAM_SAMPLE,
+        "files": [
+            {
+                "file": f"sample/10BT/{name}",
+                "bytes": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(),
+            }
+            for name, data in (files or {"part.parquet": b"source"}).items()
+        ],
+    }
+    path.write_text(json.dumps(payload))
+    return path
+
+
 class PretrainV1Tests(unittest.TestCase):
+    def test_pinned_manifest_covers_all_upstream_shards(self):
+        payload = json.loads(MODULE.SOURCE_MANIFEST_PATH.read_bytes())
+        self.assertEqual(payload["revision"], MODULE.DATASET_REVISION)
+        self.assertEqual(
+            [item["file"] for item in payload["files"]],
+            [f"sample/10BT/{index:03d}_00000.parquet" for index in range(14)],
+        )
+
+    def test_local_source_requires_exact_pinned_bytes_and_inventory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            source.mkdir()
+            pinned = source_manifest(root / "source-files.json")
+            path = source / "part.parquet"
+            with patch.object(MODULE, "SOURCE_MANIFEST_PATH", pinned):
+                for layout in (source, source / "sample/10BT"):
+                    layout.mkdir(parents=True, exist_ok=True)
+                    if path.exists():
+                        path.unlink()
+                    path = layout / "part.parquet"
+                    path.write_bytes(b"source")
+                    files, receipt, _ = MODULE.verify_source(source)
+                    self.assertEqual(files, [path])
+                    self.assertEqual(receipt["status"], "verified")
+                for content in (b"sourc", b"SOURCE"):
+                    path.write_bytes(content)
+                    with self.assertRaisesRegex(MODULE.PreparationError, "mismatch"):
+                        MODULE.verify_source(source)
+                path.write_bytes(b"source")
+                extra = source / "extra.parquet"
+                extra.write_bytes(b"source")
+                with self.assertRaisesRegex(MODULE.PreparationError, "unexpected"):
+                    MODULE.verify_source(source)
+                extra.unlink()
+                duplicate = source / "part.parquet"
+                duplicate.write_bytes(b"source")
+                with self.assertRaisesRegex(MODULE.PreparationError, "duplicate"):
+                    MODULE.verify_source(source)
+                duplicate.unlink()
+                path.unlink()
+                with self.assertRaises(MODULE.PreparationError):
+                    MODULE.verify_source(source)
+
+    def test_bad_source_fails_before_loading_dependencies_or_creating_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            source.mkdir()
+            (source / "part.parquet").write_bytes(b"SOURCE")
+            pinned = source_manifest(root / "source-files.json")
+            with patch.object(MODULE, "SOURCE_MANIFEST_PATH", pinned):
+                with patch.object(MODULE, "_load_dependencies") as dependencies:
+                    with self.assertRaisesRegex(MODULE.PreparationError, "checksum"):
+                        MODULE.prepare(
+                            source_dir=source,
+                            output_dir=root / "output",
+                            target_train_tokens=1,
+                            shard_tokens=1,
+                            eval_examples=1,
+                            eval_context_lengths=(1,),
+                            accept_large_download=False,
+                            force=False,
+                        )
+                    dependencies.assert_not_called()
+            self.assertEqual(
+                {p.name for p in root.iterdir()}, {"source", "source-files.json"}
+            )
+
     def test_force_refuses_unrecognized_or_overlapping_targets(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -339,6 +429,7 @@ class PretrainV1Tests(unittest.TestCase):
             source = root / "source"
             source.mkdir()
             (source / "part.parquet").write_bytes(b"source")
+            pinned = source_manifest(root / "source-files.json")
             output = root / "generated"
             dependencies = (
                 None,
@@ -346,7 +437,9 @@ class PretrainV1Tests(unittest.TestCase):
                 FakeParquet(),
                 FakeTiktoken(),
             )
-            with patch.object(MODULE, "_load_dependencies", return_value=dependencies):
+            with patch.object(MODULE, "SOURCE_MANIFEST_PATH", pinned), patch.object(
+                MODULE, "_load_dependencies", return_value=dependencies
+            ):
                 with patch.object(MODULE, "iter_documents", return_value=iter(rows)):
                     with patch.object(MODULE, "preview_split", side_effect=split):
                         with patch("builtins.print"):
@@ -373,6 +466,14 @@ class PretrainV1Tests(unittest.TestCase):
                 self.assertTrue((output / f"private/{split}/targets.json").is_file())
             self.assertEqual(manifest["raw_train"]["documents"], 2)
             self.assertEqual(manifest["tokenized_train"]["documents"], 2)
+            verified = verify_training_data(output / "public")
+            self.assertEqual(verified["files"], 5)
+            public = json.loads((output / "public/manifest.json").read_bytes())
+            self.assertEqual(public["source"]["verification"]["status"], "verified")
+            self.assertNotIn("preview_hidden_evaluation", public)
+            self.assertFalse(
+                any("private" in item["file"] for item in public["integrity"]["files"])
+            )
 
 
 if __name__ == "__main__":

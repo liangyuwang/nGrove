@@ -31,6 +31,7 @@ The core repository owns:
 - Agent and Worker protocol schemas;
 - semantic capability and trust requirements;
 - canonical Candidate validation and artifact identity;
+- validation and recording of trusted TRAIN verification evidence;
 - conformance specifications;
 - leaderboard eligibility decisions.
 
@@ -47,6 +48,15 @@ Platform packages are distributed separately.  Examples of possible package
 names are `autotrain-worker-docker`, `autotrain-worker-apptainer`, and
 `autotrain-worker-kubernetes`; these names are examples, not core backends.
 Core must never grow platform selection branches or import their SDKs.
+
+The trusted launcher or Worker verifies the public TRAIN view before task
+reveal. The launcher supplies that evidence to `Supervisor`, which checks its
+verified status and binding to the current root manifest without scanning the
+dataset files. The Worker must keep that verified view immutable and read-only
+during research. The bundled local launcher uses the shared file verifier;
+other deployments choose their verification mechanism. These checks do not
+read hidden data or replace Worker enforcement; see
+[TRAIN integrity](training-data.md).
 
 ## Policy and enforcement
 

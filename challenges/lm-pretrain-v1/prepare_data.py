@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import sys
@@ -22,6 +23,11 @@ from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
+from autotrain_bench.training_data import (
+    TrainingDataError,
+    file_identity,
+    write_training_manifest,
+)
 
 DATASET = "HuggingFaceFW/fineweb-edu"
 DATASET_REVISION = "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
@@ -42,6 +48,7 @@ SPLIT_BUCKETS = 4_096
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
+SOURCE_MANIFEST_PATH = DATA_DIR / "source-files.json"
 DEFAULT_RAW_DIR = DATA_DIR / "raw" / DATASET_REVISION
 DEFAULT_OUTPUT_DIR = DATA_DIR / "generated"
 BUILDER_ID = "autotrain-bench/lm-pretrain-v1"
@@ -49,6 +56,83 @@ BUILDER_ID = "autotrain-bench/lm-pretrain-v1"
 
 class PreparationError(RuntimeError):
     pass
+
+
+def verify_source(source_root: Path) -> Tuple[List[Path], Dict[str, Any], str]:
+    """Match local or downloaded Parquet bytes to the pinned upstream inventory."""
+
+    try:
+        manifest_bytes = SOURCE_MANIFEST_PATH.read_bytes()
+        manifest = json.loads(manifest_bytes)
+        if (
+            isinstance(manifest["schema_version"], bool)
+            or not isinstance(manifest["schema_version"], int)
+            or manifest["schema_version"] != 1
+            or manifest["dataset"] != DATASET
+            or manifest["revision"] != DATASET_REVISION
+            or manifest["upstream_sample"] != UPSTREAM_SAMPLE
+        ):
+            raise ValueError("source manifest identity mismatch")
+        records = manifest["files"]
+        if not isinstance(records, list) or not records:
+            raise ValueError("empty source inventory")
+        expected = {}
+        for record in records:
+            name = record["file"]
+            if (
+                not isinstance(name, str)
+                or re.fullmatch(r"sample/10BT/[A-Za-z0-9_-]+\.parquet", name) is None
+                or name in expected
+                or isinstance(record["bytes"], bool)
+                or not isinstance(record["bytes"], int)
+                or record["bytes"] <= 0
+                or not isinstance(record["sha256"], str)
+                or re.fullmatch(r"[0-9a-f]{64}", record["sha256"]) is None
+            ):
+                raise ValueError("invalid source file identity")
+            expected[name] = record
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise PreparationError("invalid pinned source manifest") from exc
+
+    before = _directory_metadata_digest(source_root)
+    found = {}
+    for path in _parquet_files(source_root):
+        relative = path.relative_to(source_root).as_posix()
+        canonical = f"{UPSTREAM_SAMPLE}/{path.name}"
+        if (
+            relative not in {path.name, canonical}
+            or canonical not in expected
+            or canonical in found
+        ):
+            raise PreparationError(
+                f"unexpected or duplicate source Parquet: {relative}"
+            )
+        found[canonical] = path
+    if set(found) != set(expected):
+        raise PreparationError(
+            f"pinned source file set mismatch; missing={sorted(set(expected) - set(found))}"
+        )
+    for name in sorted(expected):
+        record = expected[name]
+        try:
+            if found[name].lstat().st_size != record["bytes"]:
+                raise PreparationError(f"pinned source byte length mismatch: {name}")
+            actual = file_identity(found[name])
+        except (OSError, TrainingDataError) as exc:
+            raise PreparationError(f"cannot verify pinned source: {name}") from exc
+        if actual != {key: record[key] for key in ("bytes", "sha256")}:
+            raise PreparationError(f"pinned source checksum mismatch: {name}")
+    if _directory_metadata_digest(source_root) != before:
+        raise PreparationError("source changed during verification")
+    return (
+        [found[name] for name in sorted(found)],
+        {
+            "status": "verified",
+            "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+            "source_parquet_files": [expected[name] for name in sorted(expected)],
+        },
+        before,
+    )
 
 
 def _paths_overlap(first: Path, second: Path) -> bool:
@@ -731,7 +815,13 @@ def prepare(
                 "the pinned source download is roughly 28.5 GB; pass "
                 "--accept-large-download or provide --source-dir"
             )
+    if source_dir is not None:
+        source_root = source_root_argument
+        files, source_verification, source_identity = verify_source(source_root)
     snapshot_download, pyarrow, parquet, tiktoken = _load_dependencies()
+    if source_dir is None:
+        source_root = _download_source(snapshot_download, DEFAULT_RAW_DIR)
+        files, source_verification, source_identity = verify_source(source_root)
     encoding = tiktoken.get_encoding(TOKENIZER)
     if encoding.n_vocab != VOCAB_SIZE or encoding.eot_token != EOT_TOKEN_ID:
         raise PreparationError("installed GPT-2 tokenizer has unexpected semantics")
@@ -748,12 +838,6 @@ def prepare(
     build_manifest: Dict[str, Any]
 
     try:
-        if source_dir is None:
-            source_root = _download_source(snapshot_download, DEFAULT_RAW_DIR)
-        else:
-            source_root = source_root_argument
-        files = _parquet_files(source_root)
-
         writer = TokenShardWriter(tokenized_dir, maximum_tokens=shard_tokens)
         raw_writer = RawParquetWriter(
             public_raw_dir,
@@ -829,14 +913,8 @@ def prepare(
             test,
             "lm-pretrain-v1:preview:offline-v3",
         )
-        source_files = [
-            {
-                "file": path.relative_to(source_root).as_posix(),
-                "bytes": path.stat().st_size,
-                "sha256": _sha256_file(path),
-            }
-            for path in files
-        ]
+        if _directory_metadata_digest(source_root) != source_identity:
+            raise PreparationError("source changed during preparation")
         public_raw_shards = [
             {**shard, "file": f"raw/{shard['file']}"} for shard in raw_train_shards
         ]
@@ -852,7 +930,11 @@ def prepare(
                 "dataset": DATASET,
                 "revision": DATASET_REVISION,
                 "upstream_sample": UPSTREAM_SAMPLE,
-                "source_parquet_files": source_files,
+                "source_parquet_files": source_verification["source_parquet_files"],
+                "verification": {
+                    key: source_verification[key]
+                    for key in ("status", "manifest_sha256")
+                },
             },
             "raw_train": {
                 "format": "Parquet with text, selected columns, and metadata_json",
@@ -879,7 +961,7 @@ def prepare(
             },
         }
         _write_json(tokenized_dir / "manifest.json", public_manifest)
-        _write_json(public_dir / "manifest.json", public_manifest)
+        public_manifest = write_training_manifest(public_dir, public_manifest)
         build_manifest = {
             **public_manifest,
             "preview_hidden_evaluation": {

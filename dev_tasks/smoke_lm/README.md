@@ -76,6 +76,10 @@ autotrain-bench challenge-info \
 
 ## Prepare
 
+Install Core first with `python3 -m pip install -e .` from the repository root.
+The data builder and integrity verifier otherwise require only the standard
+library.
+
 ```bash
 python3 dev_tasks/smoke_lm/prepare_data.py
 autotrain-bench prepare --task dev_tasks/smoke_lm/task.json
@@ -85,6 +89,12 @@ Preparation downloads a deterministic slice of
 `karpathy/tinystories-gpt4-clean` at revision
 `0397e27157956705a0260709da3095bb9c43d6a7`, verifies the ordered source digest,
 and writes ignored generated artifacts under `dev_tasks/smoke_lm/data/`.
+
+`data/train/manifest.json` inventories the public TRAIN files without including
+hidden evaluation metadata. Cached preparation verifies this inventory;
+legacy or damaged data is rebuilt. `autotrain-bench prepare` and every new
+episode independently check the full TRAIN view before the Agent starts.
+See [TRAIN integrity](../../docs/training-data.md).
 
 ## Run an Agent integration
 

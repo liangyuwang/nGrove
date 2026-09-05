@@ -126,9 +126,10 @@ column `j` to token ID `j`, and every value must be finite.
 
 ## Prepare data
 
-Install the isolated preparation dependencies:
+Install Core and the isolated preparation dependencies:
 
 ```bash
+python3 -m pip install -e .
 python3 -m pip install -r challenges/lm-pretrain-v1/data/requirements.txt
 ```
 
@@ -147,11 +148,31 @@ python3 challenges/lm-pretrain-v1/prepare_data.py \
   --source-dir /path/to/fineweb-edu-sample-10BT
 ```
 
+Both downloaded and local sources must match all 14 Parquet identities in
+[`data/source-files.json`](data/source-files.json), frozen from the pinned
+revision's upstream LFS metadata. Verification checks file names, byte lengths,
+and SHA-256 before tokenization. `--source-dir` accepts either the `sample/10BT/`
+layout or a flat directory containing those files. Missing, extra, duplicated,
+or changed Parquet files are rejected; materialize ordinary files instead of
+passing a cache's symbolic or hard links. Arbitrary local corpora cannot be
+labeled as this release's source.
+
 The builder records the exact resulting token count, GPT-2 encoding
 fingerprint, raw and tokenized shard checksums, document mapping, dependency
 versions, balanced hidden context-length histograms, and preview hidden-dataset
 checksums. It does not force the canonical stream to contain exactly
 10,000,000,000 tokens.
+
+The root `public/manifest.json` also inventories every public TRAIN file,
+including the document index and nested tokenized manifest. Paths in both
+manifests are relative to the public TRAIN root; the nested manifest carries
+task metadata, while the root carries the authoritative integrity inventory.
+`prepare` and each episode startup read and verify the complete TRAIN view
+before the Agent starts. Source verification reads roughly 28.5 GB once; TRAIN
+verification adds a full read of the generated public data at each check.
+See [TRAIN integrity](../../docs/training-data.md) for the format and Worker
+immutability responsibilities. Older builds lacking the inventory must be
+rebuilt with `--force`.
 
 `--force` replaces only a recognized build of this exact task. The builder
 inventories every existing entry before and immediately around an atomic

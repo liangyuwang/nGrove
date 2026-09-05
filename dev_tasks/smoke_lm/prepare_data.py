@@ -18,6 +18,11 @@ import urllib.request
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
 
+from autotrain_bench.training_data import (
+    TrainingDataError,
+    verify_training_data,
+    write_training_manifest,
+)
 
 DATASET = "karpathy/tinystories-gpt4-clean"
 DATASET_REVISION = "0397e27157956705a0260709da3095bb9c43d6a7"
@@ -324,17 +329,19 @@ def _existing_data_is_valid() -> bool:
         }:
             return False
         artifacts: Dict[str, str] = metadata["artifact_sha256"]
+        verify_training_data(TRAIN_PATH.parent)
         return all(
             path.is_file() and _sha256_file(path) == artifacts[name]
             for name, path in {
                 "train/train.json": TRAIN_PATH,
+                "train/manifest.json": TRAIN_PATH.parent / "manifest.json",
                 "private/analysis/contexts.json": ANALYSIS_PATH / CONTEXTS_FILENAME,
                 "private/analysis/targets.json": ANALYSIS_PATH / TARGETS_FILENAME,
                 "private/test/contexts.json": TEST_PATH / CONTEXTS_FILENAME,
                 "private/test/targets.json": TEST_PATH / TARGETS_FILENAME,
             }.items()
         )
-    except (FileNotFoundError, KeyError, TypeError, json.JSONDecodeError):
+    except (OSError, KeyError, TypeError, json.JSONDecodeError, TrainingDataError):
         return False
 
 
@@ -343,6 +350,17 @@ def prepare(*, force: bool = False) -> Dict[str, object]:
         metadata = json.loads(METADATA_PATH.read_text(encoding="utf-8"))
         print(f"Mini benchmark data is already ready at {DATA_DIR}")
         return metadata
+
+    if TRAIN_PATH.parent.exists():
+        unexpected = {entry.name for entry in TRAIN_PATH.parent.iterdir()} - {
+            "train.json",
+            "manifest.json",
+        }
+        if unexpected:
+            raise RuntimeError(
+                "unexpected public TRAIN entries; use a clean data directory: "
+                + ", ".join(sorted(unexpected))
+            )
 
     documents = download_documents()
     train_docs = documents[:TRAIN_DOCUMENTS]
@@ -427,6 +445,21 @@ def prepare(*, force: bool = False) -> Dict[str, object]:
             "private/test/targets.json": test_artifacts["targets_sha256"],
         },
     }
+    write_training_manifest(
+        TRAIN_PATH.parent,
+        {
+            "source": {
+                "dataset": DATASET,
+                "revision": DATASET_REVISION,
+                "license": DATASET_LICENSE,
+            },
+            "tokenizer": metadata["tokenizer"],
+            "train": metadata["splits"]["train"],
+        },
+    )
+    metadata["artifact_sha256"]["train/manifest.json"] = _sha256_file(
+        TRAIN_PATH.parent / "manifest.json"
+    )
     _write_json(METADATA_PATH, metadata)
     print(json.dumps(metadata, indent=2, sort_keys=True))
     return metadata

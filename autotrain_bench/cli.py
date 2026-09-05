@@ -38,6 +38,7 @@ from .local_agent_execution import describe_local_agent_execution
 from .results import normalize_result_report
 from .runtime import DockerRuntime, RuntimeFailure
 from .supervisor import Supervisor
+from .training_data import verify_training_data
 from .worker_protocol import EnforcementLevel, v0_resource_envelope
 
 
@@ -271,12 +272,14 @@ def _stop_and_record_startup_container_agent(
 
 def command_prepare(args: argparse.Namespace) -> int:
     config = TaskConfig.load(args.task)
+    training_data_verification = verify_training_data(config.train_dir)
     reference_runtime = DockerRuntime()
     reference_runtime.prepare(config, pull_missing=not args.no_pull)
     worker_environment = reference_runtime.environment_manifest(config)
     _print(
         {
             "status": "ready",
+            "training_data_verification": training_data_verification,
             "task_id": config.task_id,
             "task_kind": config.task_kind,
             "leaderboard_eligible": config.leaderboard_eligible,
@@ -424,6 +427,9 @@ def command_start(args: argparse.Namespace) -> int:
         if missing_environment:
             names = ", ".join(missing_environment)
             raise ConfigError(f"agent environment variable is not set: {names}")
+        # Full filesystem verification belongs to this local launcher, before
+        # Worker setup or task reveal. Other launchers supply their own evidence.
+        training_data_verification = verify_training_data(config.train_dir)
         # Local file locations are private composition inputs for the bundled
         # Worker.  They never cross the semantic Core/Worker protocol, and may
         # remain absent until post-research evaluation begins.
@@ -444,27 +450,33 @@ def command_start(args: argparse.Namespace) -> int:
             agent=agent,
             resources=resources,
         )
+        supervisor = Supervisor(
+            config=config,
+            agent=agent,
+            resources=resources,
+            training_data_verification=training_data_verification,
+            resource_envelope=resource_envelope,
+            track=track,
+            episode_dir=episode_dir,
+            agent_api_dir=agent_api_dir,
+            agent_execution=agent_execution,
+            research_worker=reference_runtime,
+            evaluation_worker=reference_runtime,
+            agent_control_transport=agent_control,
+            research_worker_environment=worker_environment,
+            evaluation_worker_environment=worker_environment,
+            comparison_key=comparison_key,
+            challenge_release=challenge_release,
+        )
     except Exception:
+        # The public helper bundle is read-only. No Agent has started yet;
+        # restore its directory permissions so a failed preflight can remove it.
+        bundle = episode_dir / "public" / "agent_api"
+        for directory in (bundle / "autotrain_bench", bundle):
+            if directory.is_dir():
+                directory.chmod(0o755)
         shutil.rmtree(episode_dir, ignore_errors=True)
         raise
-
-    supervisor = Supervisor(
-        config=config,
-        agent=agent,
-        resources=resources,
-        resource_envelope=resource_envelope,
-        track=track,
-        episode_dir=episode_dir,
-        agent_api_dir=agent_api_dir,
-        agent_execution=agent_execution,
-        research_worker=reference_runtime,
-        evaluation_worker=reference_runtime,
-        agent_control_transport=agent_control,
-        research_worker_environment=worker_environment,
-        evaluation_worker_environment=worker_environment,
-        comparison_key=comparison_key,
-        challenge_release=challenge_release,
-    )
     runtime_id = uuid.uuid5(uuid.NAMESPACE_URL, str(episode_dir)).hex[:12]
     prefix = f"atb-{runtime_id}"
     agent_name = f"{prefix}-agent"

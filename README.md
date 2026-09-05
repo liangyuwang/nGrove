@@ -218,6 +218,14 @@ python3 dev_tasks/smoke_lm/prepare_data.py
 autotrain-bench prepare --task dev_tasks/smoke_lm/task.json
 ```
 
+Preparation writes a complete public TRAIN file inventory. The local `prepare`
+and `start` launchers verify file names, byte lengths, and SHA-256 before task reveal;
+old data without this inventory must be prepared again. These checks do not
+read hidden evaluation data. Core receives the trusted verification result and
+checks its binding to the root manifest without scanning the dataset. See
+[TRAIN integrity](docs/training-data.md) for
+the manifest format and the Worker's responsibility to keep TRAIN immutable.
+
 The smoke task downloads about 0.98 MB of real text and uses 512 hidden
 single-target contexts per ANALYSIS/TEST split. By default the selected Agent receives an empty workspace and
 must create its own training system. See `dev_tasks/smoke_lm/README.md` for the
@@ -2136,9 +2144,10 @@ No frozen benchmark challenge has been released. The `lm-pretrain-v1` preview un
 `challenges/` now defines provisional track configurations, a deliberately
 small set of single-host A100/H100 runtime profiles, the four-field comparison
 key, the initial external-resource policy, a task/evaluator, and a builder that
-retains both raw TRAIN documents and GPT-2 token shards. Full-scale validation
-of participant-side 10B data preparation, including scale receipts and checksum
-manifests, remains open release work alongside organizer-owned hidden datasets,
+retains both raw TRAIN documents and GPT-2 token shards. Source bytes are checked
+against a pinned upstream inventory, and TRAIN files are fully verified before
+task reveal. Full-scale validation of the 10B build and its actual scale remains
+open release work alongside organizer-owned hidden datasets,
 final pinned task images, calibrated budgets, submission services, and
 leaderboard infrastructure. Additional
 inference-provider adapters and isolation beyond the v0 Docker threat model

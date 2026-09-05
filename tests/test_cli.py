@@ -1,6 +1,7 @@
 import argparse
 import io
 import json
+import shutil
 import tempfile
 import unittest
 import uuid
@@ -22,10 +23,12 @@ from autotrain_bench.cli import (
     _validate_workspace_boundary,
     build_parser,
     command_report,
+    command_prepare,
     command_start,
 )
 from autotrain_bench.config import ConfigError, TaskConfig
 from autotrain_bench.runtime import DockerRuntime, RuntimeFailure
+from autotrain_bench.training_data import TrainingDataError, verify_training_data
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +37,94 @@ LM_PRETRAIN_PREVIEW = ROOT / "challenges/lm-pretrain-v1/challenge.json"
 
 
 class WorkspaceSnapshotTests(unittest.TestCase):
+    def test_prepare_rejects_invalid_train_before_runtime_setup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = TaskConfig.load(TASK)
+            train = Path(directory) / "train"
+            shutil.copytree(config.train_dir, train)
+            (train / "train.json").write_bytes(b"corrupt")
+            args = build_parser().parse_args(["prepare", "--task", str(TASK)])
+            with patch(
+                "autotrain_bench.cli.TaskConfig.load",
+                return_value=replace(config, train_dir=train),
+            ):
+                with patch("autotrain_bench.cli.DockerRuntime") as runtime:
+                    with self.assertRaises(TrainingDataError):
+                        command_prepare(args)
+                    runtime.assert_not_called()
+
+    def test_start_rechecks_train_and_cleans_up_before_agent_launch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            episode = root / "episode"
+            config = TaskConfig.load(TASK)
+            train = root / "train"
+            shutil.copytree(config.train_dir, train)
+            (train / "train.json").write_bytes(b"corrupt since prepare")
+            args = build_parser().parse_args(
+                [
+                    "start",
+                    "--task",
+                    str(TASK),
+                    "--track",
+                    "B",
+                    "--episode-dir",
+                    str(episode),
+                    "--agent-runner",
+                    "container",
+                    "--agent-image",
+                    f"example/agent@sha256:{'a' * 64}",
+                    "--agent-command",
+                    "example-agent",
+                ]
+            )
+            with patch(
+                "autotrain_bench.cli.TaskConfig.load",
+                return_value=replace(config, train_dir=train),
+            ):
+                with patch("autotrain_bench.cli.DockerRuntime") as runtime:
+                    with self.assertRaises(TrainingDataError):
+                        command_start(args)
+                    runtime.assert_not_called()
+            self.assertFalse(episode.exists())
+
+    def test_start_passes_verified_data_evidence_to_core_before_reveal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            episode = Path(directory) / "episode"
+            config = TaskConfig.load(TASK)
+            args = build_parser().parse_args(
+                [
+                    "start",
+                    "--task",
+                    str(TASK),
+                    "--track",
+                    "B",
+                    "--episode-dir",
+                    str(episode),
+                    "--agent-runner",
+                    "container",
+                    "--agent-image",
+                    "example:test-agent",
+                    "--agent-command",
+                    "example-agent",
+                ]
+            )
+            with patch(
+                "autotrain_bench.cli.verify_training_data", wraps=verify_training_data
+            ) as verify, patch("autotrain_bench.cli.DockerRuntime") as runtime, patch(
+                "autotrain_bench.cli.Supervisor",
+                side_effect=RuntimeError("stop before task reveal"),
+            ) as supervisor:
+                with self.assertRaisesRegex(RuntimeError, "stop before task reveal"):
+                    command_start(args)
+                verify.assert_called_once_with(config.train_dir)
+                self.assertEqual(
+                    supervisor.call_args.kwargs["training_data_verification"],
+                    verify_training_data(config.train_dir),
+                )
+                runtime.return_value.start_agent.assert_not_called()
+            self.assertFalse(episode.exists())
+
     def test_episode_exit_code_requires_a_successful_test_outcome(self):
         self.assertEqual(
             _episode_exit_code({"status": "finalized", "outcome": "success"}), 0

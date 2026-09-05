@@ -252,6 +252,7 @@ class Supervisor:
         config: TaskConfig,
         agent: AgentConfig,
         resources: TrainingResources,
+        training_data_verification: Dict[str, Any],
         resource_envelope: Optional[ResourceEnvelope] = None,
         track: str,
         episode_dir: Path,
@@ -277,6 +278,21 @@ class Supervisor:
         if normalized not in {"A", "B"}:
             raise ValueError("track must be A or B")
         self.config = config.validate()
+        # The trusted launcher verifies the data view and the Worker keeps it
+        # immutable. Core binds that evidence to its small manifest identity;
+        # it does not inventory or read the dataset files.
+        train_manifest_sha256 = _sha256_file(self.config.train_dir / "manifest.json")
+        if (
+            not isinstance(training_data_verification, dict)
+            or training_data_verification.get("status") != "verified"
+            or train_manifest_sha256 is None
+            or training_data_verification.get("manifest_sha256")
+            != train_manifest_sha256
+        ):
+            raise ValueError(
+                "training data verification must bind the current TRAIN manifest"
+            )
+        training_data_verification = copy.deepcopy(training_data_verification)
         self.agent = agent.validate()
         if agent_execution.mechanism != self.agent.runner:
             raise ValueError("Agent execution mechanism does not match Agent config")
@@ -435,7 +451,7 @@ class Supervisor:
             "task_manifest_sha256": _sha256_file(config.source),
             "policy_sha256": _sha256_file(config.source.parent / "POLICY.md"),
             "evaluator_sha256": _sha256_file(config.evaluator_entrypoint),
-            "train_manifest_sha256": _sha256_file(config.train_dir / "manifest.json"),
+            "train_manifest_sha256": train_manifest_sha256,
             # Hidden identities are deliberately resolved only after the
             # research phase is irreversibly sealed. A same-host deployment
             # may keep the bytes physically absent until then.
@@ -627,6 +643,7 @@ class Supervisor:
                 if self.release_verification
                 else None
             ),
+            "training_data_verification": training_data_verification,
             "artifact_identities": {
                 "core_git": core_identity,
                 "challenge_manifest_sha256": artifact_identities[

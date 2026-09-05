@@ -41,6 +41,7 @@ from autotrain_bench.local_mailbox import (
 )
 from autotrain_bench.local_agent_execution import describe_local_agent_execution
 from autotrain_bench.results import RESULT_SCHEMA_VERSION
+from autotrain_bench.training_data import verify_training_data, write_training_manifest
 from autotrain_bench.supervisor import (
     MAX_COMMAND_STREAM_BYTES,
     MAX_INCUMBENT_DECLARATIONS,
@@ -383,6 +384,57 @@ class SupervisorTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
+    def test_verification_evidence_must_bind_train_before_task_reveal(self):
+        valid = verify_training_data(self.config.train_dir)
+        root = self.episode.parent
+        for index, invalid in enumerate(
+            (
+                {},
+                {**valid, "status": "not_verified"},
+                {**valid, "manifest_sha256": "0" * 64},
+            )
+        ):
+            with self.subTest(evidence=invalid):
+                self.episode = root / f"episode-{index}"
+                with patch.object(self.worker, "describe_capabilities") as worker:
+                    with self.assertRaisesRegex(ValueError, "verification must bind"):
+                        self.supervisor(training_data_verification=invalid)
+                    worker.assert_not_called()
+                self.assertFalse((self.episode / "public/task.json").exists())
+                self.assertFalse((self.episode / "state.json").exists())
+
+    def test_verified_identity_is_recorded_without_reading_dataset_files(self):
+        supplied = verify_training_data(self.config.train_dir)
+        # Only the manifest is accessible here. A deployment can verify and
+        # expose the actual dataset on the Worker side.
+        train = self.episode.parent / "train-manifest-only"
+        train.mkdir()
+        (train / "manifest.json").write_bytes(
+            (self.config.train_dir / "manifest.json").read_bytes()
+        )
+        config = replace(
+            self.config,
+            train_dir=train,
+            analysis_path=self.episode.parent / "absent-analysis",
+            test_path=self.episode.parent / "absent-test",
+        )
+        with patch(
+            "autotrain_bench.training_data.verify_training_data",
+            side_effect=AssertionError("Core must not scan TRAIN"),
+        ):
+            supervisor = self.supervisor(
+                config=config, training_data_verification=supplied
+            )
+        receipt = supervisor.state["training_data_verification"]
+        self.assertEqual(receipt, supplied)
+        supplied["status"] = "changed by caller"
+        self.assertEqual(receipt["status"], "verified")
+        self.assertEqual(receipt["files"], 1)
+        self.assertEqual(
+            supervisor.state["artifact_identities"]["train_manifest_sha256"],
+            receipt["manifest_sha256"],
+        )
+
     def supervisor(
         self,
         track="B",
@@ -393,15 +445,20 @@ class SupervisorTests(unittest.TestCase):
         release_verification=None,
         agent_execution=None,
         worker_conformance=None,
+        training_data_verification=None,
     ):
+        resolved_config = config or self.config
+        if training_data_verification is None:
+            training_data_verification = verify_training_data(resolved_config.train_dir)
         resolved_agent = agent or self.agent
         agent_api_dir = publish_agent_api_bundle(self.episode / "public" / "agent_api")
         self.mailbox = LocalFileMailbox(self.episode / "control")
         self.mailbox.initialize()
         supervisor = Supervisor(
-            config=config or self.config,
+            config=resolved_config,
             agent=resolved_agent,
             resources=self.resources,
+            training_data_verification=training_data_verification,
             track=track,
             episode_dir=self.episode,
             agent_api_dir=agent_api_dir,
@@ -452,6 +509,7 @@ class SupervisorTests(unittest.TestCase):
                 config=self.config,
                 agent=self.agent,
                 resources=self.resources,
+                training_data_verification=verify_training_data(self.config.train_dir),
                 track="B",
                 episode_dir=self.episode,
                 agent_api_dir=self.episode / "public" / "agent_api",
@@ -575,9 +633,10 @@ class SupervisorTests(unittest.TestCase):
         )
         formal_train_dir = formal_task_dir / "train"
         formal_train_dir.mkdir()
-        (formal_train_dir / "manifest.json").write_text(
-            '{"frozen":true}\n', encoding="utf-8"
+        (formal_train_dir / "train.json").write_bytes(
+            (self.config.train_dir / "train.json").read_bytes()
         )
+        write_training_manifest(formal_train_dir, {"frozen": True})
         config = replace(
             self.config,
             source=formal_task,
@@ -2711,6 +2770,7 @@ class SupervisorTests(unittest.TestCase):
             config=self.config,
             agent=self.agent,
             resources=self.resources,
+            training_data_verification=verify_training_data(self.config.train_dir),
             track="B",
             episode_dir=self.episode,
             agent_api_dir=agent_api_dir,
