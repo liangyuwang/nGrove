@@ -27,6 +27,7 @@ from .config import (
     agent_environment_names,
     agent_runner,
     resolve_operator_research_limit,
+    resolve_operator_storage_limit,
 )
 from .host_agent import (
     HostAgentProcess,
@@ -374,6 +375,11 @@ def command_start(args: argparse.Namespace) -> int:
         override=args.operator_max_research_seconds,
         disabled=args.no_operator_research_limit,
     )
+    storage_limit = resolve_operator_storage_limit(
+        config.source,
+        override=args.operator_max_storage_bytes,
+        disabled=args.no_operator_storage_limit,
+    )
     resolved_runner = agent_runner(args.agent_runner, "--agent-runner")
     if resolved_runner == "host_cli":
         if args.agent_egress:
@@ -432,6 +438,52 @@ def command_start(args: argparse.Namespace) -> int:
             "This is a private operator setting; it is not sent to the Tested Agent.",
             flush=True,
         )
+    if storage_limit is None:
+        print(
+            "WARNING: Operator storage protection is disabled; writable episode "
+            "storage may exhaust the Worker disk. "
+            "Enable it before launch with --operator-max-storage-bytes BYTES.",
+            flush=True,
+        )
+    else:
+        storage_origin = (
+            "task default"
+            if args.operator_max_storage_bytes is None
+            else "run override"
+        )
+        print(
+            f"Operator storage protection: {storage_limit / 2**30:g} GiB "
+            f"({storage_limit} bytes; {storage_origin}) for this episode, on either Track.\n"
+            "Change it before launch with --operator-max-storage-bytes BYTES, "
+            "or disable it with --no-operator-storage-limit. "
+            "WARNING: disabling protection risks Worker disk exhaustion.\n"
+            "The Worker requires a dedicated bounded filesystem at the episode "
+            "parent directory.",
+            flush=True,
+        )
+    print(
+        "This is a private operator setting; it is not sent to the Tested Agent.",
+        flush=True,
+    )
+    if storage_limit is not None and resolved_runner == "host_cli":
+        raise ConfigError(
+            "host_cli cannot confine Agent writes to protected storage; use the "
+            "container runner or explicitly pass --no-operator-storage-limit "
+            "for an unprotected preview"
+        )
+    # Admission belongs to the execution-side Worker, before workspace copying
+    # or task reveal. This local composition needs a shared Docker filesystem;
+    # remote deployments perform equivalent admission in their own environment.
+    training_data_verification = verify_training_data(config.train_dir)
+    reference_runtime = DockerRuntime(
+        hidden_datasets={"analysis": config.analysis_path, "test": config.test_path}
+    )
+    if storage_limit is not None:
+        reference_runtime.configure_operator_storage(
+            root=episode_dir.parent,
+            max_bytes=storage_limit,
+            probe_image=config.evaluator_image,
+        )
     episode_dir.mkdir(parents=True, exist_ok=False)
     try:
         _initialize_agent_workspace(args.agent_workspace, workspace)
@@ -450,25 +502,18 @@ def command_start(args: argparse.Namespace) -> int:
                 "empty" if args.agent_workspace is None else "participant_snapshot"
             ),
         ).validate()
-        agent_execution = describe_local_agent_execution(agent)
+        agent_execution = describe_local_agent_execution(
+            agent, operator_storage_bounded=storage_limit is not None
+        )
         missing_environment = [
             name for name in agent.environment if name not in os.environ
         ]
         if missing_environment:
             names = ", ".join(missing_environment)
             raise ConfigError(f"agent environment variable is not set: {names}")
-        # Full filesystem verification belongs to this local launcher, before
-        # Worker setup or task reveal. Other launchers supply their own evidence.
-        training_data_verification = verify_training_data(config.train_dir)
         # Local file locations are private composition inputs for the bundled
         # Worker.  They never cross the semantic Core/Worker protocol, and may
         # remain absent until post-research evaluation begins.
-        reference_runtime = DockerRuntime(
-            hidden_datasets={
-                "analysis": config.analysis_path,
-                "test": config.test_path,
-            }
-        )
         reference_runtime.prepare(
             config,
             agent=agent,
@@ -1174,6 +1219,22 @@ def build_parser() -> argparse.ArgumentParser:
             "disable private Track B research-time protection for this run; "
             "WARNING: token consumption may be extremely high"
         ),
+    )
+    storage_protection = start.add_mutually_exclusive_group()
+    storage_protection.add_argument(
+        "--operator-max-storage-bytes",
+        type=int,
+        metavar="BYTES",
+        help=(
+            "private episode storage protection on either Track; requires a "
+            "deployment-provided bounded filesystem at the episode parent; "
+            "defaults: lm-pretrain-v1 100 GiB, smoke_lm 2 GiB"
+        ),
+    )
+    storage_protection.add_argument(
+        "--no-operator-storage-limit",
+        action="store_true",
+        help="disable private episode storage protection; WARNING: disk exhaustion risk",
     )
     start.add_argument(
         "--training-gpus",

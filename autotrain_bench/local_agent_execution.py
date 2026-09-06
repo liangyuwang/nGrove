@@ -7,7 +7,9 @@ from .config import AgentConfig, immutable_image_reference
 from .worker_protocol import EnforcementLevel, TrustLevel
 
 
-def describe_local_agent_execution(agent: AgentConfig) -> AgentExecutionEvidence:
+def describe_local_agent_execution(
+    agent: AgentConfig, *, operator_storage_bounded: bool = False
+) -> AgentExecutionEvidence:
     """Describe the v0 launcher honestly without making the mechanism proof."""
 
     agent.validate()
@@ -15,10 +17,10 @@ def describe_local_agent_execution(agent: AgentConfig) -> AgentExecutionEvidence
     limitations = []
     if not confined_container:
         limitations.append("agent_execution_boundary")
-    # Both bundled launch paths expose writable host bind mounts without a
-    # deployment-enforced filesystem quota. Application-level mailbox limits
-    # cannot contain bytes written before inspection.
-    limitations.append("agent_writable_storage_unbounded")
+    # Only successful Worker-side storage admission can bound these bind mounts.
+    # Host-native processes can write outside the admitted filesystem.
+    if not operator_storage_bounded or agent.runner != "container":
+        limitations.append("agent_writable_storage_unbounded")
     return AgentExecutionEvidence(
         source=(
             "bundled_local_docker"

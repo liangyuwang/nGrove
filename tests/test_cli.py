@@ -38,6 +38,198 @@ LM_PRETRAIN_PREVIEW = ROOT / "challenges/lm-pretrain-v1/challenge.json"
 
 
 class WorkspaceSnapshotTests(unittest.TestCase):
+    def test_inactive_invalid_defaults_do_not_block_start(self):
+        for track, time_default, storage_default, flags in (
+            ("B", 1800, "invalid", ["--no-operator-storage-limit"]),
+            ("B", 1800, "invalid", ["--operator-max-storage-bytes", "4096"]),
+            ("B", "invalid", 2**30, ["--operator-max-research-seconds", "60"]),
+            ("B", "invalid", 2**30, ["--no-operator-research-limit"]),
+            ("A", "invalid", 2**30, []),
+        ):
+            with self.subTest(
+                track=track, flags=flags
+            ), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "task/task.json"
+                source.parent.mkdir()
+                source.with_name("operator-defaults.json").write_text(
+                    json.dumps(
+                        {
+                            "track_b_max_research_seconds": time_default,
+                            "max_episode_storage_bytes": storage_default,
+                        }
+                    )
+                )
+                config = replace(TaskConfig.load(TASK), source=source)
+                episode = root / "episode"
+                args = build_parser().parse_args(
+                    [
+                        "start",
+                        "--task",
+                        str(TASK),
+                        "--track",
+                        track,
+                        "--episode-dir",
+                        str(episode),
+                        "--agent-runner",
+                        "container",
+                        "--agent-image",
+                        "fixture@sha256:" + "a" * 64,
+                        "--agent-command",
+                        "participant-agent",
+                        *flags,
+                    ]
+                )
+                with patch(
+                    "autotrain_bench.cli.TaskConfig.load", return_value=config
+                ), patch(
+                    "autotrain_bench.cli.DockerRuntime"
+                ) as runtime, redirect_stdout(io.StringIO()):
+                    runtime.return_value.prepare.side_effect = ConfigError(
+                        "reached Worker preparation"
+                    )
+                    with self.assertRaisesRegex(
+                        ConfigError, "reached Worker preparation"
+                    ):
+                        command_start(args)
+                    runtime.return_value.prepare.assert_called_once()
+                    runtime.return_value.start_agent.assert_not_called()
+                self.assertFalse(episode.exists())
+
+    def test_storage_admission_is_private_and_precedes_episode_writes(self):
+        for folder, expected in (
+            ("challenges/lm-pretrain-v1", 100 * 2**30),
+            ("dev_tasks/smoke_lm", 2 * 2**30),
+        ):
+            for track in ("A", "B"):
+                for flags, limit in (
+                    ([], expected),
+                    (["--operator-max-storage-bytes", "1048576"], 1048576),
+                    (["--no-operator-storage-limit"], None),
+                ):
+                    with self.subTest(
+                        folder=folder, track=track, flags=flags
+                    ), tempfile.TemporaryDirectory() as directory:
+                        episode = Path(directory) / "episode"
+                        config = replace(
+                            TaskConfig.load(TASK), source=ROOT / folder / "task.json"
+                        )
+                        public_before = config.public_manifest(track)
+                        args = build_parser().parse_args(
+                            [
+                                "start",
+                                "--task",
+                                str(TASK),
+                                "--track",
+                                track,
+                                "--episode-dir",
+                                str(episode),
+                                "--agent-runner",
+                                "container",
+                                "--agent-image",
+                                "fixture@sha256:" + "a" * 64,
+                                "--agent-command",
+                                "participant-agent",
+                                *flags,
+                            ]
+                        )
+                        output = io.StringIO()
+
+                        def admit(**kwargs):
+                            self.assertFalse(episode.exists())
+                            self.assertEqual(kwargs["root"], episode.parent.resolve())
+                            self.assertEqual(kwargs["max_bytes"], limit)
+                            self.assertIn(
+                                "not sent to the Tested Agent", output.getvalue()
+                            )
+                            self.assertIn(str(limit), output.getvalue())
+                            self.assertIn(
+                                "task default" if not flags else "run override",
+                                output.getvalue(),
+                            )
+                            self.assertIn(
+                                "Change it before launch with --operator-max-storage-bytes BYTES",
+                                output.getvalue(),
+                            )
+                            self.assertIn(
+                                "--no-operator-storage-limit", output.getvalue()
+                            )
+
+                        with patch(
+                            "autotrain_bench.cli.TaskConfig.load", return_value=config
+                        ), patch(
+                            "autotrain_bench.cli.DockerRuntime"
+                        ) as runtime, redirect_stdout(output):
+                            runtime.return_value.configure_operator_storage.side_effect = admit
+                            runtime.return_value.prepare.side_effect = ConfigError(
+                                "stop after admission"
+                            )
+                            with self.assertRaisesRegex(
+                                ConfigError, "stop after admission"
+                            ):
+                                command_start(args)
+                            self.assertEqual(
+                                runtime.return_value.configure_operator_storage.call_count,
+                                int(limit is not None),
+                            )
+                            runtime.return_value.start_agent.assert_not_called()
+                        self.assertFalse(episode.exists())
+                        self.assertEqual(config.public_manifest(track), public_before)
+
+    def test_storage_rejection_never_launches_or_creates_episode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            episode = Path(directory) / "episode"
+            for runner in ("host_cli", "container"):
+                args = build_parser().parse_args(
+                    [
+                        "start",
+                        "--task",
+                        str(TASK),
+                        "--track",
+                        "A",
+                        "--episode-dir",
+                        str(episode),
+                        "--agent-runner",
+                        runner,
+                        "--agent-command",
+                        "participant-agent",
+                        "--operator-max-storage-bytes",
+                        "1048576",
+                    ]
+                )
+                with patch(
+                    "autotrain_bench.cli.DockerRuntime"
+                ) as runtime, redirect_stdout(io.StringIO()):
+                    runtime.return_value.configure_operator_storage.side_effect = (
+                        RuntimeFailure("unbounded Worker storage")
+                    )
+                    with self.assertRaises((ConfigError, RuntimeFailure)):
+                        command_start(args)
+                    runtime.return_value.prepare.assert_not_called()
+                    runtime.return_value.start_agent.assert_not_called()
+                    runtime.return_value.start_host_agent.assert_not_called()
+                self.assertFalse(episode.exists())
+
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            build_parser().parse_args(
+                [
+                    "start",
+                    "--task",
+                    str(TASK),
+                    "--track",
+                    "A",
+                    "--episode-dir",
+                    "/unused",
+                    "--agent-runner",
+                    "host_cli",
+                    "--agent-command",
+                    "participant-agent",
+                    "--operator-max-storage-bytes",
+                    "1024",
+                    "--no-operator-storage-limit",
+                ]
+            )
+
     def test_start_resolves_bundled_operator_defaults_and_announces_before_preflight(
         self,
     ):
@@ -84,6 +276,7 @@ class WorkspaceSnapshotTests(unittest.TestCase):
                         "host_cli",
                         "--agent-command",
                         "participant-agent",
+                        "--no-operator-storage-limit",
                         *flags,
                     ]
                 )

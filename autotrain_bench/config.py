@@ -106,6 +106,38 @@ def resolve_operator_research_limit(
     if track.upper() != "B":
         return None
 
+    return operator_research_limit(
+        _operator_default(task_source, "track_b_max_research_seconds"), "B"
+    )
+
+
+def operator_storage_limit(value: Any) -> Optional[int]:
+    """A private deployment protection, never a Track resource envelope."""
+
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ConfigError("operator storage limit must be a positive integer of bytes")
+    return value
+
+
+def resolve_operator_storage_limit(
+    task_source: Path, *, override: Optional[int] = None, disabled: bool = False
+) -> Optional[int]:
+    if disabled:
+        if override is not None:
+            raise ConfigError("operator storage protection cannot be set and disabled")
+        return None
+    if override is not None:
+        return operator_storage_limit(override)
+    return operator_storage_limit(
+        _operator_default(task_source, "max_episode_storage_bytes")
+    )
+
+
+def _operator_default(task_source: Path, field: str) -> Any:
+    """Read one effective default; overridden/inapplicable values are irrelevant."""
+
     source = task_source.expanduser().resolve().with_name("operator-defaults.json")
     try:
         raw = json.loads(source.read_text(encoding="utf-8"))
@@ -113,10 +145,12 @@ def resolve_operator_research_limit(
         return None
     except (OSError, ValueError) as exc:
         raise ConfigError(f"cannot read operator defaults in {source}: {exc}") from exc
-    field = "track_b_max_research_seconds"
-    if not isinstance(raw, dict) or set(raw) != {field} or raw[field] is None:
-        raise ConfigError(f"{source} must contain only a finite positive {field}")
-    return operator_research_limit(raw[field], "B")
+    fields = {"track_b_max_research_seconds", "max_episode_storage_bytes"}
+    if not isinstance(raw, dict) or not raw or set(raw) - fields:
+        raise ConfigError(f"{source} contains invalid operator defaults")
+    if field in raw and raw[field] is None:
+        raise ConfigError(f"{source}: {field} must be positive")
+    return raw.get(field)
 
 
 # Phases a release may declare as benchmark-owned rather than participant time.

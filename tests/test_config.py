@@ -12,6 +12,7 @@ from autotrain_bench.config import (
     TaskConfig,
     TrainingResources,
     resolve_operator_research_limit,
+    resolve_operator_storage_limit,
 )
 
 
@@ -20,6 +21,86 @@ TASK = ROOT / "tests/fixtures/task/task.json"
 
 
 class ConfigTests(unittest.TestCase):
+    def test_only_effective_protection_defaults_are_validated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = Path(directory) / "task.json"
+            defaults = task.with_name("operator-defaults.json")
+            for invalid in (None, -1, True, "invalid"):
+                defaults.write_text(
+                    json.dumps(
+                        {
+                            "track_b_max_research_seconds": 1800,
+                            "max_episode_storage_bytes": invalid,
+                        }
+                    )
+                )
+                self.assertEqual(resolve_operator_research_limit(task, "B"), 1800)
+                self.assertIsNone(resolve_operator_storage_limit(task, disabled=True))
+                self.assertEqual(
+                    resolve_operator_storage_limit(task, override=4096), 4096
+                )
+                with self.assertRaises(ConfigError):
+                    resolve_operator_storage_limit(task)
+                defaults.write_text(
+                    json.dumps(
+                        {
+                            "track_b_max_research_seconds": invalid,
+                            "max_episode_storage_bytes": 2**30,
+                        }
+                    )
+                )
+                self.assertEqual(resolve_operator_storage_limit(task), 2**30)
+                self.assertEqual(
+                    resolve_operator_research_limit(task, "B", override=30), 30
+                )
+                self.assertIsNone(
+                    resolve_operator_research_limit(task, "B", disabled=True)
+                )
+                self.assertIsNone(resolve_operator_research_limit(task, "A"))
+                with self.assertRaises(ConfigError):
+                    resolve_operator_research_limit(task, "B")
+
+    def test_storage_defaults_remain_private_and_independent_of_track_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = self._write_task(directory)
+            original = TaskConfig.load(task)
+            self.assertIsNone(resolve_operator_storage_limit(task))
+            defaults = task.with_name("operator-defaults.json")
+            defaults.write_text(
+                json.dumps(
+                    {
+                        "track_b_max_research_seconds": 1800,
+                        "max_episode_storage_bytes": 2 * 2**30,
+                    }
+                )
+            )
+            self.assertEqual(resolve_operator_storage_limit(task), 2 * 2**30)
+            self.assertEqual(resolve_operator_storage_limit(task, override=4096), 4096)
+            self.assertIsNone(resolve_operator_storage_limit(task, disabled=True))
+            self.assertEqual(resolve_operator_research_limit(task, "B"), 1800)
+            self.assertIsNone(resolve_operator_research_limit(task, "A"))
+            self.assertEqual(TaskConfig.load(task), original)
+            for track in ("A", "B"):
+                self.assertEqual(
+                    TaskConfig.load(task).public_manifest(track),
+                    original.public_manifest(track),
+                )
+            for value in (True, 0, -1, 1.5, "1024", None):
+                with self.subTest(value=value):
+                    defaults.write_text(
+                        json.dumps({"max_episode_storage_bytes": value})
+                    )
+                    with self.assertRaises(ConfigError):
+                        resolve_operator_storage_limit(task)
+                    self.assertIsNone(
+                        resolve_operator_storage_limit(task, disabled=True)
+                    )
+                    self.assertEqual(
+                        resolve_operator_storage_limit(task, override=2048), 2048
+                    )
+            with self.assertRaises(ConfigError):
+                resolve_operator_storage_limit(task, override=1024, disabled=True)
+
     def test_operator_defaults_are_private_and_can_be_overridden_or_disabled(self):
         with tempfile.TemporaryDirectory() as directory:
             task = self._write_task(directory)

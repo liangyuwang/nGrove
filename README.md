@@ -135,9 +135,11 @@ automatic capability fallback.
 Agent launch mechanism is also separate from policy evidence. `container` and
 `host_cli` describe bundled launch paths; a trusted launcher supplies the
 semantic enforcement, trust, workload identity, and limitations recorded for
-the episode. The bundled launcher is development-trust only, and its unbounded
-writable bind-mount storage is recorded as a policy limitation rather than
-being hidden behind application-level mailbox limits.
+the episode. The bundled launcher is development-trust only. Without successful
+operator storage admission, its unbounded writable bind-mount storage is recorded
+as a policy limitation rather than being hidden behind application-level mailbox
+limits. Operator volume protection does not certify the release's separate,
+exact prediction-storage quota.
 
 The bundled `autotrain-bench prepare` and `autotrain-bench start` commands are
 the composition root for that local Docker implementation; they are not a
@@ -1204,9 +1206,10 @@ both bundled Track B tasks:
 | `smoke_lm` | 30 minutes (1,800 seconds) |
 
 Each task keeps this trusted setting in a separate `operator-defaults.json`
-beside `task.json`, with the key `track_b_max_research_seconds`. It is not a
-benchmark budget and does not enter the task/release manifest digests or the
-comparison key. A custom task without that file has no default protection;
+beside `task.json`, with the key `track_b_max_research_seconds`. The optional
+`max_episode_storage_bytes` key configures separate storage protection described
+below. These settings are not benchmark budgets and do not enter the task/release
+manifest digests or the comparison key. A custom task without that file has no default protection;
 the launcher warns explicitly when protection is disabled.
 
 Before preparation and Agent launch, `start` tells the operator the effective
@@ -1243,6 +1246,89 @@ normal cleanup without a finish-drain allowance. It records an operator-aborted
 run, returns a nonzero exit code, and performs neither TEST nor ANALYSIS, even
 if an incumbent exists. Successful normal finish before the deadline disarms
 this research protection; postmortem evaluation keeps its own existing timeouts.
+
+### Private operator storage protection
+
+On both Tracks, `lm-pretrain-v1` defaults to **100 GiB** and `smoke_lm` to
+**2 GiB** of episode filesystem capacity. These are private operator settings,
+not Track budgets, Candidate artifact limits, or evaluation targets. They are
+not included in the public task or Agent instructions. Filesystem capacity may
+still be observable by code running inside the workload.
+
+The Worker deployment must provision a dedicated, empty, bounded filesystem
+for each episode. The parent of `--episode-dir`, or `--episodes-root` itself,
+must be the root of that filesystem. Its reported capacity must be positive
+and no greater than the requested limit, with bounded metadata/inode storage.
+An ordinary directory, an ordinary Docker named volume, or a free-space check
+does not implement this protection. Filesystem/volume creation, quota setup,
+ownership, capacity reservation and eventual disposal belong to the deployment;
+the benchmark does not format disks, mount filesystems, or resize existing data.
+
+Before copying the Agent workspace or revealing the task, the bundled Worker
+verifies the filesystem boundary, capacity and inode observation. A trusted,
+network-disabled probe must observe the same capacity and a disposable shared
+identity from Docker. Each workload's writable paths are checked against the
+admitted filesystem, rejecting escaped paths and nested/replaced filesystems.
+With protection enabled, images declaring Docker `VOLUME` mounts are rejected
+before container creation, including declarations under an explicit mount.
+This covers Agent, Training, Candidate, scorer, Gateway and trusted probes.
+Launches use the inspected image ID so changing a tag cannot introduce an
+unchecked anonymous volume. Images must omit `VOLUME` declarations for this mode.
+Storage admission does not constitute independent certification of an arbitrary
+filesystem provider; the deployment must actually enforce its reported bounds,
+including separately bounded filesystem metadata overhead.
+
+For example, with an already provisioned empty filesystem at `/worker/episode-volume`,
+use `--episode-dir /worker/episode-volume/run`. To override or disable the
+protection for one run, respectively:
+
+```text
+--operator-max-storage-bytes 107374182400
+--no-operator-storage-limit
+```
+
+These options are mutually exclusive. An override must be a positive integer
+of bytes. The launcher announces the effective choice and the disk-exhaustion
+risk of disabling it. The `host_cli` preview requires explicit disabling because
+a host-native Agent can write outside the volume. A custom task without storage
+defaults has protection disabled unless an override is supplied. Missing or
+incompatible bounded storage fails before episode creation; there is no silent
+fallback to ordinary directories.
+
+Each protection validates only the default it actually uses. An invalid storage
+default cannot block an explicit storage override/disable, and an invalid Track B
+time default cannot block Track A or an explicit time override/disable. When a
+default is needed, the shared file must still be valid JSON with known keys.
+
+The protected scope is the episode directory: workspace, mailbox, Lease scratch
+and output, captured Candidates, prediction storage and episode logs/audits.
+Prepared TRAIN/hidden data and images are separate, as are the runtime's already
+bounded temporary memory filesystems and rotating container logs. Research and
+evaluation retain their separate mount views; sharing a capacity boundary does
+not grant access to each other's files. Hidden materialization remains under the
+Evaluation Worker's existing private lifecycle.
+
+The filesystem refuses allocations when full, including storage held by an
+open-but-unlinked file. It may allow progress again after space is released;
+this is not the research timer and does not itself issue an episode stop.
+An unrecovered I/O failure follows existing error/teardown handling and may
+prevent writing complete episode records to the full volume. Operators must
+retain Worker-side failure logs and clean up only after workload termination.
+No new participant penalty or evaluation scoring rule is introduced.
+
+Storage evidence is retained in the private Worker environment record as
+`operator_storage_protection`; Core does not receive filesystem provisioning
+commands. For remote execution, the remote Worker/launcher must enforce and
+record the protection where the bytes are written. Checking the operator's
+laptop disk is not sufficient. The bundled local composition still requires
+shared paths with Docker: selecting a remote Docker context alone does not
+provide a remote Worker. Separate Worker storage domains need their own
+deployment-controlled allocations; a receipt from one domain does not bound
+another. Neither the Worker protocol nor the comparison key changes.
+
+The existing `candidate_prediction_storage_quota` requirement remains unchanged
+and unsupported by the bundled Worker: a whole-episode volume limit does not
+enforce the exact per-prediction byte and two-entry ceilings required by release.
 
 The bundled launcher uses a separate guard thread and local runtime client so
 revocation does not wait for the Coordinator's synchronous Worker lock. This is

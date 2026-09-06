@@ -109,7 +109,9 @@ class ChallengeReleaseTests(unittest.TestCase):
             )
             # Private launcher defaults must not become benchmark identity or budget.
             (Path(directory) / "operator-defaults.json").write_text(
-                '{"track_b_max_research_seconds": 86400}', encoding="utf-8"
+                '{"track_b_max_research_seconds": 86400, '
+                '"max_episode_storage_bytes": 107374182400}',
+                encoding="utf-8",
             )
             self.assertEqual(
                 resolved,

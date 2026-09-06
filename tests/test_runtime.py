@@ -114,6 +114,128 @@ class CapturingDockerRuntime(DockerRuntime):
 
 
 class RuntimeBoundaryTests(unittest.TestCase):
+    def test_protected_launches_reject_image_volumes_for_every_role(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            public = root / "public/task.json"
+            publish_agent_api(public)
+            config = TaskConfig.load(TASK)
+            agent = AgentConfig(
+                workspace=workspace,
+                runner="container",
+                command=["agent"],
+                image="participant@sha256:" + "b" * 64,
+                egress="denied",
+                initial_workspace="empty",
+            ).validate()
+            inference = InferenceConfig.load(
+                {"base_url": "https://example.invalid", "allowed_models": ["fixture"]},
+                "inference",
+            )
+            for role in (
+                "agent",
+                "training",
+                "candidate",
+                "scorer",
+                "gateway",
+                "identity_probe",
+                "prepare",
+            ):
+                with self.subTest(role=role):
+                    runtime = CapturingDockerRuntime()
+                    runtime._operator_storage = object()
+                    references = {
+                        "agent": agent.image,
+                        "prepare": agent.image,
+                        "training": config.training_image,
+                        "candidate": config.candidate_image,
+                        "scorer": config.evaluator_image,
+                        "identity_probe": config.evaluator_image,
+                        "gateway": config.inference_gateway_image,
+                    }
+                    original_run = runtime._run
+                    inspected = []
+
+                    def run(args, **kwargs):
+                        if args[:2] == ["image", "inspect"] and any(
+                            "Volumes" in arg for arg in args
+                        ):
+                            inspected.append(args[2])
+                            return subprocess.CompletedProcess(
+                                args,
+                                0,
+                                json.dumps(
+                                    [
+                                        "sha256:" + "a" * 64,
+                                        {"/extra": {}}
+                                        if args[2] == references[role]
+                                        else None,
+                                    ]
+                                ),
+                                "",
+                            )
+                        return original_run(args, **kwargs)
+
+                    def launch():
+                        if role == "agent":
+                            runtime.start_agent(
+                                name="blocked",
+                                config=config,
+                                agent=agent,
+                                control_dir=root / "control",
+                                public_task_path=public,
+                            )
+                        elif role == "training":
+                            runtime.start_training(
+                                name="blocked",
+                                task=ResearchTaskSpec.from_task(
+                                    config, public.parent / "agent_api"
+                                ),
+                                workspace=workspace,
+                                resources=TrainingResources(),
+                                lease_dir=root / "lease",
+                            )
+                        elif role in {"candidate", "scorer"}:
+                            runtime._run_isolated_evaluator(
+                                episode_id="fixture",
+                                task=EvaluationTaskSpec.from_task(config),
+                                resources=TrainingResources(),
+                                candidate_dir=workspace,
+                                split="test",
+                                data_path=config.test_path,
+                                output_dir=root / "evaluation",
+                                candidate_image=config.candidate_image,
+                                evaluator_image=config.evaluator_image,
+                            )
+                        elif role == "gateway":
+                            runtime.start_inference_gateway(
+                                name="blocked",
+                                agent_network="unused",
+                                egress_network="unused",
+                                config=config,
+                                agent=replace(agent, inference=inference),
+                                audit_dir=root / "audit",
+                            )
+                        elif role == "identity_probe":
+                            runtime._execution_identity = None
+                            runtime._ensure_execution_identity(config.evaluator_image)
+                        else:
+                            runtime.prepare(config, agent=agent, pull_missing=False)
+
+                    with patch.object(runtime, "_run", run), patch.object(
+                        runtime, "_check_operator_storage"
+                    ):
+                        with self.assertRaisesRegex(
+                            RuntimeFailure, "image-declared VOLUME"
+                        ):
+                            launch()
+                    self.assertIn(references[role], inspected)
+                    self.assertFalse(
+                        any(call[0] in {"run", "create"} for call in runtime.calls)
+                    )
+
     def test_identity_probe_verifies_private_io_before_accepting_daemon_uid(self):
         runtime = DockerRuntime(docker_binary="docker")
         calls = []
@@ -432,7 +554,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             EnforcementLevel.UNSUPPORTED,
         )
         self.assertIn(
-            "no hard byte or inode quota",
+            "no release-exact prediction byte/entry quota",
             descriptor.capabilities[CANDIDATE_PREDICTION_STORAGE_QUOTA].mechanism,
         )
         self.assertEqual(

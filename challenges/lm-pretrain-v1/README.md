@@ -241,6 +241,15 @@ risks extremely high token consumption. The setting and notices are never sent
 to the Tested Agent and do not change the six one-hour Leases or comparison key.
 See [operator protection semantics](../../README.md#track-b--lease-bounded-autonomous-research).
 
+Both Tracks also default to **100 GiB of private operator storage protection**.
+The Worker deployment must provide an empty, bounded filesystem at the selected
+episode parent directory; an ordinary directory will fail admission. Use
+`--operator-max-storage-bytes BYTES` to override the limit or
+`--no-operator-storage-limit` to explicitly accept unprotected storage. This
+does not change Track budgets or the prediction-output protocol. Remote Workers
+must enforce this in their execution environment. See
+[storage protection requirements](../../README.md#private-operator-storage-protection).
+
 ```bash
 autotrain-bench start \
   --challenge challenges/lm-pretrain-v1/challenge.json \

@@ -43,6 +43,12 @@ class AgentExecutionEvidenceTests(unittest.TestCase):
                 evidence.limitations,
                 ("agent_writable_storage_unbounded",),
             )
+            protected = describe_local_agent_execution(
+                agent, operator_storage_bounded=True
+            )
+            self.assertNotIn("agent_writable_storage_unbounded", protected.limitations)
+            self.assertFalse(protected.policy_compliant)
+            self.assertFalse(protected.leaderboard_eligible)
             certified = replace(
                 evidence,
                 enforcement=EnforcementLevel.ENFORCED,
@@ -69,6 +75,12 @@ class AgentExecutionEvidenceTests(unittest.TestCase):
                     "agent_execution_boundary",
                     "agent_writable_storage_unbounded",
                 ),
+            )
+            self.assertIn(
+                "agent_writable_storage_unbounded",
+                describe_local_agent_execution(
+                    agent, operator_storage_bounded=True
+                ).limitations,
             )
 
 

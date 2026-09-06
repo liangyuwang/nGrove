@@ -411,11 +411,22 @@ might still mutate. This guarantee is reported as
 predictions for audit must define a different lifecycle with an immutable
 identity, storage budget, and retention period.
 
-The bundled Docker Worker enforces the ephemeral lifecycle but its ordinary
-host bind mount has no hard byte or inode quota. It therefore reports
+The bundled Docker Worker enforces the ephemeral lifecycle but does not enforce
+these release-exact byte and entry ceilings. It therefore reports
 `candidate_prediction_storage_quota: unsupported`; this is an explicit
 development limitation and makes the evaluation capability assessment
 insufficient for formal compliance.
+
+Separately, the trusted local launcher can require a deployment-provided,
+capacity-bounded filesystem for the entire episode. Its private operator limit
+applies to either Track and does not replace the prediction quota above. The
+Worker verifies storage in its execution environment and records observations
+in its private environment manifest as `operator_storage_protection`. This
+does not add provisioning commands, public budgets or filesystem handles to
+the semantic Worker protocol. A remote Worker must admit and enforce its own
+storage allocations; operator-host disk observations cannot stand in for that
+evidence. See the README's private operator storage protection section for the
+bundled launcher's admission requirements and scope.
 
 The v3 JSON shapes are exact (additional fields are rejected):
 

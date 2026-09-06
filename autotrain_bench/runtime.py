@@ -23,6 +23,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 from .artifact_identity import HIDDEN_BUNDLE_FILENAMES, hidden_bundle_sha256
 from .config import AgentConfig, TaskConfig, TrainingResources
 from .host_agent import HostAgentProcess, start_host_agent_process
+from .local_storage import LocalStorageProtection
 from .worker_protocol import (
     CANDIDATE_EVALUATOR_CHANNEL_ISOLATION,
     CANDIDATE_PREDICTION_ARTIFACT_LIFECYCLE,
@@ -209,6 +210,147 @@ class DockerRuntime:
         self._worker_leases: Dict[tuple, str] = {}
         self._pending_evaluations: Dict[tuple, Tuple[str, str, Path]] = {}
         self._execution_identity: Optional[Tuple[int, int]] = None
+        self._operator_storage: Optional[LocalStorageProtection] = None
+
+    def configure_operator_storage(
+        self, *, root: Path, max_bytes: int, probe_image: str
+    ) -> None:
+        """Admit an existing Worker-side volume before any episode files are made.
+
+        Provisioning belongs to the deployment. The Docker daemon must see the
+        same filesystem as this local Worker; a remote Docker context alone is
+        not a remote Worker or a shared-filesystem guarantee.
+        """
+
+        if self._operator_storage is not None:
+            raise RuntimeFailure("operator storage is already configured")
+        storage = LocalStorageProtection(root, max_bytes)
+        try:
+            probe_root = Path(
+                tempfile.mkdtemp(prefix=".atb-storage-", dir=storage.root)
+            )
+        except OSError as exc:
+            raise RuntimeFailure("Worker cannot write to protected storage") from exc
+        marker = probe_root / "identity"
+        identity = uuid.uuid4().hex
+        name = f"atb-storage-{identity[:12]}"
+        try:
+            probe_image = self._storage_safe_image(probe_image, required=True)
+            marker.write_text(identity, encoding="utf-8")
+            marker.chmod(0o444)  # Disposable random token, not episode or task data.
+            observed = self._run(
+                [
+                    "run",
+                    "--rm",
+                    "--pull",
+                    "never",
+                    "--name",
+                    name,
+                    "--network",
+                    "none",
+                    "--cap-drop",
+                    "ALL",
+                    "--security-opt",
+                    "no-new-privileges:true",
+                    "--pids-limit",
+                    "32",
+                    "--read-only",
+                    "--user",
+                    "0:0",
+                    "--workdir",
+                    "/",
+                    "--entrypoint",
+                    "python",
+                    "--mount",
+                    self._mount(storage.root, "/storage", read_only=True),
+                    "--mount",
+                    self._mount(marker, "/identity", read_only=True),
+                    probe_image,
+                    "-c",
+                    "import json,os; from pathlib import Path; "
+                    "s=os.statvfs('/storage'); "
+                    "print(json.dumps({'identity':Path('/identity').read_text(),"
+                    "'capacity':{'filesystem_bytes':s.f_blocks*s.f_frsize,"
+                    "'filesystem_inodes':s.f_files}}))",
+                ],
+                timeout=20,
+            )
+            try:
+                payload = json.loads(observed.stdout)
+                if (
+                    not isinstance(payload, dict)
+                    or set(payload) != {"identity", "capacity"}
+                    or payload["identity"] != identity
+                    or not isinstance(payload["capacity"], dict)
+                ):
+                    raise ValueError("invalid storage observation")
+                storage.verify_workload_view(payload["capacity"])
+            except (ValueError, TypeError) as exc:
+                raise RuntimeFailure(
+                    "runtime did not verify Worker storage identity"
+                ) from exc
+        except OSError as exc:
+            raise RuntimeFailure("Worker storage identity probe failed") from exc
+        finally:
+            # Never remove a mount until the trusted probe is confirmed stopped.
+            self.stop_container(name)
+            shutil.rmtree(probe_root)
+        self._operator_storage = storage
+
+    def _check_operator_storage(self, *paths: Path) -> None:
+        if self._operator_storage is not None:
+            self._operator_storage.check_paths(*paths)
+
+    def _storage_safe_image(
+        self,
+        reference: str,
+        *,
+        timeout_seconds: Optional[float] = None,
+        required: bool = False,
+    ) -> str:
+        """Reject implicit Docker volumes and launch the exact inspected image.
+
+        Read-only root filesystems do not constrain image-declared VOLUMEs.
+        Reject all declarations, including nested or apparently covered paths,
+        rather than depend on Docker mount precedence or create anonymous disks.
+        """
+
+        if not required and self._operator_storage is None:
+            return reference
+        timeout = 20.0 if timeout_seconds is None else min(20.0, timeout_seconds)
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise RuntimeFailure("image storage inspection deadline reached")
+        observed = self._run(
+            [
+                "image",
+                "inspect",
+                reference,
+                "--format",
+                '[{{json .Id}},{{json (index .Config "Volumes")}}]',
+            ],
+            timeout=timeout,
+        )
+        try:
+            payload = json.loads(observed.stdout)
+            if not isinstance(payload, list) or len(payload) != 2:
+                raise ValueError("invalid image inspection")
+            identity, volumes = payload
+            if (
+                not isinstance(identity, str)
+                or not identity.startswith("sha256:")
+                or len(identity) != 71
+                or any(char not in "0123456789abcdef" for char in identity[7:])
+                or (volumes is not None and not isinstance(volumes, dict))
+            ):
+                raise ValueError("invalid image identity or volume metadata")
+        except (ValueError, TypeError) as exc:
+            raise RuntimeFailure("cannot verify image storage metadata") from exc
+        if volumes:
+            raise RuntimeFailure(
+                "operator storage protection rejects image-declared VOLUME mounts; "
+                "provide an image without VOLUME declarations"
+            )
+        return identity
 
     def describe_capabilities(self) -> WorkerDescriptor:
         """Describe the bundled development Worker without certifying its host."""
@@ -241,7 +383,8 @@ class DockerRuntime:
                 ),
                 CANDIDATE_PREDICTION_STORAGE_QUOTA: Capability(
                     EnforcementLevel.UNSUPPORTED,
-                    "host bind mount has no hard byte or inode quota",
+                    "no release-exact prediction byte/entry quota; operator "
+                    "volume protection is a separate boundary",
                 ),
                 CANDIDATE_PREDICTION_ARTIFACT_LIFECYCLE: Capability(
                     enforced,
@@ -320,10 +463,12 @@ class DockerRuntime:
         for image in sorted(images):
             inspected = self._run(["image", "inspect", image], check=False)
             if inspected.returncode == 0:
+                self._storage_safe_image(image)
                 continue
             if not pull_missing:
                 raise RuntimeFailure(f"required image is missing: {image}")
             self._run(["pull", image])
+            self._storage_safe_image(image)
         if resources is not None:
             resources.validate_for(config)
             self.validate_hardware(resources)
@@ -342,6 +487,9 @@ class DockerRuntime:
         if self._execution_identity is not None:
             return
         deadline = self.monotonic() + timeout_seconds
+        probe_image = self._storage_safe_image(
+            probe_image, timeout_seconds=timeout_seconds
+        )
         root = Path(tempfile.mkdtemp(prefix="autotrain-bench-permissions-")).resolve()
         names = []
 
@@ -753,6 +901,11 @@ class DockerRuntime:
                 "source": "verified_bind_mount_owner",
                 "image_user": "overridden",
             },
+            "operator_storage_protection": (
+                self._operator_storage.manifest()
+                if self._operator_storage is not None
+                else None
+            ),
             # `gpus` is authoritative only when `gpu_inventory` is "inspected".
             # An empty list under "unavailable" means unknown, not none.
             "gpus": gpus,
@@ -773,6 +926,9 @@ class DockerRuntime:
         inference_network: Optional[str] = None,
         timeout_seconds: Optional[float] = None,
     ) -> None:
+        self._check_operator_storage(
+            agent.workspace, control_dir / "inbox", control_dir / "outbox"
+        )
         config.validate()
         agent.validate()
         if timeout_seconds is not None and timeout_seconds <= 0:
@@ -794,6 +950,14 @@ class DockerRuntime:
             raise RuntimeFailure(
                 "inference_network is required when inference is enabled"
             )
+        inspected_at = self.monotonic()
+        agent_image = self._storage_safe_image(
+            agent.image, timeout_seconds=timeout_seconds
+        )
+        if timeout_seconds is not None:
+            timeout_seconds -= self.monotonic() - inspected_at
+            if timeout_seconds <= 0:
+                raise RuntimeFailure("Agent startup allowance has elapsed")
         self._ensure_execution_identity(config.evaluator_image)
         agent_network = (
             inference_network
@@ -865,7 +1029,7 @@ class DockerRuntime:
                     "OPENAI_API_KEY=autotrain-bench-gateway",
                 ]
             )
-        args.extend([agent.image, *agent.command])
+        args.extend([agent_image, *agent.command])
         self._run(args, timeout=timeout_seconds)
 
     def start_host_agent(
@@ -877,6 +1041,8 @@ class DockerRuntime:
         stdout_path: Path,
         stderr_path: Path,
     ) -> HostAgentProcess:
+        if self._operator_storage is not None:
+            raise RuntimeFailure("host_cli cannot confine writes to protected storage")
         agent.validate()
         if agent.runner != "host_cli":
             raise RuntimeFailure("start_host_agent requires the host_cli runner")
@@ -933,6 +1099,7 @@ class DockerRuntime:
         audit_dir: Path,
         readiness_timeout_seconds: float = 10,
     ) -> None:
+        self._check_operator_storage(audit_dir)
         config.validate()
         agent.validate()
         inference = agent.inference
@@ -943,6 +1110,7 @@ class DockerRuntime:
                 "inference credential is missing from the trusted host: "
                 f"{inference.api_key_env}"
             )
+        gateway_image = self._storage_safe_image(config.inference_gateway_image)
         audit_dir.mkdir(parents=True, exist_ok=True)
         audit_dir.chmod(0o700)
         self._ensure_execution_identity(config.evaluator_image)
@@ -1005,7 +1173,7 @@ class DockerRuntime:
             args.extend(["--env", inference.api_key_env])
         args.extend(
             [
-                config.inference_gateway_image,
+                gateway_image,
                 "python",
                 "-m",
                 "autotrain_bench.agent_gateway",
@@ -1057,6 +1225,10 @@ class DockerRuntime:
         lease_dir: Path,
         workload_image: Optional[str] = None,
     ) -> None:
+        self._check_operator_storage(
+            workspace, lease_dir / "scratch", lease_dir / "output"
+        )
+        training_image = self._storage_safe_image(workload_image or task.training_image)
         public_helper = (
             task.public_api_dir / "autotrain_bench" / "candidate_protocol.py"
         )
@@ -1122,7 +1294,7 @@ class DockerRuntime:
             args.extend(["--gpus", str(resources.nvidia_gpu_count)])
         for device in resources.devices:
             args.extend(["--device", device])
-        args.extend([workload_image or task.training_image, "sleep", "infinity"])
+        args.extend([training_image, "sleep", "infinity"])
         self._run(args)
 
     @staticmethod
@@ -1775,8 +1947,22 @@ class DockerRuntime:
         evaluator_image: str,
         timeout_seconds: Optional[float] = None,
     ) -> CandidateEvaluationResult:
+        self._check_operator_storage(output_dir)
         evaluation_started = self.monotonic()
         resources.validate()
+        effective_timeout = float(task.timeout_seconds)
+        if timeout_seconds is not None:
+            if timeout_seconds <= 0:
+                raise RuntimeFailure("evaluation deadline reached")
+            effective_timeout = min(effective_timeout, float(timeout_seconds))
+        evaluation_deadline = evaluation_started + effective_timeout
+
+        def remaining_seconds() -> float:
+            remaining = evaluation_deadline - self.monotonic()
+            if remaining <= 0:
+                raise RuntimeFailure("evaluation deadline reached")
+            return remaining
+
         if split not in {"analysis", "test"}:
             raise RuntimeFailure(f"invalid evaluator split: {split}")
         if task.backend != "isolated_candidate":
@@ -1791,11 +1977,15 @@ class DockerRuntime:
         targets_path = data_path / "targets.json"
         if not contexts_path.is_file() or not targets_path.is_file():
             raise RuntimeFailure("hidden evaluator split is incomplete")
+        candidate_image = self._storage_safe_image(
+            candidate_image, timeout_seconds=remaining_seconds()
+        )
+        evaluator_image = self._storage_safe_image(
+            evaluator_image, timeout_seconds=remaining_seconds()
+        )
         self._ensure_execution_identity(
             evaluator_image,
-            timeout_seconds=min(
-                20, task.timeout_seconds if timeout_seconds is None else timeout_seconds
-            ),
+            timeout_seconds=min(20, remaining_seconds()),
         )
         output_dir.mkdir(parents=True, exist_ok=True)
         output_dir.chmod(0o700)
@@ -1972,19 +2162,6 @@ class DockerRuntime:
             if mode == "score":
                 args.extend(["--predictions", "/predictions"])
             return args
-
-        effective_timeout = float(task.timeout_seconds)
-        if timeout_seconds is not None:
-            if timeout_seconds <= 0:
-                raise RuntimeFailure("evaluation deadline reached")
-            effective_timeout = min(effective_timeout, float(timeout_seconds))
-        evaluation_deadline = evaluation_started + effective_timeout
-
-        def remaining_seconds() -> float:
-            remaining = evaluation_deadline - self.monotonic()
-            if remaining <= 0:
-                raise RuntimeFailure("evaluation deadline reached")
-            return remaining
 
         try:
             prediction_dir.mkdir(mode=0o700)

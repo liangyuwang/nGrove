@@ -1,3 +1,4 @@
 {
-  "track_b_max_research_seconds": 1800
+  "track_b_max_research_seconds": 1800,
+  "max_episode_storage_bytes": 2147483648
 }
