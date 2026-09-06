@@ -493,14 +493,14 @@ autotrain-bench report \
   --episode /path/to/autotrain-bench-runs/episodes/<episode-id>
 ```
 
-Episode states declare `result_schema_version: 12`. This repository is still
-pre-preview, so unpublished development schemas are not a compatibility surface:
-`report` accepts only the current result schema and rejects unversioned, older,
-and unknown future versions rather than guessing their meaning. The first
+Episode states declare `result_schema_version: 13`. `report` also accepts v12
+reports under their original semantics; v12 cannot contain operator-protection
+fields or aborted outcomes. Unversioned, earlier, and unknown future versions
+are rejected rather than guessed. This repository is still pre-preview. The first
 published preview establishes the result-compatibility baseline; later schema
 changes must then define an explicit compatibility policy.
 
-In v12, `outcome: "success"` requires a finalized episode, a non-empty final
+In v13, `outcome: "success"` requires a finalized episode, a non-empty final
 Candidate ID, a valid TEST performance score with the exact release-declared raw
 metrics, and a complete trusted TEST cost measurement. Current reports identify hidden split digests with
 `artifact_identity_algorithms.hidden_evaluation` and a formal organizer receipt
@@ -518,6 +518,14 @@ never gates leaderboard eligibility merely because diagnostic points are
 missing. A boundary or teardown failure discovered during ANALYSIS is still
 recorded as deployment-integrity evidence and makes the run non-compliant and
 ineligible, but it does not erase an already completed TEST measurement.
+
+Version 13 additionally records operator protection in the trusted-only
+`operator_limits` audit field. When that protection stops research, the run has
+`status: "operator_stopped"`, `outcome: "aborted"`, and
+`failure: "operator_time_limit_reached"`. It has no TEST measurement and is
+not a participant failure or a normal Track B result. Agent Protocol v11
+recognizes the additional terminal lifecycle; it exposes no protection setting
+or remaining operator allowance. Task and Worker protocols are unchanged.
 
 `complete` means the ANALYSIS pass finished and gave every selected Candidate a
 disposition, not that every point produced a metric. A result therefore also
@@ -1168,6 +1176,63 @@ Agent Research Time:       Unbounded by benchmark score
 ```
 
 The AutoTrain system may reason, write code, analyze previous results, and autonomously improve for as long as it chooses between Training Leases.
+
+The bundled launcher enables private research-time protection by default for
+both bundled Track B tasks:
+
+| Task | Default operator protection |
+| --- | --- |
+| `lm-pretrain-v1` | 24 hours (86,400 seconds) |
+| `smoke_lm` | 30 minutes (1,800 seconds) |
+
+Each task keeps this trusted setting in a separate `operator-defaults.json`
+beside `task.json`, with the key `track_b_max_research_seconds`. It is not a
+benchmark budget and does not enter the task/release manifest digests or the
+comparison key. A custom task without that file has no default protection;
+the launcher warns explicitly when protection is disabled.
+
+Before preparation and Agent launch, `start` tells the operator the effective
+limit, how to change or disable it, and that disabling protection risks extremely
+high token consumption. To override the default for one run, add:
+
+```text
+--operator-max-research-seconds 7200
+```
+
+To remove this protection for one run, add:
+
+```text
+--no-operator-research-limit
+```
+
+These options are mutually exclusive and rejected for Track A. A custom limit
+must be a finite positive number of seconds. Omitting both options uses the
+task's default for Track B and has no effect on Track A. The default file must
+contain a finite positive value; invalid defaults fail before runtime setup
+unless an explicit run option overrides them.
+
+The protection clock starts at task reveal (`Supervisor.begin`),
+includes Agent startup, research, waiting between Leases, and Worker preparation,
+and receives no accounting refunds. Pre-reveal preparation is outside this clock.
+The setting is fixed before reveal and recorded only in trusted episode state
+and `report`; the default file, launch notices, and effective value are absent
+from the public task, Agent instructions/status, and
+the advertised Lease budgets. It does not alter the comparison key.
+
+On expiry, research is irreversibly stopped. The local launcher revokes the
+inference Gateway, Agent, and active or pending Training workloads, then performs
+normal cleanup without a finish-drain allowance. It records an operator-aborted
+run, returns a nonzero exit code, and performs neither TEST nor ANALYSIS, even
+if an incumbent exists. Successful normal finish before the deadline disarms
+this research protection; postmortem evaluation keeps its own existing timeouts.
+
+The bundled launcher uses a separate guard thread and local runtime client so
+revocation does not wait for the Coordinator's synchronous Worker lock. This is
+explicitly **best effort**: it neither preempts arbitrary Python Worker code nor
+survives Coordinator process loss, an interpreter stall, or a runtime outage.
+Such deployments still need an independent watchdog. Cleanup may outlast the
+configured research limit, and a time limit is not a token or monetary cap.
+This feature does not upgrade the local deployment's policy-compliance claims.
 
 However, it may obtain interactive access to the Training Environment only a
 fixed number of times.

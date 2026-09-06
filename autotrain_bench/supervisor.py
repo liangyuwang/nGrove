@@ -40,6 +40,7 @@ from .config import (
     TaskConfig,
     TrainingResources,
     immutable_image_reference,
+    operator_research_limit,
 )
 from .inference import summarize_inference_trace
 from .results import (
@@ -273,10 +274,14 @@ class Supervisor:
         worker_resolution_timeout_seconds: float = (
             DEFAULT_WORKER_RESOLUTION_TIMEOUT_SECONDS
         ),
+        operator_max_research_seconds: Optional[float] = None,
     ) -> None:
         normalized = track.upper()
         if normalized not in {"A", "B"}:
             raise ValueError("track must be A or B")
+        self.operator_max_research_seconds = operator_research_limit(
+            operator_max_research_seconds, normalized
+        )
         self.config = config.validate()
         # The trusted launcher verifies the data view and the Worker keeps it
         # immutable. Core binds that evidence to its small manifest identity;
@@ -752,6 +757,11 @@ class Supervisor:
                 "analysis_evaluation_seconds": 0.0,
                 "test_evaluation_seconds": 0.0,
             },
+            # Trusted audit only; never copied into the public task or status.
+            "operator_limits": {
+                "max_research_seconds": self.operator_max_research_seconds,
+                "clock": "monotonic_since_task_reveal_without_refunds",
+            },
             "lease_serial": 0,
             "leases_used": 0,
             "active_lease": None,
@@ -1033,6 +1043,16 @@ class Supervisor:
             raise RuntimeError("a non-terminal episode cannot publish an outcome")
         if status in {"dnf", "infrastructure_failure"} and outcome != "failed":
             raise RuntimeError("a failure terminal must publish a failed outcome")
+        if (status == "operator_stopped") != (outcome == "aborted"):
+            raise RuntimeError("only an operator stop may have an aborted outcome")
+        if status == "operator_stopped" and (
+            self.state.get("research_sealed_at") is None
+            or self.state.get("test_status") is not None
+            or self.state.get("analysis_status") is not None
+            or self.state.get("final_candidate_id") is not None
+            or self.state.get("leaderboard_eligible") is not False
+        ):
+            raise RuntimeError("an operator stop must seal research without evaluation")
         if status == "finalized" and outcome not in {"success", "failed"}:
             raise RuntimeError("a finalized episode requires an outcome")
         if status != "finalized" and result_publication is not None:
@@ -1077,7 +1097,7 @@ class Supervisor:
             "failed",
         }:
             raise RuntimeError("a staged result requires a completed TEST decision")
-        if outcome == "failed" and (
+        if outcome in {"failed", "aborted"} and (
             self.state.get("test_performance_score") is not None
             or self.state.get("test_raw_metrics") is not None
             or self.state.get("test_cost") is not None
@@ -1125,6 +1145,7 @@ class Supervisor:
         normalize_result_report(self.state)
 
     def _require_active(self) -> None:
+        self.enforce_operator_limit()
         if self.state["status"] != "active":
             raise ProtocolError(
                 "episode_closed", "the episode is not active and cannot be resumed"
@@ -1226,6 +1247,20 @@ class Supervisor:
             return status
 
     def handle(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        self.enforce_operator_limit()
+        if self.state["status"] == "operator_stopped":
+            raise ProtocolError("episode_closed", "the episode is closed")
+        try:
+            result = self._handle_request(request)
+        finally:
+            # A Worker call can consume the remaining operator allowance.
+            # Never return its late acknowledgement as continued research.
+            self.enforce_operator_limit()
+        if self.state["status"] == "operator_stopped":
+            raise ProtocolError("episode_closed", "the episode is closed")
+        return result
+
+    def _handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
         operation = request.get("op")
         if operation == "status":
             return self.public_status()
@@ -2398,6 +2433,8 @@ class Supervisor:
     def _seal_research(
         self, candidate_id: Optional[str], *, reason: str
     ) -> Dict[str, Any]:
+        if self.enforce_operator_limit():
+            return self.public_status()
         self._freeze_elapsed()
         self.state["status"] = "closed"
         self.state["closure_reason"] = reason
@@ -3177,6 +3214,8 @@ class Supervisor:
 
     def enforce_deadlines(self) -> bool:
         with self.lock:
+            if self.enforce_operator_limit():
+                return True
             if self.state["status"] != "active":
                 return False
             active = self.state.get("active_lease")
@@ -3187,8 +3226,64 @@ class Supervisor:
                 self._end_active_lease("timeout")
             return False
 
+    def operator_limit_remaining(self) -> Optional[float]:
+        """Trusted launcher clock; never acquire the synchronous Worker lock.
+
+        None disarms the launcher guard once research closes normally. The deployment
+        may terminate workloads independently while a Worker call holds lock.
+        """
+
+        if (
+            self.operator_max_research_seconds is None
+            or self.started_monotonic is None
+            or self.state["status"] not in {"active", "operator_stopped"}
+        ):
+            return None
+        return (
+            self.started_monotonic
+            + self.operator_max_research_seconds
+            - self.monotonic()
+        )
+
+    def enforce_operator_limit(self) -> bool:
+        """Seal an operator-aborted run without producing a benchmark result.
+
+        Persist the stop before potentially blocking teardown. The trusted
+        launcher/Worker owns termination and retries using retained Lease IDs.
+        """
+
+        with self.lock:
+            if self.state["status"] != "active":
+                return False
+            remaining = self.operator_limit_remaining()
+            if remaining is None or remaining > 0:
+                return False
+            self._freeze_elapsed()
+            self.state.update(
+                status="operator_stopped",
+                outcome="aborted",
+                closure_reason="operator_time_limit_reached",
+                failure="operator_time_limit_reached",
+                research_sealed_at=datetime.fromtimestamp(
+                    self.wall_time(), tz=timezone.utc
+                ).isoformat(),
+                leaderboard_eligible=False,
+            )
+            self.state["leaderboard_eligibility_violations"].append(
+                "operator_time_limit_reached"
+            )
+            self._event(
+                "EPISODE_OPERATOR_STOPPED",
+                code="operator_time_limit_reached",
+                max_research_seconds=self.operator_max_research_seconds,
+                actual_research_seconds=self.monotonic() - self.started_monotonic,
+            )
+            self._save_state()
+            return True
+
     def agent_exited_without_finish(self) -> None:
         with self.lock:
+            self.enforce_operator_limit()
             if self.state["status"] != "active":
                 return
             self._freeze_elapsed()
@@ -3205,6 +3300,10 @@ class Supervisor:
         self, code: str, *, private_detail: Optional[str] = None
     ) -> None:
         with self.lock:
+            # Workload termination by the operator guard can surface as a
+            # Worker error. Preserve the operator cause rather than blaming
+            # the participant or reclassifying it as an infrastructure fault.
+            self.enforce_operator_limit()
             status = self.state["status"]
             if status not in {"created", "active", "closed"}:
                 return

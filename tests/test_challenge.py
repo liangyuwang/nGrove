@@ -107,6 +107,18 @@ class ChallengeReleaseTests(unittest.TestCase):
                 track_config_id="b-3x10m",
                 runtime_profile_id="h100-80gb-x4",
             )
+            # Private launcher defaults must not become benchmark identity or budget.
+            (Path(directory) / "operator-defaults.json").write_text(
+                '{"track_b_max_research_seconds": 86400}', encoding="utf-8"
+            )
+            self.assertEqual(
+                resolved,
+                ChallengeRelease.load(release.source).resolve(
+                    task,
+                    track_config_id="b-3x10m",
+                    runtime_profile_id="h100-80gb-x4",
+                ),
+            )
             self.assertEqual(resolved.track, "B")
             self.assertEqual(resolved.task.track_b_max_leases, 3)
             self.assertEqual(resolved.task.track_b_lease_seconds, 600)

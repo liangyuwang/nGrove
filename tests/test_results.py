@@ -213,6 +213,48 @@ def _finalized(**overrides):
 
 
 class ResultMetricTests(unittest.TestCase):
+    def test_prior_v12_reports_remain_readable_without_operator_semantics(self):
+        payload = _finalized(result_schema_version=12)
+        self.assertEqual(normalize_result_report(payload)["outcome"], "success")
+        payload["operator_limits"] = {"max_research_seconds": 60}
+        with self.assertRaisesRegex(ResultSchemaError, "version 13"):
+            normalize_result_report(payload)
+
+    def test_operator_abort_is_distinct_and_cannot_carry_benchmark_measurements(self):
+        payload = _finalized(
+            track="B",
+            status="operator_stopped",
+            outcome="aborted",
+            failure="operator_time_limit_reached",
+            closure_reason="operator_time_limit_reached",
+            leaderboard_eligible=False,
+            final_candidate_id=None,
+            test_status=None,
+            test_performance_score=None,
+            test_raw_metrics=None,
+            test_cost=None,
+            analysis_status=None,
+            analysis_complete=None,
+            analysis_failure=None,
+            analysis_identity_verified=None,
+            analysis_trajectory=[],
+            operator_limits={
+                "max_research_seconds": 60,
+                "clock": "monotonic_since_task_reveal_without_refunds",
+            },
+        )
+        self.assertEqual(normalize_result_report(payload)["outcome"], "aborted")
+        for override in (
+            {"outcome": "failed"},
+            {"outcome": "success"},
+            {"test_performance_score": 10},
+            {"leaderboard_eligible": True},
+            {"operator_limits": None},
+            {"track": "A"},
+        ):
+            with self.subTest(override=override), self.assertRaises(ResultSchemaError):
+                normalize_result_report({**payload, **override})
+
     def test_current_result_rejects_a_different_hidden_bundle_algorithm(self):
         payload = _finalized()
         payload["artifact_identity_algorithms"]["hidden_evaluation"] = "sha256"

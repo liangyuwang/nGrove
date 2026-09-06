@@ -11,6 +11,7 @@ from autotrain_bench.config import (
     InferenceConfig,
     TaskConfig,
     TrainingResources,
+    resolve_operator_research_limit,
 )
 
 
@@ -19,6 +20,66 @@ TASK = ROOT / "tests/fixtures/task/task.json"
 
 
 class ConfigTests(unittest.TestCase):
+    def test_operator_defaults_are_private_and_can_be_overridden_or_disabled(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = self._write_task(directory)
+            original = TaskConfig.load(task)
+            self.assertIsNone(resolve_operator_research_limit(task, "B"))
+            defaults = task.with_name("operator-defaults.json")
+            for seconds in (1800, 86400):
+                defaults.write_text(
+                    json.dumps({"track_b_max_research_seconds": seconds}),
+                    encoding="utf-8",
+                )
+                self.assertEqual(resolve_operator_research_limit(task, "B"), seconds)
+                self.assertEqual(
+                    resolve_operator_research_limit(task, "B", override=60), 60
+                )
+                self.assertIsNone(
+                    resolve_operator_research_limit(task, "B", disabled=True)
+                )
+                self.assertIsNone(resolve_operator_research_limit(task, "A"))
+                loaded = TaskConfig.load(task)
+                self.assertEqual(loaded, original)
+                self.assertEqual(
+                    loaded.public_manifest("B"), original.public_manifest("B")
+                )
+
+    def test_invalid_operator_defaults_do_not_silently_disable_protection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = Path(directory) / "task.json"
+            defaults = task.with_name("operator-defaults.json")
+            for content in (
+                "not json",
+                "[]",
+                "{}",
+                '{"misspelled_limit": 1800}',
+                *(
+                    json.dumps({"track_b_max_research_seconds": invalid})
+                    for invalid in (
+                        None,
+                        True,
+                        0,
+                        -1,
+                        "1800",
+                        float("inf"),
+                        float("nan"),
+                    )
+                ),
+            ):
+                with self.subTest(content=content):
+                    defaults.write_text(content, encoding="utf-8")
+                    with self.assertRaises(ConfigError):
+                        resolve_operator_research_limit(task, "B")
+                    # Explicit run choices do not depend on the defaults file.
+                    self.assertEqual(
+                        resolve_operator_research_limit(task, "B", override=30), 30
+                    )
+                    self.assertIsNone(
+                        resolve_operator_research_limit(task, "B", disabled=True)
+                    )
+                    self.assertIsNone(resolve_operator_research_limit(task, "A"))
+
     def _write_task(self, directory):
         payload = json.loads(TASK.read_text(encoding="utf-8"))
         base = TASK.parent
@@ -312,7 +373,7 @@ class ConfigTests(unittest.TestCase):
         # The Agent reads this manifest and the `agent status` response.  A
         # rename in either surface must move this version with it.
         self.assertEqual(manifest["protocol_version"], AGENT_PROTOCOL_VERSION)
-        self.assertEqual(AGENT_PROTOCOL_VERSION, 10)
+        self.assertEqual(AGENT_PROTOCOL_VERSION, 11)
 
     def test_agent_egress_environment_and_host_runner_are_separate(self):
         with tempfile.TemporaryDirectory() as directory:

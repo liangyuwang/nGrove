@@ -348,9 +348,17 @@ complete formal receipt.
 
 Status: implemented in the development schemas.
 
-The current versions are Task schema v6, Challenge schema v2, Agent Protocol v10,
-Worker Protocol v14, and result schema v12. The entries below identify the
+The current versions are Task schema v6, Challenge schema v2, Agent Protocol v11,
+Worker Protocol v14, and result schema v13. The entries below identify the
 versions that introduced each change.
+
+- Agent Protocol v11 and result schema v13 distinguish a private operator
+  research-time protection trip (`operator_stopped` / `aborted`) from participant
+  failure and normal Track B completion. The local launcher adds best-effort
+  revocation outside the synchronous request loop, with private per-task
+  defaults (24 hours for `lm-pretrain-v1`, 30 minutes for `smoke_lm`), a run
+  override, and an explicit opt-out with a token-consumption warning. This does not complete the
+  independent deployment watchdog or asynchronous Worker protocol work.
 
 - Agent Protocol v4 makes Candidate commit return artifact acceptance only.
 - Task schema v2 and Challenge schema v2 replaced legacy VAL with hidden ANALYSIS and a

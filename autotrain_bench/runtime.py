@@ -635,9 +635,12 @@ class DockerRuntime:
         control_dir: Path,
         public_task_path: Path,
         inference_network: Optional[str] = None,
+        timeout_seconds: Optional[float] = None,
     ) -> None:
         config.validate()
         agent.validate()
+        if timeout_seconds is not None and timeout_seconds <= 0:
+            raise RuntimeFailure("Agent startup allowance has elapsed")
         if agent.runner != "container":
             raise RuntimeFailure("start_agent requires the container runner")
         if not agent.image:  # guarded by AgentConfig.validate
@@ -724,7 +727,7 @@ class DockerRuntime:
                 ]
             )
         args.extend([agent.image, *agent.command])
-        self._run(args)
+        self._run(args, timeout=timeout_seconds)
 
     def start_host_agent(
         self,

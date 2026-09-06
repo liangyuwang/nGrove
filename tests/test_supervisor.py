@@ -40,7 +40,8 @@ from autotrain_bench.local_mailbox import (
     write_untrusted_response,
 )
 from autotrain_bench.local_agent_execution import describe_local_agent_execution
-from autotrain_bench.results import RESULT_SCHEMA_VERSION
+from autotrain_bench.local_run_guard import LocalResearchGuard
+from autotrain_bench.results import RESULT_SCHEMA_VERSION, normalize_result_report
 from autotrain_bench.training_data import verify_training_data, write_training_manifest
 from autotrain_bench.supervisor import (
     MAX_COMMAND_STREAM_BYTES,
@@ -446,6 +447,7 @@ class SupervisorTests(unittest.TestCase):
         agent_execution=None,
         worker_conformance=None,
         training_data_verification=None,
+        operator_max_research_seconds=None,
     ):
         resolved_config = config or self.config
         if training_data_verification is None:
@@ -475,9 +477,136 @@ class SupervisorTests(unittest.TestCase):
             evaluation_worker_conformance=worker_conformance,
             monotonic=self.clock,
             wall_time=lambda: 1_700_000_000.0,
+            operator_max_research_seconds=operator_max_research_seconds,
         )
         supervisor.begin()
         return supervisor
+
+    def test_operator_limit_is_private_and_does_not_change_track_b_budget(self):
+        supervisor = self.supervisor(operator_max_research_seconds=17)
+        task = json.loads(supervisor.public_task_path.read_text())
+        self.assertEqual(task["budget"], self.config.public_manifest("B")["budget"])
+        self.assertNotIn("operator", json.dumps(task))
+        self.assertNotIn("operator", json.dumps(supervisor.public_status()))
+        self.assertEqual(
+            supervisor.state["operator_limits"]["max_research_seconds"], 17
+        )
+        lease = supervisor.start_lease()
+        self.assertEqual(lease["duration_seconds"], self.config.track_b_lease_seconds)
+
+    def test_operator_limit_defaults_to_disabled(self):
+        supervisor = self.supervisor()
+        self.clock.advance(1_000_000)
+        self.assertIsNone(supervisor.operator_limit_remaining())
+        self.assertFalse(supervisor.enforce_deadlines())
+        self.assertEqual(supervisor.state["status"], "active")
+
+    def test_operator_limit_aborts_at_boundary_without_hidden_evaluation(self):
+        supervisor = self.supervisor(operator_max_research_seconds=10)
+        supervisor.start_lease()
+        commit = supervisor.commit_lease("/output/candidate")
+        supervisor.declare_incumbent(commit["candidate_id"])
+        lease = supervisor.start_lease()
+        self.clock.advance(9.9)
+        self.assertFalse(supervisor.enforce_operator_limit())
+        self.clock.advance(0.1)
+        self.assertTrue(supervisor.enforce_operator_limit())
+        self.assertFalse(supervisor.enforce_operator_limit())
+        state = supervisor.state
+        self.assertEqual(
+            (state["status"], state["outcome"]), ("operator_stopped", "aborted")
+        )
+        self.assertEqual(state["failure"], "operator_time_limit_reached")
+        self.assertIsNotNone(state["research_sealed_at"])
+        self.assertEqual(state["active_lease"]["lease_id"], lease["lease_id"])
+        self.assertIsNone(state["final_candidate_id"])
+        self.assertIsNone(state["test_status"])
+        self.assertFalse(state["leaderboard_eligible"])
+        with self.assertRaises(ProtocolError):
+            supervisor.handle({"op": "finish"})
+        supervisor.terminate_worker_leases_for_teardown()
+        supervisor.record_agent_execution(
+            exit_code=0, termination_reason="operator_time_limit_reached"
+        )
+        supervisor.cleanup_agent_control()
+        report = normalize_result_report(supervisor.state)
+        self.assertEqual(report["outcome"], "aborted")
+        self.assertEqual(self.worker.hidden_dataset_requests, [])
+        self.assertEqual(self.worker.evaluations, [])
+        events = supervisor.events_path.read_text()
+        self.assertEqual(events.count('"type": "EPISODE_OPERATOR_STOPPED"'), 1)
+
+    def test_operator_limit_includes_refunded_startup_and_rejects_late_ack(self):
+        self.worker.clock = self.clock
+        self.worker.start_lease_delay = 11
+        supervisor = self.supervisor(operator_max_research_seconds=10)
+        with self.assertRaisesRegex(ProtocolError, "closed"):
+            supervisor.handle({"op": "lease_start"})
+        self.assertEqual(supervisor.state["status"], "operator_stopped")
+        self.assertEqual(supervisor.state["timing"]["benchmark_overhead_seconds"], 11)
+        self.assertEqual(supervisor._elapsed(), 0)
+        supervisor.terminate_worker_leases_for_teardown()
+        self.assertFalse(self.worker.running)
+
+    def test_operator_limit_does_not_interrupt_postmortem_after_normal_finish(self):
+        supervisor = self.supervisor(operator_max_research_seconds=10)
+        supervisor.start_lease()
+        commit = supervisor.commit_lease("/output/candidate")
+        supervisor.declare_incumbent(commit["candidate_id"])
+        supervisor.finish()
+        self.clock.advance(100)
+        self.assertIsNone(supervisor.operator_limit_remaining())
+        self.assertFalse(supervisor.enforce_operator_limit())
+        result = self.finalize_after_agent_stop(supervisor)
+        self.assertEqual(result["outcome"], "success")
+
+    def test_operator_stop_preserves_cause_when_termination_fails(self):
+        supervisor = self.supervisor(operator_max_research_seconds=1)
+        supervisor.start_lease()
+        self.clock.advance(1)
+        supervisor.infrastructure_failed("worker_died_during_operator_stop")
+        with patch.object(
+            self.worker,
+            "terminate_lease",
+            side_effect=WorkerTeardownFailure("still running"),
+        ):
+            with self.assertRaises(WorkerTeardownFailure):
+                supervisor.terminate_worker_leases_for_teardown()
+        supervisor.deployment_teardown_failed("research_lease_cleanup_failure")
+        self.assertEqual(supervisor.state["status"], "operator_stopped")
+        self.assertEqual(supervisor.state["outcome"], "aborted")
+        self.assertEqual(supervisor.state["failure"], "operator_time_limit_reached")
+        self.assertFalse(supervisor.state["policy_compliant"])
+        self.assertIsNotNone(supervisor.state["active_lease"])
+
+    def test_local_guard_revokes_a_workload_while_core_waits_inside_worker(self):
+        supervisor = self.supervisor(operator_max_research_seconds=10)
+        lease = supervisor.start_lease()
+        revoked = threading.Event()
+
+        def terminate():
+            self.worker.terminate_lease(
+                episode_id=supervisor.state["episode_id"], lease_id=lease["lease_id"]
+            )
+            revoked.set()
+            return []
+
+        def blocked_worker(**kwargs):
+            self.clock.advance(10)
+            self.assertTrue(revoked.wait(2), "guard waited for the Coordinator lock")
+            raise WorkerFailure("revoked while waiting for a training command")
+
+        guard = LocalResearchGuard(supervisor.operator_limit_remaining, terminate)
+        guard.start()
+        try:
+            with patch.object(self.worker, "exec_lease", side_effect=blocked_worker):
+                with self.assertRaises(ProtocolError):
+                    supervisor.handle({"op": "lease_exec", "argv": ["long-command"]})
+        finally:
+            self.assertEqual(guard.close(), [])
+        self.assertEqual(supervisor.state["outcome"], "aborted")
+        self.assertEqual(supervisor.state["failure"], "operator_time_limit_reached")
+        self.assertFalse(self.worker.running)
 
     def finalize_after_agent_stop(self, supervisor):
         supervisor.record_agent_execution(exit_code=0, termination_reason="exited")

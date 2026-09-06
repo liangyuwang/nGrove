@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path
@@ -57,7 +58,66 @@ class ConfigError(ValueError):
 #
 # Version 10 limits Agent-visible release metadata to declared identifiers;
 # private manifest digests and audit extensions remain in trusted records.
-AGENT_PROTOCOL_VERSION = 10
+# Version 11 distinguishes operator-stopped episodes from participant failures.
+# Operator protection settings themselves are never Agent-visible.
+AGENT_PROTOCOL_VERSION = 11
+
+
+def operator_research_limit(value: Any, track: str) -> Optional[float]:
+    """Validate a trusted run setting, independent of task/Track budgets."""
+
+    if value is None:
+        return None
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value <= 0
+    ):
+        raise ConfigError("operator research time limit must be finite and positive")
+    if track.upper() != "B":
+        raise ConfigError("operator research time limit is only available for Track B")
+    return float(value)
+
+
+def resolve_operator_research_limit(
+    task_source: Path,
+    track: str,
+    *,
+    override: Optional[float] = None,
+    disabled: bool = False,
+) -> Optional[float]:
+    """Resolve launcher protection without changing the benchmark task identity.
+
+    The optional sibling file belongs to the trusted operator, not the task
+    manifest or its public budget. Only the effective value enters episode audit.
+    """
+
+    if disabled:
+        if override is not None:
+            raise ConfigError("operator research protection cannot be set and disabled")
+        if track.upper() != "B":
+            raise ConfigError(
+                "operator research time limit is only available for Track B"
+            )
+        return None
+    if override is not None:
+        return operator_research_limit(override, track)
+    if track.upper() != "B":
+        return None
+
+    source = task_source.expanduser().resolve().with_name("operator-defaults.json")
+    try:
+        raw = json.loads(source.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        raise ConfigError(f"cannot read operator defaults in {source}: {exc}") from exc
+    field = "track_b_max_research_seconds"
+    if not isinstance(raw, dict) or set(raw) != {field} or raw[field] is None:
+        raise ConfigError(f"{source} must contain only a finite positive {field}")
+    return operator_research_limit(raw[field], "B")
+
 
 # Phases a release may declare as benchmark-owned rather than participant time.
 # `README.md` requires this boundary to be release-defined and identical across

@@ -249,6 +249,17 @@ Worker can therefore block the Coordinator. This is a deployment/infrastructure
 failure, not a participant failure, although detecting and terminating it may
 currently require an outer Operator or deployment watchdog.
 
+The bundled launcher guards Track B research with a private operator wall-time
+limit, enabled by default for `lm-pretrain-v1` (24 hours) and `smoke_lm`
+(30 minutes). Operators may override or disable it before launch; disabling
+prints a warning about potentially extreme token consumption. These settings
+and notices never enter the Agent view. Its separate local thread/client can revoke
+workloads without acquiring the Coordinator lock, but still shares the
+Coordinator process and cannot preempt arbitrary Worker code. It is best-effort
+operator protection, not a new Worker deadline guarantee or a Track B scoring
+budget. Worker Protocol v14 and its outstanding independent-watchdog requirement
+are unchanged. External launchers own equivalent protection in their deployment.
+
 A future platform-neutral seam should define asynchronous operation IDs,
 absolute deadlines, status/reconciliation, idempotent retry, and cancellation
 semantics. Core should define what cancellation means and how its result affects

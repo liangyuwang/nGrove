@@ -5,7 +5,7 @@ import shutil
 import tempfile
 import unittest
 import uuid
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
@@ -29,6 +29,7 @@ from autotrain_bench.cli import (
 from autotrain_bench.config import ConfigError, TaskConfig
 from autotrain_bench.runtime import DockerRuntime, RuntimeFailure
 from autotrain_bench.training_data import TrainingDataError, verify_training_data
+from autotrain_bench.results import normalize_result_report
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +38,252 @@ LM_PRETRAIN_PREVIEW = ROOT / "challenges/lm-pretrain-v1/challenge.json"
 
 
 class WorkspaceSnapshotTests(unittest.TestCase):
+    def test_start_resolves_bundled_operator_defaults_and_announces_before_preflight(
+        self,
+    ):
+        for folder, lane, flags, expected in (
+            ("challenges/lm-pretrain-v1", "preview-b-6x1h", [], 86400),
+            ("dev_tasks/smoke_lm", "smoke-b-3x75s", [], 1800),
+            (
+                "dev_tasks/smoke_lm",
+                "smoke-b-3x75s",
+                ["--operator-max-research-seconds", "60"],
+                60,
+            ),
+            (
+                "dev_tasks/smoke_lm",
+                "smoke-b-3x75s",
+                ["--no-operator-research-limit"],
+                None,
+            ),
+            ("dev_tasks/smoke_lm", "smoke-a-5m", [], None),
+        ):
+            with self.subTest(
+                folder=folder, lane=lane, flags=flags
+            ), tempfile.TemporaryDirectory() as directory:
+                root = ROOT / folder
+                payload = json.loads((root / "task.json").read_text())
+                config = replace(
+                    TaskConfig.load(TASK),
+                    source=root / "task.json",
+                    task_id=payload["task_id"],
+                )
+                episode = Path(directory) / "episode"
+                args = build_parser().parse_args(
+                    [
+                        "start",
+                        "--challenge",
+                        str(root / "challenge.json"),
+                        "--track-config",
+                        lane,
+                        "--runtime-profile",
+                        "a100-sxm4-80gb-x4",
+                        "--episode-dir",
+                        str(episode),
+                        "--agent-runner",
+                        "host_cli",
+                        "--agent-command",
+                        "participant-agent",
+                        *flags,
+                    ]
+                )
+                output = io.StringIO()
+
+                def check_notice(*args, **kwargs):
+                    notice = output.getvalue()
+                    if "-a-" in lane:
+                        self.assertNotIn("operator research-time protection", notice)
+                    else:
+                        self.assertIn("extremely high", notice)
+                        self.assertIn("token consumption", notice)
+                        self.assertIn("not sent to the Tested Agent", notice)
+                        if expected is not None:
+                            self.assertIn(f"{expected} seconds", notice)
+                            self.assertIn("--no-operator-research-limit", notice)
+                        else:
+                            self.assertIn("protection is disabled", notice)
+
+                with patch(
+                    "autotrain_bench.cli.TaskConfig.load", return_value=config
+                ), patch("autotrain_bench.cli.DockerRuntime") as runtime, patch(
+                    "autotrain_bench.cli.Supervisor",
+                    side_effect=ConfigError("stop after preflight"),
+                ) as supervisor, redirect_stdout(output):
+                    runtime.return_value.prepare.side_effect = check_notice
+                    with self.assertRaisesRegex(ConfigError, "stop after preflight"):
+                        command_start(args)
+                    runtime.return_value.prepare.assert_called_once()
+                    self.assertEqual(
+                        supervisor.call_args.kwargs["operator_max_research_seconds"],
+                        expected,
+                    )
+                    runtime.return_value.start_agent.assert_not_called()
+                    runtime.return_value.start_host_agent.assert_not_called()
+                self.assertFalse(episode.exists())
+
+    def test_operator_limit_override_and_disable_are_mutually_exclusive(self):
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            build_parser().parse_args(
+                [
+                    "start",
+                    "--task",
+                    str(TASK),
+                    "--track",
+                    "B",
+                    "--agent-runner",
+                    "host_cli",
+                    "--agent-command",
+                    "participant-agent",
+                    "--operator-max-research-seconds",
+                    "30",
+                    "--no-operator-research-limit",
+                ]
+            )
+
+    def test_operator_limit_rejects_invalid_values_and_track_a_before_writes(self):
+        for track, value in (
+            ("B", "0"),
+            ("B", "-1"),
+            ("B", "nan"),
+            ("B", "inf"),
+            ("A", "30"),
+            ("A", None),
+        ):
+            with self.subTest(
+                track=track, value=value
+            ), tempfile.TemporaryDirectory() as directory:
+                episode = Path(directory) / "episode"
+                args = build_parser().parse_args(
+                    [
+                        "start",
+                        "--task",
+                        str(TASK),
+                        "--track",
+                        track,
+                        "--episode-dir",
+                        str(episode),
+                        "--agent-runner",
+                        "host_cli",
+                        "--agent-command",
+                        "participant-agent",
+                        f"--operator-max-research-seconds={value}"
+                        if value is not None
+                        else "--no-operator-research-limit",
+                    ]
+                )
+                with patch("autotrain_bench.cli.DockerRuntime") as runtime:
+                    with self.assertRaises(ConfigError):
+                        command_start(args)
+                    runtime.assert_not_called()
+                self.assertFalse(episode.exists())
+
+    def test_operator_guard_stops_local_runners_and_gateway_without_evaluation(self):
+        # Exercise the real launcher/state machine with fake workload boundaries;
+        # no Agent, Docker daemon, inference endpoint, or hidden data is executed.
+        for runner in ("container", "host_cli"):
+            running = set()
+            stops = []
+
+            class LocalRuntime(DockerRuntime):
+                def prepare(self, *args, **kwargs):
+                    pass
+
+                def environment_manifest(self, *args, **kwargs):
+                    return {}
+
+                def start_agent(self, *, name, **kwargs):
+                    running.add(name)
+
+                def start_host_agent(self, *, stdout_path, **kwargs):
+                    stdout_path.write_text("")
+
+                    class Host:
+                        running = True
+
+                        def stop(self):
+                            self.running = False
+                            stops.append("host")
+                            return 0
+
+                    host = Host()
+                    host.stdout_path = stdout_path
+                    return host
+
+                def create_network(self, *args, **kwargs):
+                    pass
+
+                def remove_network(self, *args, **kwargs):
+                    pass
+
+                def start_inference_gateway(self, *, name, **kwargs):
+                    running.add(name)
+
+                def container_running(self, name):
+                    return name in running
+
+                def container_exit_code(self, name):
+                    return None
+
+                def container_logs(self, name, **kwargs):
+                    return ""
+
+                def stop_container(self, name):
+                    stops.append(name)
+                    running.discard(name)
+
+                def evaluate_candidate(self, **kwargs):
+                    raise AssertionError("operator stop must not run hidden evaluation")
+
+            with self.subTest(
+                runner=runner
+            ), tempfile.TemporaryDirectory() as directory:
+                episode = Path(directory) / "episode"
+                argv = [
+                    "start",
+                    "--task",
+                    str(TASK),
+                    "--track",
+                    "B",
+                    "--episode-dir",
+                    str(episode),
+                    "--agent-runner",
+                    runner,
+                    "--agent-command",
+                    "participant-agent",
+                    "--operator-max-research-seconds",
+                    "0.05",
+                ]
+                if runner == "container":
+                    argv += [
+                        "--agent-image",
+                        "participant:test",
+                        "--inference-base-url",
+                        "https://inference.invalid",
+                        "--inference-model",
+                        "registered-model",
+                    ]
+                args = build_parser().parse_args(argv)
+                with patch(
+                    "autotrain_bench.cli.DockerRuntime", LocalRuntime
+                ), redirect_stdout(io.StringIO()):
+                    self.assertEqual(command_start(args), 1)
+                state = json.loads((episode / "state.json").read_text())
+                report = normalize_result_report(state)
+                self.assertEqual(report["outcome"], "aborted")
+                self.assertEqual(
+                    report["agent_system"]["termination_reason"],
+                    "operator_time_limit_reached",
+                )
+                self.assertTrue(report["agent_control"]["cleanup_complete"])
+                self.assertEqual(report["deployment_teardown_failures"], [])
+                self.assertIsNone(report["test_status"])
+                self.assertIsNone(report["analysis_status"])
+                self.assertFalse(running)
+                if runner == "container":
+                    self.assertTrue(stops[0].endswith("-inference"))
+                else:
+                    self.assertIn("host", stops)
+
     def test_prepare_rejects_invalid_train_before_runtime_setup(self):
         with tempfile.TemporaryDirectory() as directory:
             config = TaskConfig.load(TASK)

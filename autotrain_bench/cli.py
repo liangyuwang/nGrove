@@ -26,6 +26,7 @@ from .config import (
     agent_egress,
     agent_environment_names,
     agent_runner,
+    resolve_operator_research_limit,
 )
 from .host_agent import (
     HostAgentProcess,
@@ -35,6 +36,7 @@ from .host_agent import (
 from .inference import summarize_inference_trace
 from .local_mailbox import LocalFileMailbox
 from .local_agent_execution import describe_local_agent_execution
+from .local_run_guard import LocalResearchGuard
 from .results import normalize_result_report
 from .runtime import DockerRuntime, RuntimeFailure
 from .supervisor import Supervisor
@@ -216,6 +218,7 @@ def _stop_and_record_container_agent(
     supervisor: Supervisor,
     name: str,
     drain_seconds: float,
+    operator_stopped: bool = False,
 ) -> None:
     """Record termination only after the local runtime confirms Agent removal."""
 
@@ -230,7 +233,9 @@ def _stop_and_record_container_agent(
     runtime.stop_container(name)
     supervisor.record_agent_execution(
         exit_code=exit_code,
-        termination_reason=termination_reason,
+        termination_reason=(
+            "operator_time_limit_reached" if operator_stopped else termination_reason
+        ),
         drain_seconds=drain_seconds,
     )
 
@@ -363,6 +368,12 @@ def command_start(args: argparse.Namespace) -> int:
         resource_envelope = resolved_challenge.resource_envelope
         comparison_key = resolved_challenge.comparison_key.public_manifest()
         challenge_release = resolved_challenge.release_manifest
+    operator_limit = resolve_operator_research_limit(
+        config.source,
+        track,
+        override=args.operator_max_research_seconds,
+        disabled=args.no_operator_research_limit,
+    )
     resolved_runner = agent_runner(args.agent_runner, "--agent-runner")
     if resolved_runner == "host_cli":
         if args.agent_egress:
@@ -402,6 +413,25 @@ def command_start(args: argparse.Namespace) -> int:
         task_source=config.source,
         agent_workspace=args.agent_workspace,
     )
+    if track == "B":
+        if operator_limit is None:
+            print(
+                "WARNING: Track B operator research-time protection is disabled. "
+                "Research may continue indefinitely and token consumption may be "
+                "extremely high. Set --operator-max-research-seconds SECONDS to "
+                "enable protection."
+            )
+        else:
+            print(
+                f"Track B operator research-time protection: {operator_limit:g} seconds "
+                "from task reveal. Override with --operator-max-research-seconds "
+                "SECONDS or disable with --no-operator-research-limit. Disabling "
+                "it risks extremely high token consumption."
+            )
+        print(
+            "This is a private operator setting; it is not sent to the Tested Agent.",
+            flush=True,
+        )
     episode_dir.mkdir(parents=True, exist_ok=False)
     try:
         _initialize_agent_workspace(args.agent_workspace, workspace)
@@ -465,6 +495,7 @@ def command_start(args: argparse.Namespace) -> int:
             agent_control_transport=agent_control,
             research_worker_environment=worker_environment,
             evaluation_worker_environment=worker_environment,
+            operator_max_research_seconds=operator_limit,
             comparison_key=comparison_key,
             challenge_release=challenge_release,
         )
@@ -487,6 +518,57 @@ def command_start(args: argparse.Namespace) -> int:
     host_agent: Optional[HostAgentProcess] = None
     gateway_started = False
     networks_to_cleanup: List[str] = []
+
+    def stop_operator_research() -> List[CleanupFailure]:
+        # Use a separate local client and persisted semantic Lease IDs. Never
+        # wait for the Supervisor lock held by a synchronous Worker operation.
+        guard_runtime = DockerRuntime(docker_binary=reference_runtime.docker)
+        steps: List[CleanupStep] = []
+        if agent.inference is not None:
+            steps.append(
+                (
+                    "inference_gateway_termination_failure",
+                    lambda: guard_runtime.stop_container(gateway_name),
+                )
+            )
+        if agent.runner == "container":
+            steps.append(
+                (
+                    "agent_termination_failure",
+                    lambda: guard_runtime.stop_container(agent_name),
+                )
+            )
+        elif host_agent is not None:
+            steps.append(("agent_termination_failure", host_agent.stop))
+        failures = _run_cleanup_steps(steps)
+        try:
+            state = json.loads(supervisor.state_path.read_text(encoding="utf-8"))
+            lease_ids = set(state.get("pending_lease_teardowns", []))
+            if state.get("active_lease"):
+                lease_ids.add(state["active_lease"]["lease_id"])
+        except Exception as exc:
+            failures.append(("operator_guard_state_failure", str(exc)))
+            return failures
+        failures.extend(
+            _run_cleanup_steps(
+                [
+                    (
+                        "research_lease_cleanup_failure",
+                        lambda lease_id=lease_id: guard_runtime.terminate_lease(
+                            episode_id=state["episode_id"], lease_id=lease_id
+                        ),
+                    )
+                    for lease_id in sorted(lease_ids)
+                ]
+            )
+        )
+        return failures
+
+    operator_guard = (
+        LocalResearchGuard(supervisor.operator_limit_remaining, stop_operator_research)
+        if operator_limit is not None
+        else None
+    )
     print(f"Episode: {episode_dir}", flush=True)
     try:
         if agent.inference is not None:
@@ -510,7 +592,14 @@ def command_start(args: argparse.Namespace) -> int:
             )
             gateway_started = True
         supervisor.begin()
+        if operator_guard is not None:
+            operator_guard.start()
         if agent.runner == "container":
+            agent_start_options = {}
+            if operator_guard is not None:
+                agent_start_options["timeout_seconds"] = (
+                    supervisor.operator_limit_remaining()
+                )
             reference_runtime.start_agent(
                 name=agent_name,
                 config=config,
@@ -520,6 +609,7 @@ def command_start(args: argparse.Namespace) -> int:
                 inference_network=agent_network
                 if agent.inference is not None
                 else None,
+                **agent_start_options,
             )
         else:
             host_agent = reference_runtime.start_host_agent(
@@ -535,6 +625,12 @@ def command_start(args: argparse.Namespace) -> int:
         # path owns compensation.  In particular, Ctrl-C must not bypass the
         # cleanup that exists before the steady-state ``finally`` is installed.
         startup_error = exc
+        transition_error: Optional[BaseException] = None
+        try:
+            supervisor.enforce_operator_limit()
+        except BaseException as transition_exc:
+            transition_error = transition_exc
+        guard_failures = operator_guard.close() if operator_guard is not None else []
         if isinstance(exc, HostAgentStartupFailure):
             # Popen succeeded, so ``None`` would be an unsafe statement about
             # process ownership.  Preserve the retryable handle even when the
@@ -542,7 +638,9 @@ def command_start(args: argparse.Namespace) -> int:
             host_agent = exc.handle
             startup_error = exc.startup_error
         termination_reason = (
-            "supervisor_interrupted"
+            "operator_time_limit_reached"
+            if supervisor.state["status"] == "operator_stopped"
+            else "supervisor_interrupted"
             if isinstance(startup_error, KeyboardInterrupt)
             else "episode_startup_failure"
         )
@@ -553,7 +651,6 @@ def command_start(args: argparse.Namespace) -> int:
                 f"{type(exc.cleanup_error).__name__}: {exc.cleanup_error}"
             )
 
-        transition_error: Optional[BaseException] = None
         try:
             supervisor.infrastructure_failed(
                 termination_reason,
@@ -629,6 +726,7 @@ def command_start(args: argparse.Namespace) -> int:
                 [
                     *startup_cleanup_failures,
                     *control_cleanup_failures,
+                    *guard_failures,
                 ],
             )
         except BaseException as report_exc:
@@ -645,9 +743,16 @@ def command_start(args: argparse.Namespace) -> int:
     host_termination_reason: Optional[str] = None
     try:
         while True:
+            supervisor.enforce_operator_limit()
+            if supervisor.state["status"] == "operator_stopped":
+                host_termination_reason = "operator_time_limit_reached"
+                break
             processed = supervisor.process_one_request()
             supervisor.enforce_deadlines()
             status = supervisor.public_status()["status"]
+            if status == "operator_stopped":
+                host_termination_reason = "operator_time_limit_reached"
+                break
             agent_running = (
                 reference_runtime.container_running(agent_name)
                 if agent.runner == "container"
@@ -693,7 +798,20 @@ def command_start(args: argparse.Namespace) -> int:
         )
         raise
     finally:
-        cleanup_failures: List[CleanupFailure] = []
+        operator_recording_error: Optional[BaseException] = None
+        try:
+            supervisor.enforce_operator_limit()
+        except BaseException as exc:
+            # A failed audit write must not prevent workload revocation.
+            operator_recording_error = exc
+        cleanup_failures: List[CleanupFailure] = (
+            operator_guard.close() if operator_guard is not None else []
+        )
+        if supervisor.state["status"] == "operator_stopped":
+            # Stop inference/Agent first, even if Lease cleanup will fail. No
+            # normal finish drain is granted after an operator protection trip.
+            host_termination_reason = "operator_time_limit_reached"
+            cleanup_failures.extend(stop_operator_research())
         cleanup_failures.extend(
             _run_cleanup_steps(
                 [
@@ -720,7 +838,7 @@ def command_start(args: argparse.Namespace) -> int:
         try:
             if agent.runner == "container":
                 agent_log = (
-                    reference_runtime.container_logs(agent_name)
+                    reference_runtime.container_logs(agent_name, timeout_seconds=5)
                     if agent_started
                     else ""
                 )
@@ -743,6 +861,9 @@ def command_start(args: argparse.Namespace) -> int:
                                     max(0.0, time.monotonic() - terminal_at)
                                     if terminal_at is not None
                                     else 0.0
+                                ),
+                                operator_stopped=(
+                                    supervisor.state["status"] == "operator_stopped"
                                 ),
                             ),
                         )
@@ -814,7 +935,7 @@ def command_start(args: argparse.Namespace) -> int:
                 ]
             )
         )
-        cleanup_reporting_error: Optional[BaseException] = None
+        cleanup_reporting_error: Optional[BaseException] = operator_recording_error
         try:
             _report_cleanup_failures(supervisor, cleanup_failures)
         except BaseException as exc:
@@ -1035,6 +1156,25 @@ def build_parser() -> argparse.ArgumentParser:
         "--inference-path", dest="inference_paths", action="append", default=[]
     )
     start.add_argument("--inference-timeout", type=int, default=300)
+    operator_protection = start.add_mutually_exclusive_group()
+    operator_protection.add_argument(
+        "--operator-max-research-seconds",
+        type=float,
+        metavar="SECONDS",
+        help=(
+            "override the task's private Track B research-time protection in seconds; "
+            "defaults: lm-pretrain-v1 86400 (24h), smoke_lm 1800 (30m); "
+            "best-effort in the local launcher, never an Agent budget"
+        ),
+    )
+    operator_protection.add_argument(
+        "--no-operator-research-limit",
+        action="store_true",
+        help=(
+            "disable private Track B research-time protection for this run; "
+            "WARNING: token consumption may be extremely high"
+        ),
+    )
     start.add_argument(
         "--training-gpus",
         type=int,

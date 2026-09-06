@@ -233,6 +233,14 @@ autotrain-bench challenge-info \
 After data preparation, start a profile-bound episode. `task.json` is inferred
 from the challenge release:
 
+Track B defaults to a **24-hour private operator research-time protection**,
+configured in `operator-defaults.json`. The launcher announces it before run
+preparation. Add `--operator-max-research-seconds SECONDS` to change it or
+`--no-operator-research-limit` to disable it for one run. Disabling protection
+risks extremely high token consumption. The setting and notices are never sent
+to the Tested Agent and do not change the six one-hour Leases or comparison key.
+See [operator protection semantics](../../README.md#track-b--lease-bounded-autonomous-research).
+
 ```bash
 autotrain-bench start \
   --challenge challenges/lm-pretrain-v1/challenge.json \

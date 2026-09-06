@@ -98,6 +98,14 @@ See [TRAIN integrity](../../docs/training-data.md).
 
 ## Run an Agent integration
 
+Track B (`smoke-b-3x75s`) defaults to a **30-minute private operator research-time
+protection**, configured in `operator-defaults.json`. The launcher announces it
+before run preparation. Add `--operator-max-research-seconds SECONDS` to change
+it or `--no-operator-research-limit` to disable it for one run. Disabling protection
+risks extremely high token consumption. The setting and notices are never sent
+to the Tested Agent and do not change the three 75-second Leases or comparison key.
+See [operator protection semantics](../../README.md#track-b--lease-bounded-autonomous-research).
+
 An egress-denied participant is supplied explicitly as an Agent Container.
 The image contains the Agent executable, while the writable episode workspace
 starts empty:

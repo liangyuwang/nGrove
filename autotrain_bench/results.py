@@ -20,7 +20,7 @@ from .worker_protocol import (
 )
 
 
-RESULT_SCHEMA_VERSION = 12
+RESULT_SCHEMA_VERSION = 13
 _VALID_STATUSES = {
     "created",
     "active",
@@ -28,6 +28,7 @@ _VALID_STATUSES = {
     "dnf",
     "finalized",
     "infrastructure_failure",
+    "operator_stopped",
 }
 _PENDING_OUTCOME_STATUSES = {"created", "active", "closed"}
 _FAILED_OUTCOME_STATUSES = {
@@ -56,8 +57,14 @@ def normalize_result_report(payload: Any) -> Dict[str, Any]:
     version = payload.get("result_schema_version")
     if isinstance(version, bool) or not isinstance(version, int):
         raise ResultSchemaError("result_schema_version must be an integer")
-    if version != RESULT_SCHEMA_VERSION:
+    if version not in {12, RESULT_SCHEMA_VERSION}:
         raise ResultSchemaError(f"unsupported result schema version: {version}")
+    if version == 12 and (
+        payload.get("status") == "operator_stopped"
+        or payload.get("outcome") == "aborted"
+        or "operator_limits" in payload
+    ):
+        raise ResultSchemaError("operator protection requires result schema version 13")
     result = dict(payload)
     result.setdefault("deployment_teardown_failures", [])
     result.pop("pending_result", None)
@@ -397,6 +404,24 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
     status = result.get("status")
     if status not in _VALID_STATUSES:
         raise ResultSchemaError(f"invalid result status: {status!r}")
+    operator_limits = result.get("operator_limits")
+    if operator_limits is not None:
+        if not isinstance(operator_limits, dict) or set(operator_limits) != {
+            "max_research_seconds",
+            "clock",
+        }:
+            raise ResultSchemaError("invalid operator_limits")
+        limit = operator_limits["max_research_seconds"]
+        if limit is not None and (
+            isinstance(limit, bool)
+            or not isinstance(limit, (int, float))
+            or not math.isfinite(limit)
+            or limit <= 0
+            or result.get("track") != "B"
+        ):
+            raise ResultSchemaError("invalid Track B operator research time limit")
+        if operator_limits["clock"] != "monotonic_since_task_reveal_without_refunds":
+            raise ResultSchemaError("invalid operator research clock")
     analysis_complete = result.get("analysis_complete")
     analysis_status = result.get("analysis_status")
     analysis_failure = result.get("analysis_failure")
@@ -506,8 +531,10 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
         )
 
     outcome = result.get("outcome")
-    if outcome not in {None, "success", "failed"}:
+    if outcome not in {None, "success", "failed", "aborted"}:
         raise ResultSchemaError(f"invalid result outcome: {outcome!r}")
+    if (status == "operator_stopped") != (outcome == "aborted"):
+        raise ResultSchemaError("only an operator stop may have an aborted outcome")
     if outcome is None:
         if status not in _PENDING_OUTCOME_STATUSES:
             raise ResultSchemaError(
@@ -577,6 +604,23 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
             raise ResultSchemaError("a failed result must contain a failure reason")
         if status == "finalized" and result.get("test_status") != "failed":
             raise ResultSchemaError("a failed finalized result requires failed TEST")
+    elif outcome == "aborted":
+        if (
+            not operator_limits
+            or operator_limits["max_research_seconds"] is None
+            or result.get("failure") != "operator_time_limit_reached"
+            or result.get("closure_reason") != "operator_time_limit_reached"
+            or not isinstance(research_sealed_at, str)
+            or not research_sealed_at
+            or result.get("leaderboard_eligible") is not False
+            or candidate_id is not None
+            or test_status is not None
+            or analysis_status is not None
+            or result.get("test_performance_score") is not None
+            or result.get("test_raw_metrics") is not None
+            or test_cost is not None
+        ):
+            raise ResultSchemaError("an operator stop cannot be a benchmark result")
 
 
 def _validate_analysis_summary_counts(
