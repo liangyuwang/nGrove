@@ -378,6 +378,9 @@ class WorkspaceSnapshotTests(unittest.TestCase):
             stops = []
 
             class LocalRuntime(DockerRuntime):
+                def enable_recovery(self, **kwargs):
+                    pass  # Workloads and daemon boundaries are faked in this test.
+
                 def prepare(self, *args, **kwargs):
                     pass
 
@@ -780,7 +783,9 @@ class WorkspaceSnapshotTests(unittest.TestCase):
             runtime = DockerRuntime()
 
             with patch("autotrain_bench.cli.DockerRuntime", return_value=runtime):
-                with patch.object(runtime, "prepare"):
+                with patch.object(runtime, "prepare"), patch.object(
+                    runtime, "enable_recovery"
+                ):
                     with patch.object(
                         runtime,
                         "environment_manifest",

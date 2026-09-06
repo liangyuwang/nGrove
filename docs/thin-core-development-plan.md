@@ -284,12 +284,15 @@ use a scheduler allocation, VM, process sandbox, or another mechanism, but it
 must retain its private handles until the semantic cleanup operation is
 confirmed.
 
-The bundled v0 Worker can retry evaluation teardown while its composition
-process remains alive; those random local evaluation handles are not a durable
-crash-recovery protocol. A production external Worker must persist or
-reconstruct its own handles across the failure modes it claims to tolerate.
-Core must not solve that deployment requirement by storing container, job, or
-network identifiers.
+The bundled Docker container launcher now persists episode-owned resource
+intents and identities in a private Worker journal. A separate
+`worker-recover` invocation can reclaim registered containers, networks,
+prediction volumes and private hidden snapshots after composition-process
+loss. It uses exclusive ownership, daemon/resource identity verification and
+conservative handling of uncertain creates; it neither resumes nor publishes
+an episode. See [scope and prerequisites](worker-recovery.md). Distributed
+fencing, independent watchdogs and external scheduler recovery still belong to
+the deployment. Container, job and network handles do not enter Core state.
 
 ### Phase B exit criteria
 
@@ -357,8 +360,9 @@ versions that introduced each change.
   Docker uses an independent capacity/inode-bounded tmpfs volume with verified
   admission and teardown. This supersedes the v14 exact byte/two-entry runtime
   requirement; old receipts do not certify the new boundary. Task v7 changes
-  the release fingerprint; artifact JSON and result schema are unchanged. Process-loss cleanup recovery and formal
-  deployment certification remain outstanding.
+  the release fingerprint; artifact JSON and result schema are unchanged.
+  Cleanup-only recovery is now implemented for journaled local Docker sessions;
+  formal deployment certification remains outstanding.
 
 - Agent Protocol v11 and result schema v13 distinguish a private operator
   research-time protection trip (`operator_stopped` / `aborted`) from participant

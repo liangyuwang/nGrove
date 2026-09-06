@@ -10,6 +10,7 @@ import shutil
 import sys
 import time
 import uuid
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -333,6 +334,11 @@ def _resolve_challenge_run(
 
 
 def command_start(args: argparse.Namespace) -> int:
+    with ExitStack() as lifetime:
+        return _command_start(args, lifetime)
+
+
+def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
     if getattr(args, "agent_mode", None) is not None:
         raise ConfigError(
             "--agent-mode was renamed to --agent-egress and its values changed: "
@@ -520,6 +526,39 @@ def command_start(args: argparse.Namespace) -> int:
             resources=resources,
             pull_missing=False,
         )
+        if resolved_runner == "container":
+            state_dir = args.worker_state_dir or (
+                Path.home()
+                / ".autotrain-bench"
+                / "workers"
+                / uuid.uuid5(uuid.NAMESPACE_URL, str(episode_dir)).hex
+            )
+            state_dir = state_dir.expanduser().resolve()
+            if state_dir == episode_dir or episode_dir in state_dir.parents:
+                raise ConfigError(
+                    "Worker state must be outside the episode storage domain"
+                )
+            if storage_limit is not None and (
+                state_dir == episode_dir.parent
+                or episode_dir.parent in state_dir.parents
+            ):
+                raise ConfigError(
+                    "Worker state must be outside protected episode storage"
+                )
+            # Readiness probes above are complete. Every episode workload and
+            # post-research hidden materialization below is now recoverable.
+            reference_runtime.enable_recovery(
+                state_dir=state_dir, episode_dir=episode_dir
+            )
+            lifetime.callback(reference_runtime.close_recovery)
+            print(
+                f"Worker cleanup journal: {state_dir}\n"
+                "After Worker process loss, run worker-recover --state-dir PATH "
+                "in this same Worker environment. Recovery does not resume the episode.",
+                flush=True,
+            )
+        elif args.worker_state_dir is not None:
+            raise ConfigError("Worker crash recovery is not supported for host_cli")
         worker_environment = reference_runtime.environment_manifest(
             config,
             agent=agent,
@@ -568,6 +607,7 @@ def command_start(args: argparse.Namespace) -> int:
         # Use a separate local client and persisted semantic Lease IDs. Never
         # wait for the Supervisor lock held by a synchronous Worker operation.
         guard_runtime = DockerRuntime(docker_binary=reference_runtime.docker)
+        reference_runtime.share_recovery_with(guard_runtime)
         steps: List[CleanupStep] = []
         if agent.inference is not None:
             steps.append(
@@ -1070,6 +1110,12 @@ def command_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_worker_recover(args: argparse.Namespace) -> int:
+    report = DockerRuntime().recover_resources(args.state_dir)
+    _print(report)
+    return 0 if report["cleanup_complete"] else 2
+
+
 def command_challenge_info(args: argparse.Namespace) -> int:
     release = ChallengeRelease.load(args.challenge)
     _print(release.public_manifest())
@@ -1267,6 +1313,19 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     start.set_defaults(function=command_start)
+    start.add_argument(
+        "--worker-state-dir",
+        type=Path,
+        help="private local Worker recovery directory outside episode storage; "
+        "defaults to ~/.autotrain-bench/workers/<episode-path-id>",
+    )
+
+    recover = subparsers.add_parser(
+        "worker-recover",
+        help="reclaim a stopped Docker Worker's resources without resuming",
+    )
+    recover.add_argument("--state-dir", type=Path, required=True)
+    recover.set_defaults(function=command_worker_recover)
 
     report = subparsers.add_parser("report", help="print a completed episode report")
     report.add_argument("--episode", required=True, type=Path)

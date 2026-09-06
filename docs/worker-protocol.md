@@ -444,8 +444,11 @@ memory/swap provisioning must include the declared output capacity. The bounded
 volume protects the episode log filesystem from prediction allocation exhaustion;
 it does not reserve host memory or guarantee log persistence during host OOM,
 shared backing-device exhaustion, or runtime failure. Normal exception/retry
-cleanup is implemented; recovery after Worker process loss remains separate
-work. The Worker remains development-trusted with best-effort deadlines; this
+cleanup is implemented. The bundled launcher also journals episode resources
+for [cleanup after Worker process loss](worker-recovery.md), with exclusive
+ownership, identity checks and conservative handling of unknown creations.
+Recovery does not resume or publish an episode. The Worker remains
+development-trusted with best-effort deadlines; this
 capability does not grant formal leaderboard eligibility.
 
 Separately, the trusted local launcher can require a deployment-provided,

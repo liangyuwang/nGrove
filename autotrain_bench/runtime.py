@@ -26,6 +26,7 @@ from .prediction_output import prediction_output_contract
 from .config import AgentConfig, TaskConfig, TrainingResources
 from .host_agent import HostAgentProcess, start_host_agent_process
 from .local_storage import LocalStorageProtection
+from .docker_recovery import DockerRecovery
 from .worker_protocol import (
     CANDIDATE_EVALUATOR_CHANNEL_ISOLATION,
     CANDIDATE_PREDICTION_ARTIFACT_LIFECYCLE,
@@ -221,6 +222,40 @@ class DockerRuntime:
         self._pending_evaluations: Dict[tuple, _EvaluationResources] = {}
         self._execution_identity: Optional[Tuple[int, int]] = None
         self._operator_storage: Optional[LocalStorageProtection] = None
+        self._recovery: Optional[DockerRecovery] = None
+
+    def enable_recovery(self, *, state_dir: Path, episode_dir: Path) -> None:
+        if self._recovery is not None:
+            raise RuntimeFailure("Worker recovery is already configured")
+        journal = DockerRecovery(state_dir, episode=episode_dir)
+        self._recovery = journal
+        try:
+            journal.bind_backend(self._run_raw)
+        except BaseException:
+            journal.close()
+            raise
+
+    def close_recovery(self) -> None:
+        if self._recovery is not None:
+            self._recovery.close()
+
+    def recover_resources(self, state_dir: Path) -> Dict[str, Any]:
+        if self._recovery is not None:
+            raise RuntimeFailure("cannot recover through an active Worker client")
+        self._recovery = DockerRecovery(state_dir)
+        try:
+            return self._recovery.recover(self._run_raw)
+        finally:
+            self.close_recovery()
+
+    def share_recovery_with(self, client: "DockerRuntime") -> None:
+        """Let the same-process deadline client retain the same ownership lock."""
+        client._recovery = self._recovery
+
+    def _private_directory(self, prefix: str) -> Path:
+        if self._recovery is not None:
+            return self._recovery.private_directory(prefix)
+        return Path(tempfile.mkdtemp(prefix=prefix)).resolve()
 
     def configure_operator_storage(
         self, *, root: Path, max_bytes: int, probe_image: str
@@ -325,7 +360,7 @@ class DockerRuntime:
         rather than depend on Docker mount precedence or create anonymous disks.
         """
 
-        if not required and self._operator_storage is None:
+        if not required and self._operator_storage is None and self._recovery is None:
             return reference
         timeout = 20.0 if timeout_seconds is None else min(20.0, timeout_seconds)
         if not math.isfinite(timeout) or timeout <= 0:
@@ -424,8 +459,29 @@ class DockerRuntime:
         check: bool = True,
         timeout: Optional[float] = None,
     ) -> subprocess.CompletedProcess:
+        if self._recovery is not None:
+            return self._recovery.execute(
+                args, self._run_raw, check=check, timeout=timeout
+            )
+        return self._run_raw(args, check=check, timeout=timeout)
+
+    def _run_raw(
+        self,
+        args: Sequence[str],
+        *,
+        check: bool = True,
+        timeout: Optional[float] = None,
+    ) -> subprocess.CompletedProcess:
         self._require_docker()
         command = [self.docker, *args]
+        inheritance = {}
+        if self._recovery is not None:
+            self._recovery._require_open()
+            if list(args[:1]) == ["create"] or list(args[:2]) in (
+                ["network", "create"],
+                ["volume", "create"],
+            ):
+                inheritance["pass_fds"] = (self._recovery.lock_fd,)
         try:
             result = subprocess.run(
                 command,
@@ -433,6 +489,7 @@ class DockerRuntime:
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                **inheritance,
             )
         except subprocess.TimeoutExpired as exc:
             raise RuntimeFailure(
@@ -500,7 +557,7 @@ class DockerRuntime:
         probe_image = self._storage_safe_image(
             probe_image, timeout_seconds=timeout_seconds
         )
-        root = Path(tempfile.mkdtemp(prefix="autotrain-bench-permissions-")).resolve()
+        root = self._private_directory("autotrain-bench-permissions-")
         names = []
 
         def probe(user: str, mounts: List[str], script: str) -> str:
@@ -916,6 +973,11 @@ class DockerRuntime:
                 if self._operator_storage is not None
                 else None
             ),
+            "worker_recovery": (
+                {"state_dir": str(self._recovery.root), "mode": "cleanup_only"}
+                if self._recovery is not None
+                else None
+            ),
             # `gpus` is authoritative only when `gpu_inventory` is "inspected".
             # An empty list under "unavailable" means unknown, not none.
             "gpus": gpus,
@@ -1051,6 +1113,10 @@ class DockerRuntime:
         stdout_path: Path,
         stderr_path: Path,
     ) -> HostAgentProcess:
+        if self._recovery is not None:
+            raise RuntimeFailure(
+                "host_cli workloads are not supported by Docker recovery"
+            )
         if self._operator_storage is not None:
             raise RuntimeFailure("host_cli cannot confine writes to protected storage")
         agent.validate()
@@ -1491,6 +1557,8 @@ class DockerRuntime:
         timeout_seconds: float,
     ) -> ExecResult:
         self._require_docker()
+        if self._recovery is not None:
+            self._recovery._require_open()
         command = [self.docker, "exec", name, *argv]
         try:
             process = subprocess.Popen(
@@ -1823,9 +1891,9 @@ class DockerRuntime:
         resolution_id = uuid.uuid4().hex
         if self._hidden_snapshot_root is None:
             try:
-                self._hidden_snapshot_root = Path(
-                    tempfile.mkdtemp(prefix="autotrain-bench-hidden-")
-                ).resolve()
+                self._hidden_snapshot_root = self._private_directory(
+                    "autotrain-bench-hidden-"
+                )
                 self._hidden_snapshot_root.chmod(0o700)
             except OSError as exc:
                 raise HiddenDatasetResolutionFailure(

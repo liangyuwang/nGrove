@@ -78,6 +78,14 @@ sandbox without adding platform branches to Core.
 
 # Local Reference Prototype
 
+Container runs now record a private Worker cleanup journal outside episode
+storage. The launcher prints its location; use `--worker-state-dir PATH` to
+select it. After Worker process loss, invoke
+`autotrain-bench worker-recover --state-dir PATH` in the same Worker environment
+to verify and reclaim its resources. This preserves existing results and does
+not resume the episode. See [Worker recovery](docs/worker-recovery.md) for the
+ownership checks, supported scope and unresolved-outcome handling.
+
 The repository now contains an executable, single-host Docker prototype of the benchmark protocol. It is intended to validate episode lifecycle, Training Lease accounting, hidden evaluation, and the agent-facing control surface before the first official benchmark instance is selected.
 
 The current development snapshot uses Worker Protocol v15 but does not carry a
