@@ -99,6 +99,9 @@ class CapturingDockerRuntime(DockerRuntime):
         )
         self.calls = []
         self.call_kwargs = []
+        # Command-boundary tests use an already verified non-root Worker identity.
+        # The discovery/access probe itself is exercised separately below.
+        self._execution_identity = (12345, 23456)
 
     def _run(self, args, **kwargs):
         self.calls.append(list(args))
@@ -111,6 +114,96 @@ class CapturingDockerRuntime(DockerRuntime):
 
 
 class RuntimeBoundaryTests(unittest.TestCase):
+    def test_identity_probe_verifies_private_io_before_accepting_daemon_uid(self):
+        runtime = DockerRuntime(docker_binary="docker")
+        calls = []
+        mounts = []
+
+        def run(args, **kwargs):
+            calls.append((args, kwargs))
+            sources = {}
+            for index, value in enumerate(args):
+                if value == "--mount":
+                    fields = dict(
+                        part.split("=", 1)
+                        for part in args[index + 1].split(",")
+                        if "=" in part
+                    )
+                    sources[fields["dst"]] = Path(fields["src"])
+            mounts.extend(sources.values())
+            self.assertEqual(sources["/owner"].stat().st_mode & 0o777, 0o400)
+            self.assertEqual(args[args.index("--cap-drop") + 1], "ALL")
+            self.assertLessEqual(kwargs["timeout"], 20)
+            if "/write" in sources:
+                self.assertEqual(args[args.index("--user") + 1], "11001:12001")
+                self.assertEqual(sources["/write"].stat().st_mode & 0o777, 0o700)
+                result = sources["/write"] / "result"
+                result.write_bytes(b"private-output")
+                result.chmod(0o600)
+                stdout = ""
+            else:
+                self.assertEqual(args[args.index("--user") + 1], "0:0")
+                stdout = "[11001,12001]"
+            return subprocess.CompletedProcess(args, 0, stdout, "")
+
+        with patch.object(runtime, "_run", side_effect=run), patch.object(
+            runtime, "stop_container"
+        ) as stop:
+            runtime._ensure_execution_identity("trusted-evaluator@sha256:fixture")
+            runtime._ensure_execution_identity("trusted-evaluator@sha256:fixture")
+        self.assertEqual(runtime._container_user(), "11001:12001")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(stop.call_count, 2)
+        self.assertTrue(all(not source.exists() for source in mounts))
+
+    def test_identity_probe_rejects_invalid_ids_or_denied_access_without_fallback(self):
+        for identity in (
+            "garbage",
+            "null",
+            "[true,0]",
+            "[-1,0]",
+            "[0,4294967295]",
+            "[1000,1000]",
+        ):
+            with self.subTest(identity=identity):
+                runtime = DockerRuntime(docker_binary="docker")
+                roots = []
+
+                def run(args, **kwargs):
+                    mount = args[args.index("--mount") + 1]
+                    source = Path(mount.split("src=", 1)[1].split(",", 1)[0])
+                    roots.append(source.parent)
+                    if args[args.index("--user") + 1] != "0:0":
+                        raise RuntimeFailure("permission denied")
+                    return subprocess.CompletedProcess(args, 0, identity, "")
+
+                with patch.object(runtime, "_run", side_effect=run), patch.object(
+                    runtime, "stop_container"
+                ):
+                    with self.assertRaisesRegex(RuntimeFailure, "UID/GID"):
+                        runtime._ensure_execution_identity("trusted-image")
+                self.assertIsNone(runtime._execution_identity)
+                self.assertTrue(all(not root.exists() for root in roots))
+
+    def test_prediction_cleanup_restores_owner_access_without_following_links(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            predictions = root / "predictions"
+            nested = predictions / "locked/nested"
+            nested.mkdir(parents=True)
+            (nested / "output").write_bytes(b"data")
+            outside = root / "outside"
+            outside.mkdir()
+            outside.chmod(0o500)
+            (predictions / "link").symlink_to(outside, target_is_directory=True)
+            nested.chmod(0o000)
+            nested.parent.chmod(0o000)
+            predictions.chmod(0o000)
+            DockerRuntime._remove_prediction_artifact(predictions)
+            self.assertFalse(predictions.exists())
+            self.assertEqual(outside.stat().st_mode & 0o777, 0o500)
+            outside.chmod(0o700)
+
     def test_failure_diagnostics_stop_execution_before_reading_logs(self):
         for running in (False, True):
             order = []
@@ -1250,7 +1343,9 @@ class RuntimeBoundaryTests(unittest.TestCase):
             self.assertIn("dst=/control/inbox", command)
             self.assertIn("dst=/control/outbox", command)
             self.assertNotIn("dst=/control\n", command)
-            self.assertIn("/agent-home:rw,nosuid,size=1g,mode=1777", command)
+            self.assertIn(
+                "/agent-home:rw,nosuid,size=1g,mode=0700,uid=12345,gid=23456", command
+            )
             self.assertIn("HOME=/agent-home", command)
             self.assertNotIn("reference_agent", command)
             self.assertNotIn(str(TASK.parent / "private"), command)
@@ -1349,6 +1444,9 @@ class RuntimeBoundaryTests(unittest.TestCase):
             )
             self.assertNotIn("autotrain_bench.agent_entrypoint", serialized_agent)
             self.assertEqual(agent_command[-2:], ["node", "/workspace/agent.js"])
+            for command in (agent_command, training_command, gateway_command):
+                self.assertEqual(command[command.index("--user") + 1], "12345:23456")
+                self.assertEqual(command[command.index("--cap-drop") + 1], "ALL")
             self.assertNotIn("host-secret", serialized_agent)
             self.assertNotIn("api.openai.com", serialized_agent)
             self.assertIn("api.openai.com", serialized_gateway)
@@ -1468,6 +1566,13 @@ class RuntimeBoundaryTests(unittest.TestCase):
             ]
             self.assertEqual(len(evaluators), 2)
             validation, evaluator = evaluators
+            for command in (candidate, validation, evaluator):
+                self.assertEqual(command[command.index("--user") + 1], "12345:23456")
+                self.assertEqual(command[command.index("--cap-drop") + 1], "ALL")
+            self.assertIn(
+                "/candidate-home:rw,nosuid,size=1g,mode=0700,uid=12345,gid=23456",
+                candidate,
+            )
             self.assertIn("dst=/candidate,readonly", "\n".join(candidate))
             self.assertIn("dst=/opt/candidate-api,readonly", "\n".join(candidate))
             self.assertNotIn(str(ROOT / "autotrain_bench"), "\n".join(candidate))

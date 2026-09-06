@@ -373,6 +373,16 @@ no URL, port, socket path, network name, or scheduler handle; the bundled
 Docker Worker implements the contract with isolated filesystem mounts and
 network-disabled processes.
 
+The bundled Docker Worker verifies the bind-mount owner's UID/GID with
+disposable private input/output files and explicitly selects that identity for
+every role, overriding image `USER` defaults. Its private HOME directories and
+writable output roots belong to that identity; hidden snapshots retain `0400`
+permissions. Required image executables must support the selected numeric
+identity. UID mapping, file ownership, and permission recovery after confirmed
+termination remain deployment responsibilities; no UID fields or Docker
+identity rules enter the semantic Core/Worker protocol. Failed permission
+verification blocks launch rather than widening access.
+
 Prediction storage is an untrusted resource boundary, not merely a final shape
 check. Before Candidate startup, a conforming Worker must hard-limit the
 workspace to two entries and to at most:

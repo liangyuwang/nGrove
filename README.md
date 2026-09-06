@@ -594,6 +594,24 @@ certified Worker must enforce its deadline envelope even if the Coordinator
 disconnects. `unrestricted-dev` and `host_cli` add further non-compliant local
 integration boundaries.
 
+The Docker Worker verifies a numeric execution UID/GID before launch using
+disposable `0400` input and `0700` output storage. It discovers the owner as
+seen by the Docker daemon and checks that container-created private files are
+readable, owned, and removable by the Worker. Failed verification stops setup;
+there is no fallback to broader permissions or additional capabilities.
+
+Agent, Training, Candidate, Scorer, and Gateway containers explicitly run as
+that verified owner, overriding the image's `USER`. Images must support this
+arbitrary numeric UID/GID and keep required executables and dependencies
+accessible to it. Home/scratch directories are writable by that identity;
+hidden snapshots remain `0400`, and writable evaluation directories are `0700`.
+The trusted runtime record includes `container_execution_identity`. Role
+separation still comes from the distinct mounts and network boundaries, not
+from assigning different host UIDs to the roles. After confirmed termination,
+prediction cleanup can restore owner access on locked directories without
+following symlinks or changing hidden inputs. Existing artifacts owned by an
+unmapped or different operator account require deployment-side migration.
+
 Here, **user/operator** means the entity that prepares and launches the run; it
 may itself be a human or another Agent and is inside the trusted host boundary.
 **Tested Agent** means the submitted autonomous system being benchmarked. The v0

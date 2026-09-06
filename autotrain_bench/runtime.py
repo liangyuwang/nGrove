@@ -208,6 +208,7 @@ class DockerRuntime:
         ] = {}
         self._worker_leases: Dict[tuple, str] = {}
         self._pending_evaluations: Dict[tuple, Tuple[str, str, Path]] = {}
+        self._execution_identity: Optional[Tuple[int, int]] = None
 
     def describe_capabilities(self) -> WorkerDescriptor:
         """Describe the bundled development Worker without certifying its host."""
@@ -326,6 +327,135 @@ class DockerRuntime:
         if resources is not None:
             resources.validate_for(config)
             self.validate_hardware(resources)
+        self._ensure_execution_identity(config.evaluator_image)
+
+    def _ensure_execution_identity(
+        self, probe_image: str, *, timeout_seconds: float = 20
+    ) -> None:
+        """Verify the bind-mount owner's identity in the Docker daemon's namespace.
+
+        Host UID numbers need not equal container UID numbers (for example with
+        rootless Docker). Probe only disposable files, never task or hidden data.
+        All workload roles then use this identity instead of the image's USER.
+        """
+
+        if self._execution_identity is not None:
+            return
+        deadline = self.monotonic() + timeout_seconds
+        root = Path(tempfile.mkdtemp(prefix="autotrain-bench-permissions-")).resolve()
+        names = []
+
+        def probe(user: str, mounts: List[str], script: str) -> str:
+            remaining = deadline - self.monotonic()
+            if remaining <= 0:
+                raise RuntimeFailure("container filesystem identity probe timed out")
+            name = f"atb-permissions-{uuid.uuid4().hex[:12]}"
+            names.append(name)
+            return self._run(
+                [
+                    "run",
+                    "--rm",
+                    "--name",
+                    name,
+                    "--network",
+                    "none",
+                    "--cap-drop",
+                    "ALL",
+                    "--security-opt",
+                    "no-new-privileges:true",
+                    "--pids-limit",
+                    "32",
+                    "--read-only",
+                    "--user",
+                    user,
+                    "--workdir",
+                    "/",
+                    "--entrypoint",
+                    "python",
+                    *mounts,
+                    probe_image,
+                    "-c",
+                    script,
+                ],
+                timeout=remaining,
+            ).stdout.strip()
+
+        try:
+            root.chmod(0o700)
+            source = root / "owner"
+            source.write_bytes(b"private-input")
+            source.chmod(0o400)
+            destination = root / "write"
+            destination.mkdir(mode=0o700)
+            observed = probe(
+                "0:0",
+                ["--mount", self._mount(source, "/owner", read_only=True)],
+                "import os,json; s=os.stat('/owner'); print(json.dumps([s.st_uid,s.st_gid]))",
+            )
+            try:
+                identity = json.loads(observed)
+                if (
+                    not isinstance(identity, list)
+                    or len(identity) != 2
+                    or any(
+                        isinstance(value, bool)
+                        or not isinstance(value, int)
+                        or not 0 <= value < 2**32 - 1
+                        for value in identity
+                    )
+                ):
+                    raise ValueError("expected a numeric UID/GID pair")
+            except ValueError as exc:
+                raise RuntimeFailure(
+                    "container filesystem identity probe returned invalid UID/GID"
+                ) from exc
+            uid, gid = identity
+            probe(
+                f"{uid}:{gid}",
+                [
+                    "--mount",
+                    self._mount(source, "/owner", read_only=True),
+                    "--mount",
+                    self._mount(destination, "/write", read_only=False),
+                ],
+                "import os; from pathlib import Path; os.umask(0o077); "
+                f"assert (os.getuid(),os.getgid()) == ({uid},{gid}); "
+                "assert Path('/owner').read_bytes() == b'private-input'; "
+                "Path('/write/result').write_bytes(b'private-output')",
+            )
+            result = destination / "result"
+            if (
+                result.read_bytes() != b"private-output"
+                or result.stat().st_uid != source.stat().st_uid
+            ):
+                raise RuntimeFailure(
+                    "container outputs are not owned and readable by the Worker"
+                )
+        except (OSError, RuntimeFailure) as exc:
+            raise RuntimeFailure(
+                f"container UID/GID cannot access Worker-owned private storage: {exc}"
+            ) from exc
+        finally:
+            # A timed-out Docker client may still have created a container.
+            # Do not discard its mount while termination remains unconfirmed.
+            _run_runtime_teardown_steps(
+                [(name, lambda name=name: self.stop_container(name)) for name in names]
+            )
+            shutil.rmtree(root)
+        self._execution_identity = (uid, gid)
+
+    def _container_user(self) -> str:
+        if self._execution_identity is None:
+            raise RuntimeFailure(
+                "Worker filesystem identity is unverified; call prepare first"
+            )
+        uid, gid = self._execution_identity
+        return f"{uid}:{gid}"
+
+    def _private_home(self, path: str, size: str) -> str:
+        self._container_user()
+        uid, gid = self._execution_identity
+        return f"{path}:rw,nosuid,size={size},mode=0700,uid={uid},gid={gid}"
 
     def resolve_workload(
         self,
@@ -523,6 +653,7 @@ class DockerRuntime:
     ) -> Dict[str, Any]:
         """Record the concrete runtime used for a comparable episode."""
 
+        self._ensure_execution_identity(config.evaluator_image)
         docker_version = self._run(
             ["version", "--format", "{{.Server.Version}}"], timeout=20
         ).stdout.strip()
@@ -617,6 +748,11 @@ class DockerRuntime:
             "docker_server_version": docker_version,
             "docker_resources": docker_resources,
             "images": images,
+            "container_execution_identity": {
+                "user": self._container_user(),
+                "source": "verified_bind_mount_owner",
+                "image_user": "overridden",
+            },
             # `gpus` is authoritative only when `gpu_inventory` is "inspected".
             # An empty list under "unavailable" means unknown, not none.
             "gpus": gpus,
@@ -658,6 +794,7 @@ class DockerRuntime:
             raise RuntimeFailure(
                 "inference_network is required when inference is enabled"
             )
+        self._ensure_execution_identity(config.evaluator_image)
         agent_network = (
             inference_network
             if agent.inference is not None
@@ -669,6 +806,8 @@ class DockerRuntime:
             "--init",
             "--name",
             name,
+            "--user",
+            self._container_user(),
             "--network",
             agent_network,
             "--cap-drop",
@@ -681,7 +820,7 @@ class DockerRuntime:
             "--tmpfs",
             "/tmp:rw,nosuid,size=256m",
             "--tmpfs",
-            "/agent-home:rw,nosuid,size=1g,mode=1777",
+            self._private_home("/agent-home", "1g"),
             "--log-opt",
             "max-size=10m",
             "--log-opt",
@@ -806,6 +945,7 @@ class DockerRuntime:
             )
         audit_dir.mkdir(parents=True, exist_ok=True)
         audit_dir.chmod(0o700)
+        self._ensure_execution_identity(config.evaluator_image)
         package_dir = Path(__file__).resolve().parent
         gateway_config = json.dumps(
             {
@@ -824,6 +964,8 @@ class DockerRuntime:
             "--init",
             "--name",
             name,
+            "--user",
+            self._container_user(),
             "--network",
             egress_network,
             "--cap-drop",
@@ -835,6 +977,12 @@ class DockerRuntime:
             "--read-only",
             "--tmpfs",
             "/tmp:rw,nosuid,size=64m",
+            "--tmpfs",
+            self._private_home("/gateway-home", "64m"),
+            "--env",
+            "HOME=/gateway-home",
+            "--workdir",
+            "/tmp",
             "--log-opt",
             "max-size=10m",
             "--log-opt",
@@ -920,11 +1068,15 @@ class DockerRuntime:
         output = lease_dir / "output"
         scratch.mkdir(parents=True, exist_ok=True)
         output.mkdir(parents=True, exist_ok=True)
+        scratch.chmod(0o700)
+        output.chmod(0o700)
         args: List[str] = [
             "run",
             "--detach",
             "--name",
             name,
+            "--user",
+            self._container_user(),
             "--network",
             "none",
             "--cap-drop",
@@ -1623,6 +1775,7 @@ class DockerRuntime:
         evaluator_image: str,
         timeout_seconds: Optional[float] = None,
     ) -> CandidateEvaluationResult:
+        evaluation_started = self.monotonic()
         resources.validate()
         if split not in {"analysis", "test"}:
             raise RuntimeFailure(f"invalid evaluator split: {split}")
@@ -1638,7 +1791,14 @@ class DockerRuntime:
         targets_path = data_path / "targets.json"
         if not contexts_path.is_file() or not targets_path.is_file():
             raise RuntimeFailure("hidden evaluator split is incomplete")
+        self._ensure_execution_identity(
+            evaluator_image,
+            timeout_seconds=min(
+                20, task.timeout_seconds if timeout_seconds is None else timeout_seconds
+            ),
+        )
         output_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.chmod(0o700)
         result_path = output_dir / f"{split}.json"
         validation_path = output_dir / f"{split}.validation.json"
         try:
@@ -1672,6 +1832,8 @@ class DockerRuntime:
             "--init",
             "--name",
             candidate_name,
+            "--user",
+            self._container_user(),
             "--network",
             "none",
             "--cap-drop",
@@ -1684,7 +1846,7 @@ class DockerRuntime:
             "--tmpfs",
             "/tmp:rw,nosuid,size=1g",
             "--tmpfs",
-            "/candidate-home:rw,nosuid,size=1g",
+            self._private_home("/candidate-home", "1g"),
             "--log-opt",
             "max-size=10m",
             "--log-opt",
@@ -1731,6 +1893,8 @@ class DockerRuntime:
                 "--rm",
                 "--name",
                 evaluator_name,
+                "--user",
+                self._container_user(),
                 "--network",
                 "none",
                 "--cap-drop",
@@ -1742,6 +1906,12 @@ class DockerRuntime:
                 "--read-only",
                 "--tmpfs",
                 "/tmp:rw,nosuid,size=128m",
+                "--tmpfs",
+                self._private_home("/evaluator-home", "128m"),
+                "--env",
+                "HOME=/evaluator-home",
+                "--workdir",
+                "/tmp",
                 "--log-opt",
                 "max-size=10m",
                 "--log-opt",
@@ -1808,7 +1978,7 @@ class DockerRuntime:
             if timeout_seconds <= 0:
                 raise RuntimeFailure("evaluation deadline reached")
             effective_timeout = min(effective_timeout, float(timeout_seconds))
-        evaluation_deadline = self.monotonic() + effective_timeout
+        evaluation_deadline = evaluation_started + effective_timeout
 
         def remaining_seconds() -> float:
             remaining = evaluation_deadline - self.monotonic()
@@ -1817,7 +1987,7 @@ class DockerRuntime:
             return remaining
 
         try:
-            prediction_dir.mkdir()
+            prediction_dir.mkdir(mode=0o700)
         except OSError as exc:
             raise RuntimeFailure(
                 "failed to create Candidate prediction storage"
@@ -2000,6 +2170,14 @@ class DockerRuntime:
         if prediction_dir.is_symlink():
             raise OSError("prediction artifact root became a symlink")
         if prediction_dir.exists():
+            # The stopped Candidate may have removed owner traversal/write bits.
+            # Restore directories only, without following links or touching inputs.
+            prediction_dir.chmod(0o700)
+            for directory, children, _ in os.walk(prediction_dir, followlinks=False):
+                for child in children:
+                    path = Path(directory) / child
+                    if not path.is_symlink():
+                        path.chmod(0o700)
             shutil.rmtree(prediction_dir)
 
     def teardown_pending_evaluations(self) -> None:
