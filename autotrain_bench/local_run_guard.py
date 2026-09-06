@@ -2,8 +2,8 @@
 
 The guard does not acquire the Coordinator lock or cancel Python Worker code.
 It can revoke local workloads while a synchronous Worker call is waiting, but
-shares the launcher's process. Process loss, a stuck interpreter, and runtime
-outages still require an independent deployment watchdog.
+shares the launcher's process. The container CLI additionally uses the independent
+local_watchdog parent; host_cli and direct integrations need deployment supervision.
 """
 
 from __future__ import annotations

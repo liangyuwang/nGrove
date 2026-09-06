@@ -257,8 +257,14 @@ and notices never enter the Agent view. Its separate local thread/client can rev
 workloads without acquiring the Coordinator lock, but still shares the
 Coordinator process and cannot preempt arbitrary Worker code. It is best-effort
 operator protection, not a new Worker deadline guarantee or a Track B scoring
-budget. Worker Protocol v15 and its outstanding independent-watchdog requirement
-are unchanged. External launchers own equivalent protection in their deployment.
+budget. The container CLI now additionally uses an independent parent watchdog
+for heartbeat loss, private research limits, active Lease durations and
+instrumented Worker-operation timeouts. It fences the local process group,
+then uses the Worker journal to recover resources; it does not resume the
+episode or preempt an individual Core call safely. See
+[Worker recovery](worker-recovery.md) for tolerances, scope and reports.
+Worker Protocol v15 is unchanged. External launchers own equivalent protection
+in their execution environment.
 
 A future platform-neutral seam should define asynchronous operation IDs,
 absolute deadlines, status/reconciliation, idempotent retry, and cancellation
@@ -651,9 +657,10 @@ The pre-existing Docker runtime remains temporarily as the bundled local
 reference implementation so the runnable preview does not regress.  It is a
 compatibility implementation, not the extension point for more platforms.  A
 later extraction moves it to a separately distributed Worker package without
-changing Supervisor semantics.  Its deadline guard currently shares the
-Coordinator process, so it reports that capability as `BEST_EFFORT`; this is an
-explicit development limitation rather than a silent fallback.
+changing Supervisor semantics. Its container CLI supplies an independent
+process watchdog, but the synchronous protocol, grace-based escalation and
+uncertified deployment still report `BEST_EFFORT` deadline evidence. Direct
+runtime integrations do not inherit the CLI's process supervision.
 
 Deliberately deferred work includes:
 

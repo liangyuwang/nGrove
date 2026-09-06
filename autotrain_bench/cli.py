@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import shlex
 import shutil
@@ -39,6 +40,14 @@ from .inference import summarize_inference_trace
 from .local_mailbox import LocalFileMailbox
 from .local_agent_execution import describe_local_agent_execution
 from .local_run_guard import LocalResearchGuard
+from .local_watchdog import (
+    CONTROL_TIMEOUT,
+    DEADLINE_GRACE_SECONDS,
+    HEARTBEAT_SECONDS,
+    HEARTBEAT_TIMEOUT,
+    current as current_watchdog,
+    supervise_start,
+)
 from .results import normalize_result_report
 from .runtime import DockerRuntime, RuntimeFailure
 from .supervisor import Supervisor
@@ -557,6 +566,18 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
                 "in this same Worker environment. Recovery does not resume the episode.",
                 flush=True,
             )
+            if current_watchdog() is not None:
+                print(
+                    "Independent Worker watchdog enabled: process loss or a missed "
+                    "deadline triggers termination and journaled cleanup. "
+                    f"Heartbeat timeout {args.worker_watchdog_heartbeat_seconds:g}s; "
+                    f"deadline grace {args.worker_watchdog_grace_seconds:g}s; "
+                    f"control-call fallback {args.worker_watchdog_control_seconds:g}s. "
+                    "Adjust these before launch with --worker-watchdog-heartbeat-seconds, "
+                    "--worker-watchdog-grace-seconds and --worker-watchdog-control-seconds. "
+                    "These are private operator settings; recovery does not resume the episode.",
+                    flush=True,
+                )
         elif args.worker_state_dir is not None:
             raise ConfigError("Worker crash recovery is not supported for host_cli")
         worker_environment = reference_runtime.environment_manifest(
@@ -677,6 +698,13 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
             )
             gateway_started = True
         supervisor.begin()
+        watchdog = current_watchdog()
+        if watchdog is not None and operator_limit is not None:
+            watchdog.arm(
+                "research",
+                supervisor.operator_limit_remaining(),
+                "operator_research_limit",
+            )
         if operator_guard is not None:
             operator_guard.start()
         if agent.runner == "container":
@@ -835,6 +863,11 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
             processed = supervisor.process_one_request()
             supervisor.enforce_deadlines()
             status = supervisor.public_status()["status"]
+            if (
+                status not in {"active", "operator_stopped"}
+                and current_watchdog() is not None
+            ):
+                current_watchdog().disarm("research")
             if status == "operator_stopped":
                 host_termination_reason = "operator_time_limit_reached"
                 break
@@ -1319,6 +1352,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="private local Worker recovery directory outside episode storage; "
         "defaults to ~/.autotrain-bench/workers/<episode-path-id>",
     )
+    for name, default, help_text in (
+        ("heartbeat", HEARTBEAT_TIMEOUT, "missing Worker heartbeat tolerance"),
+        ("grace", DEADLINE_GRACE_SECONDS, "grace for cooperative deadline handling"),
+        (
+            "control",
+            CONTROL_TIMEOUT,
+            "fallback for control/startup calls without a timeout",
+        ),
+    ):
+        start.add_argument(
+            f"--worker-watchdog-{name}-seconds",
+            type=float,
+            default=default,
+            metavar="SECONDS",
+            help=f"private Docker watchdog {help_text} (default: {default:g})",
+        )
 
     recover = subparsers.add_parser(
         "worker-recover",
@@ -1384,7 +1433,36 @@ def main(argv: Optional[List[str]] = None) -> None:
     if getattr(args, "track", None):
         args.track = args.track.upper()
     try:
-        return_code = args.function(args)
+        if args.function is command_start and args.agent_runner == "container":
+            for value in (
+                args.worker_watchdog_control_seconds,
+                args.worker_watchdog_grace_seconds,
+                args.worker_watchdog_heartbeat_seconds,
+            ):
+                if not math.isfinite(value) or value <= 0:
+                    raise ConfigError(
+                        "Worker watchdog settings must be finite positive seconds"
+                    )
+            if args.worker_watchdog_heartbeat_seconds <= HEARTBEAT_SECONDS:
+                raise ConfigError(
+                    "Worker watchdog heartbeat tolerance must exceed 0.5 seconds"
+                )
+            if current_watchdog() is not None:
+                current_watchdog().control_timeout = (
+                    args.worker_watchdog_control_seconds
+                )
+        if (
+            args.function is command_start
+            and args.agent_runner == "container"
+            and current_watchdog() is None
+        ):
+            return_code = supervise_start(
+                list(argv) if argv is not None else sys.argv[1:],
+                heartbeat_timeout=args.worker_watchdog_heartbeat_seconds,
+                grace_seconds=args.worker_watchdog_grace_seconds,
+            )
+        else:
+            return_code = args.function(args)
     except (ClientError, ConfigError, RuntimeFailure, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return_code = 2

@@ -26,6 +26,7 @@ from .prediction_output import prediction_output_contract
 from .config import AgentConfig, TaskConfig, TrainingResources
 from .host_agent import HostAgentProcess, start_host_agent_process
 from .local_storage import LocalStorageProtection
+from .local_watchdog import cleanup_notifications, current as current_watchdog, watched
 from .docker_recovery import DockerRecovery
 from .worker_protocol import (
     CANDIDATE_EVALUATOR_CHANNEL_ISOLATION,
@@ -230,6 +231,9 @@ class DockerRuntime:
         journal = DockerRecovery(state_dir, episode=episode_dir)
         self._recovery = journal
         try:
+            watchdog = current_watchdog()
+            if watchdog is not None:
+                watchdog.register(journal, self.docker)
             journal.bind_backend(self._run_raw)
         except BaseException:
             journal.close()
@@ -240,13 +244,14 @@ class DockerRuntime:
             self._recovery.close()
 
     def recover_resources(self, state_dir: Path) -> Dict[str, Any]:
-        if self._recovery is not None:
-            raise RuntimeFailure("cannot recover through an active Worker client")
-        self._recovery = DockerRecovery(state_dir)
-        try:
-            return self._recovery.recover(self._run_raw)
-        finally:
-            self.close_recovery()
+        with cleanup_notifications():
+            if self._recovery is not None:
+                raise RuntimeFailure("cannot recover through an active Worker client")
+            self._recovery = DockerRecovery(state_dir)
+            try:
+                return self._recovery.recover(self._run_raw)
+            finally:
+                self.close_recovery()
 
     def share_recovery_with(self, client: "DockerRuntime") -> None:
         """Let the same-process deadline client retain the same ownership lock."""
@@ -437,7 +442,7 @@ class DockerRuntime:
                 ),
                 DEADLINE_TERMINATION: Capability(
                     EnforcementLevel.BEST_EFFORT,
-                    "Coordinator-process deadline guard",
+                    "cooperative deadlines; the container CLI adds a process watchdog",
                 ),
                 IMMUTABLE_CANDIDATE_ARTIFACT: Capability(
                     enforced, "producer stopped before Coordinator capture"
@@ -452,6 +457,26 @@ class DockerRuntime:
                 "prototype; AutoTrain-Bench does not allocate remote resources."
             )
 
+    @staticmethod
+    def _check_watchdog_command(args: Sequence[str]) -> None:
+        watchdog = current_watchdog()
+        if watchdog is None or not watchdog.registered or not watchdog.closed.is_set():
+            return
+        inspection_or_removal = list(args[:1]) in (
+            ["info"],
+            ["inspect"],
+            ["rm"],
+            ["logs"],
+        ) or (
+            len(args) > 1
+            and args[0] in {"container", "network", "volume", "image"}
+            and args[1] in {"inspect", "ls", "rm"}
+        )
+        if not inspection_or_removal:
+            raise RuntimeFailure(
+                "Worker watchdog unavailable; refusing new runtime work"
+            )
+
     def _run(
         self,
         args: Sequence[str],
@@ -459,12 +484,15 @@ class DockerRuntime:
         check: bool = True,
         timeout: Optional[float] = None,
     ) -> subprocess.CompletedProcess:
-        if self._recovery is not None:
-            return self._recovery.execute(
-                args, self._run_raw, check=check, timeout=timeout
-            )
-        return self._run_raw(args, check=check, timeout=timeout)
+        with cleanup_notifications():
+            self._check_watchdog_command(args)
+            if self._recovery is not None:
+                return self._recovery.execute(
+                    args, self._run_raw, check=check, timeout=timeout
+                )
+            return self._run_raw(args, check=check, timeout=timeout)
 
+    @watched(timeout="timeout", fallback=120, cleanup=True)
     def _run_raw(
         self,
         args: Sequence[str],
@@ -472,6 +500,7 @@ class DockerRuntime:
         check: bool = True,
         timeout: Optional[float] = None,
     ) -> subprocess.CompletedProcess:
+        self._check_watchdog_command(args)
         self._require_docker()
         command = [self.docker, *args]
         inheritance = {}
@@ -672,6 +701,7 @@ class DockerRuntime:
         uid, gid = self._execution_identity
         return f"{path}:rw,nosuid,size={size},mode=0700,uid={uid},gid={gid}"
 
+    @watched()
     def resolve_workload(
         self,
         *,
@@ -978,6 +1008,11 @@ class DockerRuntime:
                 if self._recovery is not None
                 else None
             ),
+            "worker_watchdog": (
+                {"mechanism": "parent_process", "recovery": "cleanup_only"}
+                if current_watchdog() is not None and current_watchdog().registered
+                else None
+            ),
             # `gpus` is authoritative only when `gpu_inventory` is "inspected".
             # An empty list under "unavailable" means unknown, not none.
             "gpus": gpus,
@@ -987,6 +1022,7 @@ class DockerRuntime:
             manifest["training_resources"] = resolved_resources.public_manifest()
         return manifest
 
+    @watched(fallback=120)
     def start_agent(
         self,
         *,
@@ -1488,6 +1524,7 @@ class DockerRuntime:
             receipt_id=receipt_id,
         )
 
+    @watched(fallback=120)
     def start_lease(
         self,
         *,
@@ -1503,7 +1540,6 @@ class DockerRuntime:
     ) -> ResourceAllocationReceipt:
         """Map the semantic lease operation to the local reference runtime."""
 
-        del duration_seconds
         key = self._worker_lease_key(episode_id, lease_id)
         if key in self._worker_leases:
             raise RuntimeFailure(f"lease already exists: {lease_id}")
@@ -1528,13 +1564,17 @@ class DockerRuntime:
                 lease_dir=lease_dir,
                 workload_image=workload_image,
             )
-            return self._resource_allocation_receipt(
+            receipt = self._resource_allocation_receipt(
                 episode_id=episode_id,
                 lease_id=lease_id,
                 name=name,
                 resources=resources,
                 resource_envelope=resolved_envelope,
             )
+            watchdog = current_watchdog()
+            if watchdog is not None and watchdog.registered:
+                watchdog.arm("lease:" + name, duration_seconds, "training_lease")
+            return receipt
         except Exception as start_exc:
             # ``docker run`` may create the named container before the client
             # observes a timeout or daemon error.  Register the deterministic
@@ -1549,6 +1589,7 @@ class DockerRuntime:
                 ) from start_exc
             raise
 
+    @watched()
     def exec_training(
         self,
         *,
@@ -1777,6 +1818,7 @@ class DockerRuntime:
         except Exception:
             pass
 
+    @watched(fallback=120, cleanup=True)
     def stop_container(self, name: str) -> None:
         """Force-remove a container and fail unless its absence is confirmed."""
 
@@ -1787,6 +1829,9 @@ class DockerRuntime:
             ["container", "ls", "--all", "--format", "{{.Names}}"], timeout=20
         )
         if name not in {line.strip() for line in inventory.stdout.splitlines()}:
+            watchdog = current_watchdog()
+            if watchdog is not None and watchdog.registered:
+                watchdog.disarm("lease:" + name)
             return
         detail = removal.stderr.strip() or removal.stdout.strip()
         if not detail:
@@ -1965,6 +2010,7 @@ class DockerRuntime:
         )
         return resolved
 
+    @watched()
     def resolve_hidden_dataset(
         self,
         *,
@@ -2365,6 +2411,7 @@ class DockerRuntime:
             ) from exc
         return result
 
+    @watched(fallback=lambda values: values["task"].timeout_seconds)
     def evaluate_candidate(
         self,
         *,

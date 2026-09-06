@@ -80,7 +80,9 @@ sandbox without adding platform branches to Core.
 
 Container runs now record a private Worker cleanup journal outside episode
 storage. The launcher prints its location; use `--worker-state-dir PATH` to
-select it. After Worker process loss, invoke
+select it. The container CLI additionally runs an independent parent watchdog
+that terminates an unresponsive Worker and invokes journaled cleanup. To retry
+unconfirmed cleanup, invoke
 `autotrain-bench worker-recover --state-dir PATH` in the same Worker environment
 to verify and reclaim its resources. This preserves existing results and does
 not resume the episode. See [Worker recovery](docs/worker-recovery.md) for the
@@ -1346,12 +1348,17 @@ Worker v15 allocation rule above. Disabling private episode storage protection
 does not disable prediction output protection or exact final artifact validation.
 
 The bundled launcher uses a separate guard thread and local runtime client so
-revocation does not wait for the Coordinator's synchronous Worker lock. This is
-explicitly **best effort**: it neither preempts arbitrary Python Worker code nor
-survives Coordinator process loss, an interpreter stall, or a runtime outage.
-Such deployments still need an independent watchdog. Cleanup may outlast the
-configured research limit, and a time limit is not a token or monetary cap.
-This feature does not upgrade the local deployment's policy-compliance claims.
+ordinary revocation does not wait for the Coordinator's synchronous Worker
+lock. The container CLI also runs an independent parent watchdog: missed
+heartbeats or operation deadlines beyond a short grace trigger process-group
+termination and journaled cleanup. Its default heartbeat tolerance, deadline
+grace and control-call fallback are 10, 5 and 120 seconds; the launcher prints
+their `--worker-watchdog-*-seconds` overrides before workloads start. See
+[Worker recovery](docs/worker-recovery.md) for the precise scope and failure
+report. `host_cli` and direct Python integrations require their own external
+supervision. Runtime/host outages may still prevent termination; cleanup can
+outlast the research limit, which is not a token or monetary cap. This feature
+does not upgrade the local deployment's policy-compliance claims.
 
 However, it may obtain interactive access to the Training Environment only a
 fixed number of times.

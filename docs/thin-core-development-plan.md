@@ -291,8 +291,10 @@ prediction volumes and private hidden snapshots after composition-process
 loss. It uses exclusive ownership, daemon/resource identity verification and
 conservative handling of uncertain creates; it neither resumes nor publishes
 an episode. See [scope and prerequisites](worker-recovery.md). Distributed
-fencing, independent watchdogs and external scheduler recovery still belong to
-the deployment. Container, job and network handles do not enter Core state.
+fencing and external scheduler recovery still belong to the deployment. The
+container CLI now adds an independent parent watchdog for process loss and
+instrumented operation deadlines, using this journal after process-group
+termination. Container, job and network handles do not enter Core state.
 
 ### Phase B exit criteria
 
@@ -369,8 +371,10 @@ versions that introduced each change.
   failure and normal Track B completion. The local launcher adds best-effort
   revocation outside the synchronous request loop, with private per-task
   defaults (24 hours for `lm-pretrain-v1`, 30 minutes for `smoke_lm`), a run
-  override, and an explicit opt-out with a token-consumption warning. This does not complete the
-  independent deployment watchdog or asynchronous Worker protocol work.
+  override, and an explicit opt-out with a token-consumption warning. The later
+  local parent watchdog adds independent termination/recovery for the container
+  CLI. Asynchronous Worker operations and remote deployment supervision remain
+  outstanding; this does not change benchmark budgets or formal evidence.
 
 - Agent Protocol v4 makes Candidate commit return artifact acceptance only.
 - Task schema v2 and Challenge schema v2 replaced legacy VAL with hidden ANALYSIS and a

@@ -100,9 +100,68 @@ created through a custom Worker are not certified by this journal. Direct
 DockerRuntime integrations must call `enable_recovery` before their workloads
 and retain ownership until all Worker calls stop.
 
-Recovery does not run automatically after process loss. A trusted operator or
-deployment service invokes it. Runtime outages, a hung creation client, storage
-loss or unreliable locking may leave recovery unconfirmed. An independent
-watchdog, distributed fencing, power-loss certification and automatic episode
+The container CLI now runs its trusted launcher in a dedicated process group
+under an independent parent watchdog. Once the journal is registered, the
+parent automatically invokes recovery after normal completion, process loss,
+or a watchdog trip. Manual `worker-recover` remains the retry path. Direct
+Python calls to `command_start`/`DockerRuntime` do not install this parent;
+external launchers must arrange their own supervision.
+
+## Independent local watchdog
+
+The private channel carries heartbeats and operation allowances, never Agent
+requests or credentials. Docker clients do not inherit it. The watchdog
+monitors the private Track B research limit, active Training Lease durations,
+declared resolution/execution/evaluation timeouts, and local Docker control
+calls. Disabling the private research limit does not disable process-loss or
+Worker-operation protection. Normal cooperative timeout handling is attempted
+first; the parent can terminate the whole Worker if it does not finish in time.
+If the supervision channel breaks, the Worker refuses new runtime work while
+still allowing inspection and best-effort removal; a lost watchdog acknowledgement
+must not itself keep an existing workload alive. Notification failures during
+nested cleanup calls are reported after the complete removal/absence check;
+they do not interrupt an intermediate daemon or ownership inspection, or mask
+an actual runtime cleanup failure.
+
+The launcher prints these private settings before the first episode workload:
+
+| Setting | Default | Override |
+| --- | --- | --- |
+| Missing heartbeat tolerance | 10 seconds | `--worker-watchdog-heartbeat-seconds` |
+| Deadline grace for cooperative handling | 5 seconds | `--worker-watchdog-grace-seconds` |
+| Control/startup operation without a declared timeout | 120 seconds | `--worker-watchdog-control-seconds` |
+
+These are deployment protection settings, not comparison budgets. They do not
+appear in the Agent view. A heartbeat must arrive more often than the configured
+tolerance (the client sends every 0.5 seconds). The five-second grace does not
+authorize a late benchmark result. It permits ordinary timeout/cleanup handling
+before escalating to process termination.
+
+The parent retains its direct child without reaping it until it has signalled
+the dedicated process group. This prevents PID/PGID reuse from redirecting a
+termination signal. A completed launcher reports its exit status and remains
+the group leader until this fence, so leftover Docker clients are also stopped
+on the normal path. It flushes stdout and stderr before reporting completion,
+including when output is piped or redirected; flush failure cannot report success.
+No process identity from a journal or participant is used
+for signalling. Only after this fence does recovery attempt the exclusive
+journal lock; a held lock still prevents takeover. Recovery verifies the
+registered Worker owner and directory identity as well as Docker identities.
+
+`watchdog-report.json` records the trigger, process exit, completed launcher
+status when available, and cleanup result in the private Worker directory.
+An abnormal stop or unconfirmed cleanup gives CLI exit code 2. A normally
+completed launcher retains its exit status only if recovery succeeds. Existing
+Core state, research sealing and TEST decisions are preserved; the watchdog
+does not finalize, publish or resume an interrupted episode.
+
+This covers one local POSIX execution host and its bundled Docker Worker, not
+a distributed lease/fencing protocol. It does not supply asynchronous Core
+operations, preempt arbitrary uninstrumented Python code while its heartbeat
+is healthy, turn Track A accounting into a fixed wall-clock cap, or cover
+pre-journal readiness resources. Runtime outages, uninterruptible host I/O,
+storage loss or unreliable locking can still prevent cleanup. Loss of the
+watchdog/host itself requires an external service or later manual recovery;
+distributed fencing, power-loss certification and automatic episode
 continuation remain separate capabilities. Development trust, best-effort
-deadlines and leaderboard ineligibility remain unchanged.
+deadline evidence and leaderboard ineligibility remain unchanged.
