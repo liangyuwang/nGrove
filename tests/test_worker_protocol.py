@@ -334,7 +334,8 @@ class WorkerProtocolTests(unittest.TestCase):
             manifest["prediction_storage"]["hard_limit"],
             "required_before_candidate_start",
         )
-        self.assertEqual(manifest["prediction_storage"]["max_entries"], 2)
+        self.assertEqual(manifest["prediction_storage"]["artifact_max_entries"], 2)
+        self.assertEqual(manifest["prediction_storage"]["max_inodes"], 128)
         self.assertEqual(
             manifest["prediction_storage"]["manifest_max_bytes"],
             PREDICTION_MANIFEST_MAX_BYTES,
@@ -488,12 +489,17 @@ class WorkerProtocolTests(unittest.TestCase):
         self.assertEqual(
             prediction_storage_limit(examples=2048, vocab_size=50257),
             {
-                "max_bytes": 2048 * 50257 * 4 + PREDICTION_MANIFEST_MAX_BYTES,
-                "max_entries": 2,
+                "max_bytes": 786 * 1024 * 1024,
+                "max_inodes": 128,
+                "artifact_max_bytes": 2048 * 50257 * 4 + PREDICTION_MANIFEST_MAX_BYTES,
+                "artifact_max_entries": 2,
                 "logits_bytes": 2048 * 50257 * 4,
                 "manifest_max_bytes": PREDICTION_MANIFEST_MAX_BYTES,
             },
         )
+        small = prediction_storage_limit(examples=3, vocab_size=3)
+        self.assertEqual(small["max_bytes"], 16 * 1024 * 1024)
+        self.assertEqual(small["artifact_max_bytes"], 36 + 65536)
         with self.assertRaisesRegex(ValueError, "positive integer"):
             prediction_storage_limit(examples=True, vocab_size=3)
 
@@ -678,7 +684,7 @@ class WorkerProtocolTests(unittest.TestCase):
 
     def test_descriptor_manifest_contains_no_platform_schema(self):
         manifest = descriptor().public_manifest()
-        self.assertEqual(manifest["protocol_version"], 14)
+        self.assertEqual(manifest["protocol_version"], 15)
         self.assertEqual(manifest["roles"], ["research", "evaluation"])
         self.assertNotIn("conformance", manifest)
         serialized = json.dumps(manifest).lower()
@@ -690,7 +696,7 @@ class WorkerProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "protocol version"):
             WorkerDescriptor(
                 worker_id="future-worker",
-                protocol_version=15,
+                protocol_version=14,
                 trust_level=TrustLevel.DEVELOPMENT,
                 roles=("research",),
                 capabilities={},

@@ -41,7 +41,9 @@ if TYPE_CHECKING:
     from .config import TaskConfig, TrainingResources
 
 
-WORKER_PROTOCOL_VERSION = 14
+# v15 replaces exact runtime artifact sizes with an independent bounded output
+# allocation, while retaining strict final validation and teardown ordering.
+WORKER_PROTOCOL_VERSION = 15
 WORKER_CONFORMANCE_SUITE_VERSION = f"worker-v{WORKER_PROTOCOL_VERSION}"
 CONFORMANCE_RECEIPT_VERSION = 1
 RESOURCE_ENVELOPE_SCHEMA_VERSION = 1

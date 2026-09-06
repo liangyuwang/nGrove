@@ -60,7 +60,9 @@ class ConfigError(ValueError):
 # private manifest digests and audit extensions remain in trusted records.
 # Version 11 distinguishes operator-stopped episodes from participant failures.
 # Operator protection settings themselves are never Agent-visible.
-AGENT_PROTOCOL_VERSION = 11
+# Version 12 declares bounded prediction runtime storage with temporary files;
+# Task schema 7 binds that revised rule into the task release fingerprint.
+AGENT_PROTOCOL_VERSION = 12
 
 
 def operator_research_limit(value: Any, track: str) -> Optional[float]:
@@ -778,8 +780,8 @@ class TaskConfig:
 
     def validate(self) -> "TaskConfig":
         """Validate the immutable task definition and its release classification."""
-        if self.schema_version != 6:
-            raise ConfigError("task schema_version must be 6")
+        if self.schema_version != 7:
+            raise ConfigError("task schema_version must be 7")
         task_kind(self.task_kind)
         if self.task_kind == "development_smoke" and self.leaderboard_eligible:
             raise ConfigError("development smoke tasks may not be leaderboard eligible")

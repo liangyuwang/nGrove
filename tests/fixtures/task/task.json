@@ -1,5 +1,5 @@
 {
-  "schema_version": 6,
+  "schema_version": 7,
   "task_id": "test-byte-lm-v1",
   "task_kind": "development_smoke",
   "leaderboard_eligible": false,

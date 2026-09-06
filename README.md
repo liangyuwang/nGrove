@@ -80,7 +80,7 @@ sandbox without adding platform branches to Core.
 
 The repository now contains an executable, single-host Docker prototype of the benchmark protocol. It is intended to validate episode lifecycle, Training Lease accounting, hidden evaluation, and the agent-facing control surface before the first official benchmark instance is selected.
 
-The current development snapshot uses Worker Protocol v14 but does not carry a
+The current development snapshot uses Worker Protocol v15 but does not carry a
 release package version yet. Protocol v7 introduced a breaking Worker API
 revision: every successful Training Lease startup returns operation-bound
 resource allocation evidence. The Release selects an extensible semantic resource
@@ -138,12 +138,12 @@ semantic enforcement, trust, workload identity, and limitations recorded for
 the episode. The bundled launcher is development-trust only. Without successful
 operator storage admission, its unbounded writable bind-mount storage is recorded
 as a policy limitation rather than being hidden behind application-level mailbox
-limits. Operator volume protection does not certify the release's separate,
-exact prediction-storage quota.
+limits. Prediction output uses its own bounded allocation and strict final
+validation, independently of this private operator setting.
 
 The bundled `autotrain-bench prepare` and `autotrain-bench start` commands are
 the composition root for that local Docker implementation; they are not a
-generic backend loader. Worker Protocol v14 is currently a synchronous,
+generic backend loader. Worker Protocol v15 is currently a synchronous,
 in-process Python contract. Resolution calls receive explicit deadlines, and
 TEST workload/data resolution consumes the same operation budget as evaluation;
 those deadlines are cooperative, so a future asynchronous operation/cancellation
@@ -638,14 +638,20 @@ forbidden; it also names the optional public reader and writer helpers. Hidden
 Candidate failures still return only fixed error codes to the Agent; private
 diagnostics stay in the trusted episode directory. Candidate and scorer
 containers are destroyed after each evaluation. A conforming Evaluation Worker
-also imposes the release-derived hard byte and entry limits before Candidate
-startup. The bundled Docker Worker uses an ordinary host bind mount and cannot
-enforce those limits, so it reports
-`candidate_prediction_storage_quota: unsupported` and remains a non-compliant
-development preview. After scoring or failure and confirmed workload teardown,
-it removes the ephemeral prediction directory. If teardown is
-unconfirmed, it retains that directory as pending cleanup rather than deleting
-storage that an untrusted process may still be able to mutate.
+also supplies an independent output allocation before Candidate startup:
+`round_up(max(16 MiB, 2 * (examples * vocab_size * 4 + 65536)), 1 MiB)` of
+allocated storage and at most 128 filesystem inodes, including the root.
+Temporary files are allowed during execution; the final artifact must still
+contain exactly the two specified regular files with exact logits length and
+valid format. The bundled Docker Worker enforces this boundary with a bounded
+Linux Docker tmpfs volume, independently of episode logs/results. It verifies
+the allocation before launching Candidate and refuses unbounded fallbacks.
+A read-only trusted holder preserves outputs until scoring; all consumers must
+be confirmed stopped before holder/volume removal. Failed cleanup remains
+registered for retry. This supports `candidate_prediction_storage_quota` under
+Worker Protocol v15, but does not change development trust or formal eligibility.
+See [Worker prediction storage](docs/worker-protocol.md) for memory/swap needs,
+deployment support, cleanup limits and the v14 compatibility break.
 
 The Agent Container receives a generated, minimal `autotrain_bench.client`
 package rather than the Core source tree. Its mailbox inbox and outbox are
@@ -780,9 +786,9 @@ the bytes physically absent from the host trust domain until evaluation provide
 stronger defense in depth; Core requires the visibility boundary and frozen
 identity, not one materialization mechanism.
 
-Task schema v6 still retains `paths.analysis` and `paths.test` as compatibility
+Task schema v7 still retains `paths.analysis` and `paths.test` as compatibility
 inputs for the bundled local CLI. The Supervisor neither reads them nor sends
-them through Worker Protocol v14. An external launcher supplies its Evaluation
+them through Worker Protocol v15. An external launcher supplies its Evaluation
 Worker's private source mapping independently; the configured local paths may
 remain absent for that deployment. Replacing these compatibility fields in a
 future task schema is separate from the now path-free Worker boundary.
@@ -1301,7 +1307,8 @@ time default cannot block Track A or an explicit time override/disable. When a
 default is needed, the shared file must still be valid JSON with known keys.
 
 The protected scope is the episode directory: workspace, mailbox, Lease scratch
-and output, captured Candidates, prediction storage and episode logs/audits.
+and output, captured Candidates and episode logs/audits.
+Prediction output has its own bounded allocation, separate from this volume.
 Prepared TRAIN/hidden data and images are separate, as are the runtime's already
 bounded temporary memory filesystems and rotating container logs. Research and
 evaluation retain their separate mount views; sharing a capacity boundary does
@@ -1326,9 +1333,9 @@ provide a remote Worker. Separate Worker storage domains need their own
 deployment-controlled allocations; a receipt from one domain does not bound
 another. Neither the Worker protocol nor the comparison key changes.
 
-The existing `candidate_prediction_storage_quota` requirement remains unchanged
-and unsupported by the bundled Worker: a whole-episode volume limit does not
-enforce the exact per-prediction byte and two-entry ceilings required by release.
+The separate `candidate_prediction_storage_quota` guarantee uses the revised
+Worker v15 allocation rule above. Disabling private episode storage protection
+does not disable prediction output protection or exact final artifact validation.
 
 The bundled launcher uses a separate guard thread and local runtime client so
 revocation does not wait for the Coordinator's synchronous Worker lock. This is
@@ -2058,7 +2065,7 @@ contract as a challenge preview:
 
 ```json
 {
-  "schema_version": 6,
+  "schema_version": 7,
   "task_id": "tinystories-byte-lm-smoke-v1",
   "task_kind": "development_smoke",
   "leaderboard_eligible": false,

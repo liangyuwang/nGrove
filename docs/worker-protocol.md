@@ -126,7 +126,7 @@ explicitly and never trigger a fallback. A receipt is conformant only for the
 suite version associated with the active Worker Protocol; a passing v13 receipt
 cannot certify a v14 Worker boundary.
 
-Worker Protocol v14 retains the v9 evidence direction. `WorkerDescriptor`
+Worker Protocol v15 retains the v9 evidence direction. `WorkerDescriptor`
 contains only Worker self-description and cannot carry conformance. The trusted
 Operator composition supplies `ConformanceReceipt` independently to the
 Coordinator. The receipt binds its schema and suite versions, the assessed
@@ -145,7 +145,7 @@ suite remains required before a formal deployment can receive one.
 
 ## Research and evaluation roles
 
-Worker Protocol v14 models ResearchWorker and EvaluationWorker as separate
+Worker Protocol v15 models ResearchWorker and EvaluationWorker as separate
 interfaces because their trust domains differ:
 
 - ResearchWorker sees TRAIN, the Agent workspace, and training outputs, but
@@ -239,7 +239,7 @@ are not additive timeout grants.
 
 ### Known liveness limit: cooperative deadlines
 
-Worker Protocol v14 is a synchronous, in-process Python interface. Its timeout
+Worker Protocol v15 is a synchronous, in-process Python interface. Its timeout
 arguments are semantic deadlines and a conformance requirement, but they are
 cooperative rather than a Core-side preemption mechanism. Core can reject a
 result returned after its deadline; while a call has not returned, however,
@@ -257,7 +257,7 @@ and notices never enter the Agent view. Its separate local thread/client can rev
 workloads without acquiring the Coordinator lock, but still shares the
 Coordinator process and cannot preempt arbitrary Worker code. It is best-effort
 operator protection, not a new Worker deadline guarantee or a Track B scoring
-budget. Worker Protocol v14 and its outstanding independent-watchdog requirement
+budget. Worker Protocol v15 and its outstanding independent-watchdog requirement
 are unchanged. External launchers own equivalent protection in their deployment.
 
 A future platform-neutral seam should define asynchronous operation IDs,
@@ -383,23 +383,38 @@ termination remain deployment responsibilities; no UID fields or Docker
 identity rules enter the semantic Core/Worker protocol. Failed permission
 verification blocks launch rather than widening access.
 
-Prediction storage is an untrusted resource boundary, not merely a final shape
-check. Before Candidate startup, a conforming Worker must hard-limit the
-workspace to two entries and to at most:
+Prediction storage is an untrusted resource boundary. Worker Protocol v15
+separates runtime resource protection from exact final artifact validation.
+Before Candidate startup, the Worker supplies an independent output allocation:
 
 ```text
-examples * vocab_size * 4 + 65536 bytes
+artifact_max_bytes = examples * vocab_size * 4 + 65536
+runtime_max_bytes = round_up(max(16 MiB, 2 * artifact_max_bytes), 1 MiB)
+runtime_max_inodes = 128
 ```
 
-The first term is the exact `logits.f32` size and `predictions.json` may occupy
-at most 65536 bytes. Both byte and entry/inode limits must prevent writes while
-the Candidate is running, including writes through open-but-unlinked files.
-The byte ceiling applies to participant-created file data; implementation-owned
-filesystem metadata may use separate bounded overhead. Post-exit validation or
-a polling watcher is not an enforcement mechanism. This semantic guarantee is
-reported as `candidate_prediction_storage_quota`. A Worker unable to enforce it
-reports an insufficient capability and cannot silently claim formal
-compliance.
+The runtime byte limit bounds allocated filesystem storage, including
+open-but-unlinked allocations; it does not bound sparse logical file lengths
+or cumulative bytes written. The inode limit includes the filesystem root and
+bounds file/directory metadata; implementation overhead must also remain
+bounded. Temporary files and directories are allowed within this allocation.
+The final artifact must still contain exactly `logits.f32` with the exact
+request-derived length and `predictions.json` of at most 65536 bytes, with the
+specified regular-file, schema, dtype, order and finite-value checks. Temporary
+entries must be removed before Candidate exit. Sparse or oversized files never
+relax final validation.
+
+The output allocation must not consume the capacity reserved for episode logs
+and results. A polling watcher or final validation alone does not enforce the
+runtime limit. A Worker must refuse Candidate startup if the bounded allocation
+cannot be established; it cannot substitute an ordinary writable directory.
+This guarantee remains `candidate_prediction_storage_quota`. Its v14 meaning
+(exact logical byte ceiling and two entries throughout execution) is retired;
+v14 descriptors/receipts are not evidence for the v15 contract. The public
+boundary changes in Agent Protocol v12 and is bound to Task schema v7; the
+offline v3 artifact JSON shapes are unchanged. Earlier task schemas are rejected.
+The task manifest version changes its release fingerprint;
+measurements using the old and new boundary must not be compared as one release.
 
 Prediction artifacts use the release-owned lifecycle
 `ephemeral_until_evaluation_teardown`. After scoring or failure, and only after
@@ -411,11 +426,27 @@ might still mutate. This guarantee is reported as
 predictions for audit must define a different lifecycle with an immutable
 identity, storage budget, and retention period.
 
-The bundled Docker Worker enforces the ephemeral lifecycle but does not enforce
-these release-exact byte and entry ceilings. It therefore reports
-`candidate_prediction_storage_quota: unsupported`; this is an explicit
-development limitation and makes the evaluation capability assessment
-insufficient for formal compliance.
+The bundled Docker Worker uses a separate Linux Docker local-driver `tmpfs`
+volume with `size` and `nr_inodes` limits. It verifies its options, capacity and
+empty state before Candidate startup. A trusted, network-disabled, read-only
+holder keeps it mounted between Candidate exit and scoring; the holder sees
+only prediction storage. Candidate receives the writable volume, while the
+scorer receives it read-only. Image-declared extra volumes are rejected in all
+evaluation images, even when private operator storage protection is disabled.
+After confirmed Candidate/scorer termination, the Worker removes the holder
+and volume and verifies removal, retaining failed cleanup handles for retry.
+The per-evaluation private `<split>.storage.json` records limits and observations.
+
+This implementation requires Linux Docker local-driver tmpfs support and shared
+Worker/Docker paths for the other inputs. Unsupported mounting fails closed.
+Output pages consume execution-host memory (and potentially swap), so deployment
+memory/swap provisioning must include the declared output capacity. The bounded
+volume protects the episode log filesystem from prediction allocation exhaustion;
+it does not reserve host memory or guarantee log persistence during host OOM,
+shared backing-device exhaustion, or runtime failure. Normal exception/retry
+cleanup is implemented; recovery after Worker process loss remains separate
+work. The Worker remains development-trusted with best-effort deadlines; this
+capability does not grant formal leaderboard eligibility.
 
 Separately, the trusted local launcher can require a deployment-provided,
 capacity-bounded filesystem for the entire episode. Its private operator limit

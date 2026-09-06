@@ -348,9 +348,17 @@ complete formal receipt.
 
 Status: implemented in the development schemas.
 
-The current versions are Task schema v6, Challenge schema v2, Agent Protocol v11,
-Worker Protocol v14, and result schema v13. The entries below identify the
+The current versions are Task schema v7, Challenge schema v2, Agent Protocol v12,
+Worker Protocol v15, and result schema v13. The entries below identify the
 versions that introduced each change.
+
+- Task schema v7, Worker Protocol v15 and Agent Protocol v12 separate prediction runtime
+  allocations (temporary files allowed) from exact final artifact validation.
+  Docker uses an independent capacity/inode-bounded tmpfs volume with verified
+  admission and teardown. This supersedes the v14 exact byte/two-entry runtime
+  requirement; old receipts do not certify the new boundary. Task v7 changes
+  the release fingerprint; artifact JSON and result schema are unchanged. Process-loss cleanup recovery and formal
+  deployment certification remain outstanding.
 
 - Agent Protocol v11 and result schema v13 distinguish a private operator
   research-time protection trip (`operator_stopped` / `aborted`) from participant

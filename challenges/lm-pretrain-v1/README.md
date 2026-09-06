@@ -83,11 +83,15 @@ submetrics. The clock includes Candidate sandbox startup, model loading, file
 I/O, scheduling, and inference, but excludes hidden-data materialization and
 trusted validation/scoring. Results form a Performance–Cost Pareto frontier;
 the axes are not collapsed into a scalar. Cost comparisons require the same
-hidden input identity and runtime profile. A conforming Worker hard-limits
-prediction storage to two entries and
-`examples * vocab_size * 4 + 65536` bytes, then removes it after scoring or
-failure and confirmed teardown. The bundled local Docker preview reports its
-host bind mount quota as unsupported.
+hidden input identity and runtime profile. A conforming Worker provides a
+separate prediction allocation of twice the maximum final artifact size, at
+least 16 MiB and rounded up to MiB, with at most 128 filesystem inodes including
+the root. Temporary entries are allowed during execution; the final artifact
+still consists of exactly `logits.f32` and `predictions.json` with strict sizes
+and format. The Docker Worker enforces this allocation using bounded tmpfs and
+removes it after scoring or failure and confirmed teardown. See
+[Worker Protocol v15](../../docs/worker-protocol.md) for the allocation formula,
+memory provisioning and compatibility changes.
 
 The Agent-visible task manifest declares the invocation contract at
 `evaluation.candidate_boundary.entrypoint`: the Worker imports `candidate.py`

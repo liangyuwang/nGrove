@@ -17,10 +17,12 @@ import tempfile
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .artifact_identity import HIDDEN_BUNDLE_FILENAMES, hidden_bundle_sha256
+from .prediction_output import prediction_output_contract
 from .config import AgentConfig, TaskConfig, TrainingResources
 from .host_agent import HostAgentProcess, start_host_agent_process
 from .local_storage import LocalStorageProtection
@@ -69,6 +71,14 @@ ExecResult = CommandResult
 MAX_RUNTIME_STREAM_BYTES = 1024 * 1024
 _TRUNCATION_MARKER = b"\n[output truncated by AutoTrain-Bench]\n"
 EVALUATION_DIAGNOSTIC_TIMEOUT_SECONDS = 5.0
+
+
+@dataclass(frozen=True)
+class _EvaluationResources:
+    candidate: str
+    evaluator: str
+    storage_holder: str
+    storage_volume: str
 
 
 def _sha256_file(path: Path) -> str:
@@ -208,7 +218,7 @@ class DockerRuntime:
             tuple[str, str], tuple[ResolvedWorkload, str]
         ] = {}
         self._worker_leases: Dict[tuple, str] = {}
-        self._pending_evaluations: Dict[tuple, Tuple[str, str, Path]] = {}
+        self._pending_evaluations: Dict[tuple, _EvaluationResources] = {}
         self._execution_identity: Optional[Tuple[int, int]] = None
         self._operator_storage: Optional[LocalStorageProtection] = None
 
@@ -347,7 +357,7 @@ class DockerRuntime:
             raise RuntimeFailure("cannot verify image storage metadata") from exc
         if volumes:
             raise RuntimeFailure(
-                "operator storage protection rejects image-declared VOLUME mounts; "
+                "Worker storage protection rejects image-declared VOLUME mounts; "
                 "provide an image without VOLUME declarations"
             )
         return identity
@@ -382,9 +392,9 @@ class DockerRuntime:
                     enforced, "target-free read-only input and isolated output mounts"
                 ),
                 CANDIDATE_PREDICTION_STORAGE_QUOTA: Capability(
-                    EnforcementLevel.UNSUPPORTED,
-                    "no release-exact prediction byte/entry quota; operator "
-                    "volume protection is a separate boundary",
+                    enforced,
+                    "independent capacity/inode-bounded prediction volume; "
+                    "verified before Candidate startup, no unbounded fallback",
                 ),
                 CANDIDATE_PREDICTION_ARTIFACT_LIFECYCLE: Capability(
                     enforced,
@@ -1978,10 +1988,10 @@ class DockerRuntime:
         if not contexts_path.is_file() or not targets_path.is_file():
             raise RuntimeFailure("hidden evaluator split is incomplete")
         candidate_image = self._storage_safe_image(
-            candidate_image, timeout_seconds=remaining_seconds()
+            candidate_image, timeout_seconds=remaining_seconds(), required=True
         )
         evaluator_image = self._storage_safe_image(
-            evaluator_image, timeout_seconds=remaining_seconds()
+            evaluator_image, timeout_seconds=remaining_seconds(), required=True
         )
         self._ensure_execution_identity(
             evaluator_image,
@@ -1996,12 +2006,17 @@ class DockerRuntime:
             validation_path.unlink(missing_ok=True)
         except OSError as exc:
             raise RuntimeFailure("failed to clear the prior evaluator result") from exc
-        runtime_id = uuid.uuid4().hex[:12]
+        runtime_id = uuid.uuid4().hex
         candidate_name = f"atb-candidate-{runtime_id}"
         evaluator_name = f"atb-evaluator-{runtime_id}"
         evaluation_key = (episode_id, runtime_id)
+        evaluation_resources = _EvaluationResources(
+            candidate_name,
+            evaluator_name,
+            f"atb-prediction-holder-{runtime_id}",
+            f"atb-predictions-{runtime_id}",
+        )
         candidate_api_dir = output_dir / ".candidate_api"
-        prediction_dir = output_dir / f"predictions-{runtime_id}"
         docker_scorer_adapter = (
             Path(__file__).resolve().parent / "docker_scorer_adapter.py"
         )
@@ -2048,7 +2063,9 @@ class DockerRuntime:
             "--mount",
             self._mount(contexts_path, "/eval-input/contexts.json", read_only=True),
             "--mount",
-            self._mount(prediction_dir, "/predictions", read_only=False),
+            self._prediction_mount(
+                evaluation_resources.storage_volume, read_only=False
+            ),
             "--env",
             "HOME=/candidate-home",
             "--env",
@@ -2129,7 +2146,9 @@ class DockerRuntime:
                 args.extend(
                     [
                         "--mount",
-                        self._mount(prediction_dir, "/predictions", read_only=True),
+                        self._prediction_mount(
+                            evaluation_resources.storage_volume, read_only=True
+                        ),
                     ]
                 )
             args.extend(
@@ -2163,17 +2182,9 @@ class DockerRuntime:
                 args.extend(["--predictions", "/predictions"])
             return args
 
-        try:
-            prediction_dir.mkdir(mode=0o700)
-        except OSError as exc:
-            raise RuntimeFailure(
-                "failed to create Candidate prediction storage"
-            ) from exc
-        self._pending_evaluations[evaluation_key] = (
-            candidate_name,
-            evaluator_name,
-            prediction_dir,
-        )
+        # Register every cleanup handle before any runtime allocation attempt,
+        # including calls whose completion could be uncertain after a timeout.
+        self._pending_evaluations[evaluation_key] = evaluation_resources
         candidate_wall_seconds: Optional[float] = None
         phase = "trusted_input_validation"
         candidate_attempted = False
@@ -2182,6 +2193,34 @@ class DockerRuntime:
                 scorer_args("validate"),
                 timeout=remaining_seconds(),
             )
+            phase = "prediction_storage_setup"
+            try:
+                validation_path.chmod(0o600)
+                validation = json.loads(validation_path.read_text(encoding="utf-8"))
+                limits = prediction_output_contract(
+                    task.candidate_channel.protocol
+                ).storage_limits(
+                    request_metadata=validation,
+                    task_metadata={"vocab_size": task.vocab_size},
+                )
+            except (OSError, KeyError, TypeError, ValueError) as exc:
+                raise RuntimeFailure(
+                    "invalid trusted prediction storage shape"
+                ) from exc
+            storage = self._create_prediction_storage(
+                evaluation_resources,
+                limits=limits,
+                image=evaluator_image,
+                remaining_seconds=remaining_seconds,
+            )
+            try:
+                _write_private_diagnostic(
+                    output_dir / f"{split}.storage.json", json.dumps(storage) + "\n"
+                )
+            except OSError as exc:
+                raise RuntimeFailure(
+                    "cannot record prediction storage evidence"
+                ) from exc
             candidate_started = self.monotonic()
             phase = "candidate_startup"
             candidate_attempted = True
@@ -2202,6 +2241,10 @@ class DockerRuntime:
                     f"Candidate process exited with status {candidate_exit_code}"
                 )
             candidate_wall_seconds = max(0.0, self.monotonic() - candidate_started)
+            # Freeze outputs before trusted scoring; the holder keeps their
+            # bounded allocation alive independently of the stopped Candidate.
+            phase = "candidate_teardown"
+            self.stop_container(candidate_name)
             phase = "trusted_scoring"
             self._run(
                 scorer_args("score"),
@@ -2327,35 +2370,156 @@ class DockerRuntime:
         resources = self._pending_evaluations.get(evaluation_key)
         if resources is None:
             return
-        candidate_name, evaluator_name, prediction_dir = resources
         _run_runtime_teardown_steps(
             [
-                ("candidate", lambda: self.stop_container(candidate_name)),
-                ("evaluator", lambda: self.stop_container(evaluator_name)),
+                ("candidate", lambda: self.stop_container(resources.candidate)),
+                ("evaluator", lambda: self.stop_container(resources.evaluator)),
             ]
         )
+        # The read-only holder keeps tmpfs alive between Candidate exit and
+        # scoring. Do not release it while either consumer may still be alive.
         try:
-            self._remove_prediction_artifact(prediction_dir)
-        except OSError as exc:
+            self.stop_container(resources.storage_holder)
+            self._run(
+                ["volume", "rm", resources.storage_volume], check=False, timeout=20
+            )
+            inventory = self._run(["volume", "ls", "--format", "{{.Name}}"], timeout=20)
+            if resources.storage_volume in inventory.stdout.splitlines():
+                raise RuntimeFailure("prediction volume remains after removal")
+        except RuntimeFailure as exc:
             raise WorkerTeardownFailure(
-                f"prediction artifact cleanup failed: {exc}"
+                f"prediction storage cleanup failed: {exc}"
             ) from exc
         self._pending_evaluations.pop(evaluation_key, None)
 
     @staticmethod
-    def _remove_prediction_artifact(prediction_dir: Path) -> None:
-        if prediction_dir.is_symlink():
-            raise OSError("prediction artifact root became a symlink")
-        if prediction_dir.exists():
-            # The stopped Candidate may have removed owner traversal/write bits.
-            # Restore directories only, without following links or touching inputs.
-            prediction_dir.chmod(0o700)
-            for directory, children, _ in os.walk(prediction_dir, followlinks=False):
-                for child in children:
-                    path = Path(directory) / child
-                    if not path.is_symlink():
-                        path.chmod(0o700)
-            shutil.rmtree(prediction_dir)
+    def _prediction_mount(volume: str, *, read_only: bool) -> str:
+        mount = f"type=volume,src={volume},dst=/predictions,volume-nocopy"
+        return mount + (",readonly" if read_only else "")
+
+    def _create_prediction_storage(
+        self,
+        resources: _EvaluationResources,
+        *,
+        limits: Mapping[str, int],
+        image: str,
+        remaining_seconds: Callable[[], float],
+    ) -> Dict[str, Any]:
+        """Worker-private Linux Docker storage; fail closed on other backends.
+
+        This is allocated-space protection, not a logical file length filter.
+        tmpfs accounts open-unlinked allocations in the same capacity/inode pool.
+        No host disk formatting, privileged workload or extra image is needed.
+        """
+
+        uid, gid = self._execution_identity
+        options = (
+            f"size={limits['max_bytes']},nr_inodes={limits['max_inodes']},"
+            f"uid={uid},gid={gid},mode=0700,nosuid,nodev,noexec"
+        )
+        self._run(
+            [
+                "volume",
+                "create",
+                "--driver",
+                "local",
+                "--label",
+                "autotrain-bench.role=prediction-output",
+                "--opt",
+                "type=tmpfs",
+                "--opt",
+                "device=tmpfs",
+                "--opt",
+                f"o={options}",
+                resources.storage_volume,
+            ],
+            timeout=remaining_seconds(),
+        )
+        metadata = self._run(
+            [
+                "volume",
+                "inspect",
+                resources.storage_volume,
+                "--format",
+                "{{json .Options}}",
+            ],
+            timeout=remaining_seconds(),
+        )
+        try:
+            if json.loads(metadata.stdout) != {
+                "type": "tmpfs",
+                "device": "tmpfs",
+                "o": options,
+            }:
+                raise ValueError("unexpected volume options")
+        except (ValueError, TypeError) as exc:
+            raise RuntimeFailure("cannot verify prediction volume options") from exc
+        self._run(
+            [
+                "run",
+                "--detach",
+                "--name",
+                resources.storage_holder,
+                "--label",
+                "autotrain-bench.role=prediction-output-holder",
+                "--user",
+                self._container_user(),
+                "--network",
+                "none",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges:true",
+                "--pids-limit",
+                "32",
+                "--memory",
+                "64m",
+                "--memory-swap",
+                "64m",
+                "--read-only",
+                "--workdir",
+                "/",
+                "--log-opt",
+                "max-size=1m",
+                "--log-opt",
+                "max-file=1",
+                "--mount",
+                self._prediction_mount(resources.storage_volume, read_only=True),
+                "--entrypoint",
+                "python",
+                image,
+                "-c",
+                "import signal; signal.pause()",
+            ],
+            timeout=remaining_seconds(),
+        )
+        observed = self._run(
+            [
+                "exec",
+                resources.storage_holder,
+                "python",
+                "-c",
+                "import json,os; s=os.statvfs('/predictions'); "
+                "print(json.dumps({'bytes':s.f_blocks*s.f_frsize,"
+                "'inodes':s.f_files,'empty':not os.listdir('/predictions')}))",
+            ],
+            timeout=remaining_seconds(),
+        )
+        try:
+            capacity = json.loads(observed.stdout)
+            if capacity != {
+                "bytes": limits["max_bytes"],
+                "inodes": limits["max_inodes"],
+                "empty": True,
+            }:
+                raise ValueError("unexpected prediction storage capacity")
+        except (ValueError, TypeError) as exc:
+            raise RuntimeFailure("cannot verify prediction storage capacity") from exc
+        return {
+            "backend": "docker_local_tmpfs",
+            "limits": dict(limits),
+            "observed": capacity,
+        }
 
     def teardown_pending_evaluations(self) -> None:
         """Retry every local evaluation cleanup whose result was uncertain."""

@@ -229,7 +229,8 @@ class ConfigTests(unittest.TestCase):
             boundary["public_helper_api"]["module"],
             "autotrain_bench.candidate_protocol",
         )
-        self.assertEqual(boundary["prediction_storage"]["max_entries"], 2)
+        self.assertEqual(boundary["prediction_storage"]["artifact_max_entries"], 2)
+        self.assertEqual(boundary["prediction_storage"]["max_inodes"], 128)
         self.assertEqual(
             boundary["prediction_artifact_retention"],
             "ephemeral_until_evaluation_teardown",
@@ -454,7 +455,16 @@ class ConfigTests(unittest.TestCase):
         # The Agent reads this manifest and the `agent status` response.  A
         # rename in either surface must move this version with it.
         self.assertEqual(manifest["protocol_version"], AGENT_PROTOCOL_VERSION)
-        self.assertEqual(AGENT_PROTOCOL_VERSION, 11)
+        self.assertEqual(AGENT_PROTOCOL_VERSION, 12)
+
+    def test_prior_task_storage_semantics_are_not_silently_reinterpreted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = self._write_task(directory)
+            payload = json.loads(task.read_text(encoding="utf-8"))
+            payload["schema_version"] = 6
+            task.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ConfigError, "schema_version must be 7"):
+                TaskConfig.load(task)
 
     def test_agent_egress_environment_and_host_runner_are_separate(self):
         with tempfile.TemporaryDirectory() as directory:

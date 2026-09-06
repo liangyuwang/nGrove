@@ -261,11 +261,15 @@ without renaming keys or wrapping values; its return schema is the same
 headerless row-major order: row `i` corresponds to `examples[i]`, and column `j`
 corresponds to token ID `j`.
 
-A conforming Worker hard-limits this untrusted directory to two entries and
-`examples * vocab_size * 4 + 65536` bytes; the manifest itself is limited to
-65536 bytes. The bundled local Docker preview cannot enforce a hard quota on
-its host bind mount and reports that capability as unsupported rather than
-claiming formal compliance.
+A conforming Worker provides a separate output allocation of
+`round_up(max(16 MiB, 2 * (examples * vocab_size * 4 + 65536)), 1 MiB)` and at most
+128 filesystem inodes including the root. Temporary files are allowed while
+Candidate runs. Final validation still requires exactly the two specified
+files, exact logits length, and a manifest no larger than 65536 bytes. The
+Docker Worker verifies and enforces an independent tmpfs allocation; filling it
+does not consume episode log/result filesystem capacity. See
+[Worker Protocol v15](../../docs/worker-protocol.md) for memory/swap needs,
+cleanup behavior and compatibility. This does not grant formal compliance.
 
 After research sealing and confirmed Agent/Research teardown, the bundled
 Docker Worker runs three network-disabled steps for each ANALYSIS/TEST evaluation:

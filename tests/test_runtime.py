@@ -27,6 +27,7 @@ from autotrain_bench.runtime import (
     DockerRuntime,
     RuntimeFailure,
     MAX_RUNTIME_STREAM_BYTES,
+    _EvaluationResources,
     _capture_diagnostic_command,
 )
 from autotrain_bench.worker_protocol import (
@@ -106,6 +107,50 @@ class CapturingDockerRuntime(DockerRuntime):
     def _run(self, args, **kwargs):
         self.calls.append(list(args))
         self.call_kwargs.append(dict(kwargs))
+        if args[:2] == ["image", "inspect"] and "{{json .Id}}" in " ".join(args):
+            return subprocess.CompletedProcess(
+                args, 0, json.dumps(["sha256:" + "a" * 64, None]), ""
+            )
+        if args[:2] == ["volume", "inspect"]:
+            create = next(
+                call
+                for call in reversed(self.calls)
+                if call[:2] == ["volume", "create"]
+            )
+            options = dict(
+                create[i + 1].split("=", 1)
+                for i, item in enumerate(create)
+                if item == "--opt"
+            )
+            return subprocess.CompletedProcess(args, 0, json.dumps(options), "")
+        if args[:1] == ["exec"] and args[1].startswith("atb-prediction-holder-"):
+            create = next(
+                call
+                for call in reversed(self.calls)
+                if call[:2] == ["volume", "create"]
+            )
+            options = next(item[2:] for item in create if item.startswith("o=size="))
+            values = dict(
+                item.split("=", 1) for item in options.split(",") if "=" in item
+            )
+            return subprocess.CompletedProcess(
+                args,
+                0,
+                json.dumps(
+                    {
+                        "bytes": int(values["size"]),
+                        "inodes": int(values["nr_inodes"]),
+                        "empty": True,
+                    }
+                ),
+                "",
+            )
+        if "--mode" in args and args[args.index("--mode") + 1] == "validate":
+            mount = next(item for item in args if item.endswith("dst=/output"))
+            output = Path(mount.split("src=", 1)[1].split(",dst=", 1)[0])
+            (output / Path(args[args.index("--output") + 1]).name).write_text(
+                json.dumps({"examples": 3}), encoding="utf-8"
+            )
         if args[:2] == ["image", "inspect"] and "{{.Id}}" in args:
             return subprocess.CompletedProcess(args, 0, "sha256:" + "a" * 64 + "\n", "")
         if args and args[0] == "wait":
@@ -307,24 +352,25 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 self.assertIsNone(runtime._execution_identity)
                 self.assertTrue(all(not root.exists() for root in roots))
 
-    def test_prediction_cleanup_restores_owner_access_without_following_links(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            predictions = root / "predictions"
-            nested = predictions / "locked/nested"
-            nested.mkdir(parents=True)
-            (nested / "output").write_bytes(b"data")
-            outside = root / "outside"
-            outside.mkdir()
-            outside.chmod(0o500)
-            (predictions / "link").symlink_to(outside, target_is_directory=True)
-            nested.chmod(0o000)
-            nested.parent.chmod(0o000)
-            predictions.chmod(0o000)
-            DockerRuntime._remove_prediction_artifact(predictions)
-            self.assertFalse(predictions.exists())
-            self.assertEqual(outside.stat().st_mode & 0o777, 0o500)
-            outside.chmod(0o700)
+    def test_prediction_cleanup_removes_volume_after_all_consumers(self):
+        runtime = CapturingDockerRuntime()
+        resources = _EvaluationResources("candidate", "scorer", "holder", "predictions")
+        runtime._pending_evaluations[("episode", "evaluation")] = resources
+        runtime._teardown_evaluation(("episode", "evaluation"))
+        mutations = [
+            call
+            for call in runtime.calls
+            if call[:1] == ["rm"] or call[:2] == ["volume", "rm"]
+        ]
+        self.assertEqual(
+            mutations,
+            [
+                ["rm", "--force", "candidate"],
+                ["rm", "--force", "scorer"],
+                ["rm", "--force", "holder"],
+                ["volume", "rm", "predictions"],
+            ],
+        )
 
     def test_failure_diagnostics_stop_execution_before_reading_logs(self):
         for running in (False, True):
@@ -425,7 +471,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                     split="test",
                     output_dir=output,
                 )
-            self.assertEqual(order, ["capture", "remove", "remove"])
+            self.assertEqual(order, ["capture", "remove", "remove", "remove"])
             self.assertIn(
                 "Traceback", (output / "test.candidate.stderr.log").read_text()
             )
@@ -551,10 +597,10 @@ class RuntimeBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(
             descriptor.capabilities[CANDIDATE_PREDICTION_STORAGE_QUOTA].level,
-            EnforcementLevel.UNSUPPORTED,
+            EnforcementLevel.ENFORCED,
         )
         self.assertIn(
-            "no release-exact prediction byte/entry quota",
+            "no unbounded fallback",
             descriptor.capabilities[CANDIDATE_PREDICTION_STORAGE_QUOTA].mechanism,
         )
         self.assertEqual(
@@ -793,9 +839,12 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 timeout_seconds=RESOLUTION_TIMEOUT,
             )
             runtime._pending_evaluations[("episode", "test", "candidate")] = (
-                "candidate",
-                "evaluator",
-                Path(directory) / "predictions",
+                _EvaluationResources(
+                    "candidate",
+                    "evaluator",
+                    "holder",
+                    "predictions",
+                )
             )
 
             with self.assertRaisesRegex(
@@ -1704,6 +1753,23 @@ class RuntimeBoundaryTests(unittest.TestCase):
             )
             self.assertNotIn("targets.json", "\n".join(candidate))
             self.assertIn("dst=/predictions", "\n".join(candidate))
+            holder = next(
+                call
+                for call in run_calls
+                if "autotrain-bench.role=prediction-output-holder" in call
+            )
+            self.assertNotIn("contexts.json", "\n".join(holder))
+            self.assertNotIn("targets.json", "\n".join(holder))
+            self.assertEqual(holder[holder.index("--cap-drop") + 1], "ALL")
+            self.assertEqual(holder[holder.index("--network") + 1], "none")
+            candidate_mount = next(
+                item for item in candidate if "dst=/predictions" in item
+            )
+            self.assertTrue(candidate_mount.startswith("type=volume,"))
+            self.assertIn("volume-nocopy", candidate_mount)
+            self.assertNotIn("readonly", candidate_mount)
+            self.assertIn(candidate_mount + ",readonly", holder)
+            self.assertIn(candidate_mount + ",readonly", evaluator)
             self.assertNotIn("dst=/candidate", "\n".join(evaluator))
             evaluator_command = "\n".join(evaluator)
             self.assertNotIn(str(config.analysis_path), evaluator_command)
@@ -1822,6 +1888,8 @@ class RuntimeBoundaryTests(unittest.TestCase):
                             clock.advance(7)
                     elif "candidate_offline_runner" in joined:
                         clock.advance(3)
+                    elif args[:2] == ["volume", "create"]:
+                        clock.advance(2)
                     return result
 
             runtime = ResultRuntime(monotonic=clock)
@@ -1872,10 +1940,10 @@ class RuntimeBoundaryTests(unittest.TestCase):
                     split="analysis",
                     output_dir=Path(directory) / "output",
                 )
-            self.assertEqual(runtime.teardown, ["candidate", "evaluator"])
+            self.assertEqual(runtime.teardown, ["candidate", "candidate", "evaluator"])
             self.assertEqual(len(runtime._pending_evaluations), 1)
-            prediction_dir = next(iter(runtime._pending_evaluations.values()))[2]
-            self.assertTrue(prediction_dir.exists())
+            storage = next(iter(runtime._pending_evaluations.values()))
+            self.assertNotIn(["volume", "rm", storage.storage_volume], runtime.calls)
 
             runtime.stop_container = lambda name: runtime.teardown.append(
                 "retry-container"
@@ -1883,42 +1951,112 @@ class RuntimeBoundaryTests(unittest.TestCase):
             runtime.teardown_pending_evaluations()
             runtime.close_private_materializations()
 
-            self.assertFalse(prediction_dir.exists())
+            self.assertIn(["volume", "rm", storage.storage_volume], runtime.calls)
             self.assertEqual(runtime._pending_evaluations, {})
             self.assertEqual(
-                runtime.teardown[-2:],
+                runtime.teardown[-3:],
                 [
+                    "retry-container",
                     "retry-container",
                     "retry-container",
                 ],
             )
 
     def test_prediction_cleanup_failure_remains_pending_teardown(self):
-        with tempfile.TemporaryDirectory() as directory:
-            runtime = CapturingDockerRuntime()
-            prediction_dir = Path(directory) / "predictions"
-            prediction_dir.mkdir()
-            key = ("episode", "evaluation")
-            runtime._pending_evaluations[key] = (
-                "candidate",
-                "evaluator",
-                prediction_dir,
-            )
+        runtime = CapturingDockerRuntime()
+        key = ("episode", "evaluation")
+        runtime._pending_evaluations[key] = _EvaluationResources(
+            "candidate", "evaluator", "holder", "predictions"
+        )
+        original = runtime._run
 
-            with patch.object(
-                runtime,
-                "_remove_prediction_artifact",
-                side_effect=OSError("storage unavailable"),
-            ), self.assertRaisesRegex(
-                WorkerTeardownFailure, "prediction artifact cleanup failed"
-            ):
-                runtime._teardown_evaluation(key)
+        def blocked(args, **kwargs):
+            if args[:2] == ["volume", "ls"]:
+                return subprocess.CompletedProcess(args, 0, "predictions\n", "")
+            return original(args, **kwargs)
 
-            self.assertIn(key, runtime._pending_evaluations)
-            self.assertTrue(prediction_dir.exists())
+        with patch.object(runtime, "_run", side_effect=blocked), self.assertRaisesRegex(
+            WorkerTeardownFailure, "prediction storage cleanup failed"
+        ):
             runtime._teardown_evaluation(key)
-            self.assertNotIn(key, runtime._pending_evaluations)
-            self.assertFalse(prediction_dir.exists())
+        self.assertIn(key, runtime._pending_evaluations)
+        runtime._teardown_evaluation(key)
+        self.assertNotIn(key, runtime._pending_evaluations)
+
+    def test_prediction_admission_failures_never_launch_candidate(self):
+        for fault in ("create", "options", "capacity", "empty", "shape"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
+                runtime = CapturingDockerRuntime()
+                original = runtime._run
+
+                def failing(args, **kwargs):
+                    if args[:2] == ["volume", "create"]:
+                        self.assertEqual(len(runtime._pending_evaluations), 1)
+                        if fault == "create":
+                            raise RuntimeFailure("tmpfs mounting unavailable")
+                    result = original(args, **kwargs)
+                    if fault == "options" and args[:2] == ["volume", "inspect"]:
+                        result.stdout = "{}"
+                    if args[:1] == ["exec"] and args[1].startswith(
+                        "atb-prediction-holder-"
+                    ):
+                        payload = json.loads(result.stdout)
+                        if fault == "capacity":
+                            payload["bytes"] *= 2
+                        if fault == "empty":
+                            payload["empty"] = False
+                        result.stdout = json.dumps(payload)
+                    if fault == "shape" and "--mode" in args:
+                        (Path(directory) / "analysis.validation.json").write_text(
+                            '{"examples":true}', encoding="utf-8"
+                        )
+                    return result
+
+                with patch.object(
+                    runtime, "_run", side_effect=failing
+                ), self.assertRaisesRegex(
+                    RuntimeFailure, "^isolated evaluation failed$"
+                ):
+                    runtime.run_evaluator(
+                        config=TaskConfig.load(TASK),
+                        resources=TrainingResources(),
+                        candidate_dir=TASK.parent / "agent",
+                        split="analysis",
+                        output_dir=Path(directory),
+                    )
+                self.assertFalse(
+                    any(
+                        "candidate_offline_runner" in " ".join(call)
+                        for call in runtime.calls
+                    )
+                )
+                self.assertEqual(runtime._pending_evaluations, {})
+                failure = json.loads(
+                    (Path(directory) / "analysis.failure.json").read_text()
+                )
+                self.assertEqual(failure["phase"], "prediction_storage_setup")
+
+    def test_prediction_holder_failure_retains_volume_for_retry(self):
+        runtime = CapturingDockerRuntime()
+        key = ("episode", "evaluation")
+        runtime._pending_evaluations[key] = _EvaluationResources(
+            "candidate", "scorer", "holder", "predictions"
+        )
+
+        def stop(name):
+            if name == "holder":
+                raise RuntimeFailure("holder termination uncertain")
+
+        with patch.object(
+            runtime, "stop_container", side_effect=stop
+        ), self.assertRaisesRegex(
+            WorkerTeardownFailure, "prediction storage cleanup failed"
+        ):
+            runtime._teardown_evaluation(key)
+        self.assertNotIn(["volume", "rm", "predictions"], runtime.calls)
+        self.assertIn(key, runtime._pending_evaluations)
+        runtime.teardown_pending_evaluations()
+        self.assertEqual(runtime._pending_evaluations, {})
 
     def test_evaluator_never_accepts_a_stale_result_file(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1945,13 +2083,9 @@ class RuntimeBoundaryTests(unittest.TestCase):
     def test_candidate_logs_are_private_and_never_enter_runtime_error(self):
         class FailingRuntime(CapturingDockerRuntime):
             def _run(self, args, **kwargs):
-                if args[:2] == ["image", "inspect"] and "{{.Id}}" in args:
-                    return super()._run(args, **kwargs)
-                self.calls.append(list(args))
-                self.call_kwargs.append(dict(kwargs))
                 if "candidate_offline_runner" in " ".join(args):
                     raise RuntimeFailure("hidden input_ids: [0, 1, 2]")
-                return subprocess.CompletedProcess(args, 0, "container-id\n", "")
+                return super()._run(args, **kwargs)
 
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "evaluation"

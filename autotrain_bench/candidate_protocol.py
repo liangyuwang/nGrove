@@ -22,6 +22,9 @@ PREDICTIONS_FILENAME = "predictions.json"
 LOGITS_FILENAME = "logits.f32"
 PREDICTION_ARTIFACT_MAX_ENTRIES = 2
 PREDICTION_MANIFEST_MAX_BYTES = 64 * 1024
+PREDICTION_STORAGE_MIN_BYTES = 16 * 1024 * 1024
+PREDICTION_STORAGE_GRANULARITY = 1024 * 1024
+PREDICTION_STORAGE_MAX_INODES = 128
 PREDICTION_ARTIFACT_RETENTION = "ephemeral_until_evaluation_teardown"
 PathInput = Union[str, os.PathLike]
 CONTEXT_MANIFEST_FIELDS = (
@@ -227,15 +230,24 @@ def candidate_helper_api_manifest() -> Dict[str, Any]:
 
 
 def prediction_storage_limit(*, examples: int, vocab_size: int) -> Dict[str, int]:
-    """Return the release-owned hard limits for one prediction workspace."""
+    """Separate allocated storage protection from the exact final artifact."""
 
     for value, field in ((examples, "examples"), (vocab_size, "vocab_size")):
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             raise ValueError(f"prediction storage {field} must be a positive integer")
     logits_bytes = examples * vocab_size * 4
+    artifact_max_bytes = logits_bytes + PREDICTION_MANIFEST_MAX_BYTES
+    capacity = max(PREDICTION_STORAGE_MIN_BYTES, 2 * artifact_max_bytes)
+    capacity = (
+        (capacity + PREDICTION_STORAGE_GRANULARITY - 1)
+        // PREDICTION_STORAGE_GRANULARITY
+        * PREDICTION_STORAGE_GRANULARITY
+    )
     return {
-        "max_bytes": logits_bytes + PREDICTION_MANIFEST_MAX_BYTES,
-        "max_entries": PREDICTION_ARTIFACT_MAX_ENTRIES,
+        "max_bytes": capacity,
+        "max_inodes": PREDICTION_STORAGE_MAX_INODES,
+        "artifact_max_bytes": artifact_max_bytes,
+        "artifact_max_entries": PREDICTION_ARTIFACT_MAX_ENTRIES,
         "logits_bytes": logits_bytes,
         "manifest_max_bytes": PREDICTION_MANIFEST_MAX_BYTES,
     }
@@ -246,11 +258,18 @@ def prediction_storage_manifest() -> Dict[str, Any]:
 
     return {
         "hard_limit": "required_before_candidate_start",
-        "max_entries": PREDICTION_ARTIFACT_MAX_ENTRIES,
+        "accounting": "allocated_filesystem_storage_including_open_unlinked_files",
+        "isolated_from": "episode_logs_and_results",
+        "max_inodes": PREDICTION_STORAGE_MAX_INODES,
+        "temporary_entries": "allowed_until_candidate_exit",
+        "artifact_max_entries": PREDICTION_ARTIFACT_MAX_ENTRIES,
         "logit_bytes": 4,
         "logit_values": "examples*vocab_size",
         "manifest_max_bytes": PREDICTION_MANIFEST_MAX_BYTES,
-        "max_bytes": "examples*vocab_size*4+manifest_max_bytes",
+        "artifact_max_bytes": "examples*vocab_size*4+manifest_max_bytes",
+        "max_bytes": "round_up(max(min_bytes,2*artifact_max_bytes),granularity_bytes)",
+        "min_bytes": PREDICTION_STORAGE_MIN_BYTES,
+        "granularity_bytes": PREDICTION_STORAGE_GRANULARITY,
     }
 
 

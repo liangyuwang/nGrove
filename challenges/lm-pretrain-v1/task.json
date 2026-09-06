@@ -1,5 +1,5 @@
 {
-  "schema_version": 6,
+  "schema_version": 7,
   "task_id": "lm-pretrain-v1",
   "task_kind": "benchmark_challenge",
   "leaderboard_eligible": false,
