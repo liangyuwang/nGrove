@@ -79,6 +79,7 @@ class AgentApiBundleTests(unittest.TestCase):
                 set(PUBLIC_AGENT_API_FILES.values()) | {"__init__.py"},
             )
             self.assertFalse((package / "supervisor.py").exists())
+            self.assertFalse((package / "operator_status.py").exists())
             self.assertEqual(published.stat().st_mode & 0o777, 0o555)
             self.assertEqual(package.stat().st_mode & 0o777, 0o555)
             self.assertTrue(

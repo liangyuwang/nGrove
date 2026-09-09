@@ -49,6 +49,11 @@ from .local_watchdog import (
     supervise_start,
 )
 from .results import normalize_result_report
+from .operator_status import (
+    DEFAULT_MAX_AGE_SECONDS,
+    format_operator_status,
+    read_operator_status,
+)
 from .runtime import DockerRuntime, RuntimeFailure
 from .supervisor import Supervisor
 from .training_data import verify_training_data
@@ -1149,6 +1154,19 @@ def command_worker_recover(args: argparse.Namespace) -> int:
     return 0 if report["cleanup_complete"] else 2
 
 
+def command_status(args: argparse.Namespace) -> int:
+    view = read_operator_status(
+        args.episode,
+        observation_path=args.observation,
+        max_age_seconds=args.max_age_seconds,
+    )
+    if args.json:
+        _print(view)
+    else:
+        print(format_operator_status(view))
+    return 0
+
+
 def command_challenge_info(args: argparse.Namespace) -> int:
     release = ChallengeRelease.load(args.challenge)
     _print(release.public_manifest())
@@ -1376,7 +1394,27 @@ def build_parser() -> argparse.ArgumentParser:
     recover.add_argument("--state-dir", type=Path, required=True)
     recover.set_defaults(function=command_worker_recover)
 
-    report = subparsers.add_parser("report", help="print a completed episode report")
+    status = subparsers.add_parser(
+        "status", help="show trusted Operator execution evidence and Core snapshot"
+    )
+    status.add_argument("--episode", required=True, type=Path)
+    status.add_argument(
+        "--observation", type=Path, help="trusted deployment observation JSON"
+    )
+    status.add_argument(
+        "--max-age-seconds",
+        type=float,
+        default=DEFAULT_MAX_AGE_SECONDS,
+        help="maximum deployment observation age (default: 60 seconds)",
+    )
+    status.add_argument(
+        "--json", action="store_true", help="emit the structured Operator view"
+    )
+    status.set_defaults(function=command_status)
+
+    report = subparsers.add_parser(
+        "report", help="print the full trusted Core episode report"
+    )
     report.add_argument("--episode", required=True, type=Path)
     report.set_defaults(function=command_report)
 

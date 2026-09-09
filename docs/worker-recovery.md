@@ -89,6 +89,11 @@ snapshots). Episode filesystem allocations and retained artifacts remain the
 deployment's retention/disposal responsibility. Historical Core state may still
 show the interrupted phase; cleanup success is not benchmark completion.
 
+The trusted [Operator status](operator-status.md) view keeps the Core snapshot,
+current deployment execution, workload cleanup and storage disposal separate.
+External recovery tools can report their checked observations through that
+optional format without rewriting interrupted Core state.
+
 ## Supported scope
 
 This implementation covers one local POSIX Docker Worker session after journal

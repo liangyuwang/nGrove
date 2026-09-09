@@ -43,9 +43,12 @@ class _BoundedLogSink:
         self.truncated = False
 
     def drain(self, source: BinaryIO) -> None:
+        # BufferedReader.read(n) can wait for n bytes or EOF on a live pipe.
+        # read1 returns the bytes available from one underlying read instead.
+        read = getattr(source, "read1", source.read)
         try:
             while True:
-                chunk = source.read(64 * 1024)
+                chunk = read(64 * 1024)
                 if not chunk:
                     break
                 remaining = self.limit - self.written
@@ -53,6 +56,7 @@ class _BoundedLogSink:
                     retained = chunk[:remaining]
                     self.stream.write(retained)
                     self.written += len(retained)
+                    self.stream.flush()
                 if len(chunk) > remaining:
                     self.truncated = True
             if self.truncated:
@@ -84,6 +88,7 @@ def summarize_host_agent_trace(path: Path) -> Dict[str, Any]:
         "usage_complete": True,
     }
     if not path.exists():
+        summary["usage_complete"] = False
         return summary
 
     saw_usage = False

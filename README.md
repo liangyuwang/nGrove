@@ -321,7 +321,11 @@ python3 -m autotrain_bench.cli start \
 ```
 
 The generic host runner captures stdout/stderr and enforces the same episode
-deadline. The optional Codex adapter invokes
+deadline. Short output is flushed to its log files while the process is still
+running. Each stream retains at most 10 MiB including its truncation marker;
+excess output is still drained so the log limit does not block the Agent.
+Truncated or malformed usage records remain explicitly incomplete.
+The optional Codex adapter invokes
 `codex exec --ephemeral --json`, disables web search and user configuration, and
 reuses the CLI's existing login. It never copies `auth.json` into an Agent
 Container and does not require an inference Gateway. These behaviors follow the
@@ -498,7 +502,23 @@ ordinary Docker bridge egress and marks the run
 `policy_compliant: false`. It is not a closed AutoTrain-Bench result and exists
 only to make local integration easier.
 
-The Supervisor prints the episode directory. Its final state can be inspected later with:
+The Supervisor prints the episode directory. The trusted Operator can inspect
+the latest Core snapshot and, when supplied by the deployment, current execution
+evidence with:
+
+```bash
+autotrain-bench status \
+  --episode /path/to/autotrain-bench-runs/episodes/<episode-id>
+```
+
+Without fresh, episode-bound deployment evidence, this view reports current
+execution as unknown even if the Core snapshot says `active`. Finalized results
+remain authoritative. Add `--observation PATH` for a deployment observation or
+`--json` for the structured view; see [Operator status](docs/operator-status.md)
+for the schema, freshness rules, and separate cleanup evidence. This view does
+not query an allocator or change the Agent-visible status API.
+
+The full Core report remains available with:
 
 ```bash
 autotrain-bench report \
