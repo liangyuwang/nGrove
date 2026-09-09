@@ -44,10 +44,14 @@ Platform packages own:
 - platform logs and environment receipts;
 - site-specific security hardening.
 
-Platform packages are distributed separately.  Examples of possible package
+Platform implementations live outside Core, either as separately distributed
+packages or temporary deployments created during authorized preparation. Keep
+their source and dependency identities with run evidence. Examples of package
 names are `autotrain-worker-docker`, `autotrain-worker-apptainer`, and
 `autotrain-worker-kubernetes`; these names are examples, not core backends.
 Core must never grow platform selection branches or import their SDKs.
+See [Worker integration](worker-integration.md) for trusted composition,
+startup verification, supervision, cleanup, and resource-planning guidance.
 
 The trusted launcher or Worker verifies the public TRAIN view before task
 reveal. The launcher supplies that evidence to `Supervisor`, which checks its
@@ -123,8 +127,8 @@ Passing conformance does not certify a user-controlled deployment.  Likewise,
 an organizer-controlled deployment is not eligible when required technical
 capabilities are missing.  Missing or insufficient capabilities are recorded
 explicitly and never trigger a fallback. A receipt is conformant only for the
-suite version associated with the active Worker Protocol; a passing v13 receipt
-cannot certify a v14 Worker boundary.
+suite version associated with the active Worker Protocol; a passing v14 receipt
+cannot certify a v15 Worker boundary.
 
 Worker Protocol v15 retains the v9 evidence direction. `WorkerDescriptor`
 contains only Worker self-description and cannot carry conformance. The trusted
@@ -177,25 +181,27 @@ artifact is formally usable only when the evidence matches a
 `WorkloadResolutionAcceptance` supplied through the trusted organizer release
 receipt. Worker self-description is never organizer acceptance.
 
-Version 14 is a breaking interface revision in the current unreleased
+Version 15 is a breaking interface revision in the current unreleased
 development snapshot; it does not imply a package release version. Older
-Workers are rejected rather than adapted implicitly. Version 14 retains the v6
+Workers are rejected rather than adapted implicitly. Version 15 retains the v6
 workload-resolution rules, the v7 requirement that a successful `start_lease()`
 return a `ResourceAllocationReceipt`, and the v8 mandatory resolution
 deadlines, as well as the v9 trusted conformance input and v10 single-target
 semantics, the v11 offline two-artifact file contract, and the v12 hidden-bundle
 identity and prediction-storage rules. It also retains the v13 generic
-performance-score contract and adds the release-scoped cost contract. External
+performance-score contract and the v14 release-scoped cost contract. External
 Worker packages must implement workload and hidden-data resolution, bind
 operations to resolved identities and resource requests, accept TEST before
 ANALYSIS, return valid performance and cost measurements, and preserve the
 precise context/target/artifact visibility fields in
 `CandidateChannelRequirements` and the offline file ABI without assuming a
-particular storage or sandbox implementation.
+particular storage or sandbox implementation. Version 15 separates the bounded
+runtime prediction allocation from strict final artifact validation, as
+specified under [Candidate channel](#candidate-channel).
 
 A local development Worker may implement both roles in one process. A future
 formal deployment may place them on separate services connected only through
-an immutable artifact reference. The current version 14 Python interface does
+an immutable artifact reference. The current version 15 Python interface does
 not yet define that remote artifact transport.
 
 Worker operation failures and teardown failures have different episode

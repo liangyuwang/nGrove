@@ -104,6 +104,9 @@ standalone `prepare`, `host_cli`, external scheduler allocations and resources
 created through a custom Worker are not certified by this journal. Direct
 DockerRuntime integrations must call `enable_recovery` before their workloads
 and retain ownership until all Worker calls stop.
+Custom deployments must supply their own owned-resource inspection and
+recovery entry point; see [Worker integration](worker-integration.md) for its
+required evidence, cancellation handling, and verification stages.
 
 The container CLI now runs its trusted launcher in a dedicated process group
 under an independent parent watchdog. Once the journal is registered, the

@@ -115,6 +115,8 @@ compliance or leaderboard eligibility.
   progress summary from the final authoritative state before stopping its
   snapshot publisher or unmounting episode storage. The actual Core field
   names are `closure_reason` and `research_sealed_at`, not `research_closure`.
+  Serialize periodic and final writes so an older in-flight snapshot cannot
+  overwrite the final refresh; join the publisher before detaching storage.
 - After external cancellation, preserve the interrupted Core state. Record
   deployment termination and cleanup evidence separately; do not manufacture
   a finalized result, commit a leftover checkpoint, or restart research.
@@ -123,3 +125,5 @@ Existing site-specific `watch.json`, `progress.json`, and scheduler records are
 not implicitly compatible with this schema. Their producers must supply the
 mapping in the external deployment. Core does not add site-specific parsers or
 silently interpret an arbitrary monitor file as authoritative evidence.
+See [Worker integration](worker-integration.md) for the publisher's place in
+the launch/cleanup sequence and focused deployment verification.

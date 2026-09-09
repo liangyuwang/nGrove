@@ -175,11 +175,15 @@ organizer-approved derived artifact, but may not silently substitute an
 environment.
 
 Slurm, Kubernetes, Apptainer, cloud-job, and other integrations belong in
-separately distributed Worker packages maintained by their platform or site.
-They must not add platform branches or dependencies to this core repository.
+external Worker deployments. These may be maintained platform packages or
+temporary implementations created by the trusted operator during authorized
+preparation, with source and identities preserved for the run. They must not
+add platform branches or dependencies to this core repository.
 See [Worker Protocol boundary](docs/worker-protocol.md) for the ownership rules
-and [Thin Core development plan](docs/thin-core-development-plan.md) for the
-incremental migration and its acceptance criteria.
+and [Worker integration](docs/worker-integration.md) for composition order,
+Agent tool admission, monitoring, cancellation/recovery responsibilities, and
+staged verification. The [Thin Core development plan](docs/thin-core-development-plan.md)
+describes the incremental migration and its acceptance criteria.
 
 The reference runtime requires a machine that can run Docker. AutoTrain-Bench
 consumes the environment the user has already obtained; it does **not** allocate
