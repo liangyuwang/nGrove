@@ -247,6 +247,25 @@ def _write_report(registration: dict, report: dict) -> None:
         os.close(fd)
 
 
+@contextmanager
+def _operator_signals():
+    """Latch cancellation without unwinding process creation or owned cleanup."""
+    interruption = []
+    previous = {}
+
+    def interrupted(signum, frame):
+        if not interruption:
+            interruption.append(signum)
+
+    try:
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            previous[signum] = signal.signal(signum, interrupted)
+        yield interruption
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
 def supervise(
     command: Callable[[int], Sequence[str]],
     *,
@@ -265,6 +284,27 @@ def supervise(
         for value in (heartbeat_timeout, grace_seconds)
     ):
         raise WorkerFailure("watchdog tolerances must be finite positive seconds")
+    # Keep handlers installed through fencing, recovery and report persistence.
+    # Raising from a handler can lose a just-created Popen handle or abort a
+    # cleanup that has already started. Further signals do not skip that work.
+    with _operator_signals() as interruption:
+        return _supervise(
+            command,
+            heartbeat_timeout=heartbeat_timeout,
+            grace_seconds=grace_seconds,
+            recover=recover,
+            interruption=interruption,
+        )
+
+
+def _supervise(
+    command: Callable[[int], Sequence[str]],
+    *,
+    heartbeat_timeout: float,
+    grace_seconds: float,
+    recover: Callable[[dict], dict],
+    interruption: list[int],
+) -> int:
     parent, child = socket.socketpair()
     process = None
     registration = None
@@ -274,12 +314,6 @@ def supervise(
     failures = []
     deadlines = {}
     buffer = b""
-    previous_term = signal.getsignal(signal.SIGTERM)
-
-    def interrupted(signum, frame):
-        raise KeyboardInterrupt()
-
-    signal.signal(signal.SIGTERM, interrupted)
     try:
         process = subprocess.Popen(
             command(child.fileno()),
@@ -290,6 +324,9 @@ def supervise(
         parent.settimeout(0.1)
         last_heartbeat = time.monotonic()
         while True:
+            if interruption:
+                reason = "operator_interrupted"
+                break
             now = time.monotonic()
             expired = [
                 label for deadline, label in deadlines.values() if now >= deadline
@@ -383,7 +420,6 @@ def supervise(
             except subprocess.TimeoutExpired:
                 failures.append("Worker process termination remains unconfirmed")
         parent.close()
-        signal.signal(signal.SIGTERM, previous_term)
 
     cleanup = None
     if registration is not None:
@@ -391,9 +427,12 @@ def supervise(
             cleanup = recover(registration)
         except Exception as exc:
             failures.append("Worker recovery failed: " + str(exc))
+    if interruption and reason in {"worker_completed", "worker_exited"}:
+        reason = "operator_interrupted"
     report = {
         "reason": reason,
         "detail": detail,
+        "operator_signal": interruption[0] if interruption else None,
         "worker_exit_code": process.returncode if process is not None else None,
         "completed_exit_code": completed_code,
         "cleanup": cleanup,
@@ -423,7 +462,8 @@ def supervise(
     for failure in failures:
         print("Worker watchdog: " + failure, file=sys.stderr, flush=True)
     if (
-        reason != "worker_completed"
+        interruption
+        or reason != "worker_completed"
         or failures
         or (cleanup is not None and not cleanup["cleanup_complete"])
         or process is None

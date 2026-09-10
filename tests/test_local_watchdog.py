@@ -23,6 +23,56 @@ FIXTURE = Path(__file__).parent / "fixtures/watchdog_worker.py"
 
 @unittest.skipUnless(os.name == "posix", "watchdog uses a private POSIX process group")
 class WatchdogProcessTests(unittest.TestCase):
+    def test_parent_signals_do_not_interrupt_fencing_or_recovery(self):
+        for phase in ("launch", "active", "fence", "recovery"):
+            for signum in (signal.SIGTERM, signal.SIGINT):
+                with self.subTest(phase=phase, signal=signum):
+                    with tempfile.TemporaryDirectory() as directory:
+                        root = Path(directory)
+                        episode = root / "episode"
+                        episode.mkdir()
+                        state = episode / "state.json"
+                        saved = (
+                            '{"research_sealed":true,"TEST":"saved-fixture-decision"}'
+                        )
+                        state.write_text(saved)
+                        result = subprocess.run(
+                            [
+                                sys.executable,
+                                str(FIXTURE),
+                                "signal-parent",
+                                str(root),
+                                phase,
+                                str(int(signum)),
+                            ],
+                            capture_output=True,
+                            text=True,
+                            timeout=15,
+                        )
+                        self.assertEqual(result.returncode, 2, result.stderr)
+                        self.assertEqual((root / "child-reaped").read_text(), "True")
+                        self.assertEqual(
+                            (root / "handlers-restored").read_text(), "True"
+                        )
+                        self.assertEqual(state.read_text(), saved)
+                        if phase == "launch":
+                            continue  # No journal has been registered yet.
+                        self.assertEqual((root / "recovered").read_text(), "True")
+                        report = json.loads(
+                            (root / "worker/watchdog-report.json").read_text()
+                        )
+                        self.assertEqual(report["reason"], "operator_interrupted")
+                        self.assertEqual(report["operator_signal"], signum)
+                        self.assertTrue(report["cleanup"]["cleanup_complete"])
+                        self.assertFalse((root / "worker/private").exists())
+                        self.assertEqual(report["worker_exit_code"], -signal.SIGKILL)
+                        self.assertEqual(
+                            report["completed_exit_code"],
+                            0 if phase == "recovery" else None,
+                        )
+                        self.assertEqual(report["failures"], [])
+                        self.assertFalse(report["resumed"])
+
     def test_completed_worker_flushes_final_json_to_a_pipe(self):
         environment = dict(os.environ)
         environment.pop("PYTHONUNBUFFERED", None)

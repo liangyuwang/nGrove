@@ -156,12 +156,33 @@ for signalling. Only after this fence does recovery attempt the exclusive
 journal lock; a held lock still prevents takeover. Recovery verifies the
 registered Worker owner and directory identity as well as Docker identities.
 
+The parent records the first `SIGTERM` or `SIGINT` as a cancellation request
+without raising from the signal handler. It stops supervision and fences its
+owned process group even if the signal arrived while the child was being
+created. Both handlers remain installed through fencing, journal recovery and
+report writing, so repeated signals do not abandon cleanup. The previous
+handlers are restored before `supervise()` returns. Recovery's existing
+per-command timeouts still apply; signal deferral does not add a total cleanup
+deadline or preempt blocked filesystem I/O. Forced kill or host loss still
+requires the separate recovery path described below.
+
 `watchdog-report.json` records the trigger, process exit, completed launcher
 status when available, and cleanup result in the private Worker directory.
+`operator_signal` records the first observed cancellation signal number, or
+null when none was received before the report snapshot. Cancellation during
+recovery gives exit code 2 even if the launcher had already reported success;
+an earlier deadline or watchdog failure remains the primary trigger when
+present. Cleanup evidence remains separate from the saved benchmark result.
 An abnormal stop or unconfirmed cleanup gives CLI exit code 2. A normally
 completed launcher retains its exit status only if recovery succeeds. Existing
 Core state, research sealing and TEST decisions are preserved; the watchdog
 does not finalize, publish or resume an interrupted episode.
+
+Local regressions deliver real `SIGTERM` and `SIGINT` signals during process
+creation, active supervision, fencing and recovery. They verify child reaping,
+handler restoration, cleanup reports and preservation of saved Core state with
+the test Docker backend. These tests do not certify a live Docker daemon,
+allocator-wide cancellation, device isolation, or node-loss recovery.
 
 This covers one local POSIX execution host and its bundled Docker Worker, not
 a distributed lease/fencing protocol. It does not supply asynchronous Core

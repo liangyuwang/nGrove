@@ -14,7 +14,84 @@ from autotrain_bench import local_watchdog
 from autotrain_bench.docker_recovery import DockerRecovery
 
 
+def signal_parent(directory, phase, signum):
+    """Exercise real parent signals with disposable processes and a fake daemon."""
+    from tests.test_docker_recovery import FakeDocker
+
+    root = Path(directory)
+    children = []
+    popen = subprocess.Popen
+    killpg = os.killpg
+    previous = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+
+    def launch(*args, **kwargs):
+        child = popen(*args, **kwargs)
+        children.append(child)
+        if phase == "launch":
+            # A signal after creation but before Popen returns must not lose
+            # the process handle needed to fence the dedicated group.
+            os.kill(os.getpid(), signum)
+        return child
+
+    def fence(pid, termination_signal):
+        if phase == "fence":
+            os.kill(os.getpid(), signum)
+        killpg(pid, termination_signal)
+
+    def recover(registration):
+        with_journal = DockerRecovery(Path(registration["state_dir"]))
+        try:
+            if phase == "recovery":
+                os.kill(os.getpid(), signum)
+                os.kill(os.getpid(), signum)
+            report = with_journal.recover(FakeDocker().run)
+            (root / "recovered").write_text(str(report["cleanup_complete"]))
+            return report
+        finally:
+            with_journal.close()
+
+    try:
+        with patch.object(subprocess, "Popen", launch), patch.object(
+            os, "killpg", fence
+        ):
+            code = local_watchdog.supervise(
+                lambda fd: [
+                    sys.executable,
+                    __file__,
+                    str(fd),
+                    str(root),
+                    "signal-normal"
+                    if phase == "recovery"
+                    else "signal-child-" + str(signum),
+                ],
+                recover=recover,
+            )
+        # Observe before fixture safety cleanup; cleanup cannot make a broken
+        # supervise() implementation appear to have reaped its own child.
+        (root / "child-reaped").write_text(str(children[0].returncode is not None))
+        (root / "handlers-restored").write_text(
+            str(
+                all(
+                    signal.getsignal(sig) == handler
+                    for sig, handler in previous.items()
+                )
+            )
+        )
+        return code
+    finally:
+        for child in children:
+            if child.returncode is None:
+                # Only this fixture's own unreaped child identity is used.
+                try:
+                    killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                child.wait(timeout=5)
+
+
 def main():
+    if sys.argv[1] == "signal-parent":
+        raise SystemExit(signal_parent(sys.argv[2], sys.argv[3], int(sys.argv[4])))
     if sys.argv[1] == "output-parent":
         mode = sys.argv[2]
         code = local_watchdog.supervise(
@@ -48,6 +125,12 @@ def main():
     local_watchdog._client = client
     journal = DockerRecovery(root / "worker", episode=root / "episode")
     client.register(journal, "fixture-docker")
+    if mode == "signal-normal" or mode.startswith("signal-child-"):
+        private = journal.private_directory("signal-fixture-")
+        (private / "disposable-input").write_text("fixture data, no hidden dataset")
+    if mode.startswith("signal-child-"):
+        os.kill(os.getppid(), int(mode.removeprefix("signal-child-")))
+        time.sleep(60)
     if mode == "paused":
         os.kill(os.getpid(), signal.SIGSTOP)
     if mode == "killed":
