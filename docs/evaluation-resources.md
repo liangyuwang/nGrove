@@ -66,6 +66,12 @@ output does not certify an evaluation contract. External launchers should perfor
 equivalent Worker-side checks before spending a research budget. This local
 preflight does not add a remote operation or change Worker Protocol v16.
 
+After preparation, external deployments can use the
+[evaluation Worker diagnostic](worker-evaluation-probe.md) on public fixtures to
+exercise actual protocol calls, receipt binding and typed rejection. This is a
+separately authorized disposable test, not an automatic step in `start` or a
+formal conformance receipt.
+
 ## Worker v16 and result v14
 
 Each `evaluate_candidate()` call receives `evaluation_id` (a fresh Core-issued

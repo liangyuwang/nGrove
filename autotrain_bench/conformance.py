@@ -1,9 +1,9 @@
-"""Core-owned diagnostic probes for Worker Protocol resolution semantics.
+"""Core-owned diagnostic probes for selected Worker Protocol semantics.
 
 These probes deliberately do not issue :class:`ConformanceReceipt`. They
-exercise only workload and hidden-data resolution, while the active Worker
-Protocol also includes Lease admission/execution/termination, evaluation,
-resource evidence, isolation, and teardown guarantees. Treating this partial
+exercise resolution and evaluation resource evidence, while the active Worker
+Protocol also includes Lease admission/execution/termination, physical resource
+enforcement, isolation, and teardown guarantees. Treating this partial
 coverage as complete protocol conformance would create false formal evidence.
 
 Run a probe only against a dedicated, disposable Worker deployment. The
@@ -16,25 +16,35 @@ remain outside Core.
 from __future__ import annotations
 
 import math
+import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Sequence, Tuple
 
+from .config import TrainingResources
 from .worker_protocol import (
     WORKER_PROTOCOL_VERSION,
+    CandidateEvaluationResult,
+    EvaluationResourceFailure,
     EvaluationTaskSpec,
     HiddenDatasetIdentityMismatch,
     HiddenDatasetRequest,
     HiddenDatasetResolutionFailure,
     ResolvedHiddenDataset,
     ResolvedWorkload,
+    ResourceEnvelope,
     WorkerDescriptor,
+    WorkerFailure,
+    WorkerTeardownFailure,
     WorkloadRequest,
     WorkloadResolutionFailure,
+    assess_evaluation_resources,
 )
 
 
 RESOLUTION_PROBE_VERSION = f"worker-v{WORKER_PROTOCOL_VERSION}-resolution-probe-v1"
+EVALUATION_PROBE_VERSION = f"worker-v{WORKER_PROTOCOL_VERSION}-evaluation-probe-v1"
 
 PASSED = "passed"
 FAILED = "failed"
@@ -83,7 +93,7 @@ class ConformanceCheck:
 
 
 @dataclass(frozen=True)
-class ResolutionProbeReport:
+class WorkerProbeReport:
     """A limited diagnostic report that is never formal conformance evidence."""
 
     probe_version: str
@@ -118,6 +128,25 @@ class ResolutionProbeReport:
     def private_manifest(self) -> Dict[str, Any]:
         payload = self.public_manifest()
         payload["checks"] = [item.private_manifest() for item in self.checks]
+        return payload
+
+
+@dataclass(frozen=True)
+class ResolutionProbeReport(WorkerProbeReport):
+    """Workload and hidden-data resolution observations."""
+
+
+@dataclass(frozen=True)
+class EvaluationProbeReport(WorkerProbeReport):
+    """Evaluation observations; operation evidence is trusted-Operator-only."""
+
+    task_id: str = ""
+    evaluations: Tuple[Mapping[str, Any], ...] = field(default_factory=tuple)
+
+    def private_manifest(self) -> Dict[str, Any]:
+        payload = super().private_manifest()
+        payload["task_id"] = self.task_id
+        payload["evaluations"] = list(self.evaluations)
         return payload
 
 
@@ -394,4 +423,302 @@ def probe_worker_resolution(
         run_id=run_id,
         worker_id=worker_id,
         checks=tuple(log.checks),
+    )
+
+
+class _ProbeDeadline(TimeoutError):
+    pass
+
+
+class _ProbeEvidenceError(ValueError):
+    pass
+
+
+def probe_worker_evaluation(
+    worker: Any,
+    *,
+    task: EvaluationTaskSpec,
+    candidate_dir: Path,
+    output_root: Path,
+    resources: TrainingResources,
+    hidden_dataset_identities: Mapping[str, str],
+    resource_envelope: ResourceEnvelope,
+    rejected_resource_envelope: ResourceEnvelope,
+    teardown: Callable[[], bool],
+    timeout_seconds: float = 60.0,
+) -> EvaluationProbeReport:
+    """Exercise evaluation receipts and typed resource rejection on fixtures.
+
+    The Operator supplies a known-good immutable Candidate, public synthetic
+    evaluation fixtures, one supported contract and one deliberately unsupported
+    contract. Never attach this probe to a live episode or real hidden data.
+    There are at most four evaluations: accepted TEST/ANALYSIS followed by
+    rejected TEST/ANALYSIS. Each invocation shares one deadline with its workload
+    and hidden-data resolution; an unexpected failure stops subsequent cases.
+
+    ``teardown`` must clean the dedicated deployment and return exactly True
+    only after confirming owned workloads and private materializations absent.
+    It runs after every started probe, including exceptions and interrupts.
+    An outer deployment watchdog must bound this synchronous probe and cleanup;
+    the probe can reject late replies, but cannot preempt a wedged Worker.
+    """
+
+    if not isinstance(task, EvaluationTaskSpec):
+        raise TypeError("task must be an EvaluationTaskSpec")
+    if not isinstance(resources, TrainingResources):
+        raise TypeError("resources must be TrainingResources")
+    resources = resources.validate()
+    if set(hidden_dataset_identities) != {"test", "analysis"}:
+        raise ValueError("public fixture identities for TEST and ANALYSIS are required")
+    requests = {
+        split: HiddenDatasetRequest(split, digest)
+        for split, digest in hidden_dataset_identities.items()
+    }
+    if any(request.expected_sha256 is None for request in requests.values()):
+        raise ValueError("public fixture identities must have explicit SHA-256 values")
+    for envelope in (resource_envelope, rejected_resource_envelope):
+        if not isinstance(envelope, ResourceEnvelope):
+            raise TypeError("probe contracts must be ResourceEnvelope values")
+        if not envelope.requirements:
+            raise ValueError("probe contracts require normative resource properties")
+    if resource_envelope.sha256 == rejected_resource_envelope.sha256:
+        raise ValueError("accepted and rejected resource contracts must differ")
+    if not callable(teardown):
+        raise TypeError("teardown must be callable")
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, (int, float))
+        or not math.isfinite(timeout_seconds)
+        or timeout_seconds <= 0
+    ):
+        raise ValueError("timeout_seconds must be finite and positive")
+    candidate_dir = Path(candidate_dir).resolve()
+    output_root = Path(output_root).resolve()
+    if not candidate_dir.is_dir() or not output_root.is_dir():
+        raise ValueError("candidate_dir and output_root must be existing directories")
+    if candidate_dir == output_root or candidate_dir in output_root.parents:
+        raise ValueError("probe output must be outside the immutable Candidate")
+
+    workload_requests = (
+        WorkloadRequest("candidate", task.candidate_image),
+        WorkloadRequest("evaluator", task.evaluator_image),
+    )
+    run_id = "evaluation-probe:" + uuid.uuid4().hex
+    run_dir = output_root / run_id.split(":", 1)[1]
+    log = _Recorder()
+    worker_id = "unknown"
+    records: List[Mapping[str, Any]] = []
+    receipt_ids: set[str] = set()
+    resolved_identities: Dict[str, Dict[str, Any]] = {}
+    cases = (
+        ("accepted_test", "test", resource_envelope, False),
+        ("accepted_analysis", "analysis", resource_envelope, False),
+        ("rejected_test", "test", rejected_resource_envelope, True),
+        ("rejected_analysis", "analysis", rejected_resource_envelope, True),
+    )
+    completed = 0
+    stage = "descriptor.available"
+    try:
+        descriptor = worker.describe_capabilities()
+        if not isinstance(descriptor, WorkerDescriptor):
+            raise _ProbeEvidenceError("Worker returned an invalid descriptor type")
+        worker_id = descriptor.worker_id
+        if (
+            descriptor.protocol_version != WORKER_PROTOCOL_VERSION
+            or "evaluation" not in descriptor.roles
+        ):
+            raise _ProbeEvidenceError(
+                "Worker does not declare the current evaluation role"
+            )
+        log.record(stage, PASSED)
+        stage = "output.scope_created"
+        run_dir.mkdir(exist_ok=False)
+        log.record(stage, PASSED)
+        for case, split, envelope, expect_rejection in cases:
+            prefix = f"evaluation[{case}]"
+            deadline = time.monotonic() + timeout_seconds
+
+            def remaining_seconds() -> float:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise _ProbeDeadline("evaluation probe operation deadline reached")
+                return remaining
+
+            def call(method: Callable[..., Any], **kwargs: Any) -> Any:
+                try:
+                    value = method(timeout_seconds=remaining_seconds(), **kwargs)
+                except WorkerTeardownFailure:
+                    # Preserve an unknown workload boundary even if its reply is late.
+                    raise
+                except Exception:
+                    # A late error is not timely resource rejection either.
+                    remaining_seconds()
+                    raise
+                remaining_seconds()
+                return value
+
+            evaluation_id = "evaluation:" + uuid.uuid4().hex
+            record: Dict[str, Any] = {
+                "case": case,
+                "evaluation_id": evaluation_id,
+                "split": split,
+                "expects_resource_rejection": expect_rejection,
+                "passed": False,
+                "resource_envelope": envelope.public_manifest(),
+                "hidden_dataset_request": {
+                    "name": split,
+                    "sha256": requests[split].expected_sha256,
+                    "identity_algorithm": requests[split].identity_algorithm,
+                },
+                "workloads": {},
+            }
+            records.append(record)
+            workloads: Dict[str, ResolvedWorkload] = {}
+            for request in workload_requests:
+                stage = f"{prefix}.{request.role}_resolution"
+                resolved = call(
+                    worker.resolve_workload, episode_id=run_id, workload=request
+                )
+                if not isinstance(resolved, ResolvedWorkload) or (
+                    resolved.role != request.role
+                    or resolved.requested_identity != request.requested_identity
+                ):
+                    raise _ProbeEvidenceError(
+                        "resolved workload does not bind its request"
+                    )
+                evidence = resolved.evidence_manifest()
+                record["workloads"][request.role] = evidence
+                previous = resolved_identities.setdefault(request.role, evidence)
+                if previous != evidence:
+                    raise _ProbeEvidenceError("effective workload identity changed")
+                workloads[request.role] = resolved
+                log.record(stage, PASSED)
+            stage = f"{prefix}.hidden_resolution"
+            hidden_request = requests[split]
+            hidden = call(
+                worker.resolve_hidden_dataset,
+                episode_id=run_id,
+                task=task,
+                hidden_dataset=hidden_request,
+            )
+            if not isinstance(hidden, ResolvedHiddenDataset) or (
+                hidden.name != split
+                or hidden.sha256 != hidden_request.expected_sha256
+                or hidden.identity_algorithm != hidden_request.identity_algorithm
+            ):
+                raise _ProbeEvidenceError(
+                    "resolved hidden dataset does not bind its fixture"
+                )
+            record["hidden_dataset"] = {
+                "name": hidden.name,
+                "sha256": hidden.sha256,
+                "identity_algorithm": hidden.identity_algorithm,
+            }
+            log.record(stage, PASSED)
+            stage = (
+                f"{prefix}.resource_rejection"
+                if expect_rejection
+                else f"{prefix}.result"
+            )
+            try:
+                result = call(
+                    worker.evaluate_candidate,
+                    episode_id=run_id,
+                    task=task,
+                    resources=resources,
+                    candidate_dir=candidate_dir,
+                    hidden_dataset=hidden,
+                    output_dir=run_dir / case,
+                    candidate_workload=workloads["candidate"],
+                    evaluator_workload=workloads["evaluator"],
+                    evaluation_id=evaluation_id,
+                    resource_envelope=envelope,
+                )
+            except EvaluationResourceFailure as exc:
+                if not expect_rejection:
+                    raise
+                record["resource_rejection"] = str(exc)
+                record["passed"] = True
+                log.record(stage, PASSED)
+                completed += 1
+                continue
+            if expect_rejection:
+                raise _ProbeEvidenceError(
+                    "Worker accepted the deliberately rejected contract"
+                )
+            if not isinstance(result, CandidateEvaluationResult):
+                raise _ProbeEvidenceError(
+                    "Worker returned an invalid evaluation result type"
+                )
+            record["performance"] = result.performance_manifest(task.performance_score)
+            record["cost"] = result.cost_manifest(task.cost)
+            log.record(stage, PASSED)
+            stage = f"{prefix}.resource_receipt"
+            receipt = result.resource_receipt
+            if receipt is not None:
+                record["resource_receipt"] = receipt.public_manifest()
+            assessment = assess_evaluation_resources(
+                envelope,
+                receipt,
+                episode_id=run_id,
+                evaluation_id=evaluation_id,
+                worker_id=worker_id,
+            )
+            record["assessment"] = assessment.public_manifest()
+            if not assessment.satisfied:
+                raise _ProbeEvidenceError(
+                    "evaluation resource contract is not satisfied"
+                )
+            if receipt.receipt_id in receipt_ids:
+                raise _ProbeEvidenceError("evaluation resource receipt_id was reused")
+            receipt_ids.add(receipt.receipt_id)
+            remaining_seconds()
+            log.record(stage, PASSED)
+            record["passed"] = True
+            completed += 1
+    except Exception as exc:  # noqa: BLE001 - retain failure and always clean the deployment
+        if isinstance(exc, _ProbeDeadline):
+            code = "operation_deadline_exceeded"
+        elif isinstance(exc, WorkerTeardownFailure):
+            code = "worker_teardown_unconfirmed"
+        elif isinstance(exc, EvaluationResourceFailure):
+            code = "unexpected_resource_rejection"
+        elif isinstance(exc, WorkerFailure):
+            code = "worker_failure"
+        elif isinstance(exc, (TypeError, ValueError)):
+            code = "invalid_worker_evidence"
+        else:
+            code = "unexpected_worker_exception"
+        log.record(
+            stage, FAILED, code=code, private_detail=f"{type(exc).__name__}: {exc}"
+        )
+        for case, _, _, _ in cases[completed:]:
+            log.record(
+                f"evaluation[{case}].completed",
+                SKIPPED,
+                code="probe_stopped_after_failure",
+            )
+    finally:
+        try:
+            confirmed = teardown()
+        except Exception as exc:  # noqa: BLE001 - cleanup failures remain evidence
+            log.record(
+                "deployment.teardown_confirmed",
+                FAILED,
+                code="deployment_teardown_failed",
+                private_detail=f"{type(exc).__name__}: {exc}",
+            )
+        else:
+            log.expect(
+                "deployment.teardown_confirmed",
+                confirmed is True,
+                code="deployment_teardown_unconfirmed",
+            )
+    return EvaluationProbeReport(
+        probe_version=EVALUATION_PROBE_VERSION,
+        run_id=run_id,
+        worker_id=worker_id,
+        checks=tuple(log.checks),
+        task_id=task.task_id,
+        evaluations=tuple(records),
     )

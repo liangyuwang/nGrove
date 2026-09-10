@@ -621,6 +621,14 @@ requires release-owned identities, a unique run scope, a mandatory deployment
 teardown callback, and public/private diagnostic separation, but cannot issue a
 formal receipt because it does not exercise the complete v9 contract.
 
+A separate [evaluation resource diagnostic](worker-evaluation-probe.md) now
+exercises v16 TEST/ANALYSIS invocation receipts and typed resource rejection on
+public fixtures, sharing resolution/execution deadlines and requiring explicit
+deployment cleanup confirmation. This gives external Worker preparation a
+reusable check beyond resolution. It remains partial diagnostic coverage, not
+physical enforcement acceptance or a formal conformance suite; historical
+Ibex/Orix runs are not retrospectively certified.
+
 The future formal suite belongs to organizer tooling and the external Worker
 SDK. Platform-specific deployment setup, outer watchdogs, destructive cleanup,
 and remote receipt authentication stay outside Core.
