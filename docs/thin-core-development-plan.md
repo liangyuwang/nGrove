@@ -367,6 +367,9 @@ versions that introduced each change.
   preview profiles remain unchanged and do not yet freeze a comparable evaluation
   environment. Real deployment acceptance and organizer-selected conditions remain
   outstanding; see [evaluation resources](evaluation-resources.md).
+  The local launcher now preflights these requirements before episode setup;
+  read-only support/inventory checks create no allocation receipt and do not
+  replace per-invocation verification. External launchers own equivalent admission.
 
 - Task schema v7, Worker Protocol v15 and Agent Protocol v12 separate prediction runtime
   allocations (temporary files allowed) from exact final artifact validation.

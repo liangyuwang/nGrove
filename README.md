@@ -554,6 +554,10 @@ comparability. Existing Challenge v2 profiles remain readable without this field
 Formal releases require an enforced evaluation contract and accepted TEST
 resource evidence. See [evaluation resource contracts](docs/evaluation-resources.md)
 for the Worker interface, local limits, and remaining comparison conditions.
+The local `start` command preflights the selected evaluation contract before
+episode setup and task reveal, so known unsupported conditions fail before the
+research budget is spent. Every evaluation still rechecks the environment and
+its operation-bound resource evidence.
 
 In v13, `outcome: "success"` requires a finalized episode, a non-empty final
 Candidate ID, a valid TEST performance score with the exact release-declared raw

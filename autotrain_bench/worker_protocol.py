@@ -1366,8 +1366,30 @@ def assess_resource_allocation(
     if receipt.resource_request_sha256 != envelope.sha256:
         raise ValueError("resource receipt is bound to a different request")
 
+    return assess_resource_properties(envelope, receipt.properties)
+
+
+def assess_resource_properties(
+    envelope: ResourceEnvelope,
+    properties: Tuple[ResourcePropertyEvidence, ...],
+) -> ResourceAllocationAssessment:
+    """Compare property views without asserting an operation has been allocated.
+
+    Preflight may use this check to reject unsupported requests. Accepting an
+    actual allocation still requires its receipt and operation-binding checks.
+    """
+
+    if not isinstance(envelope, ResourceEnvelope):
+        raise TypeError("resource envelope must be a ResourceEnvelope")
+    if not isinstance(properties, tuple) or any(
+        not isinstance(item, ResourcePropertyEvidence) for item in properties
+    ):
+        raise TypeError("resource properties must be a tuple of evidence")
+    if len({item.name for item in properties}) != len(properties):
+        raise ValueError("resource properties must be unique")
+
     requirements = {item.name: item for item in envelope.requirements}
-    evidence = {item.name: item for item in receipt.properties}
+    evidence = {item.name: item for item in properties}
     allowed = set(requirements).union(envelope.observational_properties)
     missing = sorted(set(requirements).difference(evidence))
     unexpected = sorted(set(evidence).difference(allowed))

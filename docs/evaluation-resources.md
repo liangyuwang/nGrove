@@ -43,6 +43,29 @@ rejects this new field, and older Cores reject v3, avoiding silent omission of a
 selected contract. The bundled preview manifests are unchanged: no CPU, memory,
 cache, I/O or exclusivity values have been invented for those historical lanes.
 
+## Startup preflight
+
+The local `start` launcher passes the selected evaluation envelope to
+`DockerRuntime.preflight_evaluation_resources()` after TRAIN verification and
+before storage admission, episode/workspace creation, image preparation or task
+reveal. This read-only check rejects normative conditions the local Worker cannot
+satisfy, including unsupported cache/exclusivity properties, stronger enforcement
+than it provides, missing CPU/memory limit support, and unavailable GPU selections.
+It uses the same property checks as evaluation, with a shared 20-second default
+budget for resource queries, including initial GPU selection.
+
+Preflight does not launch workloads, read hidden data, issue allocation receipts,
+or establish permanent admission. An absent envelope adds no resource probes;
+unavailable observational properties remain allowed. The selected contract still
+reaches the Supervisor unchanged, and every evaluation repeats the checks and
+validates its actual receipt. A successful preflight cannot authorize a changed
+backend, a substitute GPU, or an unsupported later invocation.
+
+`prepare --task` has no selected challenge runtime profile, so its readiness
+output does not certify an evaluation contract. External launchers should perform
+equivalent Worker-side checks before spending a research budget. This local
+preflight does not add a remote operation or change Worker Protocol v16.
+
 ## Worker v16 and result v14
 
 Each `evaluate_candidate()` call receives `evaluation_id` (a fresh Core-issued

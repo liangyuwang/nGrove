@@ -490,6 +490,7 @@ class ResolvedChallengeRun:
     resource_envelope: ResourceEnvelope
     comparison_key: ComparisonKey
     release_manifest: Dict[str, Any]
+    evaluation_resource_envelope: Optional[ResourceEnvelope] = None
 
 
 @dataclass(frozen=True)
@@ -688,6 +689,7 @@ class ChallengeRelease:
             track=track_config.track,
             resources=resources,
             resource_envelope=resource_envelope,
+            evaluation_resource_envelope=runtime_profile.evaluation_resource_contract,
             comparison_key=comparison_key,
             release_manifest={
                 "challenge_id": self.challenge_id,

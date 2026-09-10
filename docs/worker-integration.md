@@ -34,6 +34,12 @@ launchers may supply `evaluation_resource_envelope` directly. Resolve unsupporte
 normative properties before authorizing an expensive run. See the
 [evaluation resource contract and evidence example](evaluation-resources.md).
 
+The bundled `start` now calls the local Worker's read-only evaluation-resource
+preflight before episode setup and task reveal. External composition roots need
+the equivalent deployment check; do not postpone a known unsupported contract
+until the Agent has spent its research budget. Preflight produces no allocation
+receipt and never replaces per-evaluation enforcement and evidence validation.
+
 The following is a constructor sketch with inputs already resolved by the
 trusted launcher, not a standalone launcher or a reference Tested Agent:
 

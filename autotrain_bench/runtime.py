@@ -53,6 +53,7 @@ from .worker_protocol import (
     EvaluationResourceFailure,
     EvaluationResourceReceipt,
     assess_evaluation_resources,
+    assess_resource_properties,
     HiddenDatasetIdentityMismatch,
     HiddenDatasetRequest,
     HiddenDatasetResolutionFailure,
@@ -2186,22 +2187,45 @@ class DockerRuntime:
         self._hidden_snapshot_root = None
         self._resolved_hidden_datasets.clear()
 
-    def _evaluation_resource_plan(
+    def preflight_evaluation_resources(
+        self,
+        config: TaskConfig,
+        *,
+        resources: TrainingResources,
+        resource_envelope: Optional[ResourceEnvelope],
+        timeout_seconds: float = 20.0,
+    ) -> None:
+        """Reject a known-unavailable evaluation contract before episode setup.
+
+        Only inspect resource configuration/inventory. No workload, hidden data,
+        allocation receipt or lasting admission is created by this check.
+        """
+
+        if resource_envelope is None:
+            return
+        self._evaluation_resource_properties(
+            envelope=resource_envelope,
+            resources=resources.validate_for(config),
+            device=config.evaluator_device,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def _evaluation_resource_properties(
         self,
         *,
-        episode_id: str,
-        evaluation_id: Optional[str],
-        envelope: Optional[ResourceEnvelope],
+        envelope: ResourceEnvelope,
         resources: TrainingResources,
         device: str,
         timeout_seconds: float,
-    ) -> Tuple[List[str], Optional[EvaluationResourceReceipt]]:
-        if envelope is None:
-            return [], None
-        if not evaluation_id:
+    ) -> Tuple[List[str], Tuple[ResourcePropertyEvidence, ...]]:
+        if not isinstance(envelope, ResourceEnvelope):
+            raise TypeError("resource envelope must be a ResourceEnvelope")
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise EvaluationResourceFailure(
-                "evaluation resource contract requires an evaluation ID"
+                "evaluation resource preflight timeout must be finite and positive"
             )
+        if device == "cuda" and not resources.nvidia_gpu_count:
+            raise EvaluationResourceFailure("CUDA evaluation requires a selected GPU")
         planning_deadline = self.monotonic() + timeout_seconds
 
         def remaining_seconds() -> float:
@@ -2214,6 +2238,8 @@ class DockerRuntime:
 
         values: Dict[str, Any] = {"host.count": 1, "accelerator.count": 0}
         try:
+            if device == "cuda" and self._nvidia_selection is None:
+                self.validate_hardware(resources, timeout_seconds=remaining_seconds())
             gpu_ids = self._nvidia_devices(resources) if device == "cuda" else ()
             values["accelerator.count"] = len(gpu_ids)
             if gpu_ids:
@@ -2324,6 +2350,37 @@ class DockerRuntime:
                 )
             )
         )
+        assessment = assess_resource_properties(envelope, properties)
+        if not assessment.satisfied:
+            raise EvaluationResourceFailure(
+                "local Worker cannot satisfy evaluation resource contract: "
+                + json.dumps(assessment.public_manifest(), sort_keys=True)
+            )
+        remaining_seconds()
+        return args, properties
+
+    def _evaluation_resource_plan(
+        self,
+        *,
+        episode_id: str,
+        evaluation_id: Optional[str],
+        envelope: Optional[ResourceEnvelope],
+        resources: TrainingResources,
+        device: str,
+        timeout_seconds: float,
+    ) -> Tuple[List[str], Optional[EvaluationResourceReceipt]]:
+        if envelope is None:
+            return [], None
+        if not evaluation_id:
+            raise EvaluationResourceFailure(
+                "evaluation resource contract requires an evaluation ID"
+            )
+        args, properties = self._evaluation_resource_properties(
+            envelope=envelope,
+            resources=resources,
+            device=device,
+            timeout_seconds=timeout_seconds,
+        )
         receipt = EvaluationResourceReceipt(
             episode_id=episode_id,
             evaluation_id=evaluation_id,
@@ -2344,7 +2401,6 @@ class DockerRuntime:
                 "local Worker cannot satisfy evaluation resource contract: "
                 + json.dumps(assessment.public_manifest(), sort_keys=True)
             )
-        remaining_seconds()
         return args, receipt
 
     def _verify_evaluation_resource_limits(

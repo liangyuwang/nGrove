@@ -371,6 +371,7 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
     resolved_challenge = _resolve_challenge_run(args, config, release)
     comparison_key = None
     challenge_release = None
+    evaluation_resource_envelope = None
     if resolved_challenge is None:
         track = args.track
         resources = TrainingResources(
@@ -387,6 +388,7 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
         track = resolved_challenge.track
         resources = resolved_challenge.resources
         resource_envelope = resolved_challenge.resource_envelope
+        evaluation_resource_envelope = resolved_challenge.evaluation_resource_envelope
         comparison_key = resolved_challenge.comparison_key.public_manifest()
         challenge_release = resolved_challenge.release_manifest
     operator_limit = resolve_operator_research_limit(
@@ -498,6 +500,11 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
     reference_runtime = DockerRuntime(
         hidden_datasets={"analysis": config.analysis_path, "test": config.test_path}
     )
+    reference_runtime.preflight_evaluation_resources(
+        config,
+        resources=resources,
+        resource_envelope=evaluation_resource_envelope,
+    )
     if storage_limit is not None:
         reference_runtime.configure_operator_storage(
             root=episode_dir.parent,
@@ -598,6 +605,7 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
             resources=resources,
             training_data_verification=training_data_verification,
             resource_envelope=resource_envelope,
+            evaluation_resource_envelope=evaluation_resource_envelope,
             track=track,
             episode_dir=episode_dir,
             agent_api_dir=agent_api_dir,
