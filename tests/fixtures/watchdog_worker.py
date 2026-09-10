@@ -38,13 +38,15 @@ def signal_parent(directory, phase, signum):
             os.kill(os.getpid(), signum)
         killpg(pid, termination_signal)
 
-    def recover(registration):
+    def recover(registration, *, timeout_seconds):
         with_journal = DockerRecovery(Path(registration["state_dir"]))
         try:
             if phase == "recovery":
                 os.kill(os.getpid(), signum)
                 os.kill(os.getpid(), signum)
-            report = with_journal.recover(FakeDocker().run)
+            report = with_journal.recover(
+                FakeDocker().run, timeout_seconds=timeout_seconds
+            )
             (root / "recovered").write_text(str(report["cleanup_complete"]))
             return report
         finally:

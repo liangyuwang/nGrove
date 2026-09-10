@@ -100,7 +100,9 @@ class WatchdogProcessTests(unittest.TestCase):
         # Both streams are attempted even when stdout cannot be flushed.
         self.assertIn("fixture diagnostic", result.stderr)
 
-    def run_fixture(self, mode, *, failure=None):
+    def run_fixture(
+        self, mode, *, failure=None, recovery_seconds=120, recovery_delay=0
+    ):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             episode = root / "episode"
@@ -110,7 +112,7 @@ class WatchdogProcessTests(unittest.TestCase):
             state.write_text(saved)
             recovered = []
 
-            def recover(registration):
+            def recover(registration, *, timeout_seconds):
                 # This real lock acquisition also proves that all inherited
                 # creation-client ownership descriptors have been released.
                 journal = DockerRecovery(Path(registration["state_dir"]))
@@ -119,7 +121,18 @@ class WatchdogProcessTests(unittest.TestCase):
                     recovered.append(True)
                     if failure is not None:
                         raise WorkerFailure(failure)
-                    return journal.recover(FakeDocker().run)
+                    now = [0.0]
+                    backend = FakeDocker()
+
+                    def run(args, **kwargs):
+                        now[0] += recovery_delay
+                        return backend.run(args, **kwargs)
+
+                    with patch(
+                        "autotrain_bench.docker_recovery.time.monotonic",
+                        side_effect=lambda: now[0],
+                    ):
+                        return journal.recover(run, timeout_seconds=timeout_seconds)
                 finally:
                     journal.close()
 
@@ -128,6 +141,7 @@ class WatchdogProcessTests(unittest.TestCase):
                     lambda fd: [sys.executable, str(FIXTURE), str(fd), str(root), mode],
                     heartbeat_timeout=0.8,
                     grace_seconds=0.1,
+                    recovery_seconds=recovery_seconds,
                     recover=recover,
                 )
             report = json.loads((root / "worker/watchdog-report.json").read_text())
@@ -174,6 +188,16 @@ class WatchdogProcessTests(unittest.TestCase):
             any("daemon unavailable" in item for item in report["failures"])
         )
 
+    def test_completed_worker_recovery_timeout_keeps_nonzero_status(self):
+        code, report = self.run_fixture("normal", recovery_seconds=2, recovery_delay=3)
+        self.assertEqual(code, 2)
+        self.assertEqual(report["reason"], "worker_completed")
+        self.assertEqual(report["completed_exit_code"], 0)
+        self.assertEqual(report["recovery_timeout_seconds"], 2)
+        self.assertEqual(report["cleanup"]["timeout_seconds"], 2)
+        self.assertTrue(report["cleanup"]["deadline_exceeded"])
+        self.assertFalse(report["cleanup"]["cleanup_complete"])
+
     def test_foreign_child_reaper_is_rejected_before_launch(self):
         with patch(
             "autotrain_bench.local_watchdog.signal.getsignal",
@@ -186,6 +210,42 @@ class WatchdogProcessTests(unittest.TestCase):
 
 
 class WatchdogBindingTests(unittest.TestCase):
+    def test_default_recovery_passes_deadline_and_closes_journal(self):
+        from autotrain_bench.local_watchdog import _recover
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            journal = DockerRecovery(root / "worker", episode=root / "episode")
+            registration = {
+                "state_dir": str(journal.root),
+                "owner": journal.state["owner"],
+                "directory_identity": journal.state["directory_identity"],
+                "docker_binary": "fixture-docker",
+            }
+            journal.close()
+            now = [0.0]
+            timeouts = []
+
+            def late_backend(args, **kwargs):
+                timeouts.append(kwargs["timeout"])
+                now[0] += 2
+                return FakeDocker().run(args, **kwargs)
+
+            with patch(
+                "autotrain_bench.runtime.DockerRuntime._run_raw",
+                side_effect=late_backend,
+            ), patch(
+                "autotrain_bench.docker_recovery.time.monotonic",
+                side_effect=lambda: now[0],
+            ):
+                report = _recover(registration, timeout_seconds=1)
+            self.assertEqual(timeouts, [1])
+            self.assertFalse(report["cleanup_complete"])
+            self.assertTrue(report["deadline_exceeded"])
+            # The actual owner lock is released even after a deadline failure.
+            reopened = DockerRecovery(root / "worker")
+            reopened.close()
+
     def test_notification_failure_does_not_hide_runtime_cleanup_failure(self):
         from autotrain_bench.local_watchdog import WatchdogClient
 
@@ -277,20 +337,25 @@ class WatchdogBindingTests(unittest.TestCase):
             "20",
             "--worker-watchdog-grace-seconds",
             "3",
+            "--worker-watchdog-recovery-seconds",
+            "45",
         ]
         with patch("autotrain_bench.cli.supervise_start", return_value=0) as start:
             with self.assertRaises(SystemExit) as stopped:
                 main(argv)
             self.assertEqual(stopped.exception.code, 0)
-            start.assert_called_once_with(argv, heartbeat_timeout=20, grace_seconds=3)
-        for value in ("nan", "inf", "0", "-1"):
-            with patch("autotrain_bench.cli.supervise_start") as start, redirect_stderr(
-                io.StringIO()
-            ):
-                with self.assertRaises(SystemExit) as stopped:
-                    main([*argv, "--worker-watchdog-control-seconds", value])
-                self.assertEqual(stopped.exception.code, 2)
-                start.assert_not_called()
+            start.assert_called_once_with(
+                argv, heartbeat_timeout=20, grace_seconds=3, recovery_seconds=45
+            )
+        for option in ("control", "recovery"):
+            for value in ("nan", "inf", "0", "-1"):
+                with patch(
+                    "autotrain_bench.cli.supervise_start"
+                ) as start, redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit) as stopped:
+                        main([*argv, f"--worker-watchdog-{option}-seconds", value])
+                    self.assertEqual(stopped.exception.code, 2)
+                    start.assert_not_called()
 
     def test_watchdog_is_not_a_core_or_agent_dependency(self):
         from tests.test_architecture import imported_modules, ROOT

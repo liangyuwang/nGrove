@@ -27,7 +27,11 @@ from .config import AgentConfig, TaskConfig, TrainingResources
 from .host_agent import HostAgentProcess, start_host_agent_process
 from .local_storage import LocalStorageProtection
 from .local_watchdog import cleanup_notifications, current as current_watchdog, watched
-from .docker_recovery import DockerRecovery
+from .docker_recovery import (
+    DEFAULT_RECOVERY_TIMEOUT_SECONDS,
+    DockerRecovery,
+    recovery_timeout_seconds,
+)
 from .worker_protocol import (
     CANDIDATE_EVALUATOR_CHANNEL_ISOLATION,
     CANDIDATE_PREDICTION_ARTIFACT_LIFECYCLE,
@@ -288,13 +292,21 @@ class DockerRuntime:
         if self._recovery is not None:
             self._recovery.close()
 
-    def recover_resources(self, state_dir: Path) -> Dict[str, Any]:
+    def recover_resources(
+        self,
+        state_dir: Path,
+        *,
+        timeout_seconds: float = DEFAULT_RECOVERY_TIMEOUT_SECONDS,
+    ) -> Dict[str, Any]:
+        timeout_seconds = recovery_timeout_seconds(timeout_seconds)
         with cleanup_notifications():
             if self._recovery is not None:
                 raise RuntimeFailure("cannot recover through an active Worker client")
             self._recovery = DockerRecovery(state_dir)
             try:
-                return self._recovery.recover(self._run_raw)
+                return self._recovery.recover(
+                    self._run_raw, timeout_seconds=timeout_seconds
+                )
             finally:
                 self.close_recovery()
 

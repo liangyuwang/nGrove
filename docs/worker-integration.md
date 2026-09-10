@@ -180,6 +180,17 @@ writable storage and its exhaustion budget. Retain enough identity evidence
 to reconcile a creation whose acknowledgement was lost. Fence workload
 creation before recovery takes ownership.
 
+Use a shared recovery deadline as well as per-command timeouts: repeated
+inspection/removal failures must not each restart the full recovery allowance.
+Stop dispatching new cleanup work when it expires, preserve unresolved handles
+and prerequisite ordering, and report incomplete cleanup for a later authorized
+retry. State which local I/O or external operations the deployment cannot
+preempt. Preserve durable cleanup progress so retries do not repeatedly spend
+their allowance on already confirmed historical removals while live workloads
+wait. Uncertain or unpersisted outcomes remain pending. The bundled Docker
+recovery implements this shared allowance; it does
+not provide the termination mechanism for an external Worker.
+
 Handle supported termination signals with a bounded shutdown path: stop new
 work, attempt cooperative teardown within its allowance, then fence the owned
 execution boundary and verify absence. Record the received signal, trigger,

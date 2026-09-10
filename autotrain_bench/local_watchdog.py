@@ -25,6 +25,7 @@ from functools import wraps
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
+from .docker_recovery import DEFAULT_RECOVERY_TIMEOUT_SECONDS, recovery_timeout_seconds
 from .worker_protocol import WorkerFailure
 
 
@@ -200,7 +201,7 @@ def watched(*, timeout: str = "timeout_seconds", fallback=None, cleanup: bool = 
     return decorate
 
 
-def _recover(registration: dict) -> dict:
+def _recover(registration: dict, *, timeout_seconds: float) -> dict:
     from .docker_recovery import DockerRecovery
     from .runtime import DockerRuntime
 
@@ -213,7 +214,7 @@ def _recover(registration: dict) -> dict:
             or journal.state["directory_identity"] != registration["directory_identity"]
         ):
             raise WorkerFailure("watchdog Worker ownership differs from registration")
-        return journal.recover(runtime._run_raw)
+        return journal.recover(runtime._run_raw, timeout_seconds=timeout_seconds)
     finally:
         journal.close()
 
@@ -271,10 +272,12 @@ def supervise(
     *,
     heartbeat_timeout: float = HEARTBEAT_TIMEOUT,
     grace_seconds: float = DEADLINE_GRACE_SECONDS,
-    recover: Callable[[dict], dict] = _recover,
+    recovery_seconds: float = DEFAULT_RECOVERY_TIMEOUT_SECONDS,
+    recover: Callable[..., dict] = _recover,
 ) -> int:
     """Run one trusted launcher, fence it before reaping, then reclaim ownership."""
 
+    recovery_seconds = recovery_timeout_seconds(recovery_seconds)
     if os.name != "posix" or signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
         raise WorkerFailure(
             "Docker watchdog requires POSIX and exclusive child reaping"
@@ -292,6 +295,7 @@ def supervise(
             command,
             heartbeat_timeout=heartbeat_timeout,
             grace_seconds=grace_seconds,
+            recovery_seconds=recovery_seconds,
             recover=recover,
             interruption=interruption,
         )
@@ -302,7 +306,8 @@ def _supervise(
     *,
     heartbeat_timeout: float,
     grace_seconds: float,
-    recover: Callable[[dict], dict],
+    recovery_seconds: float,
+    recover: Callable[..., dict],
     interruption: list[int],
 ) -> int:
     parent, child = socket.socketpair()
@@ -424,7 +429,7 @@ def _supervise(
     cleanup = None
     if registration is not None:
         try:
-            cleanup = recover(registration)
+            cleanup = recover(registration, timeout_seconds=recovery_seconds)
         except Exception as exc:
             failures.append("Worker recovery failed: " + str(exc))
     if interruption and reason in {"worker_completed", "worker_exited"}:
@@ -435,6 +440,7 @@ def _supervise(
         "operator_signal": interruption[0] if interruption else None,
         "worker_exit_code": process.returncode if process is not None else None,
         "completed_exit_code": completed_code,
+        "recovery_timeout_seconds": recovery_seconds,
         "cleanup": cleanup,
         "failures": failures,
         "resumed": False,
@@ -478,6 +484,7 @@ def supervise_start(
     *,
     heartbeat_timeout: float = HEARTBEAT_TIMEOUT,
     grace_seconds: float = DEADLINE_GRACE_SECONDS,
+    recovery_seconds: float = DEFAULT_RECOVERY_TIMEOUT_SECONDS,
 ) -> int:
     return supervise(
         lambda fd: [
@@ -489,6 +496,7 @@ def supervise_start(
         ],
         heartbeat_timeout=heartbeat_timeout,
         grace_seconds=grace_seconds,
+        recovery_seconds=recovery_seconds,
     )
 
 

@@ -35,6 +35,7 @@ from .host_agent import (
     HostAgentProcess,
     HostAgentStartupFailure,
 )
+from .docker_recovery import DEFAULT_RECOVERY_TIMEOUT_SECONDS, recovery_timeout_seconds
 from .inference import summarize_inference_trace
 from .local_mailbox import LocalFileMailbox
 from .local_agent_execution import describe_local_agent_execution
@@ -576,9 +577,11 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
                     "deadline triggers termination and journaled cleanup. "
                     f"Heartbeat timeout {args.worker_watchdog_heartbeat_seconds:g}s; "
                     f"deadline grace {args.worker_watchdog_grace_seconds:g}s; "
-                    f"control-call fallback {args.worker_watchdog_control_seconds:g}s. "
+                    f"control-call fallback {args.worker_watchdog_control_seconds:g}s; "
+                    f"recovery allowance {args.worker_watchdog_recovery_seconds:g}s. "
                     "Adjust these before launch with --worker-watchdog-heartbeat-seconds, "
-                    "--worker-watchdog-grace-seconds and --worker-watchdog-control-seconds. "
+                    "--worker-watchdog-grace-seconds, --worker-watchdog-control-seconds "
+                    "and --worker-watchdog-recovery-seconds. "
                     "These are private operator settings; recovery does not resume the episode.",
                     flush=True,
                 )
@@ -1148,7 +1151,10 @@ def command_report(args: argparse.Namespace) -> int:
 
 
 def command_worker_recover(args: argparse.Namespace) -> int:
-    report = DockerRuntime().recover_resources(args.state_dir)
+    timeout_seconds = recovery_timeout_seconds(args.timeout_seconds)
+    report = DockerRuntime().recover_resources(
+        args.state_dir, timeout_seconds=timeout_seconds
+    )
     _print(report)
     return 0 if report["cleanup_complete"] else 2
 
@@ -1377,6 +1383,7 @@ def build_parser() -> argparse.ArgumentParser:
             CONTROL_TIMEOUT,
             "fallback for control/startup calls without a timeout",
         ),
+        ("recovery", DEFAULT_RECOVERY_TIMEOUT_SECONDS, "shared recovery allowance"),
     ):
         start.add_argument(
             f"--worker-watchdog-{name}-seconds",
@@ -1391,6 +1398,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="reclaim a stopped Docker Worker's resources without resuming",
     )
     recover.add_argument("--state-dir", type=Path, required=True)
+    recover.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=DEFAULT_RECOVERY_TIMEOUT_SECONDS,
+        metavar="SECONDS",
+        help=f"shared recovery allowance (default: {DEFAULT_RECOVERY_TIMEOUT_SECONDS:g})",
+    )
     recover.set_defaults(function=command_worker_recover)
 
     status = subparsers.add_parser(
@@ -1475,6 +1489,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                 args.worker_watchdog_control_seconds,
                 args.worker_watchdog_grace_seconds,
                 args.worker_watchdog_heartbeat_seconds,
+                args.worker_watchdog_recovery_seconds,
             ):
                 if not math.isfinite(value) or value <= 0:
                     raise ConfigError(
@@ -1497,6 +1512,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                 list(argv) if argv is not None else sys.argv[1:],
                 heartbeat_timeout=args.worker_watchdog_heartbeat_seconds,
                 grace_seconds=args.worker_watchdog_grace_seconds,
+                recovery_seconds=args.worker_watchdog_recovery_seconds,
             )
         else:
             return_code = args.function(args)

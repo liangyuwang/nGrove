@@ -28,6 +28,41 @@ After the Worker process has stopped, run in the **same Worker environment**:
 autotrain-bench worker-recover --state-dir /worker/private/run-state
 ```
 
+Each recovery pass has a shared 120-second allowance. Override it with
+`worker-recover --timeout-seconds SECONDS`; direct Python callers can pass
+`timeout_seconds` to `DockerRuntime.recover_resources()` or
+`DockerRecovery.recover()`. The allowance starts after journal acquisition,
+at recovery entry, and includes daemon identity checks and elapsed journal and
+private-storage work. Each Docker command receives the smaller of its existing
+20-second timeout and the remaining allowance. More resources or failed
+commands do not renew it.
+
+On detecting expiry, no further runtime commands or cleanup stages are started.
+The report records `deadline_exceeded: true`, the configured
+`timeout_seconds`, and `cleanup_complete: false`. A late successful reply is
+not an absence confirmation; retained ownership records allow a later pass to
+verify what actually happened. Holders and private storage remain protected
+until prerequisite workload cleanup succeeds. A retry receives a new allowance
+and verifies the retained records; it does not resume the episode.
+
+A resource whose absence was confirmed and whose complete `removed` record was
+persisted is finished work. Recovery checks the journal ownership and daemon
+binding on every pass, then processes only unresolved resource instances.
+Historical removals do not spend the next pass's command allowance, including
+when recovery is reopened in a new process. Workload containers still precede
+prediction holders, networks, volumes and private storage. A deletion with a
+lost acknowledgement, or a RAM-only `removed` state whose persistence failed,
+still requires verification. Legitimate name reuse creates a new intent/token
+and must pass the full ownership and identity checks again. These durable
+confirmations rely on creation remaining fenced and on resources not being
+recreated or relabelled outside the journaled lifecycle.
+
+This deadline bounds runtime command waits and checks between local operations;
+it cannot preempt blocked filesystem syscalls or an in-progress tree removal.
+Those operations may finish after the allowance and still produce an incomplete
+recovery report. Journal acquisition, report persistence and process fencing
+are outside this allowance. Host/storage failure still needs external recovery.
+
 Exit code 0 means all registered resources were confirmed absent and private
 temporary materializations were removed. Exit code 2 means recovery failed or
 remains unconfirmed; the JSON report lists unresolved resources. Repeating the
@@ -138,6 +173,7 @@ The launcher prints these private settings before the first episode workload:
 | Missing heartbeat tolerance | 10 seconds | `--worker-watchdog-heartbeat-seconds` |
 | Deadline grace for cooperative handling | 5 seconds | `--worker-watchdog-grace-seconds` |
 | Control/startup operation without a declared timeout | 120 seconds | `--worker-watchdog-control-seconds` |
+| Shared recovery allowance after fencing | 120 seconds | `--worker-watchdog-recovery-seconds` |
 
 These are deployment protection settings, not comparison budgets. They do not
 appear in the Agent view. A heartbeat must arrive more often than the configured
@@ -161,13 +197,14 @@ without raising from the signal handler. It stops supervision and fences its
 owned process group even if the signal arrived while the child was being
 created. Both handlers remain installed through fencing, journal recovery and
 report writing, so repeated signals do not abandon cleanup. The previous
-handlers are restored before `supervise()` returns. Recovery's existing
-per-command timeouts still apply; signal deferral does not add a total cleanup
-deadline or preempt blocked filesystem I/O. Forced kill or host loss still
-requires the separate recovery path described below.
+handlers are restored before `supervise()` returns. Recovery uses the shared
+allowance above while signals are deferred; it cannot preempt blocked filesystem
+I/O. Forced kill or host loss still requires the separate recovery path
+described below.
 
 `watchdog-report.json` records the trigger, process exit, completed launcher
-status when available, and cleanup result in the private Worker directory.
+status when available, the configured `recovery_timeout_seconds`, and cleanup
+result in the private Worker directory.
 `operator_signal` records the first observed cancellation signal number, or
 null when none was received before the report snapshot. Cancellation during
 recovery gives exit code 2 even if the launcher had already reported success;
@@ -183,6 +220,13 @@ creation, active supervision, fencing and recovery. They verify child reaping,
 handler restoration, cleanup reports and preservation of saved Core state with
 the test Docker backend. These tests do not certify a live Docker daemon,
 allocator-wide cancellation, device isolation, or node-loss recovery.
+Recovery regressions also cover cumulative command timeouts, late deletion
+responses, elapsed filesystem work, retained handles and retry. Equal-budget
+retries with the same simulated per-command cost must advance past persisted
+removals through workload and storage cleanup; RAM-only removals and reused
+names must retain their verification requirements. A disposable
+real subprocess verifies runtime timeout propagation; the resource backend in
+these tests remains simulated.
 
 This covers one local POSIX execution host and its bundled Docker Worker, not
 a distributed lease/fencing protocol. It does not supply asynchronous Core
