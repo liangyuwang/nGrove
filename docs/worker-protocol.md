@@ -648,11 +648,39 @@ requirements. A future schema may remove that duplicate compatibility
 projection; until then the cross-check prevents two conflicting resource
 sources of truth.
 
-The bundled Docker Worker reports its existing count-based GPU allocation as
-`best_effort`, even when the workload-visible inventory matches the request.
-It therefore remains usable for preview profiles that permit that level but
-cannot satisfy an `enforced` formal GPU envelope until its own exact device
-binding is fixed. This is honest Worker evidence, not a Docker rule in Core.
+The bundled Docker Worker selects full NVIDIA GPUs matching the requested
+count, model and minimum memory, then freezes their UUIDs for that Worker
+instance. Selection is deterministic in UUID order, independent of inventory
+row order. Training and CUDA Candidate launches use the same explicit UUID
+grant through Docker's `--gpus` device parameter, including its CSV quoting for
+multiple devices; see [NVIDIA's device-selection documentation](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/docker-specialized.html#gpu-enumeration).
+No physical device identifiers are added to the semantic resource envelope.
+
+Before returning a Training Lease receipt, the Worker queries the idle
+Training container and requires the visible UUID set, model and memory to match
+the selection and requested profile. A mismatch fails startup and triggers the
+existing Lease cleanup; unconfirmed removal retains the retryable handle.
+Successful checks write private `gpu-binding.json` evidence in the Lease
+directory. The trusted environment manifest records
+`selected_nvidia_gpu_uuids` separately from its full host inventory.
+
+CUDA evaluation rechecks that the frozen devices remain eligible before
+starting Candidate code, using the remaining evaluation allowance. It never
+substitutes another matching device. A new GPU requirement needs a new Worker
+instance. Inventory queries are bounded; malformed/duplicate UUIDs and invalid
+memory evidence are rejected. This implementation selects full GPUs only;
+MIG-enabled devices are excluded instead of treating a partition as the
+profile's full GPU. It does not change MIG mode or allocate accelerators.
+
+GPU resource evidence remains `best_effort`: command-boundary regressions and
+inventory checks do not certify denial of access to every ungranted device,
+exclusive use, a remote allocator's ownership, or the independent Evaluation
+allocation contract. The local deployment must already be authorized to use
+the selectable host devices. Scheduler-specific ownership and grants remain
+external Worker responsibilities. A real heterogeneous-host and negative-access
+acceptance run is still required before strengthening these guarantees; the
+bundled Worker remains development-trust and does not satisfy an `enforced`
+formal GPU envelope.
 
 `CommandResult` streams are capped at 1 MiB each by the local Worker and again
 by the Supervisor before they enter the mailbox or `commands.jsonl`. Concrete

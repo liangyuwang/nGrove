@@ -51,6 +51,12 @@ from autotrain_bench.worker_protocol import (
 ROOT = Path(__file__).resolve().parents[1]
 TASK = ROOT / "tests/fixtures/task/task.json"
 RESOLUTION_TIMEOUT = 30.0
+GPU_ONE = "GPU-00000000-0000-0000-0000-000000000001"
+GPU_TWO = "GPU-00000000-0000-0000-0000-000000000002"
+
+
+def gpu_inventory(*rows):
+    return subprocess.CompletedProcess(["nvidia-smi"], 0, "\n".join(rows) + "\n", "")
 
 
 def write_hidden_bundle(path: Path, *, marker: str = "original") -> Path:
@@ -521,7 +527,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 self.assertEqual(runtime._pending_evaluations, {})
                 self.assertEqual(list(output.glob("predictions-*")), [])
 
-    def test_local_gpu_receipt_reports_workload_visible_values_but_not_exact_binding(
+    def test_local_gpu_receipt_verifies_uuid_selection_but_keeps_preview_evidence(
         self,
     ):
         class GpuRuntime(CapturingDockerRuntime):
@@ -532,7 +538,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                     return subprocess.CompletedProcess(
                         args,
                         0,
-                        "NVIDIA H100 80GB HBM3, 81559\n",
+                        f"{GPU_ONE}, NVIDIA H100 80GB HBM3, 81559, Disabled\n",
                         "",
                     )
                 return super()._run(args, **kwargs)
@@ -559,6 +565,15 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 minimum_enforcement=EnforcementLevel.BEST_EFFORT,
             )
             runtime = GpuRuntime()
+            with patch(
+                "autotrain_bench.runtime.shutil.which", return_value="nvidia-smi"
+            ), patch(
+                "autotrain_bench.runtime.subprocess.run",
+                return_value=gpu_inventory(
+                    f"{GPU_ONE}, NVIDIA H100 80GB HBM3, 81559, Disabled"
+                ),
+            ):
+                runtime.validate_hardware(resources)
             workload = runtime.resolve_workload(
                 episode_id="episode-1",
                 workload=WorkloadRequest("training", reference),
@@ -1195,9 +1210,9 @@ class RuntimeBoundaryTests(unittest.TestCase):
         inventory = subprocess.CompletedProcess(
             ["nvidia-smi"],
             0,
-            "NVIDIA H100 80GB HBM3, 81559\n"
-            "NVIDIA H100 80GB HBM3, 81559\n"
-            "NVIDIA A100-SXM4-80GB, 81920\n",
+            f"{GPU_ONE}, NVIDIA H100 80GB HBM3, 81559, Disabled\n"
+            f"{GPU_TWO}, NVIDIA H100 80GB HBM3, 81559, Disabled\n"
+            "GPU-00000000-0000-0000-0000-000000000003, NVIDIA A100-SXM4-80GB, 81920, Disabled\n",
             "",
         )
         runtime = DockerRuntime(docker_binary="docker")
@@ -1210,7 +1225,8 @@ class RuntimeBoundaryTests(unittest.TestCase):
         undersized = subprocess.CompletedProcess(
             ["nvidia-smi"],
             0,
-            "NVIDIA H100 80GB HBM3, 81559\n" "NVIDIA H100 PCIe, 65536\n",
+            f"{GPU_ONE}, NVIDIA H100 80GB HBM3, 81559, Disabled\n"
+            f"{GPU_TWO}, NVIDIA H100 PCIe, 65536, Disabled\n",
             "",
         )
         with patch("autotrain_bench.runtime.shutil.which", return_value="nvidia-smi"):
@@ -1692,20 +1708,31 @@ class RuntimeBoundaryTests(unittest.TestCase):
             public_task.write_text("{}", encoding="utf-8")
             publish_agent_api(public_task)
             runtime = CapturingDockerRuntime()
-            runtime.start_training(
-                name="training",
-                task=ResearchTaskSpec.from_task(
-                    TaskConfig.load(TASK), public_task.parent / "agent_api"
+            with patch(
+                "autotrain_bench.runtime.shutil.which", return_value="nvidia-smi"
+            ), patch(
+                "autotrain_bench.runtime.subprocess.run",
+                return_value=gpu_inventory(
+                    f"{GPU_ONE}, NVIDIA H100, 81559, Disabled",
+                    f"{GPU_TWO}, NVIDIA H100, 81559, Disabled",
                 ),
-                workspace=workspace,
-                resources=TrainingResources(
-                    nvidia_gpu_count=2,
-                    devices=["/dev/accel0"],
-                ),
-                lease_dir=root / "lease",
-            )
+            ):
+                runtime.start_training(
+                    name="training",
+                    task=ResearchTaskSpec.from_task(
+                        TaskConfig.load(TASK), public_task.parent / "agent_api"
+                    ),
+                    workspace=workspace,
+                    resources=TrainingResources(
+                        nvidia_gpu_count=2,
+                        devices=["/dev/accel0"],
+                    ),
+                    lease_dir=root / "lease",
+                )
             command = runtime.calls[0]
-            self.assertEqual(command[command.index("--gpus") + 1], "2")
+            self.assertEqual(
+                command[command.index("--gpus") + 1], f'"device={GPU_ONE},{GPU_TWO}"'
+            )
             self.assertEqual(command[command.index("--device") + 1], "/dev/accel0")
 
     def test_evaluator_and_candidate_use_separate_internal_containers(self):
@@ -1716,8 +1743,20 @@ class RuntimeBoundaryTests(unittest.TestCase):
             ).validate()
             resources = TrainingResources(nvidia_gpu_count=1)
             runtime = CapturingDockerRuntime(monotonic=lambda: 100.0)
+            with patch(
+                "autotrain_bench.runtime.shutil.which", return_value="nvidia-smi"
+            ), patch(
+                "autotrain_bench.runtime.subprocess.run",
+                return_value=gpu_inventory(f"{GPU_ONE}, NVIDIA H100, 81559, Disabled"),
+            ):
+                runtime.validate_hardware(resources)
             output = Path(directory) / "output"
-            with self.assertRaises(RuntimeFailure):
+            with patch(
+                "autotrain_bench.runtime.shutil.which", return_value="nvidia-smi"
+            ), patch(
+                "autotrain_bench.runtime.subprocess.run",
+                return_value=gpu_inventory(f"{GPU_ONE}, NVIDIA H100, 81559, Disabled"),
+            ), self.assertRaises(RuntimeFailure):
                 runtime.run_evaluator(
                     config=config,
                     resources=resources,

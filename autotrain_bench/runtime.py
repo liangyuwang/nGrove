@@ -73,6 +73,49 @@ ExecResult = CommandResult
 MAX_RUNTIME_STREAM_BYTES = 1024 * 1024
 _TRUNCATION_MARKER = b"\n[output truncated by AutoTrain-Bench]\n"
 EVALUATION_DIAGNOSTIC_TIMEOUT_SECONDS = 5.0
+_NVIDIA_GPU_QUERY = "--query-gpu=uuid,name,memory.total,mig.mode.current"
+
+
+@dataclass(frozen=True)
+class _NvidiaGpu:
+    uuid: str
+    name: str
+    memory_mib: int
+    mig_mode: str
+
+
+def _parse_nvidia_gpus(output: str) -> Tuple[_NvidiaGpu, ...]:
+    devices = []
+    seen = set()
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        fields = [field.strip() for field in line.split(",")]
+        if len(fields) != 4:
+            raise RuntimeFailure("nvidia-smi returned malformed GPU metadata")
+        identifier, name, memory, mig_mode = fields
+        try:
+            valid_uuid = (
+                identifier.startswith("GPU-")
+                and str(uuid.UUID(identifier[4:])) == identifier[4:].lower()
+            )
+            memory_mib = int(memory)
+        except ValueError as exc:
+            raise RuntimeFailure("nvidia-smi returned invalid GPU metadata") from exc
+        identifier = identifier[:4] + identifier[4:].lower()
+        if (
+            not valid_uuid
+            or identifier in seen
+            or not name
+            or memory_mib <= 0
+            or mig_mode not in {"Enabled", "Disabled", "N/A", "[N/A]"}
+        ):
+            raise RuntimeFailure(
+                "nvidia-smi returned invalid or duplicate GPU metadata"
+            )
+        seen.add(identifier)
+        devices.append(_NvidiaGpu(identifier, name, memory_mib, mig_mode))
+    return tuple(devices)
 
 
 @dataclass(frozen=True)
@@ -224,6 +267,8 @@ class DockerRuntime:
         self._execution_identity: Optional[Tuple[int, int]] = None
         self._operator_storage: Optional[LocalStorageProtection] = None
         self._recovery: Optional[DockerRecovery] = None
+        self._nvidia_selection: Optional[Tuple[str, ...]] = None
+        self._nvidia_request: Optional[tuple] = None
 
     def enable_recovery(self, *, state_dir: Path, episode_dir: Path) -> None:
         if self._recovery is not None:
@@ -824,70 +869,127 @@ class DockerRuntime:
             )
         return reference
 
-    def validate_hardware(self, resources: TrainingResources) -> None:
-        resources.validate()
-        if resources.nvidia_gpu_count == 0:
-            return
+    @staticmethod
+    def _nvidia_request_key(resources: TrainingResources) -> tuple:
+        return (
+            resources.nvidia_gpu_count,
+            resources.required_gpu_model,
+            resources.minimum_gpu_memory_mib,
+        )
+
+    def _host_nvidia_gpus(
+        self, *, timeout_seconds: float = 20
+    ) -> Tuple[_NvidiaGpu, ...]:
         nvidia_smi = shutil.which("nvidia-smi")
         if not nvidia_smi:
             raise RuntimeFailure(
                 "episode requests NVIDIA GPUs, but nvidia-smi is unavailable"
             )
-        result = subprocess.run(
-            [
-                nvidia_smi,
-                "--query-gpu=name,memory.total",
-                "--format=csv,noheader,nounits",
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
+        try:
+            result = subprocess.run(
+                [nvidia_smi, _NVIDIA_GPU_QUERY, "--format=csv,noheader,nounits"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeFailure("NVIDIA GPU inventory query failed") from exc
         if result.returncode != 0:
             raise RuntimeFailure(result.stderr.strip() or "nvidia-smi failed")
-        inventory = []
-        for line in result.stdout.splitlines():
-            if not line.strip():
-                continue
-            fields = [field.strip() for field in line.rsplit(",", 1)]
-            if len(fields) != 2:
-                raise RuntimeFailure("nvidia-smi returned malformed GPU metadata")
-            try:
-                memory_mib = int(fields[1])
-            except ValueError as exc:
-                raise RuntimeFailure(
-                    "nvidia-smi returned invalid GPU memory metadata"
-                ) from exc
-            inventory.append((fields[0], memory_mib))
+        return _parse_nvidia_gpus(result.stdout)
+
+    @staticmethod
+    def _matching_nvidia_gpus(
+        resources: TrainingResources, inventory: Tuple[_NvidiaGpu, ...]
+    ) -> Tuple[_NvidiaGpu, ...]:
         if len(inventory) < resources.nvidia_gpu_count:
             raise RuntimeFailure(
                 "episode requests "
                 f"{resources.nvidia_gpu_count} NVIDIA GPU(s); found {len(inventory)}"
             )
         matching = [
-            (name, memory_mib)
-            for name, memory_mib in inventory
-            if not resources.required_gpu_model or resources.required_gpu_model in name
+            gpu
+            for gpu in inventory
+            if not resources.required_gpu_model
+            or resources.required_gpu_model in gpu.name
         ]
         if len(matching) < resources.nvidia_gpu_count:
             raise RuntimeFailure(
                 "episode requires GPU model containing "
                 f"{resources.required_gpu_model!r}; "
-                f"found {[name for name, _memory in inventory]}"
+                f"found {[gpu.name for gpu in inventory]}"
             )
-        if (
-            resources.minimum_gpu_memory_mib is not None
-            and sum(
-                memory_mib >= resources.minimum_gpu_memory_mib
-                for _name, memory_mib in matching
-            )
-            < resources.nvidia_gpu_count
-        ):
+        matching = [
+            gpu
+            for gpu in matching
+            if resources.minimum_gpu_memory_mib is None
+            or gpu.memory_mib >= resources.minimum_gpu_memory_mib
+        ]
+        if len(matching) < resources.nvidia_gpu_count:
             raise RuntimeFailure(
                 "episode requires at least "
                 f"{resources.minimum_gpu_memory_mib} MiB on each selected GPU; "
                 f"found {matching}"
             )
+        matching = [gpu for gpu in matching if gpu.mig_mode != "Enabled"]
+        if len(matching) < resources.nvidia_gpu_count:
+            raise RuntimeFailure(
+                "episode requires full GPUs; MIG-enabled devices are unsupported"
+            )
+        return tuple(matching)
+
+    def validate_hardware(
+        self, resources: TrainingResources, *, timeout_seconds: float = 20
+    ) -> None:
+        resources.validate()
+        key = self._nvidia_request_key(resources)
+        if self._nvidia_request is not None and key != self._nvidia_request:
+            raise RuntimeFailure(
+                "GPU requirements changed after selection; use a new Worker"
+            )
+        if resources.nvidia_gpu_count == 0:
+            return
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise RuntimeFailure("GPU inventory timeout must be finite and positive")
+        matching = self._matching_nvidia_gpus(
+            resources, self._host_nvidia_gpus(timeout_seconds=timeout_seconds)
+        )
+        eligible = {gpu.uuid for gpu in matching}
+        if self._nvidia_selection is None:
+            self._nvidia_selection = tuple(
+                sorted(eligible)[: resources.nvidia_gpu_count]
+            )
+            self._nvidia_request = key
+        elif not set(self._nvidia_selection).issubset(eligible):
+            raise RuntimeFailure(
+                "selected GPU set is no longer available; refusing substitution"
+            )
+
+    def _nvidia_devices(self, resources: TrainingResources) -> Tuple[str, ...]:
+        resources.validate()
+        if (
+            self._nvidia_request is not None
+            and self._nvidia_request != self._nvidia_request_key(resources)
+        ):
+            raise RuntimeFailure(
+                "GPU requirements changed after selection; use a new Worker"
+            )
+        if not resources.nvidia_gpu_count:
+            return ()
+        if self._nvidia_selection is None:
+            self.validate_hardware(resources)
+        if self._nvidia_request != self._nvidia_request_key(resources):
+            raise RuntimeFailure(
+                "GPU requirements changed after selection; use a new Worker"
+            )
+        return self._nvidia_selection
+
+    def _nvidia_grant(self, resources: TrainingResources) -> List[str]:
+        devices = self._nvidia_devices(resources)
+        # Docker parses --gpus as CSV. Quotes are part of this argv element,
+        # protecting the commas in a multi-device value; no shell is involved.
+        return ["--gpus", '"device=' + ",".join(devices) + '"'] if devices else []
 
     def environment_manifest(
         self,
@@ -952,23 +1054,36 @@ class DockerRuntime:
         # accelerator, which is how a profile declaring `accelerator: null` can
         # occupy one without leaving a trace in the result.
         requested_gpus = resolved_resources.nvidia_gpu_count
+        selected_gpus = (
+            self._nvidia_devices(resolved_resources)
+            if resources is not None
+            else self._nvidia_selection or ()
+        )
         nvidia_smi = shutil.which("nvidia-smi")
         if requested_gpus and not nvidia_smi:  # guarded by validate_hardware
             raise RuntimeFailure("nvidia-smi disappeared after hardware validation")
         gpus: List[Dict[str, str]] = []
         gpu_inventory = "unavailable"
         if nvidia_smi:
-            result = subprocess.run(
-                [
-                    nvidia_smi,
-                    "--query-gpu=name,uuid,driver_version,memory.total",
-                    "--format=csv,noheader,nounits",
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode != 0:
+            try:
+                result = subprocess.run(
+                    [
+                        nvidia_smi,
+                        "--query-gpu=name,uuid,driver_version,memory.total",
+                        "--format=csv,noheader,nounits",
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                if requested_gpus:
+                    raise RuntimeFailure("NVIDIA GPU inventory query failed") from exc
+                result = None
+            if result is None:
+                pass  # Optional host inventory remains unavailable for CPU runs.
+            elif result.returncode != 0:
                 # A failure still matters when accelerators were requested,
                 # because validate_hardware already depended on this tool.
                 if requested_gpus:
@@ -1017,6 +1132,7 @@ class DockerRuntime:
             # An empty list under "unavailable" means unknown, not none.
             "gpus": gpus,
             "gpu_inventory": gpu_inventory,
+            "selected_nvidia_gpu_uuids": list(selected_gpus),
         }
         if resources is not None:
             manifest["training_resources"] = resolved_resources.public_manifest()
@@ -1401,9 +1517,7 @@ class DockerRuntime:
             "--workdir",
             "/workspace",
         ]
-        resources.validate()
-        if resources.nvidia_gpu_count:
-            args.extend(["--gpus", str(resources.nvidia_gpu_count)])
+        args.extend(self._nvidia_grant(resources))
         for device in resources.devices:
             args.extend(["--device", device])
         args.extend([training_image, "sleep", "infinity"])
@@ -1428,6 +1542,7 @@ class DockerRuntime:
         name: str,
         resources: TrainingResources,
         resource_envelope: ResourceEnvelope,
+        lease_dir: Path,
     ) -> ResourceAllocationReceipt:
         """Observe the local workload without making Docker the Core schema."""
 
@@ -1439,31 +1554,25 @@ class DockerRuntime:
                     "exec",
                     name,
                     "nvidia-smi",
-                    "--query-gpu=name,memory.total",
+                    _NVIDIA_GPU_QUERY,
                     "--format=csv,noheader,nounits",
                 ],
                 timeout=20,
             )
-            names = []
-            memory = []
-            for line in result.stdout.splitlines():
-                if not line.strip():
-                    continue
-                fields = [field.strip() for field in line.rsplit(",", 1)]
-                if len(fields) != 2:
-                    raise RuntimeFailure(
-                        "training workload returned malformed accelerator evidence"
-                    )
-                try:
-                    memory_mib = int(fields[1])
-                except ValueError as exc:
-                    raise RuntimeFailure(
-                        "training workload returned invalid accelerator memory evidence"
-                    ) from exc
-                names.append(fields[0])
-                memory.append(memory_mib)
-            gpu_names = tuple(names)
-            gpu_memory = tuple(memory)
+            inventory = _parse_nvidia_gpus(result.stdout)
+            expected = self._nvidia_devices(resources)
+            observed = tuple(gpu.uuid for gpu in inventory)
+            if set(observed) != set(expected):
+                raise RuntimeFailure(
+                    "training workload GPU UUIDs differ from the selected set"
+                )
+            self._matching_nvidia_gpus(resources, inventory)
+            gpu_names = tuple(gpu.name for gpu in inventory)
+            gpu_memory = tuple(gpu.memory_mib for gpu in inventory)
+            _write_private_diagnostic(
+                lease_dir / "gpu-binding.json",
+                json.dumps({"selected_uuids": expected, "observed_uuids": observed}),
+            )
 
         actual = {
             "host.count": 1,
@@ -1487,9 +1596,8 @@ class DockerRuntime:
                 )
                 continue
             gpu_property = requirement.name.startswith("accelerator.")
-            # The v0 count-based device request observes what became visible,
-            # but cannot prove that a preselected physical device set was
-            # enforced. Keep that limitation in Worker evidence.
+            # UUID selection and visibility checks are not an adversarial
+            # device-isolation certification. Retain preview enforcement evidence.
             level = (
                 EnforcementLevel.BEST_EFFORT
                 if gpu_property and resources.nvidia_gpu_count
@@ -1570,6 +1678,7 @@ class DockerRuntime:
                 name=name,
                 resources=resources,
                 resource_envelope=resolved_envelope,
+                lease_dir=lease_dir,
             )
             watchdog = current_watchdog()
             if watchdog is not None and watchdog.registered:
@@ -2190,7 +2299,12 @@ class DockerRuntime:
             "/candidate",
         ]
         if task.device == "cuda":
-            candidate_args.extend(["--gpus", str(resources.nvidia_gpu_count)])
+            if not resources.nvidia_gpu_count:
+                raise RuntimeFailure("CUDA evaluation requires a selected GPU")
+            self.validate_hardware(
+                resources, timeout_seconds=min(20, remaining_seconds())
+            )
+            candidate_args.extend(self._nvidia_grant(resources))
         candidate_args.extend(
             [
                 candidate_image,

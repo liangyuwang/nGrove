@@ -105,10 +105,10 @@ The v0 support statement is:
   integration, or non-Docker formal execution path yet.
 - The current local Docker and `host_cli` paths are development/preview paths;
   no official leaderboard challenge has been released.
-- The v0 Docker GPU preflight verifies that enough matching devices exist, but
-  its count-based Docker grant does not yet prove that those exact devices were
-  selected. GPU profile matching is therefore a known reference-Worker
-  limitation, not a Core allocation mechanism.
+- The bundled Docker Worker freezes matching GPU UUIDs and checks the Training
+  workload's visible set before returning a Lease. Hardware isolation and
+  independent evaluation-resource certification remain reference-Worker
+  acceptance gaps, not a Core allocation mechanism.
 - The local mailbox bounds the live entries and regular-file bytes it will
   process, but the bundled bind-mounted storage does not yet provide a hard
   filesystem quota. Pre-inspection disk containment is a known local Worker
@@ -577,12 +577,14 @@ profile still declares one. Authenticity still depends on the trusted Worker
 deployment and invocation channel. Remote cryptographic transport and
 deployment certification remain separate future work.
 
-The bundled Docker Worker reports count-based GPU selection as `best_effort`.
-That honestly satisfies current preview envelopes but not an `enforced` formal
-GPU envelope. Exact Docker GPU binding remains a reference-Worker issue rather
-than part of the C4 Core schema. Evaluation-operation allocation evidence is
-also deferred until a release demonstrates that resources outside Training
-Leases are independently normative.
+The bundled Docker Worker now uses matching, frozen GPU UUIDs for Training and
+CUDA Candidate grants and verifies Training visibility. It retains `best_effort`
+resource evidence pending real hardware/negative-access acceptance, satisfying
+preview envelopes but not an `enforced` formal GPU envelope. Physical device
+binding remains in the Worker rather than the C4 Core schema; see the current
+[resource-contract implementation](worker-protocol.md#current-migration-stage)
+for evidence and limitations. Independent evaluation-operation allocation
+evidence remains a separate capability.
 
 ### C5. Trusted conformance evidence
 
