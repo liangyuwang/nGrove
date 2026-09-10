@@ -329,6 +329,13 @@ deadline. Short output is flushed to its log files while the process is still
 running. Each stream retains at most 10 MiB including its truncation marker;
 excess output is still drained so the log limit does not block the Agent.
 Truncated or malformed usage records remain explicitly incomplete.
+If a log write or flush fails (for example, disk space or quota exhaustion),
+the runner remembers the failure and continues draining that pipe. Final
+`agent_usage.log_capture` records each stream's completion, truncation, and
+first I/O error. Incomplete stdout capture makes `usage_complete: false` even
+if its retained prefix contains valid usage records; stderr diagnostic loss is
+recorded separately. Log-capture failure does not imply process-termination
+failure.
 The optional Codex adapter invokes
 `codex exec --ephemeral --json`, disables web search and user configuration, and
 reuses the CLI's existing login. It never copies `auth.json` into an Agent

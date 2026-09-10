@@ -34,7 +34,6 @@ from .config import (
 from .host_agent import (
     HostAgentProcess,
     HostAgentStartupFailure,
-    summarize_host_agent_trace,
 )
 from .inference import summarize_inference_trace
 from .local_mailbox import LocalFileMailbox
@@ -266,7 +265,7 @@ def _stop_and_record_host_agent(
     """Record host-Agent termination only after its process has stopped."""
 
     exit_code = host_agent.stop()
-    usage = summarize_host_agent_trace(host_agent.stdout_path)
+    usage = host_agent.summarize_usage()
     supervisor.record_agent_execution(
         exit_code=exit_code,
         usage=usage,

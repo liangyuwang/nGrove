@@ -8,7 +8,7 @@ import uuid
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from autotrain_bench.cli import (
     _episode_exit_code,
@@ -17,6 +17,7 @@ from autotrain_bench.cli import (
     _resolve_challenge_run,
     _run_cleanup_steps,
     _stop_and_record_container_agent,
+    _stop_and_record_host_agent,
     _stop_and_record_startup_container_agent,
     _snapshot_agent_workspace,
     _terminal_agent_action,
@@ -27,6 +28,7 @@ from autotrain_bench.cli import (
     command_start,
 )
 from autotrain_bench.config import ConfigError, TaskConfig
+from autotrain_bench.host_agent import summarize_host_agent_trace
 from autotrain_bench.runtime import DockerRuntime, RuntimeFailure
 from autotrain_bench.training_data import TrainingDataError, verify_training_data
 from autotrain_bench.results import normalize_result_report
@@ -395,6 +397,9 @@ class WorkspaceSnapshotTests(unittest.TestCase):
 
                     class Host:
                         running = True
+
+                        def summarize_usage(self):
+                            return summarize_host_agent_trace(self.stdout_path)
 
                         def stop(self):
                             self.running = False
@@ -823,6 +828,52 @@ class WorkspaceSnapshotTests(unittest.TestCase):
             ),
             "exited",
         )
+
+    def test_host_termination_records_capture_evidence_after_stop(self):
+        calls = []
+        usage = {
+            "usage_complete": False,
+            "total_tokens": 25,
+            "log_capture": {"stdout": {"complete": False}},
+        }
+
+        class Host:
+            def stop(self):
+                calls.append("stop")
+                return 0
+
+            def summarize_usage(self):
+                calls.append("usage")
+                return usage
+
+        supervisor = Mock()
+        supervisor.record_agent_execution.side_effect = lambda **kwargs: calls.append(
+            "record"
+        )
+        _stop_and_record_host_agent(
+            supervisor=supervisor,
+            host_agent=Host(),
+            termination_reason="exited",
+            drain_seconds=0.5,
+        )
+        self.assertEqual(calls, ["stop", "usage", "record"])
+        supervisor.record_agent_execution.assert_called_once_with(
+            exit_code=0, usage=usage, termination_reason="exited", drain_seconds=0.5
+        )
+
+    def test_host_termination_failure_does_not_record_an_exit(self):
+        host = Mock()
+        host.stop.side_effect = RuntimeError("termination unconfirmed")
+        supervisor = Mock()
+        with self.assertRaisesRegex(RuntimeError, "termination unconfirmed"):
+            _stop_and_record_host_agent(
+                supervisor=supervisor,
+                host_agent=host,
+                termination_reason="exited",
+                drain_seconds=0.5,
+            )
+        host.summarize_usage.assert_not_called()
+        supervisor.record_agent_execution.assert_not_called()
 
     def test_host_agent_drain_has_a_bounded_timeout(self):
         self.assertEqual(

@@ -92,6 +92,19 @@ whether state changed, not a cleanup-success receipt; handle raised failures
 and the retained active/pending Lease state. `cleanup_agent_control()` must
 return true before evaluation.
 
+When using `start_host_agent_process`, call `handle.stop()` and then pass
+`handle.summarize_usage()` to `record_agent_execution(usage=...)`. The summary
+combines retained stdout records with in-memory capture evidence for both
+streams. Disk-full, quota, write/flush/close errors, missing EOF, and unfinished
+draining must not make a surviving valid usage prefix look complete. The
+file-only `summarize_host_agent_trace(path)` parser cannot detect those losses.
+Stderr capture has its own status; stdout is the source of token accounting.
+The log sink discards further output after a write failure while continuing to
+drain the pipe, and records the first error without relying on another write
+to the failed log file. Preserve this evidence in trusted state/archive when
+storage is available. Loss of the launcher or its state storage still requires
+external evidence; an in-memory flag is not a durable recovery receipt.
+
 On a live launcher's infrastructure failure, use
 `infrastructure_failed(code, private_detail=...)` to record the cause. For
 unconfirmed termination/removal, use `deployment_teardown_failed(...)` and
@@ -210,6 +223,9 @@ Include focused regressions for the integration changes: runtime-private host
 paths absent from Agent temporary-directory variables, real file-tool operation, short live log
 visibility, final progress after publication, transient monitor failures,
 blocked Worker calls, cancellation, and independent recovery after parent loss.
+Include log-storage failures and incomplete draining: the Agent must not block
+on a pipe whose destination filled, and retained usage must reflect capture
+loss even when a truncation marker could not be written.
 Use disposable owned resources with bounded costs. Unit simulations establish
 logic; real-runtime tests establish the observed deployment behavior. A normal
 successful episode alone does not certify cancellation, hard quota exhaustion,
