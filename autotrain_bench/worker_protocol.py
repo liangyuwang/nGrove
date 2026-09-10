@@ -41,9 +41,9 @@ if TYPE_CHECKING:
     from .config import TaskConfig, TrainingResources
 
 
-# v15 replaces exact runtime artifact sizes with an independent bounded output
-# allocation, while retaining strict final validation and teardown ordering.
-WORKER_PROTOCOL_VERSION = 15
+# v16 binds evaluation resource evidence to each Candidate invocation, separately
+# from Training Lease allocations. The v15 bounded prediction allocation remains.
+WORKER_PROTOCOL_VERSION = 16
 WORKER_CONFORMANCE_SUITE_VERSION = f"worker-v{WORKER_PROTOCOL_VERSION}"
 CONFORMANCE_RECEIPT_VERSION = 1
 RESOURCE_ENVELOPE_SCHEMA_VERSION = 1
@@ -74,6 +74,10 @@ class WorkerFailure(RuntimeError):
 
 class WorkerTeardownFailure(WorkerFailure):
     """A Worker could not confirm teardown of an isolated workload boundary."""
+
+
+class EvaluationResourceFailure(WorkerFailure):
+    """Evaluation resource evidence is missing or does not satisfy its contract."""
 
 
 class HiddenDatasetResolutionFailure(WorkerFailure):
@@ -591,8 +595,13 @@ class CandidateEvaluationResult:
     task_count: int
     input_tokens: int
     prediction_bytes: int
+    resource_receipt: Optional[EvaluationResourceReceipt] = None
 
     def __post_init__(self) -> None:
+        if self.resource_receipt is not None and not isinstance(
+            self.resource_receipt, EvaluationResourceReceipt
+        ):
+            raise TypeError("evaluation resource_receipt has an invalid type")
         if isinstance(self.performance_score, bool) or not isinstance(
             self.performance_score, (int, float)
         ):
@@ -1258,6 +1267,82 @@ class ResourceAllocationAssessment:
         }
 
 
+@dataclass(frozen=True)
+class EvaluationResourceReceipt:
+    """Resource views bound to a Core-issued evaluation ID, never a Lease ID."""
+
+    episode_id: str
+    evaluation_id: str
+    worker_id: str
+    resource_request_sha256: str
+    properties: Tuple[ResourcePropertyEvidence, ...]
+    receipt_id: str
+    receipt_version: int = RESOURCE_ALLOCATION_RECEIPT_VERSION
+
+    def __post_init__(self) -> None:
+        # Share the strict field validators; the public operation binding is
+        # deliberately distinct so a Training receipt cannot be replayed here.
+        self._allocation()
+
+    def _allocation(self) -> ResourceAllocationReceipt:
+        return ResourceAllocationReceipt(
+            episode_id=self.episode_id,
+            lease_id=self.evaluation_id,
+            worker_id=self.worker_id,
+            resource_request_sha256=self.resource_request_sha256,
+            properties=self.properties,
+            receipt_id=self.receipt_id,
+            receipt_version=self.receipt_version,
+        )
+
+    def public_manifest(self) -> Dict[str, Any]:
+        value = self._allocation().public_manifest()
+        value["evaluation_id"] = value.pop("lease_id")
+        return value
+
+    @classmethod
+    def from_manifest(cls, value: Any) -> EvaluationResourceReceipt:
+        if (
+            not isinstance(value, dict)
+            or "evaluation_id" not in value
+            or "lease_id" in value
+        ):
+            raise ValueError("evaluation resource receipt requires an evaluation_id")
+        fields = dict(value)
+        fields["lease_id"] = fields.pop("evaluation_id")
+        receipt = ResourceAllocationReceipt.from_manifest(fields)
+        return cls(
+            episode_id=receipt.episode_id,
+            evaluation_id=receipt.lease_id,
+            worker_id=receipt.worker_id,
+            resource_request_sha256=receipt.resource_request_sha256,
+            properties=receipt.properties,
+            receipt_id=receipt.receipt_id,
+            receipt_version=receipt.receipt_version,
+        )
+
+
+def assess_evaluation_resources(
+    envelope: ResourceEnvelope,
+    receipt: EvaluationResourceReceipt,
+    *,
+    episode_id: str,
+    evaluation_id: str,
+    worker_id: str,
+) -> ResourceAllocationAssessment:
+    if not isinstance(receipt, EvaluationResourceReceipt):
+        raise TypeError("evaluation resource receipt has an invalid type")
+    if receipt.evaluation_id != evaluation_id:
+        raise ValueError("resource receipt is bound to a different evaluation")
+    return assess_resource_allocation(
+        envelope,
+        receipt._allocation(),
+        episode_id=episode_id,
+        lease_id=evaluation_id,
+        worker_id=worker_id,
+    )
+
+
 def assess_resource_allocation(
     envelope: ResourceEnvelope,
     receipt: ResourceAllocationReceipt,
@@ -1779,6 +1864,8 @@ class EvaluationWorker(Protocol):
         output_dir: Path,
         candidate_workload: ResolvedWorkload,
         evaluator_workload: ResolvedWorkload,
+        evaluation_id: str,
+        resource_envelope: Optional[ResourceEnvelope],
         timeout_seconds: Optional[float] = None,
     ) -> CandidateEvaluationResult: ...
 

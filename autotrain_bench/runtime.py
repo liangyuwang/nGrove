@@ -18,6 +18,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -49,6 +50,9 @@ from .worker_protocol import (
     CommandResult,
     EnforcementLevel,
     EvaluationTaskSpec,
+    EvaluationResourceFailure,
+    EvaluationResourceReceipt,
+    assess_evaluation_resources,
     HiddenDatasetIdentityMismatch,
     HiddenDatasetRequest,
     HiddenDatasetResolutionFailure,
@@ -2182,6 +2186,217 @@ class DockerRuntime:
         self._hidden_snapshot_root = None
         self._resolved_hidden_datasets.clear()
 
+    def _evaluation_resource_plan(
+        self,
+        *,
+        episode_id: str,
+        evaluation_id: Optional[str],
+        envelope: Optional[ResourceEnvelope],
+        resources: TrainingResources,
+        device: str,
+        timeout_seconds: float,
+    ) -> Tuple[List[str], Optional[EvaluationResourceReceipt]]:
+        if envelope is None:
+            return [], None
+        if not evaluation_id:
+            raise EvaluationResourceFailure(
+                "evaluation resource contract requires an evaluation ID"
+            )
+        planning_deadline = self.monotonic() + timeout_seconds
+
+        def remaining_seconds() -> float:
+            remaining = planning_deadline - self.monotonic()
+            if remaining <= 0:
+                raise EvaluationResourceFailure(
+                    "evaluation resource planning deadline reached"
+                )
+            return remaining
+
+        values: Dict[str, Any] = {"host.count": 1, "accelerator.count": 0}
+        try:
+            gpu_ids = self._nvidia_devices(resources) if device == "cuda" else ()
+            values["accelerator.count"] = len(gpu_ids)
+            if gpu_ids:
+                inventory = self._host_nvidia_gpus(timeout_seconds=remaining_seconds())
+                selected = tuple(
+                    sorted(
+                        (gpu for gpu in inventory if gpu.uuid in gpu_ids),
+                        key=lambda gpu: gpu.uuid,
+                    )
+                )
+                if {gpu.uuid for gpu in selected} != set(gpu_ids):
+                    raise EvaluationResourceFailure(
+                        "evaluation GPU allocation disappeared"
+                    )
+                self._matching_nvidia_gpus(resources, selected)
+                values.update(
+                    {
+                        "accelerator.vendor": "nvidia",
+                        "accelerator.model": tuple(gpu.name for gpu in selected),
+                        "accelerator.memory_mib_per_device": tuple(
+                            gpu.memory_mib for gpu in selected
+                        ),
+                        "accelerator.uuids": tuple(gpu.uuid for gpu in selected),
+                    }
+                )
+        except (EvaluationResourceFailure, WorkerTeardownFailure):
+            raise
+        except WorkerFailure as exc:
+            raise EvaluationResourceFailure(str(exc)) from exc
+        args = []
+        for requirement in envelope.requirements:
+            name, value = requirement.name, requirement.value
+            if name not in {"cpu.quota_cores", "memory.limit_bytes"}:
+                continue
+            if (
+                requirement.relation != "exact"
+                or isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or value <= 0
+            ):
+                raise EvaluationResourceFailure(f"unsupported evaluation limit: {name}")
+            if name == "cpu.quota_cores":
+                # Docker represents this limit in integer nanocpus. Do not
+                # silently round a release-selected value to a different cap.
+                nanocpus = Decimal(str(value)) * 10**9
+                if nanocpus != int(nanocpus) or not 0 < nanocpus <= 2**63 - 1:
+                    raise EvaluationResourceFailure(
+                        "CPU quota cannot be represented exactly"
+                    )
+                args.extend(["--cpus", str(value)])
+            else:
+                if (
+                    not isinstance(value, int)
+                    or not 6 * 1024 * 1024 <= value <= 2**63 - 1
+                ):
+                    raise EvaluationResourceFailure(
+                        "memory limit requires at least 6 MiB in whole bytes"
+                    )
+                args.extend(["--memory", str(value), "--memory-swap", str(value)])
+            values[name] = value
+        if args:
+            try:
+                support = json.loads(
+                    self._run(
+                        [
+                            "info",
+                            "--format",
+                            "[{{json .CPUCfsQuota}},{{json .MemoryLimit}},{{json .SwapLimit}}]",
+                        ],
+                        timeout=remaining_seconds(),
+                    ).stdout
+                )
+                if not isinstance(support, list) or len(support) != 3:
+                    raise ValueError("missing Docker resource limit support")
+                required = ([0] if "--cpus" in args else []) + (
+                    [1, 2] if "--memory" in args else []
+                )
+                if any(support[index] is not True for index in required):
+                    raise ValueError(
+                        "Docker backend does not support the evaluation limits"
+                    )
+            except (RuntimeFailure, ValueError) as exc:
+                raise EvaluationResourceFailure(str(exc)) from exc
+        properties = tuple(
+            ResourcePropertyEvidence(
+                name=name,
+                allocator_allocated=(
+                    ResourceObservation(
+                        "observed", values[name], "local-reference-runtime-config"
+                    )
+                    if name in values
+                    else ResourceObservation("unavailable")
+                ),
+                # Configuration and host inventory are not in-sandbox evidence.
+                workload_visible=ResourceObservation("unavailable"),
+                enforcement_level=(
+                    EnforcementLevel.BEST_EFFORT
+                    if name in values
+                    else EnforcementLevel.UNSUPPORTED
+                ),
+                enforcement_authority="local-reference-runtime"
+                if name in values
+                else None,
+            )
+            for name in sorted(
+                {item.name for item in envelope.requirements}.union(
+                    envelope.observational_properties
+                )
+            )
+        )
+        receipt = EvaluationResourceReceipt(
+            episode_id=episode_id,
+            evaluation_id=evaluation_id,
+            worker_id=self.describe_capabilities().worker_id,
+            resource_request_sha256=envelope.sha256,
+            properties=properties,
+            receipt_id="evaluation-allocation:" + uuid.uuid4().hex,
+        )
+        assessment = assess_evaluation_resources(
+            envelope,
+            receipt,
+            episode_id=episode_id,
+            evaluation_id=evaluation_id,
+            worker_id=receipt.worker_id,
+        )
+        if not assessment.satisfied:
+            raise EvaluationResourceFailure(
+                "local Worker cannot satisfy evaluation resource contract: "
+                + json.dumps(assessment.public_manifest(), sort_keys=True)
+            )
+        remaining_seconds()
+        return args, receipt
+
+    def _verify_evaluation_resource_limits(
+        self,
+        name: str,
+        args: List[str],
+        *,
+        gpu_ids: Tuple[str, ...],
+        timeout_seconds: float,
+    ) -> None:
+        try:
+            inspected = self._run(
+                ["inspect", name, "--format", "{{json .HostConfig}}"],
+                timeout=timeout_seconds,
+            )
+            config = json.loads(inspected.stdout)
+            if not isinstance(config, dict):
+                raise ValueError("missing container resource configuration")
+            for flag, field, scale in (
+                ("--cpus", "NanoCpus", 1e9),
+                ("--memory", "Memory", 1),
+                ("--memory-swap", "MemorySwap", 1),
+            ):
+                if flag in args:
+                    expected = int(Decimal(args[args.index(flag) + 1]) * int(scale))
+                    actual = config.get(field)
+                    if (
+                        isinstance(actual, bool)
+                        or not isinstance(actual, int)
+                        or actual != expected
+                    ):
+                        raise ValueError(f"container resource limit differs: {field}")
+            requests = config.get("DeviceRequests") or []
+            if not isinstance(requests, list):
+                raise ValueError("invalid container GPU request")
+            if gpu_ids:
+                if (
+                    len(requests) != 1
+                    or not isinstance(requests[0], dict)
+                    or isinstance(requests[0].get("Count"), bool)
+                    or requests[0].get("Count") != 0
+                    or sorted(requests[0].get("DeviceIDs") or []) != sorted(gpu_ids)
+                    or ["gpu"] not in (requests[0].get("Capabilities") or [])
+                ):
+                    raise ValueError(
+                        "container GPU request differs from the frozen grant"
+                    )
+            elif requests:
+                raise ValueError("CPU evaluation unexpectedly requests devices")
+        except (RuntimeFailure, TypeError, ValueError) as exc:
+            raise EvaluationResourceFailure(str(exc)) from exc
+
     def _run_isolated_evaluator(
         self,
         *,
@@ -2194,6 +2409,8 @@ class DockerRuntime:
         output_dir: Path,
         candidate_image: str,
         evaluator_image: str,
+        evaluation_id: Optional[str] = None,
+        resource_envelope: Optional[ResourceEnvelope] = None,
         timeout_seconds: Optional[float] = None,
     ) -> CandidateEvaluationResult:
         self._check_operator_storage(output_dir)
@@ -2315,12 +2532,28 @@ class DockerRuntime:
             "/candidate",
         ]
         if task.device == "cuda":
-            if not resources.nvidia_gpu_count:
-                raise RuntimeFailure("CUDA evaluation requires a selected GPU")
-            self.validate_hardware(
-                resources, timeout_seconds=min(20, remaining_seconds())
-            )
-            candidate_args.extend(self._nvidia_grant(resources))
+            try:
+                if not resources.nvidia_gpu_count:
+                    raise EvaluationResourceFailure(
+                        "CUDA evaluation requires a selected GPU"
+                    )
+                self.validate_hardware(
+                    resources, timeout_seconds=min(20, remaining_seconds())
+                )
+                candidate_args.extend(self._nvidia_grant(resources))
+            except (EvaluationResourceFailure, WorkerTeardownFailure):
+                raise
+            except WorkerFailure as exc:
+                raise EvaluationResourceFailure(str(exc)) from exc
+        resource_args, resource_receipt = self._evaluation_resource_plan(
+            episode_id=episode_id,
+            evaluation_id=evaluation_id,
+            envelope=resource_envelope,
+            resources=resources,
+            device=task.device,
+            timeout_seconds=min(20, remaining_seconds()),
+        )
+        candidate_args.extend(resource_args)
         candidate_args.extend(
             [
                 candidate_image,
@@ -2485,6 +2718,16 @@ class DockerRuntime:
                     f"Candidate process exited with status {candidate_exit_code}"
                 )
             candidate_wall_seconds = max(0.0, self.monotonic() - candidate_started)
+            if resource_receipt is not None:
+                phase = "evaluation_resource_verification"
+                self._verify_evaluation_resource_limits(
+                    candidate_name,
+                    resource_args,
+                    gpu_ids=self._nvidia_devices(resources)
+                    if task.device == "cuda"
+                    else (),
+                    timeout_seconds=min(20, remaining_seconds()),
+                )
             # Freeze outputs before trusted scoring; the holder keeps their
             # bounded allocation alive independently of the stopped Candidate.
             phase = "candidate_teardown"
@@ -2503,6 +2746,10 @@ class DockerRuntime:
                 candidate_name=candidate_name,
                 candidate_attempted=candidate_attempted,
             )
+            if isinstance(exc, EvaluationResourceFailure):
+                raise EvaluationResourceFailure(
+                    "evaluation resource verification failed"
+                ) from None
             raise RuntimeFailure("isolated evaluation failed") from None
         finally:
             self._teardown_evaluation(evaluation_key)
@@ -2525,6 +2772,7 @@ class DockerRuntime:
                 task_count=payload["examples"],
                 input_tokens=payload["input_tokens"],
                 prediction_bytes=payload["prediction_bytes"],
+                resource_receipt=resource_receipt,
             )
             result.performance_manifest(task.performance_score)
             result.cost_manifest(task.cost)
@@ -2553,6 +2801,8 @@ class DockerRuntime:
         output_dir: Path,
         candidate_workload: ResolvedWorkload,
         evaluator_workload: ResolvedWorkload,
+        evaluation_id: Optional[str] = None,
+        resource_envelope: Optional[ResourceEnvelope] = None,
         timeout_seconds: Optional[float] = None,
     ) -> CandidateEvaluationResult:
         """Map the semantic evaluation operation to the reference runtime."""
@@ -2608,6 +2858,8 @@ class DockerRuntime:
             output_dir=output_dir,
             candidate_image=candidate_image,
             evaluator_image=evaluator_image,
+            evaluation_id=evaluation_id,
+            resource_envelope=resource_envelope,
             timeout_seconds=timeout_seconds,
         )
 

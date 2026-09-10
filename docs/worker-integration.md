@@ -18,12 +18,21 @@ deployment revision; do not rewrite a running or archived deployment.
 
 ## Composition and lifecycle
 
-Worker Protocol v15 is synchronous Python. The trusted launcher constructs the
+Worker Protocol v16 is synchronous Python. The trusted launcher constructs the
 Supervisor with its Research Worker, Evaluation Worker, Agent execution
 evidence, and Agent-control transport. Remaining `Path` arguments require a
 deployment in which their consumers can resolve the intended files; they are
 not remote artifact-transfer instructions. Hidden-data locations and resolving
 credentials are private Evaluation Worker configuration.
+
+When updating a deployment from v15, `evaluate_candidate()` must accept the new
+`evaluation_id` and `resource_envelope` keyword arguments. An explicit envelope
+requires an operation-bound `EvaluationResourceReceipt` on the returned result.
+It cannot reuse Training or another evaluation's receipt. The Supervisor reads
+the evaluation envelope from the resolved challenge release; standalone trusted
+launchers may supply `evaluation_resource_envelope` directly. Resolve unsupported
+normative properties before authorizing an expensive run. See the
+[evaluation resource contract and evidence example](evaluation-resources.md).
 
 The following is a constructor sketch with inputs already resolved by the
 trusted launcher, not a standalone launcher or a reference Tested Agent:

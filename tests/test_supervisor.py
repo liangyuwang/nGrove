@@ -68,6 +68,7 @@ from autotrain_bench.worker_protocol import (
     LeaseState,
     ResourceAllocationReceipt,
     ResourceObservation,
+    EvaluationResourceReceipt,
     ResourcePropertyEvidence,
     ResolvedHiddenDataset,
     TrustLevel,
@@ -309,9 +310,11 @@ class FakeWorker:
         output_dir,
         candidate_workload,
         evaluator_workload,
+        evaluation_id,
+        resource_envelope,
         timeout_seconds=None,
     ):
-        del episode_id, resources, candidate_dir, output_dir
+        del resources, candidate_dir, output_dir
         if not isinstance(candidate_workload, ResolvedWorkload):
             raise AssertionError("Candidate workload is not resolved")
         if not isinstance(evaluator_workload, ResolvedWorkload):
@@ -347,6 +350,29 @@ class FakeWorker:
             task_count=3,
             input_tokens=6,
             prediction_bytes=64,
+            resource_receipt=(
+                EvaluationResourceReceipt(
+                    episode_id=episode_id,
+                    evaluation_id=evaluation_id,
+                    worker_id="test-worker",
+                    resource_request_sha256=resource_envelope.sha256,
+                    receipt_id="receipt:" + evaluation_id,
+                    properties=tuple(
+                        ResourcePropertyEvidence(
+                            name=item.name,
+                            allocator_allocated=ResourceObservation("unavailable"),
+                            workload_visible=ResourceObservation(
+                                "observed", item.value, "test-worker"
+                            ),
+                            enforcement_level=EnforcementLevel.ENFORCED,
+                            enforcement_authority="test-worker",
+                        )
+                        for item in resource_envelope.requirements
+                    ),
+                )
+                if resource_envelope is not None
+                else None
+            ),
         )
 
 
@@ -448,6 +474,7 @@ class SupervisorTests(unittest.TestCase):
         worker_conformance=None,
         training_data_verification=None,
         operator_max_research_seconds=None,
+        evaluation_resource_envelope=None,
     ):
         resolved_config = config or self.config
         if training_data_verification is None:
@@ -478,6 +505,7 @@ class SupervisorTests(unittest.TestCase):
             monotonic=self.clock,
             wall_time=lambda: 1_700_000_000.0,
             operator_max_research_seconds=operator_max_research_seconds,
+            evaluation_resource_envelope=evaluation_resource_envelope,
         )
         supervisor.begin()
         return supervisor
@@ -751,7 +779,8 @@ class SupervisorTests(unittest.TestCase):
             for digest in private_digests:
                 self.assertNotIn(digest, serialized)
 
-    def test_leaderboard_eligibility_requires_the_complete_formal_contract(self):
+    def formal_supervisor(self):
+        """A trusted test deployment with every formal contract input supplied."""
         digest = "@sha256:" + "a" * 64
         formal_task_dir = self.episode.parent / "formal-task"
         formal_task_dir.mkdir()
@@ -810,6 +839,7 @@ class SupervisorTests(unittest.TestCase):
             self.resources,
             minimum_enforcement=EnforcementLevel.ENFORCED,
         ).public_manifest()
+        release["evaluation_resource_envelope"] = release["resource_envelope"]
         artifacts = {
             "challenge_manifest_sha256": release["challenge_manifest_sha256"],
             "task_manifest_sha256": release["task_manifest_sha256"],
@@ -851,6 +881,10 @@ class SupervisorTests(unittest.TestCase):
                 release_verification=receipt,
                 worker_conformance=worker_conformance,
             )
+        return supervisor, artifacts
+
+    def test_leaderboard_eligibility_requires_the_complete_formal_contract(self):
+        supervisor, artifacts = self.formal_supervisor()
         self.assertFalse(supervisor.state["leaderboard_eligible"])
         self.assertEqual(
             supervisor.state["leaderboard_eligibility_violations"],
@@ -860,6 +894,7 @@ class SupervisorTests(unittest.TestCase):
                 "workload_resolution_pending:candidate",
                 "workload_resolution_pending:evaluator",
                 "resource_allocation_pending",
+                "evaluation_resource_allocation_pending",
             ],
         )
         public_task = json.loads(

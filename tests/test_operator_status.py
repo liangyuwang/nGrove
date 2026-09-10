@@ -272,7 +272,7 @@ class OperatorStatusTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()) as output:
             command_report(args)
         report = json.loads(output.getvalue())
-        self.assertEqual(report["result_schema_version"], 13)
+        self.assertEqual(report["result_schema_version"], 14)
         self.assertEqual(report["outcome"], "success")
         self.assertNotIn("deployment", report)
 

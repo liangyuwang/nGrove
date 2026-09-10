@@ -127,10 +127,10 @@ Passing conformance does not certify a user-controlled deployment.  Likewise,
 an organizer-controlled deployment is not eligible when required technical
 capabilities are missing.  Missing or insufficient capabilities are recorded
 explicitly and never trigger a fallback. A receipt is conformant only for the
-suite version associated with the active Worker Protocol; a passing v14 receipt
-cannot certify a v15 Worker boundary.
+suite version associated with the active Worker Protocol; a passing v15 receipt
+cannot certify a v16 Worker boundary.
 
-Worker Protocol v15 retains the v9 evidence direction. `WorkerDescriptor`
+Worker Protocol v16 retains the v9 evidence direction. `WorkerDescriptor`
 contains only Worker self-description and cannot carry conformance. The trusted
 Operator composition supplies `ConformanceReceipt` independently to the
 Coordinator. The receipt binds its schema and suite versions, the assessed
@@ -149,7 +149,7 @@ suite remains required before a formal deployment can receive one.
 
 ## Research and evaluation roles
 
-Worker Protocol v15 models ResearchWorker and EvaluationWorker as separate
+Worker Protocol v16 models ResearchWorker and EvaluationWorker as separate
 interfaces because their trust domains differ:
 
 - ResearchWorker sees TRAIN, the Agent workspace, and training outputs, but
@@ -201,7 +201,7 @@ specified under [Candidate channel](#candidate-channel).
 
 A local development Worker may implement both roles in one process. A future
 formal deployment may place them on separate services connected only through
-an immutable artifact reference. The current version 15 Python interface does
+an immutable artifact reference. The current version 16 Python interface does
 not yet define that remote artifact transport.
 
 Worker operation failures and teardown failures have different episode
@@ -245,7 +245,7 @@ are not additive timeout grants.
 
 ### Known liveness limit: cooperative deadlines
 
-Worker Protocol v15 is a synchronous, in-process Python interface. Its timeout
+Worker Protocol v16 is a synchronous, in-process Python interface. Its timeout
 arguments are semantic deadlines and a conformance requirement, but they are
 cooperative rather than a Core-side preemption mechanism. Core can reject a
 result returned after its deadline; while a call has not returned, however,
@@ -269,7 +269,8 @@ instrumented Worker-operation timeouts. It fences the local process group,
 then uses the Worker journal to recover resources; it does not resume the
 episode or preempt an individual Core call safely. See
 [Worker recovery](worker-recovery.md) for tolerances, scope and reports.
-Worker Protocol v15 is unchanged. External launchers own equivalent protection
+The semantic Worker deadline contract is unchanged by this local supervision.
+External launchers own equivalent protection
 in their execution environment.
 
 A future platform-neutral seam should define asynchronous operation IDs,
@@ -597,7 +598,18 @@ context-file reading, participant-controlled scheduling/inference, and
 prediction writing. Hidden resolution, trusted validation, target joining, and
 score computation are outside that clock. Teardown is confirmed before the
 operation returns. Cost comparisons require the same benchmark release, hidden
-dataset identity, and runtime profile.
+dataset identity, and runtime profile. Matching profile names do not prove
+equivalent effective resources or cache/contending-workload conditions.
+
+Worker v16 additionally receives `evaluation_id` and `resource_envelope` on each
+evaluation. When the latter is non-null, `CandidateEvaluationResult` must carry
+an `EvaluationResourceReceipt` binding that ID, episode, Worker and request hash.
+Core validates effective normative values and enforcement before accepting the
+score, and records/revalidates the evidence in result v14. The Challenge v3
+`evaluation_resource_contract` is separate from Training requirements. A resource
+rejection is an infrastructure failure; a later ANALYSIS failure preserves an
+accepted TEST decision. See [evaluation resource contracts](evaluation-resources.md)
+for comparison limits, protocol migration, Docker support, and formal gating.
 
 ## Current migration stage
 

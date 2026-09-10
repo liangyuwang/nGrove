@@ -191,6 +191,7 @@ class RuntimeProfile:
     gpu_model_match: Optional[str]
     provisional: bool = False
     resource_contract: Optional[ResourceEnvelope] = None
+    evaluation_resource_contract: Optional[ResourceEnvelope] = None
 
     @classmethod
     def load(cls, profile_id: str, value: Any) -> "RuntimeProfile":
@@ -218,6 +219,16 @@ class RuntimeProfile:
             )
         except (TypeError, ValueError) as exc:
             raise ConfigError(f"{field}.resource_contract is invalid: {exc}") from exc
+        try:
+            evaluation_resource_contract = (
+                ResourceEnvelope.from_manifest(raw["evaluation_resource_contract"])
+                if "evaluation_resource_contract" in raw
+                else None
+            )
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(
+                f"{field}.evaluation_resource_contract is invalid: {exc}"
+            ) from exc
         if accelerator is None:
             return cls(
                 profile_id=profile_id,
@@ -230,6 +241,7 @@ class RuntimeProfile:
                 gpu_model_match=None,
                 provisional=provisional,
                 resource_contract=resource_contract,
+                evaluation_resource_contract=evaluation_resource_contract,
             )
         vendor = _string(
             accelerator.get("vendor"), f"{field}.accelerator.vendor"
@@ -259,6 +271,7 @@ class RuntimeProfile:
             ),
             provisional=provisional,
             resource_contract=resource_contract,
+            evaluation_resource_contract=evaluation_resource_contract,
         )
 
     def training_resources(self) -> TrainingResources:
@@ -353,6 +366,10 @@ class RuntimeProfile:
         )
         if self.resource_contract is not None:
             manifest["resource_contract"] = self.resource_contract.public_manifest()
+        if self.evaluation_resource_contract is not None:
+            manifest["evaluation_resource_contract"] = (
+                self.evaluation_resource_contract.public_manifest()
+            )
         return manifest
 
 
@@ -502,8 +519,8 @@ class ChallengeRelease:
             raise ConfigError(f"invalid JSON in {source}: {exc}") from exc
         root = _mapping(raw, "root")
         schema_version = _positive_int(root.get("schema_version"), "schema_version")
-        if schema_version != 2:
-            raise ConfigError("challenge schema_version must be 2")
+        if schema_version not in {2, 3}:
+            raise ConfigError("challenge schema_version must be 2 or 3")
         release_stage = _string(root.get("release_stage"), "release_stage")
         if release_stage not in RELEASE_STAGES:
             allowed = ", ".join(sorted(RELEASE_STAGES))
@@ -520,6 +537,13 @@ class ChallengeRelease:
         runtime_profiles = {
             key: RuntimeProfile.load(key, value) for key, value in raw_runtimes.items()
         }
+        if schema_version < 3 and any(
+            profile.evaluation_resource_contract is not None
+            for profile in runtime_profiles.values()
+        ):
+            raise ConfigError(
+                "evaluation_resource_contract requires challenge schema_version 3"
+            )
         task_file = _string(root.get("task"), "task")
         configured_task = Path(task_file)
         if configured_task.is_absolute() or ".." in configured_task.parts:
@@ -587,6 +611,20 @@ class ChallengeRelease:
                     "a leaderboard-eligible release requires enforced normative "
                     "resources: " + ", ".join(weak_resource_requirements)
                 )
+            for profile in self.runtime_profiles.values():
+                envelope = profile.evaluation_resource_contract
+                if (
+                    envelope is None
+                    or not envelope.requirements
+                    or any(
+                        item.minimum_enforcement is not EnforcementLevel.ENFORCED
+                        for item in envelope.requirements
+                    )
+                ):
+                    raise ConfigError(
+                        "a leaderboard-eligible release requires an enforced "
+                        f"evaluation_resource_contract: {profile.profile_id}"
+                    )
         return self
 
     @property
@@ -662,6 +700,11 @@ class ChallengeRelease:
                 "track_config": track_config.public_manifest(),
                 "runtime_profile": runtime_profile.public_manifest(),
                 "resource_envelope": resource_envelope.public_manifest(),
+                "evaluation_resource_envelope": (
+                    runtime_profile.evaluation_resource_contract.public_manifest()
+                    if runtime_profile.evaluation_resource_contract is not None
+                    else None
+                ),
             },
         )
 

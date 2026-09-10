@@ -353,9 +353,20 @@ complete formal receipt.
 
 Status: implemented in the development schemas.
 
-The current versions are Task schema v7, Challenge schema v2, Agent Protocol v12,
-Worker Protocol v15, and result schema v13. The entries below identify the
+The current versions are Task schema v7, Challenge schema v3 (v2 previews remain
+readable), Agent Protocol v12, Worker Protocol v16, and result schema v14. The entries below identify the
 versions that introduced each change.
+
+- Worker v16, Challenge v3, and result v14 add a separate evaluation resource
+  envelope and per-invocation allocation receipt. Core checks binding, effective
+  values and enforcement before accepting cost or performance, and attributes a
+  rejected receipt to infrastructure. TEST resource acceptance gates formal
+  eligibility; later ANALYSIS resource failures remain diagnostic. Docker can
+  apply CPU quota and memory caps with best-effort configuration evidence, while
+  unsupported normative cache/I/O/exclusivity conditions fail closed. The bundled
+  preview profiles remain unchanged and do not yet freeze a comparable evaluation
+  environment. Real deployment acceptance and organizer-selected conditions remain
+  outstanding; see [evaluation resources](evaluation-resources.md).
 
 - Task schema v7, Worker Protocol v15 and Agent Protocol v12 separate prediction runtime
   allocations (temporary files allowed) from exact final artifact validation.
@@ -583,8 +594,10 @@ resource evidence pending real hardware/negative-access acceptance, satisfying
 preview envelopes but not an `enforced` formal GPU envelope. Physical device
 binding remains in the Worker rather than the C4 Core schema; see the current
 [resource-contract implementation](worker-protocol.md#current-migration-stage)
-for evidence and limitations. Independent evaluation-operation allocation
-evidence remains a separate capability.
+for evidence and limitations. Worker v16 adds independent evaluation-operation
+allocation evidence through the same semantic property vocabulary; see
+[evaluation resource contracts](evaluation-resources.md). Real enforcement of
+the release-selected comparison conditions still needs deployment acceptance.
 
 ### C5. Trusted conformance evidence
 

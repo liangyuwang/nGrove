@@ -181,10 +181,23 @@ class ChallengeReleaseTests(unittest.TestCase):
             payload = json.loads(path.read_text(encoding="utf-8"))
             payload["leaderboard_eligible"] = True
             payload["release_stage"] = "official"
+            payload["schema_version"] = 3
             for value in payload["track_configs"].values():
                 value["provisional"] = False
             for value in payload["runtime_profiles"].values():
                 value["provisional"] = False
+                value["evaluation_resource_contract"] = {
+                    "schema_version": 1,
+                    "normative": [
+                        {
+                            "name": "host.count",
+                            "relation": "exact",
+                            "value": 1,
+                            "minimum_enforcement": "enforced",
+                        }
+                    ],
+                    "observational": [],
+                }
             path.write_text(json.dumps(payload), encoding="utf-8")
             release = ChallengeRelease.load(path)
             with self.assertRaisesRegex(ConfigError, "development smoke"):
