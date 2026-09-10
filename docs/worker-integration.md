@@ -188,8 +188,12 @@ retry. State which local I/O or external operations the deployment cannot
 preempt. Preserve durable cleanup progress so retries do not repeatedly spend
 their allowance on already confirmed historical removals while live workloads
 wait. Uncertain or unpersisted outcomes remain pending. The bundled Docker
-recovery implements this shared allowance; it does
-not provide the termination mechanism for an external Worker.
+recovery implements this shared allowance. Its CLI and
+`DockerRuntime.recover_resources()` also isolate journal access, cleanup and
+report persistence in independently supervised processes. Low-level
+`DockerRecovery.recover()` remains cooperative and needs an outer supervisor
+when used directly. The bundled mechanism does not supervise an external
+Worker's arbitrary cleanup implementation.
 
 Handle supported termination signals with a bounded shutdown path: stop new
 work, attempt cooperative teardown within its allowance, then fence the owned

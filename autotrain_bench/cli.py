@@ -1156,7 +1156,12 @@ def command_worker_recover(args: argparse.Namespace) -> int:
         args.state_dir, timeout_seconds=timeout_seconds
     )
     _print(report)
-    return 0 if report["cleanup_complete"] else 2
+    return (
+        0
+        if report["cleanup_complete"]
+        and not report.get("process_supervision", {}).get("operator_signal")
+        else 2
+    )
 
 
 def command_status(args: argparse.Namespace) -> int:

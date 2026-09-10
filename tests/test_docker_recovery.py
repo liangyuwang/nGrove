@@ -468,6 +468,7 @@ class DockerRecoveryTests(unittest.TestCase):
         self.assertEqual(self.backend.calls, [])
 
     def test_stuck_runtime_subprocess_obeys_shared_recovery_deadline(self):
+        from autotrain_bench.local_recovery import _perform
         from autotrain_bench.runtime import DockerRuntime
 
         self.create()
@@ -485,9 +486,17 @@ class DockerRecoveryTests(unittest.TestCase):
 
         runtime = DockerRuntime(docker_binary=sys.executable)
         started = time.monotonic()
-        with patch("autotrain_bench.runtime.subprocess.run", stuck_command):
-            report = runtime.recover_resources(
-                self.root / "worker", timeout_seconds=0.1
+        with patch("autotrain_bench.runtime.subprocess.run", stuck_command), patch(
+            "autotrain_bench.runtime.DockerRuntime", return_value=runtime
+        ):
+            report = _perform(
+                {
+                    "operation": "recover",
+                    "state_dir": str(self.root / "worker"),
+                    "docker_binary": sys.executable,
+                    "registration": None,
+                    "timeout_seconds": 0.1,
+                }
             )
         self.assertLess(time.monotonic() - started, 3)
         self.assertEqual(len(attempted), 1)

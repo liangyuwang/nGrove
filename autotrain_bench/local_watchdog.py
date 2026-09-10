@@ -13,7 +13,6 @@ import math
 import os
 import signal
 import socket
-import stat
 import subprocess
 import sys
 import threading
@@ -202,54 +201,24 @@ def watched(*, timeout: str = "timeout_seconds", fallback=None, cleanup: bool = 
 
 
 def _recover(registration: dict, *, timeout_seconds: float) -> dict:
-    from .docker_recovery import DockerRecovery
-    from .runtime import DockerRuntime
+    from .local_recovery import recover_resources
 
-    runtime = DockerRuntime(docker_binary=registration["docker_binary"])
-    journal = DockerRecovery(Path(registration["state_dir"]))
-    runtime._recovery = journal
-    try:
-        if (
-            journal.state["owner"] != registration["owner"]
-            or journal.state["directory_identity"] != registration["directory_identity"]
-        ):
-            raise WorkerFailure("watchdog Worker ownership differs from registration")
-        return journal.recover(runtime._run_raw, timeout_seconds=timeout_seconds)
-    finally:
-        journal.close()
-
-
-def _write_report(registration: dict, report: dict) -> None:
-    root = Path(registration["state_dir"])
-    metadata = root.lstat()
-    if (
-        not stat.S_ISDIR(metadata.st_mode)
-        or metadata.st_uid != os.geteuid()
-        or metadata.st_mode & 0o077
-        or [metadata.st_dev, metadata.st_ino] != registration["directory_identity"]
-    ):
-        raise WorkerFailure("watchdog report directory ownership changed")
-    data = (json.dumps(report, sort_keys=True) + "\n").encode()
-    if len(data) > 1024 * 1024:
-        raise WorkerFailure("watchdog report capacity reached")
-    temporary = root / "watchdog-report.next"
-    fd = os.open(
-        temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600
+    return recover_resources(
+        Path(registration["state_dir"]),
+        docker_binary=registration["docker_binary"],
+        registration=registration,
+        timeout_seconds=timeout_seconds,
     )
-    with os.fdopen(fd, "wb") as stream:
-        stream.write(data)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, root / "watchdog-report.json")
-    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+
+
+def _write_report(registration: dict, report: dict, *, timeout_seconds: float) -> None:
+    from .local_recovery import write_watchdog_report
+
+    write_watchdog_report(registration, report, timeout_seconds=timeout_seconds)
 
 
 @contextmanager
-def _operator_signals():
+def _operator_signals(*, propagate: bool = False):
     """Latch cancellation without unwinding process creation or owned cleanup."""
     interruption = []
     previous = {}
@@ -265,6 +234,11 @@ def _operator_signals():
     finally:
         for signum, handler in previous.items():
             signal.signal(signum, handler)
+        if propagate and interruption:
+            signum = interruption[0]
+            handler = previous[signum]
+            if callable(handler) and handler is not signal.default_int_handler:
+                handler(signum, None)
 
 
 def supervise(
@@ -427,6 +401,7 @@ def _supervise(
         parent.close()
 
     cleanup = None
+    recovery_deadline = time.monotonic() + recovery_seconds
     if registration is not None:
         try:
             cleanup = recover(registration, timeout_seconds=recovery_seconds)
@@ -442,12 +417,29 @@ def _supervise(
         "completed_exit_code": completed_code,
         "recovery_timeout_seconds": recovery_seconds,
         "cleanup": cleanup,
+        "report_persisted": False,
         "failures": failures,
         "resumed": False,
     }
     if registration is not None:
         try:
-            _write_report(registration, report)
+            remaining = recovery_deadline - time.monotonic()
+            if remaining <= 0:
+                raise WorkerFailure(
+                    "recovery deadline exhausted before report persistence"
+                )
+            if cleanup is not None and not cleanup.get("process_supervision", {}).get(
+                "termination_confirmed", True
+            ):
+                raise WorkerFailure(
+                    "report deferred while recovery process termination is unconfirmed"
+                )
+            _write_report(
+                registration,
+                {**report, "report_persisted": True},
+                timeout_seconds=remaining,
+            )
+            report["report_persisted"] = True
         except Exception as exc:
             failures.append("cannot persist watchdog report: " + str(exc))
     cleanup_status = (
@@ -457,11 +449,18 @@ def _supervise(
     )
     report_location = (
         f"report {registration['state_dir']}/watchdog-report.json"
+        if registration is not None and report["report_persisted"]
+        else "current report was not persisted; any retained report may be from an earlier attempt"
         if registration is not None
         else "no journal registered; pre-journal resources are outside recovery scope"
     )
     print(
-        f"Worker watchdog: {reason}; cleanup {cleanup_status}; {report_location}",
+        f"Worker watchdog: {reason}; cleanup {cleanup_status}; {report_location}"
+        + (
+            f"; recovery attempt {cleanup['process_supervision']['attempt_id']}"
+            if cleanup is not None and "process_supervision" in cleanup
+            else ""
+        ),
         file=sys.stderr,
         flush=True,
     )

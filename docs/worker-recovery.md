@@ -30,12 +30,15 @@ autotrain-bench worker-recover --state-dir /worker/private/run-state
 
 Each recovery pass has a shared 120-second allowance. Override it with
 `worker-recover --timeout-seconds SECONDS`; direct Python callers can pass
-`timeout_seconds` to `DockerRuntime.recover_resources()` or
-`DockerRecovery.recover()`. The allowance starts after journal acquisition,
-at recovery entry, and includes daemon identity checks and elapsed journal and
-private-storage work. Each Docker command receives the smaller of its existing
-20-second timeout and the remaining allowance. More resources or failed
-commands do not renew it.
+`timeout_seconds` to `DockerRuntime.recover_resources()`. These entry points
+execute recovery in a fresh interpreter and dedicated process group. The
+supervisor starts its monotonic timer before helper launch; journal acquisition,
+daemon checks, journal writes, private-storage deletion and journal close all
+run inside the supervised process. The watchdog's subsequent report writer uses
+another supervised process with only the remainder of the same allowance.
+Each Docker command also retains its cooperative timeout of at most 20 seconds
+and the algorithm's remaining allowance. More resources or failed commands do
+not renew the parent's timer.
 
 On detecting expiry, no further runtime commands or cleanup stages are started.
 The report records `deadline_exceeded: true`, the configured
@@ -44,6 +47,26 @@ not an absence confirmation; retained ownership records allow a later pass to
 verify what actually happened. Holders and private storage remain protected
 until prerequisite workload cleanup succeeds. A retry receives a new allowance
 and verifies the retained records; it does not resume the episode.
+
+The parent reads only bounded private socket messages and never opens the
+journal or writes report files itself. At completion or expiry it signals its
+own unreaped helper process group before waiting, preventing PID/PGID reuse.
+Termination confirmation has a separate allowance of at most five seconds;
+the parent returns an incomplete result instead of waiting indefinitely if
+termination or fencing remains unconfirmed. It never unlocks another process's
+journal. Every Docker recovery client inherits the ownership lock, so an
+uninterruptible client still blocks a competing recovery pass after helper
+loss. `process_supervision` records the attempt ID, helper exit code,
+termination/fencing confirmation, received operator signal and failures.
+Unavailable episode metadata remains null when journal acquisition failed.
+
+The recovery and report subprocesses inherit no Agent/control channel and have
+their stdout/stderr disconnected from the caller; only the bounded private
+response channel is used. Recovery supervision requires POSIX, a main-thread
+caller and exclusive child reaping. Direct `DockerRecovery.recover()` is the
+cooperative primitive used **inside** that boundary and does not install its
+own process supervisor. Custom launchers calling it directly need equivalent
+supervision, as do custom recovery callbacks supplied to `supervise()`.
 
 A resource whose absence was confirmed and whose complete `removed` record was
 persisted is finished work. Recovery checks the journal ownership and daemon
@@ -57,11 +80,12 @@ and must pass the full ownership and identity checks again. These durable
 confirmations rely on creation remaining fenced and on resources not being
 recreated or relabelled outside the journaled lifecycle.
 
-This deadline bounds runtime command waits and checks between local operations;
-it cannot preempt blocked filesystem syscalls or an in-progress tree removal.
-Those operations may finish after the allowance and still produce an incomplete
-recovery report. Journal acquisition, report persistence and process fencing
-are outside this allowance. Host/storage failure still needs external recovery.
+Blocked recovery-storage syscalls no longer trap the waiting supervisor. This
+does not guarantee that a kernel will immediately terminate an uninterruptible
+task or that unavailable storage will be reclaimed. Unconfirmed resources and
+held locks remain for external recovery. The supervisor's own OS scheduling,
+trusted interpreter/source availability and the caller's final console/output
+delivery are outside the recovery-storage guarantee.
 
 Exit code 0 means all registered resources were confirmed absent and private
 temporary materializations were removed. Exit code 2 means recovery failed or
@@ -197,14 +221,23 @@ without raising from the signal handler. It stops supervision and fences its
 owned process group even if the signal arrived while the child was being
 created. Both handlers remain installed through fencing, journal recovery and
 report writing, so repeated signals do not abandon cleanup. The previous
-handlers are restored before `supervise()` returns. Recovery uses the shared
-allowance above while signals are deferred; it cannot preempt blocked filesystem
-I/O. Forced kill or host loss still requires the separate recovery path
-described below.
+handlers are restored before `supervise()` returns. Nested recovery/report
+supervision propagates cancellation back to this handler after its helper is
+fenced. Manual recovery likewise defers signals through bounded cleanup and
+returns exit code 2 after cancellation. Forced kill or host loss still requires
+the separate recovery path described below.
 
 `watchdog-report.json` records the trigger, process exit, completed launcher
 status when available, the configured `recovery_timeout_seconds`, and cleanup
 result in the private Worker directory.
+Report persistence must finish within the remaining recovery allowance. If it
+times out, fails, or is skipped because recovery exhausted the allowance or its
+process termination is unconfirmed, the watchdog returns exit code 2 and
+explicitly says that the current report was not persisted. Any retained file
+may describe an earlier attempt; the printed recovery attempt ID can be matched
+against `cleanup.process_supervision.attempt_id` in a successfully persisted
+report. A failed writer does not cause a synchronous fallback write to the same
+storage. Successfully persisted reports contain `report_persisted: true`.
 `operator_signal` records the first observed cancellation signal number, or
 null when none was received before the report snapshot. Cancellation during
 recovery gives exit code 2 even if the launcher had already reported success;
@@ -227,6 +260,12 @@ removals through workload and storage cleanup; RAM-only removals and reused
 names must retain their verification requirements. A disposable
 real subprocess verifies runtime timeout propagation; the resource backend in
 these tests remains simulated.
+Fresh-process regressions stall journal reading, saving, private-tree removal,
+journal close and report writing until killed. They verify bounded return,
+ownership-lock retention by surviving runtime clients, retry from durable
+progress, cancellation, malformed/missing replies and unchanged Core results.
+These fixtures simulate the blocked filesystem operation; they do not certify
+real uninterruptible kernel I/O or a particular cluster/storage deployment.
 
 This covers one local POSIX execution host and its bundled Docker Worker, not
 a distributed lease/fencing protocol. It does not supply asynchronous Core

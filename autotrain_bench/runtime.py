@@ -271,6 +271,7 @@ class DockerRuntime:
         self._execution_identity: Optional[Tuple[int, int]] = None
         self._operator_storage: Optional[LocalStorageProtection] = None
         self._recovery: Optional[DockerRecovery] = None
+        self._recovery_clients_hold_lock = False
         self._nvidia_selection: Optional[Tuple[str, ...]] = None
         self._nvidia_request: Optional[tuple] = None
 
@@ -302,13 +303,11 @@ class DockerRuntime:
         with cleanup_notifications():
             if self._recovery is not None:
                 raise RuntimeFailure("cannot recover through an active Worker client")
-            self._recovery = DockerRecovery(state_dir)
-            try:
-                return self._recovery.recover(
-                    self._run_raw, timeout_seconds=timeout_seconds
-                )
-            finally:
-                self.close_recovery()
+            from .local_recovery import recover_resources
+
+            return recover_resources(
+                state_dir, docker_binary=self.docker, timeout_seconds=timeout_seconds
+            )
 
     def share_recovery_with(self, client: "DockerRuntime") -> None:
         """Let the same-process deadline client retain the same ownership lock."""
@@ -563,9 +562,14 @@ class DockerRuntime:
         inheritance = {}
         if self._recovery is not None:
             self._recovery._require_open()
-            if list(args[:1]) == ["create"] or list(args[:2]) in (
-                ["network", "create"],
-                ["volume", "create"],
+            if (
+                self._recovery_clients_hold_lock
+                or list(args[:1]) == ["create"]
+                or list(args[:2])
+                in (
+                    ["network", "create"],
+                    ["volume", "create"],
+                )
             ):
                 inheritance["pass_fds"] = (self._recovery.lock_fd,)
         try:

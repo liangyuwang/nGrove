@@ -210,8 +210,8 @@ class WatchdogProcessTests(unittest.TestCase):
 
 
 class WatchdogBindingTests(unittest.TestCase):
-    def test_default_recovery_passes_deadline_and_closes_journal(self):
-        from autotrain_bench.local_watchdog import _recover
+    def test_recovery_helper_passes_deadline_and_closes_journal(self):
+        from autotrain_bench.local_recovery import _perform
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -238,7 +238,15 @@ class WatchdogBindingTests(unittest.TestCase):
                 "autotrain_bench.docker_recovery.time.monotonic",
                 side_effect=lambda: now[0],
             ):
-                report = _recover(registration, timeout_seconds=1)
+                report = _perform(
+                    {
+                        "operation": "recover",
+                        "state_dir": registration["state_dir"],
+                        "docker_binary": "fixture-docker",
+                        "registration": registration,
+                        "timeout_seconds": 1,
+                    }
+                )
             self.assertEqual(timeouts, [1])
             self.assertFalse(report["cleanup_complete"])
             self.assertTrue(report["deadline_exceeded"])
