@@ -51,7 +51,7 @@ below. Implementation and deployment acceptance are tracked separately in the
 | 3 | External Worker startup and exceptional cleanup | Integration, tool-admission, clocks and recovery guidance delivered; affected external packaging/cleanup remains deployment work |
 | 4 | Minimum acceptance for original issues 2/3/4/5/6/8 | Reliability fixes, v16 evaluation probe and evidence matrix delivered; current deployment acceptance remains pending per scenario |
 | 5 | Original issue 7: cost comparison conditions | Evaluation contract, operation receipts and startup preflight implemented; release-selected cache/I/O/contention conditions and actual enforcement still need completion |
-| 6 | Original issues 10/12/13: formal evaluation | Gateway evidence and reusable Lease/evaluation diagnostics implemented in Core; actual deployment evidence, complete conformance and formal release/submission infrastructure remain open |
+| 6 | Original issues 10/12/13: formal evaluation | Gateway evidence and reusable Worker diagnostics, including independent observation of idle Lease expiry, implemented in Core; actual deployment evidence, complete conformance and formal release/submission infrastructure remain open |
 
 The matrix records historical successful Tracks and fault diagnostics without
 treating them as acceptance of later code. It also defines the next bounded
@@ -666,6 +666,13 @@ starts before calling the Worker and compensates failed or late creation before
 the mandatory deployment teardown. This is another bounded issue-10 increment;
 independent deadlines, isolation, physical enforcement, crash recovery and
 organizer certification remain required for complete formal conformance.
+
+The [idle Lease deadline diagnostic](worker-deadline-probe.md) now adds an
+independent observer seam for live-state, deadline-event and stopped-state
+evidence, without invoking Worker state/command/cleanup methods during the idle
+window. This closes the reusable diagnostic gap for that bounded case. Exact
+activation timing, command cancellation, paused/killed Worker behavior and
+allocation/host-loss recovery remain separate acceptance work.
 
 ### Other independently triggered work
 

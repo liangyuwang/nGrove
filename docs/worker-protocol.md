@@ -149,8 +149,12 @@ the supplied Evaluation Worker on public fixtures, checks per-invocation receipt
 and typed resource rejection, rejects late replies, and requires explicit
 deployment cleanup confirmation. The probes use unique operation scopes, separate
 public failure codes from trusted details, and invoke deployment teardown.
+The separate [idle Lease deadline diagnostic](worker-deadline-probe.md) uses an
+independent deployment observer to verify workload absence and a bound deadline
+event before any Worker cleanup call. Its observer must never enforce expiry
+as a side effect of inspection.
 They do not test the complete physical enforcement, isolation, deadline and
-recovery contract or issues a formal `ConformanceReceipt`. A complete
+recovery contract or issue a formal `ConformanceReceipt`. A complete
 organizer-controlled suite remains required before a formal deployment can
 receive one.
 

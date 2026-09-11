@@ -268,6 +268,12 @@ allocations and a rejected admission, resource receipt binding, fixture command
 execution, repeated termination and failed-start compensation. Its command is
 supplied by the disposable deployment; it creates no Agent or hidden evaluation.
 
+The [idle deadline diagnostic](worker-deadline-probe.md) observes one live Lease
+through expiry using the deployment's independent read-only observer and
+controller event evidence. Supply that observer separately from Worker state
+polling; the probe cannot validate independent expiry by asking the Worker to
+perform its own deferred cleanup.
+
 The [evaluation Worker diagnostic](worker-evaluation-probe.md) supplies a reusable
 interface check for supported TEST/ANALYSIS resource receipts and deliberately
 unsupported contracts. Run it only on public disposable fixtures, with the

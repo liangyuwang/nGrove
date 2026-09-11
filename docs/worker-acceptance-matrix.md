@@ -127,6 +127,13 @@ handles followed by a successful authorized recovery check.
 
 ### R04: stalled calls, signals and loss of the launcher
 
+The later [idle deadline diagnostic](worker-deadline-probe.md) adds a reusable
+check before fault injection: observe a live Lease, then verify independent
+deadline-trigger evidence and workload absence without Worker status or command
+calls. Its tests include simulated controllers and a local process fixture with
+a separate controller process; neither is a real Worker v16 platform acceptance
+run. The observer must be read-only and independent of Worker reconciliation.
+
 Exercise an operation that exceeds its allowance and a stopped/nonresponsive
 Worker; independently check Lease and private research deadlines. Deliver a
 handled cancellation during launch, active work and cleanup. Verify that a

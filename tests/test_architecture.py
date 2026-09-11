@@ -41,6 +41,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
             "supervisor.py",
             "worker_protocol.py",
             "gateway_execution.py",
+            "deadline_probe.py",
         ):
             with self.subTest(filename=filename):
                 modules = imported_modules(ROOT / "autotrain_bench" / filename)

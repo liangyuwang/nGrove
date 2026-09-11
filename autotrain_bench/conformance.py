@@ -3,8 +3,10 @@
 These probes deliberately do not issue :class:`ConformanceReceipt`. They
 exercise resolution, Lease lifecycle and evaluation resource evidence, while
 the active Worker Protocol also includes physical resource enforcement,
-isolation, independent deadlines and recovery guarantees. Treating this partial
-coverage as complete protocol conformance would create false formal evidence.
+isolation, full deadline/cancellation and recovery guarantees. The separate
+``deadline_probe`` checks idle Lease expiry through a deployment observer.
+Treating this partial coverage as complete protocol conformance would create
+false formal evidence.
 
 Run a probe only against a dedicated, disposable Worker deployment. The
 trusted Operator supplies the release-owned identities and a deployment-level
