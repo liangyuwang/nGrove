@@ -2,8 +2,8 @@
 
 `time_per_task` is the trusted Candidate invocation wall time divided by the
 frozen task count. A successful measurement is not proof that another invocation
-had equivalent CPU, I/O, cache or contention conditions. The Ibex and Orix preview
-findings identified this gap; Training Lease evidence and host inventory do not
+had equivalent CPU, I/O, cache or contention conditions. External Worker preview
+testing identified this gap; Training Lease evidence and host inventory do not
 establish the effective environment of a later evaluation.
 
 ## Release contract
@@ -159,5 +159,5 @@ the release's chosen contract.
 Before comparing costs externally, the organizer still needs to freeze suitable
 conditions, implement and validate their enforcement in the authorized Worker,
 and record every invocation's evidence. Local command-boundary tests are not real
-Docker/GPU admission or formal conformance evidence. Existing Ibex/Orix preview
+Docker/GPU admission or formal conformance evidence. Existing external preview
 measurements retain their original comparison limits.

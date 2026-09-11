@@ -1,6 +1,6 @@
 # Evaluation Worker diagnostic probe
 
-The Ibex/Orix findings distinguish a successful preview from acceptance of its
+External Worker testing distinguishes a successful preview from acceptance of its
 Worker's failure paths. Worker v16 also requires evaluation resource receipts
 that an older temporary deployment may not implement. The resolution probe
 cannot detect a Worker that resolves inputs correctly but omits, misbinds or
@@ -11,6 +11,11 @@ platform-independent diagnostic for that gap. It calls the actual supplied
 Evaluation Worker interface. It does not create an Agent, launch a benchmark
 episode, select an incumbent, publish a benchmark result or issue a
 `ConformanceReceipt`. Its report always carries `formal_conformance: false`.
+
+This probe supplies part of R08-E in the
+[acceptance evidence matrix](worker-acceptance-matrix.md). Supervisor failure
+attribution/publication, actual allocation inspection, independent deadline
+enforcement and crash recovery have separate acceptance criteria there.
 
 ## Prepare a disposable deployment
 

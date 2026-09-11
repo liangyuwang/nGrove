@@ -38,6 +38,28 @@ The Agent control transport and the Coordinator-to-Worker Protocol are
 different boundaries. A deployment may use a shared file mailbox for one and a
 remote Worker service for the other, or replace either independently.
 
+## Preview repair and acceptance sequence
+
+The external Worker follow-up uses this sequence alongside the architectural phases
+below. Implementation and deployment acceptance are tracked separately in the
+[Worker acceptance evidence matrix](worker-acceptance-matrix.md).
+
+| Step | Scope | Current disposition |
+| --- | --- | --- |
+| 1 | Host Agent log visibility | Implemented, including capture-loss handling and local process regressions |
+| 2 | Trusted Operator status | Implemented; external observation wiring/final refresh requires deployment evidence |
+| 3 | External Worker startup and exceptional cleanup | Integration, tool-admission, clocks and recovery guidance delivered; affected external packaging/cleanup remains deployment work |
+| 4 | Minimum acceptance for original issues 2/3/4/5/6/8 | Reliability fixes, v16 evaluation probe and evidence matrix delivered; current deployment acceptance remains pending per scenario |
+| 5 | Original issue 7: cost comparison conditions | Evaluation contract, operation receipts and startup preflight implemented; release-selected cache/I/O/contention conditions and actual enforcement still need completion |
+| 6 | Original issues 10/12/13: formal evaluation | Complete conformance, Gateway execution identity and formal release/submission infrastructure remain open |
+
+The matrix records historical successful Tracks and fault diagnostics without
+treating them as acceptance of later code. It also defines the next bounded
+diagnostic cases and the evidence needed to close them; it does not authorize a
+new allocation or require another full A/B run. Original issues 1/9 retain their
+main-item completion. Original issue 11 and full remote operation/cancellation
+semantics remain separately demand-driven.
+
 ## Invariants throughout the migration
 
 - The Coordinator remains authoritative for Track A/B budgets, Lease
@@ -627,7 +649,7 @@ public fixtures, sharing resolution/execution deadlines and requiring explicit
 deployment cleanup confirmation. This gives external Worker preparation a
 reusable check beyond resolution. It remains partial diagnostic coverage, not
 physical enforcement acceptance or a formal conformance suite; historical
-Ibex/Orix runs are not retrospectively certified.
+external preview runs are not retrospectively certified.
 
 The future formal suite belongs to organizer tooling and the external Worker
 SDK. Platform-specific deployment setup, outer watchdogs, destructive cleanup,

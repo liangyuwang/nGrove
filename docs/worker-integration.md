@@ -241,6 +241,12 @@ Use focused checks before a full run. Retain evidence against the exact Worker,
 runtime, Agent, and Core identities; repeat affected checks after changes.
 Unchanged unrelated checks do not need to be repeated on every ordinary run.
 
+Use the [acceptance evidence matrix](worker-acceptance-matrix.md) to select the
+remaining cases for the exact deployment. It separates current local regression
+coverage from historical external Worker observations, defines failure and
+cleanup criteria, and lists the evidence needed for each result. A completed
+matrix or passing probe alone does not close its pending deployment cases.
+
 | Stage | Minimum evidence before progressing |
 | --- | --- |
 | Interface | Protocol/version compatibility, bound workload/resource receipts, hidden resolution rules, and required failure types; the resolution diagnostic alone is not full conformance |
