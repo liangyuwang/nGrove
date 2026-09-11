@@ -43,6 +43,13 @@ from .config import (
     operator_research_limit,
 )
 from .inference import summarize_inference_trace
+from .gateway_execution import (
+    GatewayExecutionReceipt,
+    GatewayExecutionRequest,
+    gateway_eligibility_violations,
+    inference_policy_sha256,
+    manifest_sha256,
+)
 from .results import (
     RESULT_SCHEMA_VERSION,
     normalize_result_report,
@@ -405,6 +412,7 @@ class Supervisor:
                 workload_resolution_acceptance=dict(
                     verified_release.workload_resolution_acceptance
                 ),
+                inference_gateway_artifact=verified_release.inference_gateway_artifact,
             )
         self.monotonic = monotonic
         self.wall_time = wall_time
@@ -593,13 +601,17 @@ class Supervisor:
             eligibility_violations.append("agent_workload_identity_not_immutable")
         if not agent_execution.leaderboard_eligible:
             eligibility_violations.append("agent_execution_not_certified")
-        # Worker Protocol v14 covers Worker-owned training/Candidate/Evaluator
-        # workloads. AgentExecutionEvidence v0 binds the Agent image itself but
-        # has no trusted field for an inference Gateway workload. Fail closed
-        # instead of treating the task's configured Gateway reference as proof
-        # of what an external launcher actually ran.
+        # The launcher supplies actual Gateway evidence after startup and before
+        # begin(). A configured image is never proof of an executed artifact.
         if config.leaderboard_eligible and agent.inference is not None:
-            eligibility_violations.append("inference_gateway_workload_evidence_missing")
+            eligibility_violations.extend(
+                gateway_eligibility_violations(
+                    None,
+                    self.release_verification.inference_gateway_artifact
+                    if self.release_verification is not None
+                    else None,
+                )
+            )
         core_revision = core_identity.get("revision")
         if not isinstance(core_revision, str) or not core_revision:
             eligibility_violations.append("core_identity_unknown")
@@ -668,6 +680,32 @@ class Supervisor:
             and not eligibility_violations
         )
 
+        episode_id = "episode:" + uuid.uuid4().hex
+        self._gateway_execution_request = None
+        if self.agent.inference is not None:
+            inference = self.agent.inference
+            # Hash private registration values, never credential contents. Do
+            # not publish even this fingerprint to the Tested Agent.
+            self._gateway_execution_request = GatewayExecutionRequest(
+                episode_id=episode_id,
+                requested_identity=config.inference_gateway_image,
+                core_revision=core_identity.get("revision"),
+                inference_policy_sha256=inference_policy_sha256(
+                    inference.protocol,
+                    inference.allowed_models,
+                    inference.allowed_paths,
+                ),
+                inference_registration_sha256=manifest_sha256(
+                    {
+                        "protocol": inference.protocol,
+                        "base_url": inference.base_url,
+                        "api_key_env": inference.api_key_env,
+                        "allowed_models": sorted(inference.allowed_models),
+                        "allowed_paths": sorted(inference.allowed_paths),
+                        "timeout_seconds": inference.timeout_seconds,
+                    }
+                ),
+            )
         self.state: Dict[str, Any] = {
             "protocol_version": AGENT_PROTOCOL_VERSION,
             "result_schema_version": RESULT_SCHEMA_VERSION,
@@ -675,7 +713,15 @@ class Supervisor:
             # particular, an operator-selected directory may contain spaces or
             # Unicode that are valid on the host but invalid in opaque Worker
             # receipt IDs.  Keep the protocol identity stable and path-free.
-            "episode_id": "episode:" + uuid.uuid4().hex,
+            "episode_id": episode_id,
+            "gateway_execution": (
+                {
+                    "request": self._gateway_execution_request.private_manifest(),
+                    "receipt": None,
+                }
+                if self._gateway_execution_request is not None
+                else None
+            ),
             "task_id": config.task_id,
             "task_kind": config.task_kind,
             "leaderboard_eligible": leaderboard_eligible,
@@ -902,6 +948,52 @@ class Supervisor:
             and evaluation["leaderboard_eligible"]
             and not self.state["leaderboard_eligibility_violations"]
         )
+
+    @property
+    def gateway_execution_request(self) -> Optional[GatewayExecutionRequest]:
+        """Private, immutable request for the trusted Gateway launcher."""
+        return self._gateway_execution_request
+
+    def record_gateway_execution(self, receipt: GatewayExecutionReceipt) -> None:
+        """Freeze actual launcher evidence once, before task reveal.
+
+        The caller is the trusted composition, never the Tested Agent. Starting,
+        inspecting, enforcing and stopping the Gateway remain deployment-owned.
+        """
+        with self.lock:
+            if self.state["status"] != "created":
+                raise ProtocolError(
+                    "invalid_state", "Gateway evidence must precede task reveal"
+                )
+            request = self._gateway_execution_request
+            if request is None:
+                raise ValueError("Gateway inference is not enabled")
+            if not isinstance(receipt, GatewayExecutionReceipt):
+                raise TypeError("receipt must be a GatewayExecutionReceipt")
+            if self.state["gateway_execution"]["receipt"] is not None:
+                raise ValueError("Gateway execution evidence is already fixed")
+            receipt.validate_request(request)
+            self.state["gateway_execution"]["receipt"] = receipt.private_manifest()
+            if self.config.leaderboard_eligible:
+                violations = self.state["leaderboard_eligibility_violations"]
+                violations[:] = [
+                    item
+                    for item in violations
+                    if not item.startswith("inference_gateway_")
+                ]
+                violations.extend(
+                    gateway_eligibility_violations(
+                        receipt,
+                        self.release_verification.inference_gateway_artifact
+                        if self.release_verification is not None
+                        else None,
+                    )
+                )
+                self._refresh_leaderboard_eligibility()
+            self._event(
+                "INFERENCE_GATEWAY_EXECUTION_RECORDED", receipt_id=receipt.receipt_id
+            )
+            self._save_state()
 
     def begin(self) -> None:
         with self.lock:

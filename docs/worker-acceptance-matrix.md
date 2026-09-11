@@ -303,4 +303,7 @@ real-runtime acceptance. Step 5 still requires release owners to freeze and
 Workers to enforce the comparison conditions in
 [evaluation resources](evaluation-resources.md). Step 6 covers original issues
 10/12/13: formal conformance, Gateway execution identity and release/publication.
+The [Gateway execution evidence](gateway-execution.md) Core interface now
+supports issue 12; real launcher evidence and deployment certification remain
+pending independently of its regression tests.
 Original issue 11 and full remote operations remain demand-driven work.

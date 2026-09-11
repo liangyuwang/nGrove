@@ -51,7 +51,7 @@ below. Implementation and deployment acceptance are tracked separately in the
 | 3 | External Worker startup and exceptional cleanup | Integration, tool-admission, clocks and recovery guidance delivered; affected external packaging/cleanup remains deployment work |
 | 4 | Minimum acceptance for original issues 2/3/4/5/6/8 | Reliability fixes, v16 evaluation probe and evidence matrix delivered; current deployment acceptance remains pending per scenario |
 | 5 | Original issue 7: cost comparison conditions | Evaluation contract, operation receipts and startup preflight implemented; release-selected cache/I/O/contention conditions and actual enforcement still need completion |
-| 6 | Original issues 10/12/13: formal evaluation | Complete conformance, Gateway execution identity and formal release/submission infrastructure remain open |
+| 6 | Original issues 10/12/13: formal evaluation | Gateway execution receipt, release binding and result validation implemented in Core; actual deployment evidence, complete conformance and formal release/submission infrastructure remain open |
 
 The matrix records historical successful Tracks and fault diagnostics without
 treating them as acceptance of later code. It also defines the next bounded
@@ -376,7 +376,7 @@ complete formal receipt.
 Status: implemented in the development schemas.
 
 The current versions are Task schema v7, Challenge schema v3 (v2 previews remain
-readable), Agent Protocol v12, Worker Protocol v16, and result schema v14. The entries below identify the
+readable), Agent Protocol v12, Worker Protocol v16, and result schema v15. The entries below identify the
 versions that introduced each change.
 
 - Worker v16, Challenge v3, and result v14 add a separate evaluation resource
@@ -508,10 +508,14 @@ semantic fields instead of mechanism names, which changes the persisted
 structure and therefore requires a result schema revision. Once the first
 preview establishes a compatibility baseline, that revision must also define
 an explicit compatibility policy. Worker Protocol v14 resolves only Worker-owned training, Candidate,
-and Evaluator workloads. The v0 Agent evidence binds the Agent image but not a
-separate inference Gateway image, so formal runs using registered inference now
-fail closed with `inference_gateway_workload_evidence_missing` until C1 defines
-trusted evidence for that deployment boundary.
+and Evaluator workloads. The separate
+[Gateway execution evidence](gateway-execution.md) interface now lets a trusted
+launcher register an actual execution receipt before task reveal, bound to the
+episode and frozen inference registration. Result v15 verifies it against the
+organizer's complete Gateway artifact identity. The bundled development launcher
+does not issue that receipt and still fails closed for formal inference. This
+bounded issue-12 repair does not redesign Agent runner vocabulary or close C1's
+broader non-Docker sandbox trigger.
 
 ### C2. Remote immutable artifacts
 

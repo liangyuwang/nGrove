@@ -11,6 +11,7 @@ from autotrain_bench.challenge import (
     ReleaseVerificationReceipt,
 )
 from autotrain_bench.config import ConfigError, TaskConfig
+from autotrain_bench.gateway_execution import GatewayArtifactIdentity
 from autotrain_bench.worker_protocol import (
     ResourceEnvelope,
     WorkloadResolutionAcceptance,
@@ -437,6 +438,16 @@ class ChallengeReleaseTests(unittest.TestCase):
             artifact_identity_algorithms=FORMAL_ARTIFACT_IDENTITY_ALGORITHMS,
         )
         self.assertIs(receipt.validate(), receipt)
+        artifact = GatewayArtifactIdentity("complete-gateway-bundle-v1", "c" * 64)
+        with_gateway = replace(receipt, inference_gateway_artifact=artifact).validate()
+        self.assertEqual(
+            with_gateway.private_manifest()["inference_gateway_artifact"],
+            artifact.private_manifest(),
+        )
+        with self.assertRaisesRegex(ConfigError, "GatewayArtifactIdentity"):
+            replace(
+                receipt, inference_gateway_artifact=artifact.private_manifest()
+            ).validate()
         self.assertEqual(
             receipt.private_manifest()["artifact_identity_algorithms"],
             FORMAL_ARTIFACT_IDENTITY_ALGORITHMS,

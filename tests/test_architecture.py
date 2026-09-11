@@ -36,7 +36,12 @@ class ArchitectureBoundaryTests(unittest.TestCase):
             "autotrain_bench.local_agent_execution",
             "autotrain_bench.runtime",
         }
-        for filename in ("conformance.py", "supervisor.py", "worker_protocol.py"):
+        for filename in (
+            "conformance.py",
+            "supervisor.py",
+            "worker_protocol.py",
+            "gateway_execution.py",
+        ):
             with self.subTest(filename=filename):
                 modules = imported_modules(ROOT / "autotrain_bench" / filename)
                 self.assertTrue(forbidden.isdisjoint(modules))

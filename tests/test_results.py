@@ -119,6 +119,7 @@ def _resource_fields():
     }
     return {
         "episode_id": "episode-1",
+        "gateway_execution": None,
         "evaluation_resource_envelope": None,
         "evaluation_resource_allocations": [],
         "performance_score_contract": {
@@ -198,6 +199,8 @@ def _finalized(**overrides):
         "test_raw_metrics": {"mean_nll": 0.0},
     }
     payload.update(overrides)
+    if payload["result_schema_version"] < 15:
+        payload.pop("gateway_execution", None)
     if payload["result_schema_version"] >= 14:
         payload.setdefault("evaluation_resource_envelope", None)
         if "evaluation_resource_allocations" not in overrides:

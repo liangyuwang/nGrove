@@ -25,6 +25,13 @@ deployment in which their consumers can resolve the intended files; they are
 not remote artifact-transfer instructions. Hidden-data locations and resolving
 credentials are private Evaluation Worker configuration.
 
+Registered inference has a separate [Gateway execution evidence](gateway-execution.md)
+interface. A trusted launcher obtains `Supervisor.gateway_execution_request`,
+starts and inspects the Gateway, and records a `GatewayExecutionReceipt` before
+`begin()`. Formal eligibility requires the complete running artifact to match
+the organizer's release verification; a configured image string is insufficient.
+The bundled development launcher still provides no certified Gateway receipt.
+
 When updating a deployment from v15, `evaluate_candidate()` must accept the new
 `evaluation_id` and `resource_envelope` keyword arguments. An explicit envelope
 requires an operation-bound `EvaluationResourceReceipt` on the returned result.
@@ -87,6 +94,7 @@ Use this sequence when implementing the composition layer:
 | Stage | Core interaction | Deployment responsibility |
 | --- | --- | --- |
 | Admit | Construct `Supervisor` with frozen inputs | Verify boundaries, images, TRAIN, tools, resource authorization, and recovery readiness before task reveal |
+| Start registered Gateway | Obtain `gateway_execution_request`, then `record_gateway_execution(receipt)` | Register cleanup before startup; attest the actual running artifact and fixed inference registration through the trusted launcher boundary |
 | Reveal and launch | `begin()` immediately before the selected Agent starts | Start only the frozen Agent command and workspace, with the agreed inference path; record actual process startup separately from allocation |
 | Research | Repeatedly call `enforce_operator_limit()`, `process_one_request()`, and `enforce_deadlines()` while active | Enforce deadlines independently of the request loop; if the Agent exits while Core is still active, call `agent_exited_without_finish()` |
 | Close research | Let Agent requests and Core deadline/failure transitions close research | Stop admitting work; do not call `finish()` on behalf of an interrupted Agent or choose an incumbent |

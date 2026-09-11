@@ -20,6 +20,7 @@ from .artifact_identity import (
     HIDDEN_BUNDLE_IDENTITY_ALGORITHM,
 )
 from .config import ConfigError, TaskConfig, TrainingResources
+from .gateway_execution import GatewayArtifactIdentity
 from .worker_protocol import (
     EnforcementLevel,
     ResourceEnvelope,
@@ -407,8 +408,15 @@ class ReleaseVerificationReceipt:
     workload_resolution_acceptance: Mapping[str, WorkloadResolutionAcceptance] = field(
         default_factory=dict
     )
+    inference_gateway_artifact: Optional[GatewayArtifactIdentity] = None
 
     def validate(self) -> "ReleaseVerificationReceipt":
+        if self.inference_gateway_artifact is not None and not isinstance(
+            self.inference_gateway_artifact, GatewayArtifactIdentity
+        ):
+            raise ConfigError(
+                "inference_gateway_artifact must be a GatewayArtifactIdentity"
+            )
         _string(self.authority, "release verification authority")
         _identifier(self.release_id, "release verification release_id")
         if len(self.core_revision) not in {40, 64} or any(
@@ -479,6 +487,11 @@ class ReleaseVerificationReceipt:
                     self.workload_resolution_acceptance.items()
                 )
             },
+            "inference_gateway_artifact": (
+                self.inference_gateway_artifact.private_manifest()
+                if self.inference_gateway_artifact is not None
+                else None
+            ),
         }
 
 

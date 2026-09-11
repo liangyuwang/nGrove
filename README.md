@@ -536,10 +536,13 @@ autotrain-bench report \
   --episode /path/to/autotrain-bench-runs/episodes/<episode-id>
 ```
 
-Episode states declare `result_schema_version: 14`. `report` also accepts v12/v13
+Episode states declare `result_schema_version: 15`. `report` also accepts v12/v13/v14
 reports under their original semantics; v12 cannot contain operator-protection
-fields or aborted outcomes. Neither old version carries verified evaluation
-resource evidence. Unversioned, earlier, and unknown future versions
+fields or aborted outcomes. V12/v13 carry no verified evaluation
+resource evidence. V15 adds private, request-bound
+[Gateway execution evidence](docs/gateway-execution.md), checked against the
+organizer's complete artifact identity for formal inference. Older reports
+cannot contain those new fields. Unversioned, earlier, and unknown future versions
 are rejected rather than guessed. This repository is still pre-preview. The first
 published preview establishes the result-compatibility baseline; later schema
 changes must then define an explicit compatibility policy.
