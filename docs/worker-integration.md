@@ -195,6 +195,21 @@ cached deadlines, and escalate when the configured loss/deadline tolerance is
 actually exhausted. Record read failures and the precise trigger. A healthy
 heartbeat alone must not authorize a Worker operation to run indefinitely.
 
+Keep heartbeat and deadline control independent of progress and log I/O. Do
+not hold their locks while reading `state.json`, tailing logs, or writing,
+flushing or `fsync`ing a progress record. Restrict shared locks to short
+in-memory updates; isolate potentially blocking I/O in independently
+supervised helpers. Separate threads alone do not establish independence.
+
+Bound the control channel itself, including the watchdog's reads and the
+producer's writes. Prefer a private IPC channel with finite send/receive
+allowances; a file-based implementation needs equivalent supervision of its
+reads, writes and flushes. Moving I/O outside a lock does not bound a stalled
+filesystem operation. Confirm registration of an operation's deadline before
+dispatch, and keep enforcing registered monotonic deadlines during monitoring
+failures. Heartbeats must come from the supervised process; the watchdog or an
+unrelated publisher must not generate fresh liveness evidence on its behalf.
+
 All Worker operations and cleanup attempts need finite allowances. An outer
 watchdog must remain able to act when the synchronous Coordinator call blocks;
 a second thread that needs the same lock is insufficient. Register owned
@@ -293,6 +308,13 @@ remaining cases for the exact deployment. It separates current local regression
 coverage from historical external Worker observations, defines failure and
 cleanup criteria, and lists the evidence needed for each result. A completed
 matrix or passing probe alone does not close its pending deployment cases.
+
+For a new or changed heartbeat, progress publisher or watchdog, select the
+[R08-O blocking-I/O checks](worker-acceptance-matrix.md#r08-o-observability-and-external-tool-compatibility)
+and affected R04 deadline checks before declaring monitoring ready. Tests of
+missing files, parse errors or successful episodes do not cover a call that
+never returns. Reuse only evidence that covers the same mechanism and runtime
+boundary; otherwise keep that guarantee pending until the scoped checks pass.
 
 | Stage | Minimum evidence before progressing |
 | --- | --- |

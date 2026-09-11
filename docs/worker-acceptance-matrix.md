@@ -82,7 +82,7 @@ Worker protocol or a second list of Core defects.
 | R06 / 6: exact GPU grant | Frozen UUID selection, workload validation for Training and configuration checks for CUDA Candidate. [GPU tests](../tests/test_docker_gpu.py) simulate inventories/grants; [evaluation tests](../tests/test_evaluation_resources.py) check actual-config response handling. Evidence remains `best_effort`. | H-FAULT records actual CUDA/device identity. H-ADMISSION records its allocation/visible devices; neither proves all heterogeneous or negative-access guarantees for current code. | Verify exact granted/visible devices and controlled negative access on the selected hardware, plus rejection of disappeared/mismatched devices. |
 | R08-E / 8, bridge to 7: evaluation resources | v16 operation receipts, preflight and [evaluation probe](worker-evaluation-probe.md). [Resource](../tests/test_evaluation_resources.py), [preflight](../tests/test_evaluation_preflight.py) and [probe tests](../tests/test_evaluation_probe.py) use mocks/fixture Workers. | H-COMPLETE measured cost under v15 without the new evaluation receipt. | Run actual v16 supported/rejected contracts, inspect the workload allocation, and exercise Supervisor classification/report validation. The probe alone cannot establish all three. |
 | R08-L / 8: lifecycle, identity and publication | [Supervisor tests](../tests/test_supervisor.py) cover delayed hidden materialization, teardown gates, TEST-first decisions, failed cleanup and atomic publication. These use fixture Workers and local files. | H-COMPLETE have complete normal sequences. H-INTERRUPTED supplies interruption evidence only. | Exercise failed research teardown, hidden-resolution boundaries, ANALYSIS-only errors and failed final cleanup/publication in a disposable integration harness. |
-| R08-O / 8 and new observations: logs, status and tools | [Host log tests](../tests/test_host_agent.py) use real child pipes plus injected storage errors. [Operator status tests](../tests/test_operator_status.py) use local records; [integration guidance](worker-integration.md) covers external tool/monitor wiring. | H-MON records the log defect and stale summaries; one wrapper passed tool admission, while another retained an unresolved file-tool issue. | Verify the current deployment publishes live logs/capture loss and correct final/stale status; retest affected native tools and heartbeat handling in their actual view. |
+| R08-O / 8 and new observations: logs, status and tools | [Host log tests](../tests/test_host_agent.py) use real child pipes plus injected storage errors. [Operator status tests](../tests/test_operator_status.py) use local records; [integration guidance](worker-integration.md) covers external tool/monitor wiring. | H-MON records the log defect and stale summaries; one wrapper passed tool admission, while another retained an unresolved file-tool issue. | Verify live logs/capture loss, final/stale status and affected native tools; inject blocked progress and heartbeat-channel I/O to check liveness independence and bounded watchdog action in the current deployment. |
 
 ## Scenarios and passing criteria
 
@@ -322,6 +322,31 @@ one unavailable monitoring source and an externally terminated job. Pass when
 the trusted view distinguishes current execution, the historical snapshot,
 accepted result, workload cleanup and storage disposal without rewriting Core.
 
+For a new or changed heartbeat, progress publisher or watchdog, the following
+checks are applicable unless equivalent evidence covers the exact mechanism
+and runtime boundary. Use the actual deployment's monitor/control wiring and
+existing diagnostic hooks with disposable public fixtures. No Tested Agent or
+hidden evaluation is needed. A CPU fixture can cover this monitoring boundary
+without establishing GPU enforcement. Fix the injection, configured loss
+tolerance, operation deadlines and outer recovery allowance before execution.
+
+| Injection | Required observation and passing criterion |
+| --- | --- |
+| Separately block each applicable progress path: state read, log-tail read, and progress write/flush/`fsync` | Keep the supervised process responsive and hold the fault beyond the heartbeat-loss tolerance but before an operation deadline. An independent observer confirms the fault remains active, heartbeats stay fresh, the affected progress source is marked stale/unavailable, and progress failure alone does not fence healthy work. |
+| Block the heartbeat producer's channel write or the watchdog's channel read, separately | Control I/O returns or is fenced within its allowance. The watchdog continues checking the last valid heartbeat and registered deadlines; it applies the configured loss/deadline protection without resetting clocks or inventing fresh heartbeats. A blocked watchdog read must not disable fencing. |
+| Stop the supervised heartbeat producer while progress/log helpers remain alive | Helpers cannot keep that process apparently alive. Heartbeat loss still triggers bounded fencing and independent workload-absence checks. |
+| Keep heartbeats fresh while an operation, Lease or private research deadline expires, with progress I/O still blocked | Repeat the affected R04 checks: the original deadlines still trigger bounded protection and cleanup. A fresh heartbeat or failed progress query cannot extend an allowance. |
+
+Bind observations to the frozen Worker/launcher identity. Record when the fault
+was confirmed active, the last valid heartbeat, progress freshness, registered
+deadlines, any fence trigger/time, and helper/workload termination separately.
+Missing-file and parse-error tests exercise returning failures, not blocking;
+they cannot substitute for these checks. Lock inspection or an isolated unit
+simulation alone does not establish behavior of the deployed process/channel
+arrangement. Do not widen loss tolerances or Track budgets to make a check pass.
+Missing evidence stays pending; a required failed guarantee follows the stop
+and reopen conditions below.
+
 For an affected Agent wrapper, exercise actual required file/command tools in
 the final UID/path/temp view on a separate diagnostic workspace. A version or
 shell-only check does not establish native tool compatibility. Follow the
@@ -396,7 +421,7 @@ probe framework:
 | R08-E and affected R08-L | Adopting v16 evaluation resources or changing evaluation composition/receipts | Public supported/rejected TEST and ANALYSIS fixtures through the evaluation probe; independent allocation/cleanup inspection and targeted Supervisor classification/result checks. Retain unchanged Core regressions, and verify the actual deployment error/evidence handoff |
 | R04 and affected R05 | Command/Lease enforcement or recovery changed, or required fault behavior lacks applicable evidence | Existing Lease/command-timeout and idle/fault deadline probes plus the deployment recovery path. Select specific faults and same-budget recovery retries; record separate deadline and cleanup outcomes |
 | R05 archive cases and affected R08-L | External archiving, timeout composition or retention/recovery changed, or evidence is missing | Representative public artifact fixtures, archive failure and launcher-loss recovery through the deployment's CPU-side entry point; preserve saved Core results and record workload termination, helper termination, archive verification and disposal independently |
-| R08-O | The chosen Agent wrapper, live logs, heartbeat handling or final status wiring changed or remains unverified | Required file/command tools in a separate diagnostic workspace, live-log/capture-loss checks and final/stale status observations. No participant or inference path is selected by this checklist |
+| R08-O and affected R04 | The chosen Agent wrapper, live logs, heartbeat handling or final status wiring changed or remains unverified | Select affected tool/log/status checks; for new or changed monitoring, include blocked progress I/O, bounded heartbeat-channel I/O, true heartbeat loss and deadline enforcement under the fault. Use the deployment's existing hooks and independent observation; no participant or inference path is selected by this checklist |
 | R02/R03/R06 and remaining R08-L subcases | A required clock, storage/device, visibility or publication boundary changed or lacks applicable evidence | Only the applicable public-fixture fault checks from the case catalog above; retain unchanged proven boundaries and use the selected hardware for device-specific claims |
 
 The evaluation probe attempts at most four calls. The Lease probe permits at
