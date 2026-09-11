@@ -61,7 +61,7 @@ cluster and other platform integrations live in external Workers.
 More results will be added after further testing. A dedicated website is planned
 to present results in greater detail.
 
-The `lm-pretrain-v1` preview has completed full-data runs in both tracks, using
+The `lm-pretrain` preview has completed full-data runs in both tracks, using
 a public TRAIN pool of approximately **9.95 billion tokens**. Both runs completed
 autonomous training, Candidate submission, research sealing, TEST, and postmortem
 ANALYSIS.
@@ -83,7 +83,7 @@ success also does not certify the current Worker revision; see the
 
 ## Try it
 
-Start with the small [Smoke LM task](dev_tasks/smoke_lm/README.md) to exercise a
+Start with the small [Smoke LM pretrain task](dev_tasks/smoke_lm-pretrain/README.md) to exercise a
 complete episode before preparing the larger LM preview.
 
 You need **Python 3.9+**, **Docker** for the bundled local runtime, and **your own
@@ -96,17 +96,17 @@ configurations:
 ```bash
 python3 -m pip install -e .
 autotrain-bench challenge-info \
-  --challenge dev_tasks/smoke_lm/challenge.json
+  --challenge dev_tasks/smoke_lm-pretrain/challenge.json
 ```
 
-Then follow the [data preparation](dev_tasks/smoke_lm/README.md#prepare) and
-[Agent integration](dev_tasks/smoke_lm/README.md#run-an-agent-integration) steps.
+Then follow the [data preparation](dev_tasks/smoke_lm-pretrain/README.md#prepare) and
+[Agent integration](dev_tasks/smoke_lm-pretrain/README.md#run-an-agent-integration) steps.
 They cover the Agent command, resource settings, and a dedicated working root
 outside the Core checkout.
 
 - **Local Docker run:** [quick start](docs/benchmark-reference.md#quick-start).
 - **Existing host CLI Agent:** [host-native preview setup](docs/benchmark-reference.md#bring-your-own-agent-host-native-cli-tools).
-- **Larger training experiment:** [LM pretrain v1 preview](challenges/lm-pretrain-v1/README.md).
+- **Larger training experiment:** [LM pretrain preview](challenges/lm-pretrain/README.md).
 - **Your own execution environment:** [external Worker integration](docs/worker-integration.md).
 
 If an Agent is helping you operate the benchmark, it should follow

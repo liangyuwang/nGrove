@@ -12,8 +12,8 @@ from benchcore.training_data import verify_training_data
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SMOKE_ROOT = ROOT / "dev_tasks/smoke_lm"
-PRETRAIN_ROOT = ROOT / "challenges/lm-pretrain-v1"
+SMOKE_ROOT = ROOT / "dev_tasks/smoke_lm-pretrain"
+PRETRAIN_ROOT = ROOT / "challenges/lm-pretrain"
 PREPARE_PATH = SMOKE_ROOT / "prepare_data.py"
 TASK_FIXTURE = ROOT / "tests/fixtures/task/task.json"
 SPEC = importlib.util.spec_from_file_location("smoke_lm_prepare_data", PREPARE_PATH)

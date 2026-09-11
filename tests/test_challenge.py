@@ -20,7 +20,7 @@ from benchcore.worker_protocol import (
 
 ROOT = Path(__file__).resolve().parents[1]
 TASK = ROOT / "tests/fixtures/task/task.json"
-LM_PRETRAIN_PREVIEW = ROOT / "challenges/lm-pretrain-v1/challenge.json"
+LM_PRETRAIN_PREVIEW = ROOT / "challenges/lm-pretrain/challenge.json"
 
 
 class ChallengeReleaseTests(unittest.TestCase):
@@ -67,7 +67,7 @@ class ChallengeReleaseTests(unittest.TestCase):
     def test_preview_manifest_has_a_finite_public_profile_map(self):
         release = ChallengeRelease.load(LM_PRETRAIN_PREVIEW)
         public = release.public_manifest()
-        self.assertEqual(public["challenge_id"], "lm-pretrain-v1")
+        self.assertEqual(public["challenge_id"], "lm-pretrain")
         self.assertEqual(public["task"], "task.json")
         self.assertEqual(public["release_stage"], "preview")
         self.assertFalse(public["leaderboard_eligible"])

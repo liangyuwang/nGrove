@@ -12,11 +12,11 @@ from benchcore.training_data import verify_training_data
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PRETRAIN_ROOT = ROOT / "challenges/lm-pretrain-v1"
+PRETRAIN_ROOT = ROOT / "challenges/lm-pretrain"
 TASK = PRETRAIN_ROOT / "task.json"
 PREPARE = PRETRAIN_ROOT / "prepare_data.py"
 
-SPEC = importlib.util.spec_from_file_location("lm_pretrain_v1_prepare", PREPARE)
+SPEC = importlib.util.spec_from_file_location("lm_pretrain_prepare", PREPARE)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(MODULE)
@@ -59,7 +59,7 @@ def source_manifest(path, files=None):
     return path
 
 
-class PretrainV1Tests(unittest.TestCase):
+class PretrainTests(unittest.TestCase):
     def test_pinned_manifest_covers_all_upstream_shards(self):
         payload = json.loads(MODULE.SOURCE_MANIFEST_PATH.read_bytes())
         self.assertEqual(payload["revision"], MODULE.DATASET_REVISION)
@@ -293,7 +293,7 @@ class PretrainV1Tests(unittest.TestCase):
             task_path = root / "task.json"
             task_path.write_text(json.dumps(payload), encoding="utf-8")
             task = TaskConfig.load(task_path)
-            self.assertEqual(task.task_id, "lm-pretrain-v1")
+            self.assertEqual(task.task_id, "lm-pretrain")
             self.assertEqual(task.task_kind, "benchmark_challenge")
             self.assertEqual(task.vocab_size, 50_257)
             self.assertEqual(task.context_length, 2_048)

@@ -445,7 +445,7 @@ versions that introduced each change.
   research-time protection trip (`operator_stopped` / `aborted`) from participant
   failure and normal Track B completion. The local launcher adds best-effort
   revocation outside the synchronous request loop, with private per-task
-  defaults (24 hours for `lm-pretrain-v1`, 30 minutes for `smoke_lm`), a run
+  defaults (24 hours for `lm-pretrain`, 30 minutes for `smoke_lm-pretrain`), a run
   override, and an explicit opt-out with a token-consumption warning. The later
   local parent watchdog adds independent termination/recovery for the container
   CLI. Asynchronous Worker operations and remote deployment supervision remain

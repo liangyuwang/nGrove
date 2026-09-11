@@ -1,7 +1,7 @@
 # Benchmark challenges
 
 No frozen, leaderboard-eligible AutoTrain-Bench challenge has been released
-yet. `lm-pretrain-v1/` contains the first runnable preview package, but its data is
+yet. `lm-pretrain/` contains the first runnable preview package, but its data is
 generated locally and its release settings are still provisional.
 
 This directory is reserved for published benchmark challenge packages. A
@@ -79,10 +79,10 @@ Preview profile maps can be inspected without preparing challenge data:
 
 ```bash
 autotrain-bench challenge-info \
-  --challenge challenges/lm-pretrain-v1/challenge.json
+  --challenge challenges/lm-pretrain/challenge.json
 ```
 
 For the lightweight end-to-end development task, use
-`dev_tasks/smoke_lm/`. It remains permanently non-leaderboard, but uses the
+`dev_tasks/smoke_lm-pretrain/`. It remains permanently non-leaderboard, but uses the
 same profile-bound start command, Policy boundary, and trusted Evaluator
 implementation as the challenge preview.

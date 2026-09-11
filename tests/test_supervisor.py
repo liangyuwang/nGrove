@@ -689,13 +689,13 @@ class SupervisorTests(unittest.TestCase):
 
     def test_public_release_contains_only_declared_identifiers(self):
         comparison_key = {
-            "challenge_id": "lm-pretrain-v1",
+            "challenge_id": "lm-pretrain",
             "track": "B",
             "track_config": "preview-b-6x1h",
             "runtime_profile": "h100-sxm-80gb-x4",
         }
         public_release = {
-            "challenge_id": "lm-pretrain-v1",
+            "challenge_id": "lm-pretrain",
             "release_stage": "preview",
             "leaderboard_eligible": False,
             "track_config_id": comparison_key["track_config"],
@@ -736,7 +736,9 @@ class SupervisorTests(unittest.TestCase):
         }
         task_payload["evaluation"]["entrypoint"] = str(self.config.evaluator_entrypoint)
         challenge_payload = json.loads(
-            (ROOT / "dev_tasks/smoke_lm/challenge.json").read_text(encoding="utf-8")
+            (ROOT / "dev_tasks/smoke_lm-pretrain/challenge.json").read_text(
+                encoding="utf-8"
+            )
         )
         challenge_payload["task_id"] = self.config.task_id
         challenge_payload["challenge_id"] = "hidden-lengths-regression"

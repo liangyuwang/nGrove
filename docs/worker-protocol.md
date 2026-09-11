@@ -274,7 +274,7 @@ failure, not a participant failure, although detecting and terminating it may
 currently require an outer Operator or deployment watchdog.
 
 The bundled launcher guards Track B research with a private operator wall-time
-limit, enabled by default for `lm-pretrain-v1` (24 hours) and `smoke_lm`
+limit, enabled by default for `lm-pretrain` (24 hours) and `smoke_lm-pretrain`
 (30 minutes). Operators may override or disable it before launch; disabling
 prints a warning about potentially extreme token consumption. These settings
 and notices never enter the Agent view. Its separate local thread/client can revoke
@@ -603,7 +603,7 @@ finite score.
 The independent cost contract defines `time_per_task` in
 `seconds_per_task`, with `minimize` direction, as
 `candidate_wall_seconds / task_count`. The task manifest freezes what one task
-means; `lm-pretrain-v1` uses one next-token prediction. This is an amortized
+means; `lm-pretrain` uses one next-token prediction. This is an amortized
 workload cost rather than per-request latency because the Candidate controls
 batching and scheduling. `task_count` comes from the trusted, release-required
 context set; incomplete prediction output fails before a cost is returned.

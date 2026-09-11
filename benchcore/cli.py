@@ -1323,7 +1323,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SECONDS",
         help=(
             "override the task's private Track B research-time protection in seconds; "
-            "defaults: lm-pretrain-v1 86400 (24h), smoke_lm 1800 (30m); "
+            "defaults: lm-pretrain 86400 (24h), smoke_lm-pretrain 1800 (30m); "
             "best-effort in the local launcher, never an Agent budget"
         ),
     )
@@ -1343,7 +1343,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "private episode storage protection on either Track; requires a "
             "deployment-provided bounded filesystem at the episode parent; "
-            "defaults: lm-pretrain-v1 100 GiB, smoke_lm 2 GiB"
+            "defaults: lm-pretrain 100 GiB, smoke_lm-pretrain 2 GiB"
         ),
     )
     storage_protection.add_argument(

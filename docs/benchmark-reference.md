@@ -194,14 +194,14 @@ consumes the environment the user has already obtained; it does **not** allocate
 machines or integrate with Slurm, Kubernetes, or a cloud scheduler.
 
 The repository contains one bundled development task,
-`dev_tasks/smoke_lm`. It is an end-to-end smoke test for Agent and runtime
+`dev_tasks/smoke_lm-pretrain`. It is an end-to-end smoke test for Agent and runtime
 development and never a leaderboard task. It uses the same release-bound start
 contract, Policy, trusted Evaluator implementation, both tracks, and isolated
 Candidate serving boundary as the challenge preview, while retaining a much
 smaller task-specific corpus and evaluation configuration. It intentionally
 ships no reference Agent.
 
-Future official task packages live under `challenges/`. `lm-pretrain-v1/` now
+Future official task packages live under `challenges/`. `lm-pretrain/` now
 contains a runnable-after-preparation preview task, evaluator, data builder, and
 provisional comparison profiles; no frozen, leaderboard-eligible challenge has
 been released yet.
@@ -234,8 +234,8 @@ python3 -m pip install -e .
 Prepare the TinyStories smoke-task data and pinned images:
 
 ```bash
-python3 dev_tasks/smoke_lm/prepare_data.py
-autotrain-bench prepare --task dev_tasks/smoke_lm/task.json
+python3 dev_tasks/smoke_lm-pretrain/prepare_data.py
+autotrain-bench prepare --task dev_tasks/smoke_lm-pretrain/task.json
 ```
 
 Preparation writes a complete public TRAIN file inventory. The local `prepare`
@@ -248,7 +248,7 @@ the manifest format and the Worker's responsibility to keep TRAIN immutable.
 
 The smoke task downloads about 0.98 MB of real text and uses 512 hidden
 single-target contexts per ANALYSIS/TEST split. By default the selected Agent receives an empty workspace and
-must create its own training system. See `dev_tasks/smoke_lm/README.md` for the
+must create its own training system. See `dev_tasks/smoke_lm-pretrain/README.md` for the
 development workflow, Candidate ABI, Policy, and reproducibility details.
 Smoke-task scores are not benchmark results.
 
@@ -265,7 +265,7 @@ A participant Agent Container can be selected without changing the task:
 
 ```bash
 autotrain-bench start \
-  --challenge dev_tasks/smoke_lm/challenge.json \
+  --challenge dev_tasks/smoke_lm-pretrain/challenge.json \
   --track-config smoke-b-3x75s \
   --runtime-profile cpu-local \
   --episodes-root /path/to/autotrain-bench-runs/episodes \
@@ -288,7 +288,7 @@ knows how to operate the benchmark protocol:
 
 ```bash
 autotrain-bench start \
-  --challenge dev_tasks/smoke_lm/challenge.json \
+  --challenge dev_tasks/smoke_lm-pretrain/challenge.json \
   --track-config smoke-a-5m \
   --runtime-profile cpu-local \
   --episodes-root /path/to/autotrain-bench-runs/episodes \
@@ -320,7 +320,7 @@ confirms an existing login, run the TinyStories Track A with a fixed Codex model
 
 ```bash
 python3 -m benchcore.cli start \
-  --challenge dev_tasks/smoke_lm/challenge.json \
+  --challenge dev_tasks/smoke_lm-pretrain/challenge.json \
   --track-config smoke-a-5m \
   --runtime-profile cpu-local \
   --episodes-root /path/to/autotrain-bench-runs/episodes \
@@ -1272,8 +1272,8 @@ both bundled Track B tasks:
 
 | Task | Default operator protection |
 | --- | --- |
-| `lm-pretrain-v1` | 24 hours (86,400 seconds) |
-| `smoke_lm` | 30 minutes (1,800 seconds) |
+| `lm-pretrain` | 24 hours (86,400 seconds) |
+| `smoke_lm-pretrain` | 30 minutes (1,800 seconds) |
 
 Each task keeps this trusted setting in a separate `operator-defaults.json`
 beside `task.json`, with the key `track_b_max_research_seconds`. The optional
@@ -1319,7 +1319,7 @@ this research protection; postmortem evaluation keeps its own existing timeouts.
 
 ### Private operator storage protection
 
-On both Tracks, `lm-pretrain-v1` defaults to **100 GiB** and `smoke_lm` to
+On both Tracks, `lm-pretrain` defaults to **100 GiB** and `smoke_lm-pretrain` to
 **2 GiB** of episode filesystem capacity. These are private operator settings,
 not Track budgets, Candidate artifact limits, or evaluation targets. They are
 not included in the public task or Agent instructions. Filesystem capacity may
@@ -1776,7 +1776,7 @@ $$
 {\operatorname{task\_count}}}
 $$
 
-Lower is better. For `lm-pretrain-v1`, one task is one next-token prediction
+Lower is better. For `lm-pretrain`, one task is one next-token prediction
 from one hidden prefix. This is an amortized workload cost, not the latency of
 an individual request: the Candidate controls batching and scheduling across
 the complete hidden context file. The denominator is the release-required task
@@ -1953,7 +1953,7 @@ selected tool's own host login and network path.
 
 Synthetic training examples generated autonomously during the episode by the
 frozen initial system through registered capabilities are allowed by the
-`lm-pretrain-v1` preview direction. Human intervention after task reveal,
+`lm-pretrain` preview direction. Human intervention after task reveal,
 unregistered external access, extra mounted corpora, and a submitted initial
 workspace or image containing an external target-model checkpoint or extra
 training corpus are outside policy. The runtime enforces the untrusted Agent
@@ -2112,14 +2112,14 @@ Inspect a release's supported maps with:
 
 ```bash
 autotrain-bench challenge-info \
-  --challenge challenges/lm-pretrain-v1/challenge.json
+  --challenge challenges/lm-pretrain/challenge.json
 ```
 
 In challenge mode, `--track-config` selects both the track and its budget, while
 `--runtime-profile` supplies the concrete resources. Manual `--track` and GPU
 overrides are rejected so the recorded key cannot disagree with the run.
 
-The `lm-pretrain-v1` TRAIN mount contains both raw FineWeb-Edu TRAIN documents with
+The `lm-pretrain` TRAIN mount contains both raw FineWeb-Edu TRAIN documents with
 source metadata and official GPT-2 token shards linked by document IDs and
 token spans. The Agent may use either representation. Preview ANALYSIS/TEST rows are
 excluded from both Agent-visible forms and remain evaluator-only.
@@ -2195,12 +2195,12 @@ contract as a challenge preview:
 }
 ```
 
-See `dev_tasks/smoke_lm/task.json` for the complete runnable development
+See `dev_tasks/smoke_lm-pretrain/task.json` for the complete runnable development
 manifest with exact image digests. Agent image, command, runner, and optional
 initial workspace are participant-owned launch inputs and are intentionally
 absent from the task. Hardware/device allocation is absent from `task.json` and
 selected through a named runtime profile in
-`dev_tasks/smoke_lm/challenge.json`.
+`dev_tasks/smoke_lm-pretrain/challenge.json`.
 This example is trusted task configuration. Its `context_length` is the input
 bound and `context_lengths` selects the local evaluation lengths, all of which
 must fit that bound. The Agent receives a filtered manifest with
@@ -2385,7 +2385,7 @@ developers can verify a complete episode cheaply. It is explicitly marked
 `leaderboard_eligible: false`. The selected Agent and its initial workspace
 remain participant-owned.
 
-No frozen benchmark challenge has been released. The `lm-pretrain-v1` preview under
+No frozen benchmark challenge has been released. The `lm-pretrain` preview under
 `challenges/` now defines provisional track configurations, a deliberately
 small set of single-host A100/H100 runtime profiles, the four-field comparison
 key, the initial external-resource policy, a task/evaluator, and a builder that

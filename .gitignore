@@ -4,6 +4,6 @@ __pycache__/
 *.egg-info/
 .coverage
 .pytest_cache/
-dev_tasks/smoke_lm/data/
-challenges/lm-pretrain-v1/data/generated/
-challenges/lm-pretrain-v1/data/raw/
+dev_tasks/smoke_lm-pretrain/data/
+challenges/lm-pretrain/data/generated/
+challenges/lm-pretrain/data/raw/

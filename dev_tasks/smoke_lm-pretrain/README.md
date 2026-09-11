@@ -1,10 +1,10 @@
-# Smoke LM development task
+# Smoke LM pretrain development task
 
-`smoke_lm` is the single bundled end-to-end development smoke task for
+`smoke_lm-pretrain` is the single bundled end-to-end development smoke task for
 AutoTrain-Bench. It exercises the same release-bound launch contract,
 task/participant boundary, Policy, trusted Evaluator implementation, Track
 A/Track B state machine, Candidate isolation, and incumbent semantics as
-`lm-pretrain-v1`. Its corpus, tokenization, context, data layout, split recipe,
+`lm-pretrain`. Its corpus, tokenization, context, data layout, split recipe,
 evaluation resources, and budgets are deliberately smaller development
 choices. Its scores are not benchmark results and it is never leaderboard
 eligible.
@@ -67,11 +67,11 @@ does not make that recipe suitable as a secret formal evaluation.
 Training resources are selected from the finite map in `challenge.json`, never
 by `task.json` or ad-hoc launch flags. `cpu-local` keeps the smoke path cheap;
 the A100/H100 profiles exercise the same accelerator-profile contract as
-`lm-pretrain-v1`. Inspect the supported Track and runtime choices before launch:
+`lm-pretrain`. Inspect the supported Track and runtime choices before launch:
 
 ```bash
 autotrain-bench challenge-info \
-  --challenge dev_tasks/smoke_lm/challenge.json
+  --challenge dev_tasks/smoke_lm-pretrain/challenge.json
 ```
 
 ## Prepare
@@ -81,14 +81,14 @@ The data builder and integrity verifier otherwise require only the standard
 library.
 
 ```bash
-python3 dev_tasks/smoke_lm/prepare_data.py
-autotrain-bench prepare --task dev_tasks/smoke_lm/task.json
+python3 dev_tasks/smoke_lm-pretrain/prepare_data.py
+autotrain-bench prepare --task dev_tasks/smoke_lm-pretrain/task.json
 ```
 
 Preparation downloads a deterministic slice of
 `karpathy/tinystories-gpt4-clean` at revision
 `0397e27157956705a0260709da3095bb9c43d6a7`, verifies the ordered source digest,
-and writes ignored generated artifacts under `dev_tasks/smoke_lm/data/`.
+and writes ignored generated artifacts under `dev_tasks/smoke_lm-pretrain/data/`.
 
 `data/train/manifest.json` inventories the public TRAIN files without including
 hidden evaluation metadata. Cached preparation verifies this inventory;
@@ -122,7 +122,7 @@ starts empty:
 
 ```bash
 autotrain-bench start \
-  --challenge dev_tasks/smoke_lm/challenge.json \
+  --challenge dev_tasks/smoke_lm-pretrain/challenge.json \
   --track-config smoke-a-5m \
   --runtime-profile cpu-local \
   --episodes-root /path/to/autotrain-bench-runs/episodes \
@@ -136,7 +136,7 @@ changing the task or using manual resource overrides:
 
 ```bash
 autotrain-bench start \
-  --challenge dev_tasks/smoke_lm/challenge.json \
+  --challenge dev_tasks/smoke_lm-pretrain/challenge.json \
   --track-config smoke-a-5m \
   --runtime-profile h100-sxm-80gb-x4 \
   --episodes-root /path/to/autotrain-bench-runs/episodes \
@@ -155,7 +155,7 @@ instructions remain in scope.
 
 ```bash
 autotrain-bench start \
-  --challenge dev_tasks/smoke_lm/challenge.json \
+  --challenge dev_tasks/smoke_lm-pretrain/challenge.json \
   --track-config smoke-a-5m \
   --runtime-profile cpu-local \
   --episodes-root /path/to/autotrain-bench-runs/episodes \
@@ -171,7 +171,7 @@ Development deployment and its deadline guard shares the Coordinator process.
 It therefore cannot produce a formal leaderboard result.
 
 The Tested Agent is governed by the same [preview Policy](POLICY.md) as
-`lm-pretrain-v1`. In particular, the initial Agent image/workspace may not
+`lm-pretrain`. In particular, the initial Agent image/workspace may not
 contain extra training corpora or a pretrained target-model checkpoint.
 
 ## Candidate artifact contract

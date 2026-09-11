@@ -37,7 +37,7 @@ from benchcore.results import normalize_result_report
 
 ROOT = Path(__file__).resolve().parents[1]
 TASK = ROOT / "tests/fixtures/task/task.json"
-LM_PRETRAIN_PREVIEW = ROOT / "challenges/lm-pretrain-v1/challenge.json"
+LM_PRETRAIN_PREVIEW = ROOT / "challenges/lm-pretrain/challenge.json"
 
 
 class WorkspaceSnapshotTests(unittest.TestCase):
@@ -144,8 +144,8 @@ class WorkspaceSnapshotTests(unittest.TestCase):
 
     def test_storage_admission_is_private_and_precedes_episode_writes(self):
         for folder, expected in (
-            ("challenges/lm-pretrain-v1", 100 * 2**30),
-            ("dev_tasks/smoke_lm", 2 * 2**30),
+            ("challenges/lm-pretrain", 100 * 2**30),
+            ("dev_tasks/smoke_lm-pretrain", 2 * 2**30),
         ):
             for track in ("A", "B"):
                 for flags, limit in (
@@ -280,21 +280,21 @@ class WorkspaceSnapshotTests(unittest.TestCase):
         self,
     ):
         for folder, lane, flags, expected in (
-            ("challenges/lm-pretrain-v1", "preview-b-6x1h", [], 86400),
-            ("dev_tasks/smoke_lm", "smoke-b-3x75s", [], 1800),
+            ("challenges/lm-pretrain", "preview-b-6x1h", [], 86400),
+            ("dev_tasks/smoke_lm-pretrain", "smoke-b-3x75s", [], 1800),
             (
-                "dev_tasks/smoke_lm",
+                "dev_tasks/smoke_lm-pretrain",
                 "smoke-b-3x75s",
                 ["--operator-max-research-seconds", "60"],
                 60,
             ),
             (
-                "dev_tasks/smoke_lm",
+                "dev_tasks/smoke_lm-pretrain",
                 "smoke-b-3x75s",
                 ["--no-operator-research-limit"],
                 None,
             ),
-            ("dev_tasks/smoke_lm", "smoke-a-5m", [], None),
+            ("dev_tasks/smoke_lm-pretrain", "smoke-a-5m", [], None),
         ):
             with self.subTest(
                 folder=folder, lane=lane, flags=flags
@@ -1212,7 +1212,7 @@ class WorkspaceSnapshotTests(unittest.TestCase):
 
         task = replace(
             TaskConfig.load(TASK),
-            task_id="lm-pretrain-v1",
+            task_id="lm-pretrain",
             task_kind="benchmark_challenge",
         ).validate()
         args.challenge = LM_PRETRAIN_PREVIEW

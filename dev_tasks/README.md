@@ -8,7 +8,7 @@ and evaluation choices may be smaller.
 
 The repository intentionally contains one such task:
 
-- `smoke_lm/` runs a small TinyStories byte-language-model episode through
+- `smoke_lm-pretrain/` runs a small TinyStories byte-language-model episode through
   Training Leases, research sealing, isolated postmortem ANALYSIS/TEST
   evaluation, Candidate snapshots, and
   explicit incumbent selection. It ships no Tested Agent or starter workspace;

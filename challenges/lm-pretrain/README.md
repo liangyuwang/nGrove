@@ -1,6 +1,6 @@
-# LM pretrain v1 preview
+# LM pretrain preview
 
-`lm-pretrain-v1` is the first formal language-model pretraining challenge preview. Its identity
+`lm-pretrain` is the first formal language-model pretraining challenge preview. Its identity
 is independent of its initial corpus: this version builds an approximately
 10-billion-token TRAIN pool from a pinned FineWeb-Edu revision and fixes GPT-2
 token IDs only at the evaluation boundary.
@@ -134,21 +134,21 @@ Install Core and the isolated preparation dependencies:
 
 ```bash
 python3 -m pip install -e .
-python3 -m pip install -r challenges/lm-pretrain-v1/data/requirements.txt
+python3 -m pip install -r challenges/lm-pretrain/data/requirements.txt
 ```
 
 The default source download is roughly 28.5 GB and the tokenized output is
 about 20 GB, in addition to the public raw TRAIN Parquet:
 
 ```bash
-python3 challenges/lm-pretrain-v1/prepare_data.py --accept-large-download
-autotrain-bench prepare --task challenges/lm-pretrain-v1/task.json
+python3 challenges/lm-pretrain/prepare_data.py --accept-large-download
+autotrain-bench prepare --task challenges/lm-pretrain/task.json
 ```
 
 An existing pinned FineWeb-Edu `sample/10BT` download can be reused:
 
 ```bash
-python3 challenges/lm-pretrain-v1/prepare_data.py \
+python3 challenges/lm-pretrain/prepare_data.py \
   --source-dir /path/to/fineweb-edu-sample-10BT
 ```
 
@@ -242,7 +242,7 @@ Challenge-local regression checks use the real hash split and default context
 quotas on synthetic documents, without downloading or rebuilding the corpus:
 
 ```bash
-python3 -m unittest discover -s challenges/lm-pretrain-v1 -p 'test_prepare_data.py' -v
+python3 -m unittest discover -s challenges/lm-pretrain -p 'test_prepare_data.py' -v
 ```
 
 These checks exercise the pool-sizing failure and shortage diagnostics; a full
@@ -268,7 +268,7 @@ Inspect the finite maps:
 
 ```bash
 autotrain-bench challenge-info \
-  --challenge challenges/lm-pretrain-v1/challenge.json
+  --challenge challenges/lm-pretrain/challenge.json
 ```
 
 After data preparation, start a profile-bound episode. `task.json` is inferred
@@ -293,7 +293,7 @@ must enforce this in their execution environment. See
 
 ```bash
 autotrain-bench start \
-  --challenge challenges/lm-pretrain-v1/challenge.json \
+  --challenge challenges/lm-pretrain/challenge.json \
   --track-config preview-b-6x1h \
   --runtime-profile h100-sxm-80gb-x4 \
   --episodes-root /path/to/autotrain-bench-runs/episodes \

@@ -1,4 +1,4 @@
-"""Build the lm-pretrain-v1 preview from pinned FineWeb-Edu Parquet files.
+"""Build the lm-pretrain preview from pinned FineWeb-Edu Parquet files.
 
 The default build processes the complete pinned source sample (roughly 28.5 GB
 of Parquet, nominally 10 billion GPT-2 tokens). Optional dependencies are
@@ -53,7 +53,7 @@ DATA_DIR = ROOT / "data"
 SOURCE_MANIFEST_PATH = DATA_DIR / "source-files.json"
 DEFAULT_RAW_DIR = DATA_DIR / "raw" / DATASET_REVISION
 DEFAULT_OUTPUT_DIR = DATA_DIR / "generated"
-BUILDER_ID = "autotrain-bench/lm-pretrain-v1"
+BUILDER_ID = "autotrain-bench/lm-pretrain"
 
 
 class PreparationError(RuntimeError):
@@ -203,7 +203,7 @@ def _validate_existing_output(path: Path) -> Tuple[int, int, str, str]:
     except (FileNotFoundError, OSError, json.JSONDecodeError) as exc:
         raise PreparationError(
             "refusing --force because the target is not a recognizable "
-            "lm-pretrain-v1 generated build"
+            "lm-pretrain generated build"
         ) from exc
     builder = payload.get("builder")
     source = payload.get("source")
@@ -698,7 +698,7 @@ def _load_dependencies() -> Tuple[Any, Any, Any, Any]:
     except ImportError as exc:
         raise PreparationError(
             "data dependencies are missing; run: "
-            "python -m pip install -r challenges/lm-pretrain-v1/data/requirements.txt"
+            "python -m pip install -r challenges/lm-pretrain/data/requirements.txt"
         ) from exc
     return snapshot_download, pyarrow, parquet, tiktoken
 
@@ -938,12 +938,12 @@ def prepare(
         analysis_artifacts = _write_evaluation_split(
             analysis_dir,
             analysis,
-            "lm-pretrain-v1:preview:offline-v3",
+            "lm-pretrain:preview:offline-v3",
         )
         test_artifacts = _write_evaluation_split(
             test_dir,
             test,
-            "lm-pretrain-v1:preview:offline-v3",
+            "lm-pretrain:preview:offline-v3",
         )
         if _directory_metadata_digest(source_root) != source_identity:
             raise PreparationError("source changed during preparation")
