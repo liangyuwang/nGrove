@@ -139,13 +139,17 @@ decision. Core checks the Worker binding before using the receipt. This local
 trusted-input seam does not pretend to be a cryptographic remote attestation;
 authentication of a future remote receipt belongs to the deployment transport.
 
-`autotrain_bench.conformance` provides a resolution diagnostic and an
-[evaluation resource diagnostic](worker-evaluation-probe.md). The latter calls
+`autotrain_bench.conformance` provides resolution,
+[Research Lease](worker-lease-probe.md), and
+[evaluation resource](worker-evaluation-probe.md) diagnostics. The Lease probe
+checks admission receipts, fixture command execution, stopped-state observations,
+repeated termination and rejected admission, with failed-start compensation.
+The evaluation probe calls
 the supplied Evaluation Worker on public fixtures, checks per-invocation receipts
 and typed resource rejection, rejects late replies, and requires explicit
-deployment cleanup confirmation. Both use unique operation scopes, separate
+deployment cleanup confirmation. The probes use unique operation scopes, separate
 public failure codes from trusted details, and invoke deployment teardown.
-Neither tests the complete Lease, physical enforcement, isolation, deadline and
+They do not test the complete physical enforcement, isolation, deadline and
 recovery contract or issues a formal `ConformanceReceipt`. A complete
 organizer-controlled suite remains required before a formal deployment can
 receive one.

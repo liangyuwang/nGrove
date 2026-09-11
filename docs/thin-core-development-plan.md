@@ -51,7 +51,7 @@ below. Implementation and deployment acceptance are tracked separately in the
 | 3 | External Worker startup and exceptional cleanup | Integration, tool-admission, clocks and recovery guidance delivered; affected external packaging/cleanup remains deployment work |
 | 4 | Minimum acceptance for original issues 2/3/4/5/6/8 | Reliability fixes, v16 evaluation probe and evidence matrix delivered; current deployment acceptance remains pending per scenario |
 | 5 | Original issue 7: cost comparison conditions | Evaluation contract, operation receipts and startup preflight implemented; release-selected cache/I/O/contention conditions and actual enforcement still need completion |
-| 6 | Original issues 10/12/13: formal evaluation | Gateway execution receipt, release binding and result validation implemented in Core; actual deployment evidence, complete conformance and formal release/submission infrastructure remain open |
+| 6 | Original issues 10/12/13: formal evaluation | Gateway evidence and reusable Lease/evaluation diagnostics implemented in Core; actual deployment evidence, complete conformance and formal release/submission infrastructure remain open |
 
 The matrix records historical successful Tracks and fault diagnostics without
 treating them as acceptance of later code. It also defines the next bounded
@@ -658,6 +658,14 @@ external preview runs are not retrospectively certified.
 The future formal suite belongs to organizer tooling and the external Worker
 SDK. Platform-specific deployment setup, outer watchdogs, destructive cleanup,
 and remote receipt authentication stay outside Core.
+
+The [Research Lease diagnostic](worker-lease-probe.md) now adds admission and
+resource-receipt checks, fixture command execution, repeated termination,
+post-stop command rejection and rejected-admission observations. It registers
+starts before calling the Worker and compensates failed or late creation before
+the mandatory deployment teardown. This is another bounded issue-10 increment;
+independent deadlines, isolation, physical enforcement, crash recovery and
+organizer certification remain required for complete formal conformance.
 
 ### Other independently triggered work
 

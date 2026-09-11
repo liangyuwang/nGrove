@@ -220,6 +220,11 @@ wedged call's independent termination; those require R08-L and R04.
 
 ### R08-L: teardown gates and result persistence
 
+The [Research Lease diagnostic](worker-lease-probe.md) supplies an earlier
+Worker-level check for admission/resource evidence, command execution and
+termination, with failed-start compensation. Its regression tests use fake
+Workers; it does not close the Supervisor-level or real deployment cases below.
+
 Using public fixtures, prevent research/control teardown confirmation and verify
 that hidden-data resolution and evaluation never begin. Once sealed and stopped,
 check that the Candidate receives one target-free input and no research workspace,

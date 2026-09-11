@@ -1,9 +1,9 @@
 """Core-owned diagnostic probes for selected Worker Protocol semantics.
 
 These probes deliberately do not issue :class:`ConformanceReceipt`. They
-exercise resolution and evaluation resource evidence, while the active Worker
-Protocol also includes Lease admission/execution/termination, physical resource
-enforcement, isolation, and teardown guarantees. Treating this partial
+exercise resolution, Lease lifecycle and evaluation resource evidence, while
+the active Worker Protocol also includes physical resource enforcement,
+isolation, independent deadlines and recovery guarantees. Treating this partial
 coverage as complete protocol conformance would create false formal evidence.
 
 Run a probe only against a dedicated, disposable Worker deployment. The
@@ -26,13 +26,17 @@ from .config import TrainingResources
 from .worker_protocol import (
     WORKER_PROTOCOL_VERSION,
     CandidateEvaluationResult,
+    CommandResult,
     EvaluationResourceFailure,
     EvaluationTaskSpec,
     HiddenDatasetIdentityMismatch,
     HiddenDatasetRequest,
     HiddenDatasetResolutionFailure,
+    LeaseState,
+    ResearchTaskSpec,
     ResolvedHiddenDataset,
     ResolvedWorkload,
+    ResourceAllocationReceipt,
     ResourceEnvelope,
     WorkerDescriptor,
     WorkerFailure,
@@ -40,11 +44,13 @@ from .worker_protocol import (
     WorkloadRequest,
     WorkloadResolutionFailure,
     assess_evaluation_resources,
+    assess_resource_allocation,
 )
 
 
 RESOLUTION_PROBE_VERSION = f"worker-v{WORKER_PROTOCOL_VERSION}-resolution-probe-v1"
 EVALUATION_PROBE_VERSION = f"worker-v{WORKER_PROTOCOL_VERSION}-evaluation-probe-v1"
+LEASE_PROBE_VERSION = f"worker-v{WORKER_PROTOCOL_VERSION}-lease-probe-v1"
 
 PASSED = "passed"
 FAILED = "failed"
@@ -147,6 +153,20 @@ class EvaluationProbeReport(WorkerProbeReport):
         payload = super().private_manifest()
         payload["task_id"] = self.task_id
         payload["evaluations"] = list(self.evaluations)
+        return payload
+
+
+@dataclass(frozen=True)
+class LeaseProbeReport(WorkerProbeReport):
+    """Research observations, with workload and command details kept private."""
+
+    task_id: str = ""
+    leases: Tuple[Mapping[str, Any], ...] = field(default_factory=tuple)
+
+    def private_manifest(self) -> Dict[str, Any]:
+        payload = super().private_manifest()
+        payload["task_id"] = self.task_id
+        payload["leases"] = list(self.leases)
         return payload
 
 
@@ -432,6 +452,372 @@ class _ProbeDeadline(TimeoutError):
 
 class _ProbeEvidenceError(ValueError):
     pass
+
+
+def probe_worker_leases(
+    worker: Any,
+    *,
+    task: ResearchTaskSpec,
+    workspace: Path,
+    output_root: Path,
+    resources: TrainingResources,
+    resource_envelope: ResourceEnvelope,
+    rejected_resource_envelope: ResourceEnvelope,
+    command: Sequence[str],
+    expected_stdout: str,
+    teardown: Callable[[], bool],
+    duration_seconds: float = 30.0,
+    timeout_seconds: float = 60.0,
+    cleanup_timeout_seconds: float = 30.0,
+) -> LeaseProbeReport:
+    """Exercise two accepted Leases and one rejected admission on public fixtures.
+
+    The deployment supplies a disposable workspace and a harmless, deterministic
+    command known to succeed in its fixture workload. No Agent or hidden data is
+    involved. Successful calls must bind resource receipts, execute the command,
+    stop, tolerate repeated termination, and no longer execute successfully.
+
+    Each case shares an operation deadline. Lease duration is a separate Worker
+    grant, not a startup timeout. The v16 start/state/stop methods have no timeout
+    argument; this probe rejects late returns but cannot preempt a wedged call.
+    An independent deployment watchdog must bound the entire diagnostic.
+    Every attempted start is registered for compensation before calling Worker
+    code. Unconfirmed Leases get one cleanup attempt under a shared, separate
+    allowance, followed by mandatory deployment teardown even after interrupts.
+    """
+
+    if not isinstance(task, ResearchTaskSpec):
+        raise TypeError("task must be a ResearchTaskSpec")
+    if not isinstance(resources, TrainingResources):
+        raise TypeError("resources must be TrainingResources")
+    resources = resources.validate()
+    for envelope in (resource_envelope, rejected_resource_envelope):
+        if not isinstance(envelope, ResourceEnvelope):
+            raise TypeError("probe contracts must be ResourceEnvelope values")
+        if not envelope.requirements:
+            raise ValueError("probe contracts require normative resource properties")
+    if resource_envelope.sha256 == rejected_resource_envelope.sha256:
+        raise ValueError("accepted and rejected resource contracts must differ")
+    if isinstance(command, (str, bytes)) or not isinstance(command, Sequence):
+        raise TypeError("command must be an argument sequence")
+    if not command or any(not isinstance(arg, str) or not arg for arg in command):
+        raise ValueError("command arguments must be non-empty strings")
+    command = tuple(command)
+    if not isinstance(expected_stdout, str) or not expected_stdout:
+        raise ValueError("expected_stdout must be a non-empty fixture marker")
+    if not callable(teardown):
+        raise TypeError("teardown must be callable")
+    for name, value in (
+        ("duration_seconds", duration_seconds),
+        ("timeout_seconds", timeout_seconds),
+        ("cleanup_timeout_seconds", cleanup_timeout_seconds),
+    ):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value <= 0
+        ):
+            raise ValueError(f"{name} must be finite and positive")
+    workspace = Path(workspace).resolve()
+    output_root = Path(output_root).resolve()
+    if not workspace.is_dir() or not output_root.is_dir():
+        raise ValueError("workspace and output_root must be existing directories")
+    for fixture in (
+        workspace,
+        Path(task.train_dir).resolve(),
+        Path(task.public_api_dir).resolve(),
+    ):
+        if (
+            fixture == output_root
+            or fixture in output_root.parents
+            or output_root in fixture.parents
+        ):
+            raise ValueError("probe inputs and output must be separate directory trees")
+    workload_request = WorkloadRequest("training", task.training_image)
+    run_id = "lease-probe:" + uuid.uuid4().hex
+    run_dir = output_root / run_id.split(":", 1)[1]
+    cases = (
+        ("accepted_first", resource_envelope, False),
+        ("accepted_second", resource_envelope, False),
+        ("rejected", rejected_resource_envelope, True),
+    )
+    log = _Recorder()
+    worker_id = "unknown"
+    records: List[Mapping[str, Any]] = []
+    pending: Dict[str, Dict[str, Any]] = {}
+    receipt_ids: set[str] = set()
+    resolved_identity = None
+    completed = 0
+    stage = "descriptor.available"
+
+    def remaining(deadline: float) -> float:
+        allowance = deadline - time.monotonic()
+        if allowance <= 0:
+            raise _ProbeDeadline("Lease probe operation deadline reached")
+        return allowance
+
+    def call(deadline: float, method: Callable[..., Any], **kwargs: Any) -> Any:
+        remaining(deadline)
+        try:
+            value = method(**kwargs)
+        except WorkerTeardownFailure:
+            raise  # Unconfirmed workload ownership remains explicit even if late.
+        except Exception:
+            remaining(deadline)
+            raise
+        remaining(deadline)
+        return value
+
+    def state(deadline: float, lease_id: str) -> LeaseState:
+        value = call(deadline, worker.lease_state, episode_id=run_id, lease_id=lease_id)
+        if not isinstance(value, LeaseState):
+            raise _ProbeEvidenceError("Worker returned an invalid Lease state")
+        return value
+
+    def stop(deadline: float, lease_id: str) -> None:
+        result = call(
+            deadline, worker.terminate_lease, episode_id=run_id, lease_id=lease_id
+        )
+        if result is not None or state(deadline, lease_id) is not LeaseState.STOPPED:
+            raise _ProbeEvidenceError("Worker did not confirm a stopped Lease")
+
+    def command_result(value: Any) -> Dict[str, Any]:
+        if not isinstance(value, CommandResult):
+            raise _ProbeEvidenceError("Worker returned an invalid command result")
+        return {
+            "exit_code": value.exit_code,
+            "timed_out": value.timed_out,
+            "stdout": value.stdout[:4096],
+            "stderr": value.stderr[:4096],
+            "stdout_truncated": value.stdout_truncated or len(value.stdout) > 4096,
+            "stderr_truncated": value.stderr_truncated or len(value.stderr) > 4096,
+        }
+
+    try:
+        descriptor = worker.describe_capabilities()
+        if not isinstance(descriptor, WorkerDescriptor):
+            raise _ProbeEvidenceError("Worker returned an invalid descriptor type")
+        worker_id = descriptor.worker_id
+        if (
+            descriptor.protocol_version != WORKER_PROTOCOL_VERSION
+            or "research" not in descriptor.roles
+        ):
+            raise _ProbeEvidenceError(
+                "Worker does not declare the current research role"
+            )
+        log.record(stage, PASSED)
+        stage = "output.scope_created"
+        run_dir.mkdir(exist_ok=False)
+        log.record(stage, PASSED)
+        for case, envelope, expect_rejection in cases:
+            prefix = f"lease[{case}]"
+            deadline = time.monotonic() + timeout_seconds
+            lease_id = "lease:" + uuid.uuid4().hex
+            record: Dict[str, Any] = {
+                "case": case,
+                "lease_id": lease_id,
+                "passed": False,
+                "start_attempted": False,
+                "termination_confirmed": False,
+                "expects_resource_rejection": expect_rejection,
+                "resource_envelope": envelope.public_manifest(),
+                "duration_seconds": duration_seconds,
+                "command": list(command),
+            }
+            records.append(record)
+            stage = f"{prefix}.workload_resolution"
+            workload = call(
+                deadline,
+                worker.resolve_workload,
+                episode_id=run_id,
+                workload=workload_request,
+                timeout_seconds=remaining(deadline),
+            )
+            if not isinstance(workload, ResolvedWorkload) or (
+                workload.role != "training"
+                or workload.requested_identity != task.training_image
+            ):
+                raise _ProbeEvidenceError("resolved workload does not bind its request")
+            identity = workload.evidence_manifest()
+            record["workload"] = identity
+            if resolved_identity is not None and resolved_identity != identity:
+                raise _ProbeEvidenceError("effective workload identity changed")
+            resolved_identity = identity
+            log.record(stage, PASSED)
+            stage = f"{prefix}.admission"
+            record["start_attempted"] = True
+            pending[lease_id] = record
+            try:
+                receipt = call(
+                    deadline,
+                    worker.start_lease,
+                    episode_id=run_id,
+                    lease_id=lease_id,
+                    duration_seconds=duration_seconds,
+                    task=task,
+                    workspace=workspace,
+                    resources=resources,
+                    resource_envelope=envelope,
+                    lease_dir=run_dir / case,
+                    workload=workload,
+                )
+            except WorkerTeardownFailure:
+                raise
+            except WorkerFailure as exc:
+                if not expect_rejection:
+                    raise
+                record["admission_rejection"] = str(exc)
+                # Ordinary failure promises no unaccounted workload. Observe
+                # this before compensation could hide a leaked creation.
+                if state(deadline, lease_id) is not LeaseState.STOPPED:
+                    raise _ProbeEvidenceError(
+                        "rejected admission left a live Lease"
+                    ) from exc
+            else:
+                if isinstance(receipt, ResourceAllocationReceipt):
+                    record["resource_receipt"] = receipt.public_manifest()
+                if expect_rejection:
+                    raise _ProbeEvidenceError("Worker accepted the rejected contract")
+                stage = f"{prefix}.resource_receipt"
+                assessment = assess_resource_allocation(
+                    envelope,
+                    receipt,
+                    episode_id=run_id,
+                    lease_id=lease_id,
+                    worker_id=worker_id,
+                )
+                record["assessment"] = assessment.public_manifest()
+                if not assessment.satisfied or receipt.receipt_id in receipt_ids:
+                    raise _ProbeEvidenceError(
+                        "invalid resource allocation or reused receipt ID"
+                    )
+                receipt_ids.add(receipt.receipt_id)
+                log.record(stage, PASSED)
+                stage = f"{prefix}.running"
+                if state(deadline, lease_id) is not LeaseState.RUNNING:
+                    raise _ProbeEvidenceError("admitted Lease is not running")
+                log.record(stage, PASSED)
+                stage = f"{prefix}.command"
+                result = call(
+                    deadline,
+                    worker.exec_lease,
+                    episode_id=run_id,
+                    lease_id=lease_id,
+                    argv=command,
+                    timeout_seconds=remaining(deadline),
+                )
+                record["command_result"] = command_result(result)
+                if (
+                    result.exit_code != 0
+                    or result.timed_out
+                    or result.stdout_truncated
+                    or result.stderr_truncated
+                    or result.stdout != expected_stdout
+                ):
+                    raise _ProbeEvidenceError(
+                        "fixture command did not succeed as expected"
+                    )
+            log.record(stage, PASSED)
+            stage = f"{prefix}.termination"
+            stop(deadline, lease_id)
+            log.record(stage, PASSED)
+            stage = f"{prefix}.repeated_termination"
+            stop(deadline, lease_id)
+            log.record(stage, PASSED)
+            if not expect_rejection:
+                stage = f"{prefix}.post_stop_command"
+                try:
+                    result = call(
+                        deadline,
+                        worker.exec_lease,
+                        episode_id=run_id,
+                        lease_id=lease_id,
+                        argv=command,
+                        timeout_seconds=remaining(deadline),
+                    )
+                except WorkerTeardownFailure:
+                    raise
+                except WorkerFailure as exc:
+                    record["post_stop_rejection"] = str(exc)
+                else:
+                    record["post_stop_result"] = command_result(result)
+                    if (
+                        result.exit_code == 0
+                        or result.timed_out
+                        or result.stdout
+                        or result.stdout_truncated
+                        or result.stderr_truncated
+                    ):
+                        raise _ProbeEvidenceError(
+                            "stopped Lease did not reject the fixture command"
+                        )
+                if state(deadline, lease_id) is not LeaseState.STOPPED:
+                    raise _ProbeEvidenceError("post-stop command revived a Lease")
+                log.record(stage, PASSED)
+            record["termination_confirmed"] = True
+            pending.pop(lease_id)
+            record["passed"] = True
+            completed += 1
+    except Exception as exc:  # noqa: BLE001 - diagnostic failure always compensates
+        code = (
+            "operation_deadline_exceeded"
+            if isinstance(exc, _ProbeDeadline)
+            else "worker_teardown_unconfirmed"
+            if isinstance(exc, WorkerTeardownFailure)
+            else "worker_failure"
+            if isinstance(exc, WorkerFailure)
+            else "invalid_worker_evidence"
+            if isinstance(exc, (TypeError, ValueError))
+            else "unexpected_worker_exception"
+        )
+        log.record(
+            stage, FAILED, code=code, private_detail=f"{type(exc).__name__}: {exc}"
+        )
+        for case, _, _ in cases[completed:]:
+            log.record(
+                f"lease[{case}].completed", SKIPPED, code="probe_stopped_after_failure"
+            )
+    finally:
+        try:
+            cleanup_deadline = time.monotonic() + cleanup_timeout_seconds
+            for lease_id, record in pending.items():
+                try:
+                    stop(cleanup_deadline, lease_id)
+                except Exception as exc:  # noqa: BLE001 - retain cleanup failure
+                    log.record(
+                        f"lease[{record['case']}].compensation",
+                        FAILED,
+                        code="lease_cleanup_unconfirmed",
+                        private_detail=f"{type(exc).__name__}: {exc}",
+                    )
+                else:
+                    record["termination_confirmed"] = True
+                    log.record(f"lease[{record['case']}].compensation", PASSED)
+        finally:
+            try:
+                confirmed = teardown()
+            except Exception as exc:  # noqa: BLE001 - outer cleanup is independent
+                log.record(
+                    "deployment.teardown_confirmed",
+                    FAILED,
+                    code="deployment_teardown_failed",
+                    private_detail=f"{type(exc).__name__}: {exc}",
+                )
+            else:
+                log.expect(
+                    "deployment.teardown_confirmed",
+                    confirmed is True,
+                    code="deployment_teardown_unconfirmed",
+                )
+    return LeaseProbeReport(
+        probe_version=LEASE_PROBE_VERSION,
+        run_id=run_id,
+        worker_id=worker_id,
+        checks=tuple(log.checks),
+        task_id=task.task_id,
+        leases=tuple(records),
+    )
 
 
 def probe_worker_evaluation(

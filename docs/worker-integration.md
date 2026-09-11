@@ -263,6 +263,11 @@ matrix or passing probe alone does not close its pending deployment cases.
 | Short complete episode | An agreed development lane within the approved diagnostic scope reaches Lease, commit, Agent-declared incumbent, research sealing, confirmed teardown, TEST, ANALYSIS disposition, final publication and final status refresh |
 | Full selected Track | Run the already agreed lane and budget, retaining real enforcement and completion evidence; never shorten its manifest in place and call that the full Track |
 
+The [Research Lease diagnostic](worker-lease-probe.md) checks two supported
+allocations and a rejected admission, resource receipt binding, fixture command
+execution, repeated termination and failed-start compensation. Its command is
+supplied by the disposable deployment; it creates no Agent or hidden evaluation.
+
 The [evaluation Worker diagnostic](worker-evaluation-probe.md) supplies a reusable
 interface check for supported TEST/ANALYSIS resource receipts and deliberately
 unsupported contracts. Run it only on public disposable fixtures, with the
