@@ -1,6 +1,6 @@
 # Lease deadline diagnostic
 
-`autotrain_bench.deadline_probe.probe_worker_lease_deadline()` checks one idle
+`benchcore.deadline_probe.probe_worker_lease_deadline()` checks one idle
 Research Lease through an independent deployment observer, optionally while its
 Worker control execution is paused or terminated. This extends the
 [Lease lifecycle diagnostic](worker-lease-probe.md), which explicitly stops its
@@ -59,7 +59,7 @@ into Core.
 The deployment's trusted launcher can then call:
 
 ```python
-from autotrain_bench.deadline_probe import probe_worker_lease_deadline
+from benchcore.deadline_probe import probe_worker_lease_deadline
 
 report = probe_worker_lease_deadline(
     research_worker,
@@ -129,7 +129,7 @@ A fault that immediately stops the workload does not pass this deadline case.
 For example, add these arguments to the invocation above:
 
 ```python
-from autotrain_bench.deadline_probe import WorkerFaultKind
+from benchcore.deadline_probe import WorkerFaultKind
 
 # Additional keyword arguments for one disposable, authorized pause case:
 fault_options = dict(

@@ -5,7 +5,7 @@ produced during evaluation are separate contracts. The next-token release uses
 two prediction files with a fixed logits shape; this is not a requirement for
 every future evaluation task.
 
-`autotrain_bench.prediction_output.PredictionOutputContract` is the trusted
+`benchcore.prediction_output.PredictionOutputContract` is the trusted
 extension point for prediction artifacts. It separates:
 
 - `artifact_manifest()`: the final output format, which can be variable-length;

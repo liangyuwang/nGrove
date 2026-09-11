@@ -11,11 +11,11 @@ from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from autotrain_bench import local_recovery
-from autotrain_bench.docker_recovery import DockerRecovery
-from autotrain_bench.local_watchdog import supervise
-from autotrain_bench.runtime import DockerRuntime
-from autotrain_bench.worker_protocol import WorkerFailure
+from benchcore import local_recovery
+from benchcore.docker_recovery import DockerRecovery
+from benchcore.local_watchdog import supervise
+from benchcore.runtime import DockerRuntime
+from benchcore.worker_protocol import WorkerFailure
 from tests.test_docker_recovery import FakeDocker
 
 
@@ -130,7 +130,7 @@ class LocalRecoveryProcessTests(unittest.TestCase):
             self.assertEqual(target.read_text(), saved)
 
     def test_manual_recovery_uses_process_boundary_without_parent_journal_io(self):
-        from autotrain_bench.cli import build_parser, command_worker_recover
+        from benchcore.cli import build_parser, command_worker_recover
 
         with self.episode() as (root, registration):
             args = build_parser().parse_args(
@@ -211,7 +211,7 @@ class LocalRecoveryProcessTests(unittest.TestCase):
                 self.assertEqual(signal.getsignal(sig), handler)
 
     def test_manual_cancellation_returns_failure_even_when_cleanup_completes(self):
-        from autotrain_bench.cli import build_parser, command_worker_recover
+        from benchcore.cli import build_parser, command_worker_recover
 
         with self.episode() as (root, registration):
             args = build_parser().parse_args(
@@ -313,7 +313,7 @@ class LocalRecoveryProcessTests(unittest.TestCase):
                 raise WorkerFailure("simulated helper loss")
 
             try:
-                with patch("autotrain_bench.runtime.subprocess.run", lose_helper):
+                with patch("benchcore.runtime.subprocess.run", lose_helper):
                     with self.assertRaisesRegex(WorkerFailure, "simulated helper loss"):
                         runtime._run_raw(["info"], timeout=1)
                 journal.close()

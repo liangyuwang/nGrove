@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from autotrain_bench.candidate_protocol import (
+from benchcore.candidate_protocol import (
     CANDIDATE_PROTOCOL,
     PREDICTION_MANIFEST_MAX_BYTES,
     CandidateProtocolError,
@@ -18,8 +18,8 @@ from autotrain_bench.candidate_protocol import (
     validate_prediction_artifact,
     write_prediction_artifact,
 )
-from autotrain_bench.worker_protocol import PerformanceScoreContract
-from autotrain_bench.config import TaskConfig
+from benchcore.worker_protocol import PerformanceScoreContract
+from benchcore.config import TaskConfig
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -167,7 +167,7 @@ def run_offline(candidate_dir, contexts_path, output_dir, device):
                 [
                     sys.executable,
                     "-m",
-                    "autotrain_bench.candidate_offline_runner",
+                    "benchcore.candidate_offline_runner",
                     "--candidate",
                     str(candidate),
                     "--contexts",

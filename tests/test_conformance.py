@@ -3,12 +3,12 @@ import unittest
 import uuid
 from pathlib import Path
 
-from autotrain_bench.conformance import (
+from benchcore.conformance import (
     RESOLUTION_PROBE_VERSION,
     probe_worker_resolution,
 )
-from autotrain_bench.config import TaskConfig
-from autotrain_bench.worker_protocol import (
+from benchcore.config import TaskConfig
+from benchcore.worker_protocol import (
     BASELINE_REQUIREMENTS,
     Capability,
     EnforcementLevel,

@@ -151,7 +151,7 @@ The v0 support statement is:
 
 - The bundled `autotrain-bench prepare` and `autotrain-bench start` commands
   are a single-host local Docker reference composition.
-- `autotrain_bench.worker_protocol` version 12 is a synchronous in-process
+- `benchcore.worker_protocol` version 12 is a synchronous in-process
   Python contract. Its remaining TRAIN/workspace/Candidate/output `Path` values
   are local deployment handles, not a serializable remote wire format. Hidden
   dataset requests and resolutions are path-free.
@@ -537,7 +537,7 @@ participant with a compliant inference path is needed before redesigning C1.
 
 Result schema version 12 still pins `agent_system` to the bundled v0 runner
 vocabulary, so this phase also owns that structure. `_validate_agent_system()`
-in `autotrain_bench/results.py` rejects a `runner` outside `AGENT_RUNNERS` and
+in `benchcore/results.py` rejects a `runner` outside `AGENT_RUNNERS` and
 keys its "a host runner declares no egress policy" rule on the literal
 `host_cli`; `AgentConfig.network` derives `host_managed` from the same literal.
 Those checks are correct while Core owns a closed runner set, but a result

@@ -12,9 +12,9 @@ from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
-from autotrain_bench.docker_recovery import DockerRecovery
-from autotrain_bench.local_watchdog import supervise, watched
-from autotrain_bench.worker_protocol import WorkerFailure
+from benchcore.docker_recovery import DockerRecovery
+from benchcore.local_watchdog import supervise, watched
+from benchcore.worker_protocol import WorkerFailure
 from tests.test_docker_recovery import FakeDocker
 
 
@@ -129,7 +129,7 @@ class WatchdogProcessTests(unittest.TestCase):
                         return backend.run(args, **kwargs)
 
                     with patch(
-                        "autotrain_bench.docker_recovery.time.monotonic",
+                        "benchcore.docker_recovery.time.monotonic",
                         side_effect=lambda: now[0],
                     ):
                         return journal.recover(run, timeout_seconds=timeout_seconds)
@@ -200,10 +200,10 @@ class WatchdogProcessTests(unittest.TestCase):
 
     def test_foreign_child_reaper_is_rejected_before_launch(self):
         with patch(
-            "autotrain_bench.local_watchdog.signal.getsignal",
+            "benchcore.local_watchdog.signal.getsignal",
             return_value=signal.SIG_IGN,
         ):
-            with patch("autotrain_bench.local_watchdog.subprocess.Popen") as launch:
+            with patch("benchcore.local_watchdog.subprocess.Popen") as launch:
                 with self.assertRaisesRegex(WorkerFailure, "exclusive child reaping"):
                     supervise(lambda fd: ["unused"])
                 launch.assert_not_called()
@@ -211,7 +211,7 @@ class WatchdogProcessTests(unittest.TestCase):
 
 class WatchdogBindingTests(unittest.TestCase):
     def test_recovery_helper_passes_deadline_and_closes_journal(self):
-        from autotrain_bench.local_recovery import _perform
+        from benchcore.local_recovery import _perform
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -232,10 +232,10 @@ class WatchdogBindingTests(unittest.TestCase):
                 return FakeDocker().run(args, **kwargs)
 
             with patch(
-                "autotrain_bench.runtime.DockerRuntime._run_raw",
+                "benchcore.runtime.DockerRuntime._run_raw",
                 side_effect=late_backend,
             ), patch(
-                "autotrain_bench.docker_recovery.time.monotonic",
+                "benchcore.docker_recovery.time.monotonic",
                 side_effect=lambda: now[0],
             ):
                 report = _perform(
@@ -255,7 +255,7 @@ class WatchdogBindingTests(unittest.TestCase):
             reopened.close()
 
     def test_notification_failure_does_not_hide_runtime_cleanup_failure(self):
-        from autotrain_bench.local_watchdog import WatchdogClient
+        from benchcore.local_watchdog import WatchdogClient
 
         left, right = socket.socketpair()
         client = WatchdogClient(left.detach())
@@ -275,8 +275,8 @@ class WatchdogBindingTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "posix", "journal uses POSIX ownership locks")
     def test_channel_loss_after_initial_cleanup_info_does_not_block_removal(self):
-        from autotrain_bench.local_watchdog import WatchdogClient
-        from autotrain_bench.runtime import DockerRuntime
+        from benchcore.local_watchdog import WatchdogClient
+        from benchcore.runtime import DockerRuntime
 
         for kind in ("container", "network", "volume"):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
@@ -308,8 +308,8 @@ class WatchdogBindingTests(unittest.TestCase):
                         raise WorkerFailure("watchdog channel is unavailable")
 
                 client._request = request
-                with patch("autotrain_bench.local_watchdog._client", client), patch(
-                    "autotrain_bench.runtime.subprocess.run",
+                with patch("benchcore.local_watchdog._client", client), patch(
+                    "benchcore.runtime.subprocess.run",
                     side_effect=lambda command, **kwargs: backend.run(command[1:]),
                 ):
                     with self.assertRaisesRegex(WorkerFailure, "watchdog"):
@@ -325,7 +325,7 @@ class WatchdogBindingTests(unittest.TestCase):
                 )
 
     def test_container_cli_routes_to_watchdog_and_validates_private_overrides(self):
-        from autotrain_bench.cli import main
+        from benchcore.cli import main
 
         argv = [
             "start",
@@ -348,7 +348,7 @@ class WatchdogBindingTests(unittest.TestCase):
             "--worker-watchdog-recovery-seconds",
             "45",
         ]
-        with patch("autotrain_bench.cli.supervise_start", return_value=0) as start:
+        with patch("benchcore.cli.supervise_start", return_value=0) as start:
             with self.assertRaises(SystemExit) as stopped:
                 main(argv)
             self.assertEqual(stopped.exception.code, 0)
@@ -357,9 +357,9 @@ class WatchdogBindingTests(unittest.TestCase):
             )
         for option in ("control", "recovery"):
             for value in ("nan", "inf", "0", "-1"):
-                with patch(
-                    "autotrain_bench.cli.supervise_start"
-                ) as start, redirect_stderr(io.StringIO()):
+                with patch("benchcore.cli.supervise_start") as start, redirect_stderr(
+                    io.StringIO()
+                ):
                     with self.assertRaises(SystemExit) as stopped:
                         main([*argv, f"--worker-watchdog-{option}-seconds", value])
                     self.assertEqual(stopped.exception.code, 2)
@@ -374,12 +374,12 @@ class WatchdogBindingTests(unittest.TestCase):
             "client.py",
             "agent_api.py",
         ):
-            path = ROOT / "autotrain_bench" / name
+            path = ROOT / "benchcore" / name
             if path.exists():
                 self.assertNotIn("local_watchdog", imported_modules(path))
 
     def test_operation_uses_actual_allowance_and_disarms_after_failure(self):
-        from autotrain_bench.local_watchdog import WatchdogClient
+        from benchcore.local_watchdog import WatchdogClient
 
         client = WatchdogClient.__new__(WatchdogClient)
         client.registered = True
@@ -390,7 +390,7 @@ class WatchdogBindingTests(unittest.TestCase):
         def operation(*, timeout_seconds):
             raise WorkerFailure("ordinary timeout")
 
-        with patch("autotrain_bench.local_watchdog._client", client):
+        with patch("benchcore.local_watchdog._client", client):
             with self.assertRaisesRegex(WorkerFailure, "ordinary timeout"):
                 operation(timeout_seconds=2.5)
         self.assertEqual(messages[0]["seconds"], 2.5)
@@ -398,8 +398,8 @@ class WatchdogBindingTests(unittest.TestCase):
         self.assertEqual(messages[1], {"type": "disarm", "key": messages[0]["key"]})
 
     def test_broken_watchdog_channel_allows_stop_but_refuses_new_work(self):
-        from autotrain_bench.local_watchdog import WatchdogClient
-        from autotrain_bench.runtime import DockerRuntime
+        from benchcore.local_watchdog import WatchdogClient
+        from benchcore.runtime import DockerRuntime
 
         for already_detected in (False, True):
             with self.subTest(already_detected=already_detected):
@@ -417,8 +417,8 @@ class WatchdogBindingTests(unittest.TestCase):
                     calls.append(command)
                     return subprocess.CompletedProcess(command, 0, "", "")
 
-                with patch("autotrain_bench.local_watchdog._client", client), patch(
-                    "autotrain_bench.runtime.subprocess.run", side_effect=run
+                with patch("benchcore.local_watchdog._client", client), patch(
+                    "benchcore.runtime.subprocess.run", side_effect=run
                 ):
                     # Missing watchdog acknowledgement stays an error AFTER
                     # actual removal/absence checks, rather than blocking stop.

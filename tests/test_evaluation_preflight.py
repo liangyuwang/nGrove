@@ -10,9 +10,9 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from autotrain_bench.cli import build_parser, command_start
-from autotrain_bench.config import TaskConfig, TrainingResources
-from autotrain_bench.worker_protocol import (
+from benchcore.cli import build_parser, command_start
+from benchcore.config import TaskConfig, TrainingResources
+from benchcore.worker_protocol import (
     EnforcementLevel,
     EvaluationResourceFailure,
     ResourceEnvelope,
@@ -47,7 +47,7 @@ class EvaluationPreflightTests(unittest.TestCase):
             return original(args, **kwargs)
 
         with patch.object(self.runtime, "_run", side_effect=read_only), patch(
-            "autotrain_bench.runtime.EvaluationResourceReceipt",
+            "benchcore.runtime.EvaluationResourceReceipt",
             side_effect=AssertionError(
                 "preflight must not issue an allocation receipt"
             ),
@@ -86,7 +86,7 @@ class EvaluationPreflightTests(unittest.TestCase):
                 self.fixture.evaluate(self.runtime, self.request)
         self.assertFalse(
             any(
-                "autotrain_bench.candidate_offline_runner" in call
+                "benchcore.candidate_offline_runner" in call
                 for call in self.runtime.calls
             )
         )
@@ -104,9 +104,9 @@ class EvaluationPreflightTests(unittest.TestCase):
             self.runtime.now += 2
             return gpu_inventory(f"{GPU_ONE}, NVIDIA H100, 81920, Disabled")
 
-        with patch(
-            "autotrain_bench.runtime.shutil.which", return_value="nvidia-smi"
-        ), patch("autotrain_bench.runtime.subprocess.run", side_effect=query):
+        with patch("benchcore.runtime.shutil.which", return_value="nvidia-smi"), patch(
+            "benchcore.runtime.subprocess.run", side_effect=query
+        ):
             with self.assertRaisesRegex(EvaluationResourceFailure, "deadline"):
                 self.runtime.preflight_evaluation_resources(
                     config,
@@ -120,10 +120,8 @@ class EvaluationPreflightTests(unittest.TestCase):
     def test_preflight_gpu_selection_is_not_substituted_when_it_disappears(self):
         config = replace(self.config, evaluator_device="cuda")
         resources = TrainingResources(nvidia_gpu_count=1, required_gpu_model="H100")
-        with patch(
-            "autotrain_bench.runtime.shutil.which", return_value="nvidia-smi"
-        ), patch(
-            "autotrain_bench.runtime.subprocess.run",
+        with patch("benchcore.runtime.shutil.which", return_value="nvidia-smi"), patch(
+            "benchcore.runtime.subprocess.run",
             return_value=gpu_inventory(f"{GPU_ONE}, NVIDIA H100, 81920, Disabled"),
         ) as query:
             self.runtime.preflight_evaluation_resources(
@@ -143,7 +141,7 @@ class EvaluationPreflightTests(unittest.TestCase):
                 )
         self.assertFalse(
             any(
-                "autotrain_bench.candidate_offline_runner" in call
+                "benchcore.candidate_offline_runner" in call
                 for call in self.runtime.calls
             )
         )
@@ -201,11 +199,11 @@ class EvaluationPreflightTests(unittest.TestCase):
                 args = self.launch_args(root, request)
                 runtime = self.fixture.runtime(supported=supported)
                 with patch(
-                    "autotrain_bench.cli.TaskConfig.load", return_value=self.config
-                ), patch(
-                    "autotrain_bench.cli.DockerRuntime", return_value=runtime
-                ), patch("autotrain_bench.cli.Supervisor") as supervisor, patch(
-                    "autotrain_bench.cli._initialize_agent_workspace"
+                    "benchcore.cli.TaskConfig.load", return_value=self.config
+                ), patch("benchcore.cli.DockerRuntime", return_value=runtime), patch(
+                    "benchcore.cli.Supervisor"
+                ) as supervisor, patch(
+                    "benchcore.cli._initialize_agent_workspace"
                 ) as workspace, patch.object(
                     runtime, "configure_operator_storage"
                 ) as storage, patch.object(runtime, "prepare") as prepare, patch.object(
@@ -226,9 +224,9 @@ class EvaluationPreflightTests(unittest.TestCase):
             root = Path(temporary)
             args = self.launch_args(root, self.request)
             with patch(
-                "autotrain_bench.cli.TaskConfig.load", return_value=self.config
+                "benchcore.cli.TaskConfig.load", return_value=self.config
             ), patch(
-                "autotrain_bench.cli.DockerRuntime", return_value=self.runtime
+                "benchcore.cli.DockerRuntime", return_value=self.runtime
             ), patch.object(
                 self.runtime,
                 "preflight_evaluation_resources",
@@ -240,7 +238,7 @@ class EvaluationPreflightTests(unittest.TestCase):
             ), patch.object(
                 self.runtime, "environment_manifest", return_value={}
             ), patch(
-                "autotrain_bench.cli.Supervisor",
+                "benchcore.cli.Supervisor",
                 side_effect=RuntimeError("stop before reveal"),
             ) as supervisor, redirect_stdout(io.StringIO()):
                 with self.assertRaisesRegex(RuntimeError, "stop before reveal"):

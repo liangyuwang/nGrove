@@ -179,13 +179,13 @@ def summarize_host_agent_trace(path: Path) -> Dict[str, Any]:
             continue
 
         record_type = record.get("type")
-        if record_type == "autotrain_bench.agent_metadata":
+        if record_type == "benchcore.agent_metadata":
             for key in ("tool", "tool_version", "model", "reasoning_effort"):
                 value = record.get(key)
                 if isinstance(value, str) and value:
                     summary[key] = value
             continue
-        if record_type in {"autotrain_bench.agent_usage", "turn.completed"}:
+        if record_type in {"benchcore.agent_usage", "turn.completed"}:
             if record_type == "turn.completed":
                 summary["turns_completed"] += 1
             usage = record.get("usage")
@@ -194,7 +194,7 @@ def summarize_host_agent_trace(path: Path) -> Dict[str, Any]:
                 continue
             saw_usage = True
             if (
-                record_type == "autotrain_bench.agent_usage"
+                record_type == "benchcore.agent_usage"
                 and record.get("usage_complete") is False
             ):
                 summary["usage_complete"] = False

@@ -1,4 +1,4 @@
-from autotrain_bench.candidate_protocol import (
+from benchcore.candidate_protocol import (
     load_context_request,
     write_prediction_artifact,
 )

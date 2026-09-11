@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from autotrain_bench.local_mailbox import LocalFileMailbox, MailboxLimitExceeded
+from benchcore.local_mailbox import LocalFileMailbox, MailboxLimitExceeded
 
 
 class LocalFileMailboxTests(unittest.TestCase):

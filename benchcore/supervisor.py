@@ -435,7 +435,7 @@ class Supervisor:
                 f"episode directory already contains state: {self.episode_dir}"
             )
         self.agent_api_dir = agent_api_dir.resolve()
-        if not (self.agent_api_dir / "autotrain_bench" / "client.py").is_file():
+        if not (self.agent_api_dir / "benchcore" / "client.py").is_file():
             raise ValueError(f"Agent API bundle is missing: {self.agent_api_dir}")
         self.episode_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(self.episode_dir, 0o700)

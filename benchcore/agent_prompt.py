@@ -35,19 +35,19 @@ Allowed information and actions:
   declares the binary encoding, shape, and row/column order of logits.f32.
 - Read and edit only the current workspace ($AUTOTRAIN_BENCH_WORKSPACE).
 - Use only these mailbox commands as the benchmark control plane:
-  python -m autotrain_bench.cli agent status
-  python -m autotrain_bench.cli agent lease-start [--seconds N]
-  python -m autotrain_bench.cli agent lease-exec [--timeout N] -- <command>
-  python -m autotrain_bench.cli agent lease-logs [--limit N]
-  python -m autotrain_bench.cli agent lease-commit /output/<candidate-directory>
-  python -m autotrain_bench.cli agent declare-incumbent <candidate-id>
-  python -m autotrain_bench.cli agent lease-stop
-  python -m autotrain_bench.cli agent finish
+  python -m benchcore.cli agent status
+  python -m benchcore.cli agent lease-start [--seconds N]
+  python -m benchcore.cli agent lease-exec [--timeout N] -- <command>
+  python -m benchcore.cli agent lease-logs [--limit N]
+  python -m benchcore.cli agent lease-commit /output/<candidate-directory>
+  python -m benchcore.cli agent declare-incumbent <candidate-id>
+  python -m benchcore.cli agent lease-stop
+  python -m benchcore.cli agent finish
 - lease-exec runs inside an isolated Training Container. In that command, the
   workspace is /workspace, visible training data is /benchmark/train, and the
   lease-owned artifact directory is /output. Candidates must be written under
   /output; the Agent process cannot modify that directory after the lease stops.
-- The generated autotrain_bench.candidate_protocol module is an allowed public
+- The generated benchcore.candidate_protocol module is an allowed public
   API in Agent and Training environments. Its request reader and prediction writer
   are documented under evaluation.candidate_boundary.public_helper_api; using
   those helpers is optional.

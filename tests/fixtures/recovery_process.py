@@ -10,8 +10,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from autotrain_bench import local_recovery
-from autotrain_bench.docker_recovery import DockerRecovery
+from benchcore import local_recovery
+from benchcore.docker_recovery import DockerRecovery
 from tests.test_docker_recovery import FakeDocker
 
 
@@ -67,7 +67,7 @@ def main():
 
         with ExitStack() as stack:
             stack.enter_context(
-                patch("autotrain_bench.runtime.DockerRuntime._run_raw", side_effect=run)
+                patch("benchcore.runtime.DockerRuntime._run_raw", side_effect=run)
             )
             if mode in {"open-block", "signals"}:
                 stack.enter_context(patch.object(DockerRecovery, "_read", block))
@@ -75,7 +75,7 @@ def main():
                 stack.enter_context(patch.object(DockerRecovery, "_save", block))
             if mode == "delete-block":
                 stack.enter_context(
-                    patch("autotrain_bench.docker_recovery.shutil.rmtree", block)
+                    patch("benchcore.docker_recovery.shutil.rmtree", block)
                 )
             if mode in {"close-block", "complete-signals"}:
                 stack.enter_context(patch.object(DockerRecovery, "close", close))

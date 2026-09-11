@@ -95,7 +95,7 @@ paths; Core still owns Candidate acceptance and canonical identity.
 
 ## Capabilities, conformance, and trust
 
-`autotrain_bench.worker_protocol` describes capabilities by semantic name and
+`benchcore.worker_protocol` describes capabilities by semantic name and
 an enforcement level:
 
 ```text
@@ -139,7 +139,7 @@ decision. Core checks the Worker binding before using the receipt. This local
 trusted-input seam does not pretend to be a cryptographic remote attestation;
 authentication of a future remote receipt belongs to the deployment transport.
 
-`autotrain_bench.conformance` provides resolution,
+`benchcore.conformance` provides resolution,
 [Research Lease](worker-lease-probe.md), and
 [evaluation resource](worker-evaluation-probe.md) diagnostics. The Lease probe
 checks admission receipts, fixture command execution, stopped-state observations,
@@ -363,7 +363,7 @@ byte string, with no separators other than those shown:
 
 The bundle directory must not be a symlink and must contain exactly those two
 regular files. Lengths are unsigned 64-bit big-endian integers. The shared
-`autotrain_bench.artifact_identity.hidden_bundle_sha256()` implementation is
+`benchcore.artifact_identity.hidden_bundle_sha256()` implementation is
 normative for Python Workers. The organizer release receipt declares
 `file: sha256` and
 `hidden_evaluation: autotrain-bench-hidden-bundle-v1-sha256`; the current result

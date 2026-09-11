@@ -14,7 +14,7 @@ def _print(payload: Dict[str, Any]) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="python -m autotrain_bench.cli")
+    parser = argparse.ArgumentParser(prog="python -m benchcore.cli")
     commands = parser.add_subparsers(dest="command", required=True)
     agent = commands.add_parser("agent")
     operations = agent.add_subparsers(dest="operation", required=True)

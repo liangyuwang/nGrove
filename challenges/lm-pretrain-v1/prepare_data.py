@@ -23,7 +23,7 @@ from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
-from autotrain_bench.training_data import (
+from benchcore.training_data import (
     TrainingDataError,
     file_identity,
     write_training_manifest,

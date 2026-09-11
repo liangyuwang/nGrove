@@ -1,7 +1,7 @@
 """Hardened local-file transport for the Agent control API.
 
 This module owns filesystem mechanics only. Benchmark request semantics remain
-in :mod:`autotrain_bench.supervisor`, and Docker or other workload placement
+in :mod:`benchcore.supervisor`, and Docker or other workload placement
 belongs to a deployment launcher.
 """
 

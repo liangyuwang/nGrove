@@ -1,11 +1,11 @@
 import unittest
 
-from autotrain_bench.artifact_identity import (
+from benchcore.artifact_identity import (
     CANDIDATE_TREE_IDENTITY_ALGORITHM,
     FILE_IDENTITY_ALGORITHM,
     HIDDEN_BUNDLE_IDENTITY_ALGORITHM,
 )
-from autotrain_bench.results import (
+from benchcore.results import (
     RESULT_SCHEMA_VERSION,
     ResultSchemaError,
     normalize_result_report,

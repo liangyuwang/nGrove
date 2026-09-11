@@ -160,7 +160,7 @@ autotrain-bench start \
   --runtime-profile cpu-local \
   --episodes-root /path/to/autotrain-bench-runs/episodes \
   --agent-runner host_cli \
-  --agent-command "python3 -m autotrain_bench.cli_adapters.codex --model MODEL --reasoning-effort high"
+  --agent-command "python3 -m benchcore.cli_adapters.codex --model MODEL --reasoning-effort high"
 ```
 
 The `host_cli` run reports `policy_compliant: false` because a host process can
@@ -180,7 +180,7 @@ Training commands write Candidate artifacts beneath the lease-owned `/output`
 mount. A participant commits an artifact through the mailbox:
 
 ```bash
-python -m autotrain_bench.cli agent lease-commit /output/candidate
+python -m benchcore.cli agent lease-commit /output/candidate
 ```
 
 Commit stops the Training sandbox before validating and snapshotting the
@@ -251,7 +251,7 @@ manifest = {
 The generated public task at `$AUTOTRAIN_BENCH_TASK` carries the same
 machine-readable contract under
 `evaluation.candidate_boundary.prediction_manifest`. The generated public
-`autotrain_bench.candidate_protocol` API is explicitly allowed in Agent and
+`benchcore.candidate_protocol` API is explicitly allowed in Agent and
 Training environments: `load_context_request(path)` reads the request and
 `write_prediction_artifact(output_dir, *, dataset_id, logits, examples,
 vocab_size)` writes both output files. The reader returns the parsed dictionary

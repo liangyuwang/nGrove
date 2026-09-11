@@ -6,8 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from autotrain_bench.config import TaskConfig
-from autotrain_bench.worker_protocol import CandidateChannelRequirements
+from benchcore.config import TaskConfig
+from benchcore.worker_protocol import CandidateChannelRequirements
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -157,7 +157,7 @@ class CandidateEntrypointTests(unittest.TestCase):
                     [
                         sys.executable,
                         "-m",
-                        "autotrain_bench.candidate_offline_runner",
+                        "benchcore.candidate_offline_runner",
                         "--candidate",
                         candidate.name,
                         "--contexts",

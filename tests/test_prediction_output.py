@@ -2,12 +2,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from autotrain_bench.candidate_protocol import (
+from benchcore.candidate_protocol import (
     CANDIDATE_PROTOCOL,
     CandidateProtocolError,
     write_prediction_artifact,
 )
-from autotrain_bench.prediction_output import prediction_output_contract
+from benchcore.prediction_output import prediction_output_contract
 
 
 class PredictionOutputContractTests(unittest.TestCase):

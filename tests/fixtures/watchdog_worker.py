@@ -10,8 +10,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from autotrain_bench import local_watchdog
-from autotrain_bench.docker_recovery import DockerRecovery
+from benchcore import local_watchdog
+from benchcore.docker_recovery import DockerRecovery
 
 
 def signal_parent(directory, phase, signum):
@@ -102,7 +102,7 @@ def main():
         raise SystemExit(code)
     fd, directory, mode = sys.argv[1:]
     if mode.startswith("output-child"):
-        from autotrain_bench import cli
+        from benchcore import cli
 
         def output(argv):
             cli._print({"status": "closed", "TEST": "saved"})

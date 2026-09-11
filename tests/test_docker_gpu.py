@@ -10,9 +10,9 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from autotrain_bench.config import TaskConfig, TrainingResources
-from autotrain_bench.runtime import DockerRuntime, RuntimeFailure
-from autotrain_bench.worker_protocol import (
+from benchcore.config import TaskConfig, TrainingResources
+from benchcore.runtime import DockerRuntime, RuntimeFailure
+from benchcore.worker_protocol import (
     ResearchTaskSpec,
     WorkloadRequest,
     WorkerTeardownFailure,
@@ -68,11 +68,11 @@ class DockerGpuTests(unittest.TestCase):
         self.patches = ExitStack()
         self.addCleanup(self.patches.close)
         self.smi = self.patches.enter_context(
-            patch("autotrain_bench.runtime.shutil.which", return_value="nvidia-smi")
+            patch("benchcore.runtime.shutil.which", return_value="nvidia-smi")
         )
         self.query = self.patches.enter_context(
             patch(
-                "autotrain_bench.runtime.subprocess.run",
+                "benchcore.runtime.subprocess.run",
                 return_value=gpu_inventory(GOOD),
             )
         )
@@ -192,7 +192,7 @@ class DockerGpuTests(unittest.TestCase):
         candidate = next(
             call
             for call in runtime.calls
-            if "autotrain_bench.candidate_offline_runner" in call
+            if "benchcore.candidate_offline_runner" in call
         )
         self.assertEqual(
             candidate[candidate.index("--gpus") + 1], f'"device={GPU_TWO}"'
@@ -210,10 +210,7 @@ class DockerGpuTests(unittest.TestCase):
                 output_dir=self.root / "later-evaluation",
             )
         self.assertFalse(
-            any(
-                "autotrain_bench.candidate_offline_runner" in call
-                for call in runtime.calls
-            )
+            any("benchcore.candidate_offline_runner" in call for call in runtime.calls)
         )
 
     def test_environment_records_selection_separately_from_host_inventory(self):

@@ -213,7 +213,7 @@ def candidate_helper_api_manifest() -> Dict[str, Any]:
     """Describe the optional generated helper API available to Candidates."""
 
     return {
-        "module": "autotrain_bench.candidate_protocol",
+        "module": "benchcore.candidate_protocol",
         "request_reader": "load_context_request(path)",
         "request_reader_return": {
             "python_type": "dict",

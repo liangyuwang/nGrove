@@ -10,14 +10,14 @@ import time
 import unittest
 from pathlib import Path
 
-from autotrain_bench.config import TrainingResources
-from autotrain_bench.deadline_probe import (
+from benchcore.config import TrainingResources
+from benchcore.deadline_probe import (
     LeaseDeadlineObservation,
     WorkerFaultEvidence,
     WorkerFaultKind,
     probe_worker_lease_deadline,
 )
-from autotrain_bench.worker_protocol import LeaseState, ResearchTaskSpec
+from benchcore.worker_protocol import LeaseState, ResearchTaskSpec
 from tests.test_lease_probe import LeaseWorker, contract
 
 

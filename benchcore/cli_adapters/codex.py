@@ -125,7 +125,7 @@ def main(
         version = "unknown"
 
     metadata = {
-        "type": "autotrain_bench.agent_metadata",
+        "type": "benchcore.agent_metadata",
         "tool": "codex",
         "tool_version": version or "unknown",
         "model": args.model,

@@ -9,10 +9,10 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from autotrain_bench.challenge import ChallengeRelease
-from autotrain_bench.config import ConfigError, TaskConfig, TrainingResources
-from autotrain_bench.results import ResultSchemaError, normalize_result_report
-from autotrain_bench.worker_protocol import (
+from benchcore.challenge import ChallengeRelease
+from benchcore.config import ConfigError, TaskConfig, TrainingResources
+from benchcore.results import ResultSchemaError, normalize_result_report
+from benchcore.worker_protocol import (
     EnforcementLevel,
     EvaluationResourceFailure,
     EvaluationResourceReceipt,
@@ -459,8 +459,8 @@ class EvaluationResourceDockerTests(unittest.TestCase):
                 else {"return_value": response}
             )
             with self.subTest(response=response), patch(
-                "autotrain_bench.runtime.shutil.which", return_value="nvidia-smi"
-            ), patch("autotrain_bench.runtime.subprocess.run", **options):
+                "benchcore.runtime.shutil.which", return_value="nvidia-smi"
+            ), patch("benchcore.runtime.subprocess.run", **options):
                 with self.assertRaises(EvaluationResourceFailure):
                     runtime._evaluation_resource_plan(
                         episode_id="episode",
@@ -500,7 +500,7 @@ class EvaluationResourceDockerTests(unittest.TestCase):
                         ),
                         "",
                     )
-                if "autotrain_bench.candidate_offline_runner" in args:
+                if "benchcore.candidate_offline_runner" in args:
                     self.now += 3
                 if "--mode" in args and args[args.index("--mode") + 1] == "score":
                     mount = next(item for item in args if item.endswith("dst=/output"))
@@ -548,7 +548,7 @@ class EvaluationResourceDockerTests(unittest.TestCase):
         command = next(
             call
             for call in runtime.calls
-            if "autotrain_bench.candidate_offline_runner" in call
+            if "benchcore.candidate_offline_runner" in call
         )
         self.assertEqual(command[command.index("--cpus") + 1], "1.5")
         self.assertEqual(command[command.index("--memory") + 1], str(64 * 1024**2))
@@ -573,7 +573,7 @@ class EvaluationResourceDockerTests(unittest.TestCase):
                 self.evaluate(runtime, request)
             self.assertFalse(
                 any(
-                    "autotrain_bench.candidate_offline_runner" in call
+                    "benchcore.candidate_offline_runner" in call
                     for call in runtime.calls
                 )
             )
@@ -602,7 +602,7 @@ class EvaluationResourceDockerTests(unittest.TestCase):
                         )
                 self.assertFalse(
                     any(
-                        "autotrain_bench.candidate_offline_runner" in call
+                        "benchcore.candidate_offline_runner" in call
                         for call in runtime.calls
                     )
                 )

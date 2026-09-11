@@ -10,7 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from autotrain_bench.cli import (
+from benchcore.cli import (
     _episode_exit_code,
     _initialize_agent_workspace,
     _report_cleanup_failures,
@@ -28,11 +28,11 @@ from autotrain_bench.cli import (
     command_start,
     command_worker_recover,
 )
-from autotrain_bench.config import ConfigError, TaskConfig
-from autotrain_bench.host_agent import summarize_host_agent_trace
-from autotrain_bench.runtime import DockerRuntime, RuntimeFailure
-from autotrain_bench.training_data import TrainingDataError, verify_training_data
-from autotrain_bench.results import normalize_result_report
+from benchcore.config import ConfigError, TaskConfig
+from benchcore.host_agent import summarize_host_agent_trace
+from benchcore.runtime import DockerRuntime, RuntimeFailure
+from benchcore.training_data import TrainingDataError, verify_training_data
+from benchcore.results import normalize_result_report
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -57,9 +57,7 @@ class WorkspaceSnapshotTests(unittest.TestCase):
             ]
         )
         output = io.StringIO()
-        with patch("autotrain_bench.cli.DockerRuntime") as runtime, redirect_stdout(
-            output
-        ):
+        with patch("benchcore.cli.DockerRuntime") as runtime, redirect_stdout(output):
             runtime.return_value.recover_resources.return_value = report
             self.assertEqual(command_worker_recover(args), 2)
         runtime.return_value.recover_resources.assert_called_once_with(
@@ -82,7 +80,7 @@ class WorkspaceSnapshotTests(unittest.TestCase):
                 ]
             )
             with self.subTest(value=value), patch(
-                "autotrain_bench.cli.DockerRuntime"
+                "benchcore.cli.DockerRuntime"
             ) as runtime:
                 with self.assertRaisesRegex(RuntimeFailure, "finite positive"):
                     command_worker_recover(args)
@@ -130,10 +128,8 @@ class WorkspaceSnapshotTests(unittest.TestCase):
                         *flags,
                     ]
                 )
-                with patch(
-                    "autotrain_bench.cli.TaskConfig.load", return_value=config
-                ), patch(
-                    "autotrain_bench.cli.DockerRuntime"
+                with patch("benchcore.cli.TaskConfig.load", return_value=config), patch(
+                    "benchcore.cli.DockerRuntime"
                 ) as runtime, redirect_stdout(io.StringIO()):
                     runtime.return_value.prepare.side_effect = ConfigError(
                         "reached Worker preparation"
@@ -206,9 +202,9 @@ class WorkspaceSnapshotTests(unittest.TestCase):
                             )
 
                         with patch(
-                            "autotrain_bench.cli.TaskConfig.load", return_value=config
+                            "benchcore.cli.TaskConfig.load", return_value=config
                         ), patch(
-                            "autotrain_bench.cli.DockerRuntime"
+                            "benchcore.cli.DockerRuntime"
                         ) as runtime, redirect_stdout(output):
                             runtime.return_value.configure_operator_storage.side_effect = admit
                             runtime.return_value.prepare.side_effect = ConfigError(
@@ -247,9 +243,9 @@ class WorkspaceSnapshotTests(unittest.TestCase):
                         "1048576",
                     ]
                 )
-                with patch(
-                    "autotrain_bench.cli.DockerRuntime"
-                ) as runtime, redirect_stdout(io.StringIO()):
+                with patch("benchcore.cli.DockerRuntime") as runtime, redirect_stdout(
+                    io.StringIO()
+                ):
                     runtime.return_value.configure_operator_storage.side_effect = (
                         RuntimeFailure("unbounded Worker storage")
                     )
@@ -346,10 +342,10 @@ class WorkspaceSnapshotTests(unittest.TestCase):
                         else:
                             self.assertIn("protection is disabled", notice)
 
-                with patch(
-                    "autotrain_bench.cli.TaskConfig.load", return_value=config
-                ), patch("autotrain_bench.cli.DockerRuntime") as runtime, patch(
-                    "autotrain_bench.cli.Supervisor",
+                with patch("benchcore.cli.TaskConfig.load", return_value=config), patch(
+                    "benchcore.cli.DockerRuntime"
+                ) as runtime, patch(
+                    "benchcore.cli.Supervisor",
                     side_effect=ConfigError("stop after preflight"),
                 ) as supervisor, redirect_stdout(output):
                     runtime.return_value.prepare.side_effect = check_notice
@@ -414,7 +410,7 @@ class WorkspaceSnapshotTests(unittest.TestCase):
                         else "--no-operator-research-limit",
                     ]
                 )
-                with patch("autotrain_bench.cli.DockerRuntime") as runtime:
+                with patch("benchcore.cli.DockerRuntime") as runtime:
                     with self.assertRaises(ConfigError):
                         command_start(args)
                     runtime.assert_not_called()
@@ -513,7 +509,7 @@ class WorkspaceSnapshotTests(unittest.TestCase):
                     ]
                 args = build_parser().parse_args(argv)
                 with patch(
-                    "autotrain_bench.cli.DockerRuntime", LocalRuntime
+                    "benchcore.cli.DockerRuntime", LocalRuntime
                 ), redirect_stdout(io.StringIO()):
                     self.assertEqual(command_start(args), 1)
                 state = json.loads((episode / "state.json").read_text())
@@ -541,10 +537,10 @@ class WorkspaceSnapshotTests(unittest.TestCase):
             (train / "train.json").write_bytes(b"corrupt")
             args = build_parser().parse_args(["prepare", "--task", str(TASK)])
             with patch(
-                "autotrain_bench.cli.TaskConfig.load",
+                "benchcore.cli.TaskConfig.load",
                 return_value=replace(config, train_dir=train),
             ):
-                with patch("autotrain_bench.cli.DockerRuntime") as runtime:
+                with patch("benchcore.cli.DockerRuntime") as runtime:
                     with self.assertRaises(TrainingDataError):
                         command_prepare(args)
                     runtime.assert_not_called()
@@ -575,10 +571,10 @@ class WorkspaceSnapshotTests(unittest.TestCase):
                 ]
             )
             with patch(
-                "autotrain_bench.cli.TaskConfig.load",
+                "benchcore.cli.TaskConfig.load",
                 return_value=replace(config, train_dir=train),
             ):
-                with patch("autotrain_bench.cli.DockerRuntime") as runtime:
+                with patch("benchcore.cli.DockerRuntime") as runtime:
                     with self.assertRaises(TrainingDataError):
                         command_start(args)
                     runtime.assert_not_called()
@@ -606,9 +602,9 @@ class WorkspaceSnapshotTests(unittest.TestCase):
                 ]
             )
             with patch(
-                "autotrain_bench.cli.verify_training_data", wraps=verify_training_data
-            ) as verify, patch("autotrain_bench.cli.DockerRuntime") as runtime, patch(
-                "autotrain_bench.cli.Supervisor",
+                "benchcore.cli.verify_training_data", wraps=verify_training_data
+            ) as verify, patch("benchcore.cli.DockerRuntime") as runtime, patch(
+                "benchcore.cli.Supervisor",
                 side_effect=RuntimeError("stop before task reveal"),
             ) as supervisor:
                 with self.assertRaisesRegex(RuntimeError, "stop before task reveal"):
@@ -807,7 +803,7 @@ class WorkspaceSnapshotTests(unittest.TestCase):
             ]
         )
 
-        with patch("autotrain_bench.cli.DockerRuntime") as runtime:
+        with patch("benchcore.cli.DockerRuntime") as runtime:
             with self.assertRaisesRegex(ConfigError, "outside the trusted"):
                 command_start(args)
         runtime.assert_not_called()
@@ -835,7 +831,7 @@ class WorkspaceSnapshotTests(unittest.TestCase):
             )
             runtime = DockerRuntime()
 
-            with patch("autotrain_bench.cli.DockerRuntime", return_value=runtime):
+            with patch("benchcore.cli.DockerRuntime", return_value=runtime):
                 with patch.object(runtime, "prepare"), patch.object(
                     runtime, "enable_recovery"
                 ):

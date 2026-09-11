@@ -623,7 +623,7 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
         # The public helper bundle is read-only. No Agent has started yet;
         # restore its directory permissions so a failed preflight can remove it.
         bundle = episode_dir / "public" / "agent_api"
-        for directory in (bundle / "autotrain_bench", bundle):
+        for directory in (bundle / "benchcore", bundle):
             if directory.is_dir():
                 directory.chmod(0o755)
         shutil.rmtree(episode_dir, ignore_errors=True)

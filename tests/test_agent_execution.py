@@ -3,10 +3,10 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from autotrain_bench.agent_execution import AgentExecutionEvidence
-from autotrain_bench.config import AgentConfig
-from autotrain_bench.local_agent_execution import describe_local_agent_execution
-from autotrain_bench.worker_protocol import EnforcementLevel, TrustLevel
+from benchcore.agent_execution import AgentExecutionEvidence
+from benchcore.config import AgentConfig
+from benchcore.local_agent_execution import describe_local_agent_execution
+from benchcore.worker_protocol import EnforcementLevel, TrustLevel
 
 
 class AgentExecutionEvidenceTests(unittest.TestCase):

@@ -4,15 +4,15 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from autotrain_bench.challenge import (
+from benchcore.challenge import (
     FORMAL_ARTIFACT_DIGEST_FIELDS,
     FORMAL_ARTIFACT_IDENTITY_ALGORITHMS,
     ChallengeRelease,
     ReleaseVerificationReceipt,
 )
-from autotrain_bench.config import ConfigError, TaskConfig
-from autotrain_bench.gateway_execution import GatewayArtifactIdentity
-from autotrain_bench.worker_protocol import (
+from benchcore.config import ConfigError, TaskConfig
+from benchcore.gateway_execution import GatewayArtifactIdentity
+from benchcore.worker_protocol import (
     ResourceEnvelope,
     WorkloadResolutionAcceptance,
 )

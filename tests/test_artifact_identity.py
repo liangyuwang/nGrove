@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from autotrain_bench.artifact_identity import (
+from benchcore.artifact_identity import (
     HIDDEN_BUNDLE_FILENAMES,
     HIDDEN_BUNDLE_IDENTITY_ALGORITHM,
     hidden_bundle_sha256,

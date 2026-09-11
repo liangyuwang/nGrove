@@ -51,7 +51,7 @@ The following is a constructor sketch with inputs already resolved by the
 trusted launcher, not a standalone launcher or a reference Tested Agent:
 
 ```python
-from autotrain_bench.supervisor import Supervisor
+from benchcore.supervisor import Supervisor
 
 supervisor = Supervisor(
     config=task_config,

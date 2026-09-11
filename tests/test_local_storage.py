@@ -8,9 +8,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from autotrain_bench.local_storage import LocalStorageProtection
-from autotrain_bench.runtime import DockerRuntime, RuntimeFailure
-from autotrain_bench.worker_protocol import WorkerTeardownFailure
+from benchcore.local_storage import LocalStorageProtection
+from benchcore.runtime import DockerRuntime, RuntimeFailure
+from benchcore.worker_protocol import WorkerTeardownFailure
 
 
 @contextmanager
@@ -133,7 +133,7 @@ class StorageProtectionTests(unittest.TestCase):
             root = Path(directory).resolve()
             runtime = DockerRuntime(docker_binary="docker")
             with bounded_filesystem(root), patch(
-                "autotrain_bench.runtime.tempfile.mkdtemp",
+                "benchcore.runtime.tempfile.mkdtemp",
                 side_effect=PermissionError("read only"),
             ), patch.object(runtime, "_run") as run:
                 with self.assertRaisesRegex(RuntimeFailure, "cannot write"):

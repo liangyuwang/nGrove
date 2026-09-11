@@ -8,12 +8,12 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from autotrain_bench.config import TrainingResources
-from autotrain_bench.conformance import (
+from benchcore.config import TrainingResources
+from benchcore.conformance import (
     EVALUATION_PROBE_VERSION,
     probe_worker_evaluation,
 )
-from autotrain_bench.worker_protocol import (
+from benchcore.worker_protocol import (
     CandidateEvaluationResult,
     EnforcementLevel,
     EvaluationResourceFailure,
@@ -331,7 +331,7 @@ class EvaluationProbeTests(unittest.TestCase):
             return invoke
 
         with (
-            patch("autotrain_bench.conformance.time.monotonic", clock),
+            patch("benchcore.conformance.time.monotonic", clock),
             patch.object(
                 self.worker,
                 "resolve_workload",
@@ -361,7 +361,7 @@ class EvaluationProbeTests(unittest.TestCase):
             clock.now += 2
             return result
 
-        with patch("autotrain_bench.conformance.time.monotonic", clock), patch.object(
+        with patch("benchcore.conformance.time.monotonic", clock), patch.object(
             self.worker, "resolve_workload", side_effect=resolve
         ):
             report = self.probe(timeout_seconds=3)
@@ -386,7 +386,7 @@ class EvaluationProbeTests(unittest.TestCase):
                         clock.now += 10
 
             with self.subTest(late_rejection=late_rejection), patch(
-                "autotrain_bench.conformance.time.monotonic", clock
+                "benchcore.conformance.time.monotonic", clock
             ), patch.object(self.worker, "evaluate_candidate", side_effect=evaluate):
                 report = self.probe(timeout_seconds=3)
             self.assert_failed(report, "operation_deadline_exceeded")
@@ -414,7 +414,7 @@ class EvaluationProbeTests(unittest.TestCase):
             raise WorkerTeardownFailure("workload still present")
 
         with (
-            patch("autotrain_bench.conformance.time.monotonic", clock),
+            patch("benchcore.conformance.time.monotonic", clock),
             patch.object(self.worker, "evaluate_candidate", side_effect=evaluate),
         ):
             report = self.probe(timeout_seconds=3)

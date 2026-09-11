@@ -37,7 +37,7 @@ def _command(fd: int) -> list[str]:
         sys.executable,
         "-c",
         "import sys; sys.path.insert(0, sys.argv[1]); "
-        "from autotrain_bench.local_recovery import worker_main; "
+        "from benchcore.local_recovery import worker_main; "
         "worker_main(int(sys.argv[2]))",
         str(Path(__file__).parent.parent),
         str(fd),

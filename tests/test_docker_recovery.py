@@ -13,8 +13,8 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-from autotrain_bench.docker_recovery import DockerRecovery, OWNER_LABEL, RESOURCE_LABEL
-from autotrain_bench.worker_protocol import WorkerFailure
+from benchcore.docker_recovery import DockerRecovery, OWNER_LABEL, RESOURCE_LABEL
+from benchcore.worker_protocol import WorkerFailure
 
 
 class FakeDocker:
@@ -178,7 +178,7 @@ class DockerRecoveryTests(unittest.TestCase):
             return result
 
         with patch(
-            "autotrain_bench.docker_recovery.time.monotonic", side_effect=lambda: now[0]
+            "benchcore.docker_recovery.time.monotonic", side_effect=lambda: now[0]
         ):
             report = recovered.recover(slow_run, timeout_seconds=4)
         self.assertTrue(report["deadline_exceeded"])
@@ -220,7 +220,7 @@ class DockerRecoveryTests(unittest.TestCase):
 
         try:
             with patch(
-                "autotrain_bench.docker_recovery.time.monotonic",
+                "benchcore.docker_recovery.time.monotonic",
                 side_effect=lambda: now[0],
             ):
                 report = recovered.recover(run, timeout_seconds=timeout_seconds)
@@ -375,7 +375,7 @@ class DockerRecoveryTests(unittest.TestCase):
             raise WorkerFailure("runtime command timed out")
 
         with patch(
-            "autotrain_bench.docker_recovery.time.monotonic", side_effect=lambda: now[0]
+            "benchcore.docker_recovery.time.monotonic", side_effect=lambda: now[0]
         ):
             report = recovered.recover(unavailable, timeout_seconds=45)
         self.assertEqual(timeouts, [20, 20, 20, 5])
@@ -401,7 +401,7 @@ class DockerRecoveryTests(unittest.TestCase):
             return self.backend.run(args, **kwargs)
 
         with patch(
-            "autotrain_bench.docker_recovery.time.monotonic", side_effect=lambda: now[0]
+            "benchcore.docker_recovery.time.monotonic", side_effect=lambda: now[0]
         ):
             report = self.journal.recover(late_backend, timeout_seconds=1)
         self.assertEqual(len(calls), 1)
@@ -426,7 +426,7 @@ class DockerRecoveryTests(unittest.TestCase):
 
         self.backend.calls.clear()
         with patch(
-            "autotrain_bench.docker_recovery.time.monotonic", side_effect=lambda: now[0]
+            "benchcore.docker_recovery.time.monotonic", side_effect=lambda: now[0]
         ), patch.object(recovered, "_save", slow_save):
             report = recovered.recover(self.backend.run, timeout_seconds=1)
         self.assertTrue(report["deadline_exceeded"])
@@ -447,8 +447,8 @@ class DockerRecoveryTests(unittest.TestCase):
             now[0] += 2
 
         with patch(
-            "autotrain_bench.docker_recovery.time.monotonic", side_effect=lambda: now[0]
-        ), patch("autotrain_bench.docker_recovery.shutil.rmtree", slow_remove):
+            "benchcore.docker_recovery.time.monotonic", side_effect=lambda: now[0]
+        ), patch("benchcore.docker_recovery.shutil.rmtree", slow_remove):
             report = recovered.recover(self.backend.run, timeout_seconds=1)
         self.assertTrue(report["deadline_exceeded"])
         self.assertFalse(report["cleanup_complete"])
@@ -468,8 +468,8 @@ class DockerRecoveryTests(unittest.TestCase):
         self.assertEqual(self.backend.calls, [])
 
     def test_stuck_runtime_subprocess_obeys_shared_recovery_deadline(self):
-        from autotrain_bench.local_recovery import _perform
-        from autotrain_bench.runtime import DockerRuntime
+        from benchcore.local_recovery import _perform
+        from benchcore.runtime import DockerRuntime
 
         self.create()
         private = self.journal.private_directory("hidden-")
@@ -486,8 +486,8 @@ class DockerRecoveryTests(unittest.TestCase):
 
         runtime = DockerRuntime(docker_binary=sys.executable)
         started = time.monotonic()
-        with patch("autotrain_bench.runtime.subprocess.run", stuck_command), patch(
-            "autotrain_bench.runtime.DockerRuntime", return_value=runtime
+        with patch("benchcore.runtime.subprocess.run", stuck_command), patch(
+            "benchcore.runtime.DockerRuntime", return_value=runtime
         ):
             report = _perform(
                 {
@@ -673,7 +673,7 @@ class DockerRecoveryTests(unittest.TestCase):
         path = self.root / "worker/resources.json"
         saved = json.loads(path.read_text())
         with patch(
-            "autotrain_bench.docker_recovery.MAX_JOURNAL_BYTES",
+            "benchcore.docker_recovery.MAX_JOURNAL_BYTES",
             path.stat().st_size + 10,
         ):
             with self.assertRaisesRegex(WorkerFailure, "capacity reached"):
@@ -703,7 +703,7 @@ class DockerRecoveryTests(unittest.TestCase):
                     "identity": None,
                 }
                 limit = len((json.dumps(proposed, sort_keys=True) + "\n").encode())
-                with patch("autotrain_bench.docker_recovery.MAX_JOURNAL_BYTES", limit):
+                with patch("benchcore.docker_recovery.MAX_JOURNAL_BYTES", limit):
                     with self.assertRaisesRegex(WorkerFailure, "capacity reached"):
                         self.create(kind)
                 self.assertEqual(self.journal.state, saved)
@@ -726,11 +726,11 @@ class DockerRecoveryTests(unittest.TestCase):
             "identity": "b" * 64,
         }
         limit = len((json.dumps(final, sort_keys=True) + "\n").encode())
-        with patch("autotrain_bench.docker_recovery.MAX_JOURNAL_BYTES", limit - 1):
+        with patch("benchcore.docker_recovery.MAX_JOURNAL_BYTES", limit - 1):
             with self.assertRaisesRegex(WorkerFailure, "capacity reached"):
                 self.create()
             self.assertFalse(self.backend.objects)
-        with patch("autotrain_bench.docker_recovery.MAX_JOURNAL_BYTES", limit):
+        with patch("benchcore.docker_recovery.MAX_JOURNAL_BYTES", limit):
             self.create()
             recovered = self.reopen()
             self.assertTrue(recovered.recover(self.backend.run)["cleanup_complete"])
@@ -765,7 +765,7 @@ class DockerRecoveryTests(unittest.TestCase):
             raise WorkerFailure("creation acknowledgement lost")
 
         self.backend.after_create = lose_acknowledgement
-        with patch("autotrain_bench.docker_recovery.MAX_JOURNAL_BYTES", limit):
+        with patch("benchcore.docker_recovery.MAX_JOURNAL_BYTES", limit):
             for kind, name in pending:
                 with self.assertRaisesRegex(WorkerFailure, "acknowledgement lost"):
                     self.create(kind, name)
@@ -887,7 +887,7 @@ class DockerRecoveryTests(unittest.TestCase):
             return real_fsync(fd)
 
         with patch(
-            "autotrain_bench.docker_recovery.os.fsync", side_effect=fail_directory_sync
+            "benchcore.docker_recovery.os.fsync", side_effect=fail_directory_sync
         ):
             with self.assertRaisesRegex(WorkerFailure, "cannot persist"):
                 self.create(name="training")

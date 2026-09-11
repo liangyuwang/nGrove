@@ -4,7 +4,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from autotrain_bench.config import (
+from benchcore.config import (
     AGENT_PROTOCOL_VERSION,
     AgentConfig,
     ConfigError,
@@ -227,7 +227,7 @@ class ConfigTests(unittest.TestCase):
         )
         self.assertEqual(
             boundary["public_helper_api"]["module"],
-            "autotrain_bench.candidate_protocol",
+            "benchcore.candidate_protocol",
         )
         self.assertEqual(boundary["prediction_storage"]["artifact_max_entries"], 2)
         self.assertEqual(boundary["prediction_storage"]["max_inodes"], 128)

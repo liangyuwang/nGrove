@@ -9,28 +9,28 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from autotrain_bench.artifact_identity import hidden_bundle_sha256
-from autotrain_bench.config import (
+from benchcore.artifact_identity import hidden_bundle_sha256
+from benchcore.config import (
     AgentConfig,
     InferenceConfig,
     TaskConfig,
     TrainingResources,
 )
-from autotrain_bench.host_agent import (
+from benchcore.host_agent import (
     HostAgentProcess,
     HostAgentStartupFailure,
     _BoundedLogSink,
     start_host_agent_process,
     summarize_host_agent_trace,
 )
-from autotrain_bench.runtime import (
+from benchcore.runtime import (
     DockerRuntime,
     RuntimeFailure,
     MAX_RUNTIME_STREAM_BYTES,
     _EvaluationResources,
     _capture_diagnostic_command,
 )
-from autotrain_bench.worker_protocol import (
+from benchcore.worker_protocol import (
     CANDIDATE_PREDICTION_ARTIFACT_LIFECYCLE,
     CANDIDATE_PREDICTION_STORAGE_QUOTA,
     DEADLINE_TERMINATION,
@@ -71,7 +71,7 @@ def write_hidden_bundle(path: Path, *, marker: str = "original") -> Path:
 
 
 def publish_agent_api(public_task: Path) -> None:
-    package = public_task.parent / "agent_api/autotrain_bench"
+    package = public_task.parent / "agent_api/benchcore"
     package.mkdir(parents=True)
     (package / "client.py").write_text("class Client: pass\n", encoding="utf-8")
     (package / "candidate_protocol.py").write_text(
@@ -406,7 +406,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             with patch.object(runtime, "_require_docker"), patch.object(
                 runtime, "_run", side_effect=run
             ), patch(
-                "autotrain_bench.runtime._capture_diagnostic_command",
+                "benchcore.runtime._capture_diagnostic_command",
                 side_effect=capture,
             ):
                 result = runtime._candidate_failure_diagnostics("candidate")
@@ -510,7 +510,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                     )
                     if failure == "capture"
                     else patch(
-                        "autotrain_bench.runtime._write_private_diagnostic",
+                        "benchcore.runtime._write_private_diagnostic",
                         side_effect=OSError("disk full"),
                     )
                 )
@@ -566,9 +566,9 @@ class RuntimeBoundaryTests(unittest.TestCase):
             )
             runtime = GpuRuntime()
             with patch(
-                "autotrain_bench.runtime.shutil.which", return_value="nvidia-smi"
+                "benchcore.runtime.shutil.which", return_value="nvidia-smi"
             ), patch(
-                "autotrain_bench.runtime.subprocess.run",
+                "benchcore.runtime.subprocess.run",
                 return_value=gpu_inventory(
                     f"{GPU_ONE}, NVIDIA H100 80GB HBM3, 81559, Disabled"
                 ),
@@ -916,7 +916,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
         runtime = DockerRuntime(docker_binary="docker")
 
         with patch(
-            "autotrain_bench.runtime.subprocess.run",
+            "benchcore.runtime.subprocess.run",
             side_effect=OSError("runtime executable disappeared"),
         ):
             with self.assertRaisesRegex(RuntimeFailure, "failed to execute"):
@@ -1049,11 +1049,9 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 created.append(process)
                 return process
 
-            with patch(
-                "autotrain_bench.host_agent.subprocess.Popen", side_effect=launch
-            ):
+            with patch("benchcore.host_agent.subprocess.Popen", side_effect=launch):
                 with patch(
-                    "autotrain_bench.host_agent.threading.Thread.start",
+                    "benchcore.host_agent.threading.Thread.start",
                     side_effect=RuntimeError("thread startup failed"),
                 ):
                     with self.assertRaises(HostAgentStartupFailure) as raised:
@@ -1092,7 +1090,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             stdout_sink = _BoundedLogSink(root / "stdout.log")
 
             with patch(
-                "autotrain_bench.host_agent._BoundedLogSink",
+                "benchcore.host_agent._BoundedLogSink",
                 side_effect=[stdout_sink, OSError("stderr log unavailable")],
             ):
                 with self.assertRaisesRegex(OSError, "stderr log unavailable"):
@@ -1132,11 +1130,11 @@ class RuntimeBoundaryTests(unittest.TestCase):
             termination_error = subprocess.TimeoutExpired("host Agent", 3)
 
             with patch(
-                "autotrain_bench.host_agent.subprocess.Popen",
+                "benchcore.host_agent.subprocess.Popen",
                 return_value=process,
             ):
                 with patch(
-                    "autotrain_bench.host_agent.threading.Thread.start",
+                    "benchcore.host_agent.threading.Thread.start",
                     side_effect=RuntimeError("thread startup failed"),
                 ):
                     with patch.object(
@@ -1190,7 +1188,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 _stderr_sink=stderr_sink,
             )
 
-            with patch("autotrain_bench.host_agent.os.killpg") as killpg:
+            with patch("benchcore.host_agent.os.killpg") as killpg:
                 with self.assertRaises(subprocess.TimeoutExpired):
                     handle.stop(timeout_seconds=0.01)
 
@@ -1216,10 +1214,8 @@ class RuntimeBoundaryTests(unittest.TestCase):
             "",
         )
         runtime = DockerRuntime(docker_binary="docker")
-        with patch("autotrain_bench.runtime.shutil.which", return_value="nvidia-smi"):
-            with patch(
-                "autotrain_bench.runtime.subprocess.run", return_value=inventory
-            ):
+        with patch("benchcore.runtime.shutil.which", return_value="nvidia-smi"):
+            with patch("benchcore.runtime.subprocess.run", return_value=inventory):
                 runtime.validate_hardware(resources)
 
         undersized = subprocess.CompletedProcess(
@@ -1229,10 +1225,8 @@ class RuntimeBoundaryTests(unittest.TestCase):
             f"{GPU_TWO}, NVIDIA H100 PCIe, 65536, Disabled\n",
             "",
         )
-        with patch("autotrain_bench.runtime.shutil.which", return_value="nvidia-smi"):
-            with patch(
-                "autotrain_bench.runtime.subprocess.run", return_value=undersized
-            ):
+        with patch("benchcore.runtime.shutil.which", return_value="nvidia-smi"):
+            with patch("benchcore.runtime.subprocess.run", return_value=undersized):
                 with self.assertRaisesRegex(RuntimeFailure, "at least 80000 MiB"):
                     runtime.validate_hardware(resources)
 
@@ -1261,7 +1255,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 self.returncode = -9
 
         with patch(
-            "autotrain_bench.runtime.subprocess.Popen",
+            "benchcore.runtime.subprocess.Popen",
             return_value=TimedOutProcess(),
         ):
             with patch.object(runtime, "stop_container") as stop_container:
@@ -1305,7 +1299,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 self.returncode = -9
 
         process = TimedOutProcess()
-        with patch("autotrain_bench.runtime.subprocess.Popen", return_value=process):
+        with patch("benchcore.runtime.subprocess.Popen", return_value=process):
             with patch.object(
                 runtime,
                 "stop_container",
@@ -1341,7 +1335,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
 
         runtime = DockerRuntime(docker_binary="docker")
         with patch(
-            "autotrain_bench.runtime.subprocess.Popen",
+            "benchcore.runtime.subprocess.Popen",
             return_value=CompletedProcess(),
         ):
             result = runtime.exec_training(
@@ -1413,7 +1407,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             trace = Path(directory) / "agent.stdout.log"
             records = [
                 {
-                    "type": "autotrain_bench.agent_metadata",
+                    "type": "benchcore.agent_metadata",
                     "tool": "codex",
                     "tool_version": "codex-cli 1.2.3",
                     "model": "test-model",
@@ -1449,13 +1443,13 @@ class RuntimeBoundaryTests(unittest.TestCase):
             trace = Path(directory) / "agent.stdout.log"
             records = [
                 {
-                    "type": "autotrain_bench.agent_metadata",
+                    "type": "benchcore.agent_metadata",
                     "tool": "example-cli",
                     "tool_version": "4.2",
                     "model": "example-model",
                 },
                 {
-                    "type": "autotrain_bench.agent_usage",
+                    "type": "benchcore.agent_usage",
                     "usage": {
                         "input_tokens": 100,
                         "cached_input_tokens": 25,
@@ -1526,7 +1520,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             )
             command = "\n".join(runtime.calls[0])
             self.assertIn("dst=/opt/agent-api,readonly", command)
-            self.assertNotIn("dst=/opt/autotrain_bench", command)
+            self.assertNotIn("dst=/opt/benchcore", command)
             self.assertIn("dst=/control/inbox", command)
             self.assertIn("dst=/control/outbox", command)
             self.assertNotIn("dst=/control\n", command)
@@ -1629,7 +1623,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 "OPENAI_BASE_URL=http://inference-gateway:8765/v1",
                 serialized_agent,
             )
-            self.assertNotIn("autotrain_bench.agent_entrypoint", serialized_agent)
+            self.assertNotIn("benchcore.agent_entrypoint", serialized_agent)
             self.assertEqual(agent_command[-2:], ["node", "/workspace/agent.js"])
             for command in (agent_command, training_command, gateway_command):
                 self.assertEqual(command[command.index("--user") + 1], "12345:23456")
@@ -1709,9 +1703,9 @@ class RuntimeBoundaryTests(unittest.TestCase):
             publish_agent_api(public_task)
             runtime = CapturingDockerRuntime()
             with patch(
-                "autotrain_bench.runtime.shutil.which", return_value="nvidia-smi"
+                "benchcore.runtime.shutil.which", return_value="nvidia-smi"
             ), patch(
-                "autotrain_bench.runtime.subprocess.run",
+                "benchcore.runtime.subprocess.run",
                 return_value=gpu_inventory(
                     f"{GPU_ONE}, NVIDIA H100, 81559, Disabled",
                     f"{GPU_TWO}, NVIDIA H100, 81559, Disabled",
@@ -1744,17 +1738,17 @@ class RuntimeBoundaryTests(unittest.TestCase):
             resources = TrainingResources(nvidia_gpu_count=1)
             runtime = CapturingDockerRuntime(monotonic=lambda: 100.0)
             with patch(
-                "autotrain_bench.runtime.shutil.which", return_value="nvidia-smi"
+                "benchcore.runtime.shutil.which", return_value="nvidia-smi"
             ), patch(
-                "autotrain_bench.runtime.subprocess.run",
+                "benchcore.runtime.subprocess.run",
                 return_value=gpu_inventory(f"{GPU_ONE}, NVIDIA H100, 81559, Disabled"),
             ):
                 runtime.validate_hardware(resources)
             output = Path(directory) / "output"
             with patch(
-                "autotrain_bench.runtime.shutil.which", return_value="nvidia-smi"
+                "benchcore.runtime.shutil.which", return_value="nvidia-smi"
             ), patch(
-                "autotrain_bench.runtime.subprocess.run",
+                "benchcore.runtime.subprocess.run",
                 return_value=gpu_inventory(f"{GPU_ONE}, NVIDIA H100, 81559, Disabled"),
             ), self.assertRaises(RuntimeFailure):
                 runtime.run_evaluator(
@@ -1785,7 +1779,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             )
             self.assertIn("dst=/candidate,readonly", "\n".join(candidate))
             self.assertIn("dst=/opt/candidate-api,readonly", "\n".join(candidate))
-            self.assertNotIn(str(ROOT / "autotrain_bench"), "\n".join(candidate))
+            self.assertNotIn(str(ROOT / "benchcore"), "\n".join(candidate))
             self.assertNotIn(str(config.analysis_path), "\n".join(candidate))
             self.assertIn(
                 "dst=/eval-input/contexts.json,readonly", "\n".join(candidate)
@@ -2236,10 +2230,8 @@ class RuntimeBoundaryTests(unittest.TestCase):
             "",
         )
         runtime = CapturingDockerRuntime()
-        with patch("autotrain_bench.runtime.shutil.which", return_value="nvidia-smi"):
-            with patch(
-                "autotrain_bench.runtime.subprocess.run", return_value=inventory
-            ):
+        with patch("benchcore.runtime.shutil.which", return_value="nvidia-smi"):
+            with patch("benchcore.runtime.subprocess.run", return_value=inventory):
                 manifest = runtime.environment_manifest(
                     TaskConfig.load(TASK), resources=TrainingResources()
                 )
@@ -2250,7 +2242,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
 
     def test_an_uninspectable_host_is_not_reported_as_having_no_accelerator(self):
         runtime = CapturingDockerRuntime()
-        with patch("autotrain_bench.runtime.shutil.which", return_value=None):
+        with patch("benchcore.runtime.shutil.which", return_value=None):
             manifest = runtime.environment_manifest(
                 TaskConfig.load(TASK), resources=TrainingResources()
             )
@@ -2264,15 +2256,15 @@ class RuntimeBoundaryTests(unittest.TestCase):
         failure = subprocess.CompletedProcess(["nvidia-smi"], 9, "", "driver error")
         runtime = CapturingDockerRuntime()
 
-        with patch("autotrain_bench.runtime.shutil.which", return_value="nvidia-smi"):
-            with patch("autotrain_bench.runtime.subprocess.run", return_value=failure):
+        with patch("benchcore.runtime.shutil.which", return_value="nvidia-smi"):
+            with patch("benchcore.runtime.subprocess.run", return_value=failure):
                 manifest = runtime.environment_manifest(
                     TaskConfig.load(TASK), resources=TrainingResources()
                 )
         self.assertEqual(manifest["gpu_inventory"], "unavailable")
 
-        with patch("autotrain_bench.runtime.shutil.which", return_value="nvidia-smi"):
-            with patch("autotrain_bench.runtime.subprocess.run", return_value=failure):
+        with patch("benchcore.runtime.shutil.which", return_value="nvidia-smi"):
+            with patch("benchcore.runtime.subprocess.run", return_value=failure):
                 with self.assertRaisesRegex(RuntimeFailure, "driver error"):
                     runtime.environment_manifest(
                         TaskConfig.load(TASK),

@@ -30,7 +30,7 @@ def publish_agent_api_bundle(
         if source_package is not None
         else Path(__file__).resolve().parent
     )
-    package = destination / "autotrain_bench"
+    package = destination / "benchcore"
     package.mkdir(parents=True, exist_ok=False)
     for source_name, destination_name in PUBLIC_AGENT_API_FILES.items():
         source_path = source / source_name

@@ -16,50 +16,50 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from autotrain_bench.agent_control import AgentControlStepResult
-from autotrain_bench.agent_api_bundle import publish_agent_api_bundle
-from autotrain_bench.challenge import (
+from benchcore.agent_control import AgentControlStepResult
+from benchcore.agent_api_bundle import publish_agent_api_bundle
+from benchcore.challenge import (
     FORMAL_ARTIFACT_DIGEST_FIELDS,
     FORMAL_ARTIFACT_IDENTITY_ALGORITHMS,
     ChallengeRelease,
     ReleaseVerificationReceipt,
 )
-from autotrain_bench.artifact_identity import (
+from benchcore.artifact_identity import (
     HIDDEN_BUNDLE_IDENTITY_ALGORITHM,
     hidden_bundle_sha256,
 )
-from autotrain_bench.config import (
+from benchcore.config import (
     AgentConfig,
     InferenceConfig,
     TaskConfig,
     TrainingResources,
 )
-from autotrain_bench.client import Client
-from autotrain_bench.local_mailbox import (
+from benchcore.client import Client
+from benchcore.local_mailbox import (
     MAX_MAILBOX_RESPONSE_BYTES,
     LocalFileMailbox,
     write_untrusted_response,
 )
-from autotrain_bench.local_agent_execution import describe_local_agent_execution
-from autotrain_bench.gateway_execution import (
+from benchcore.local_agent_execution import describe_local_agent_execution
+from benchcore.gateway_execution import (
     GatewayArtifactIdentity,
     GatewayExecutionReceipt,
 )
-from autotrain_bench.local_run_guard import LocalResearchGuard
-from autotrain_bench.results import (
+from benchcore.local_run_guard import LocalResearchGuard
+from benchcore.results import (
     RESULT_SCHEMA_VERSION,
     ResultSchemaError,
     normalize_result_report,
 )
-from autotrain_bench.training_data import verify_training_data, write_training_manifest
-from autotrain_bench.supervisor import (
+from benchcore.training_data import verify_training_data, write_training_manifest
+from benchcore.supervisor import (
     MAX_COMMAND_STREAM_BYTES,
     MAX_INCUMBENT_DECLARATIONS,
     ProtocolError,
     Supervisor,
     _core_identity,
 )
-from autotrain_bench.worker_protocol import (
+from benchcore.worker_protocol import (
     BASELINE_REQUIREMENTS,
     CANDIDATE_PREDICTION_STORAGE_QUOTA,
     CONFORMANCE_RECEIPT_VERSION,
@@ -455,7 +455,7 @@ class SupervisorTests(unittest.TestCase):
             test_path=self.episode.parent / "absent-test",
         )
         with patch(
-            "autotrain_bench.training_data.verify_training_data",
+            "benchcore.training_data.verify_training_data",
             side_effect=AssertionError("Core must not scan TRAIN"),
         ):
             supervisor = self.supervisor(
@@ -876,7 +876,7 @@ class SupervisorTests(unittest.TestCase):
             inference_gateway_artifact=gateway_artifact,
         )
         with patch(
-            "autotrain_bench.supervisor._core_identity",
+            "benchcore.supervisor._core_identity",
             return_value={"revision": core_revision, "dirty": False},
         ):
             supervisor = self.supervisor(
@@ -1352,7 +1352,7 @@ class SupervisorTests(unittest.TestCase):
             passed=True,
         )
         with patch(
-            "autotrain_bench.supervisor._core_identity",
+            "benchcore.supervisor._core_identity",
             return_value={"revision": "d" * 40, "dirty": True},
         ):
             supervisor = self.supervisor(
@@ -1399,9 +1399,7 @@ class SupervisorTests(unittest.TestCase):
             subprocess.CompletedProcess([], 0, revision + "\n", ""),
             subprocess.CompletedProcess([], 0, " M changed.py\n", ""),
         ]
-        with patch(
-            "autotrain_bench.supervisor.subprocess.run", side_effect=results
-        ) as run:
+        with patch("benchcore.supervisor.subprocess.run", side_effect=results) as run:
             first = _core_identity()
             second = _core_identity()
 
@@ -1423,7 +1421,7 @@ class SupervisorTests(unittest.TestCase):
             {
                 path.name
                 for path in (
-                    self.worker.research_tasks[0].public_api_dir / "autotrain_bench"
+                    self.worker.research_tasks[0].public_api_dir / "benchcore"
                 ).iterdir()
             },
             {
@@ -1436,7 +1434,7 @@ class SupervisorTests(unittest.TestCase):
         environment = os.environ.copy()
         environment["PYTHONPATH"] = str(self.worker.research_tasks[0].public_api_dir)
         smoke = subprocess.run(
-            [sys.executable, "-m", "autotrain_bench.cli", "agent", "--help"],
+            [sys.executable, "-m", "benchcore.cli", "agent", "--help"],
             cwd=self.workspace,
             env=environment,
             check=False,
@@ -2237,7 +2235,7 @@ class SupervisorTests(unittest.TestCase):
         private_detail = "/trusted/episode/lease directory is busy"
 
         with patch(
-            "autotrain_bench.supervisor.shutil.rmtree",
+            "benchcore.supervisor.shutil.rmtree",
             side_effect=OSError(private_detail),
         ):
             with self.assertRaises(ProtocolError) as caught:
@@ -3265,7 +3263,7 @@ class SupervisorTests(unittest.TestCase):
         (rejected / "nested").write_text("untrusted", encoding="utf-8")
 
         with patch(
-            "autotrain_bench.local_mailbox.shutil.rmtree",
+            "benchcore.local_mailbox.shutil.rmtree",
             side_effect=OSError("simulated cross-uid cleanup failure"),
         ):
             self.assertFalse(supervisor.cleanup_agent_control())
@@ -3594,7 +3592,7 @@ class SupervisorTests(unittest.TestCase):
     def test_mailbox_response_has_a_portable_non_dir_fd_path(self):
         self.supervisor()
         with patch(
-            "autotrain_bench.local_mailbox.directory_fd_operations_available",
+            "benchcore.local_mailbox.directory_fd_operations_available",
             return_value=False,
         ):
             write_untrusted_response(

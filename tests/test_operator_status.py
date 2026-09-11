@@ -8,8 +8,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from autotrain_bench.cli import build_parser, command_report
-from autotrain_bench.operator_status import format_operator_status, read_operator_status
+from benchcore.cli import build_parser, command_report
+from benchcore.operator_status import format_operator_status, read_operator_status
 from tests.test_results import _finalized
 
 
@@ -310,9 +310,7 @@ class OperatorStatusTests(unittest.TestCase):
         def at_fixed_time(*args, **kwargs):
             return read_operator_status(*args, now=NOW, **kwargs)
 
-        with patch(
-            "autotrain_bench.cli.read_operator_status", side_effect=at_fixed_time
-        ):
+        with patch("benchcore.cli.read_operator_status", side_effect=at_fixed_time):
             with redirect_stdout(io.StringIO()) as output:
                 args.function(args)
         view = json.loads(output.getvalue())

@@ -140,7 +140,7 @@ The Python package itself remains `0.0.0` while unreleased.
 
 Docker is the bundled v0 compatibility implementation, not a general platform
 abstraction. The benchmark Supervisor now depends on the semantic
-`autotrain_bench.worker_protocol` boundary: it asks a Worker to start, execute,
+`benchcore.worker_protocol` boundary: it asks a Worker to start, execute,
 inspect, and terminate a lease or evaluate a Candidate without referring to
 containers, scheduler jobs, Pods, or platform networks. Worker capabilities,
 deployment trust, and conformance are recorded independently, and there is no
@@ -302,7 +302,7 @@ workspace and with stdin disconnected. It receives
 `AUTOTRAIN_BENCH_CONTROL_DIR`; it must use the `autotrain-bench agent ...`
 mailbox commands for benchmark control and run without further user input. A
 custom wrapper may reuse the tool-independent prompt in
-`autotrain_bench.agent_prompt.HOST_CLI_PROMPT`.
+`benchcore.agent_prompt.HOST_CLI_PROMPT`.
 
 The supplied prompt describes the evaluation objective, allowed interfaces, and
 episode lifecycle. Research methods, experiment scheduling, status polling, and
@@ -319,13 +319,13 @@ Codex CLI installation to be used without an API key. After `codex login status`
 confirms an existing login, run the TinyStories Track A with a fixed Codex model:
 
 ```bash
-python3 -m autotrain_bench.cli start \
+python3 -m benchcore.cli start \
   --challenge dev_tasks/smoke_lm/challenge.json \
   --track-config smoke-a-5m \
   --runtime-profile cpu-local \
   --episodes-root /path/to/autotrain-bench-runs/episodes \
   --agent-runner host_cli \
-  --agent-command "python3 -m autotrain_bench.cli_adapters.codex --model YOUR_CODEX_MODEL --reasoning-effort high"
+  --agent-command "python3 -m benchcore.cli_adapters.codex --model YOUR_CODEX_MODEL --reasoning-effort high"
 ```
 
 The generic host runner captures stdout/stderr and enforces the same episode
@@ -353,8 +353,8 @@ JSON to stdout. The runner recognizes these tool-independent records (additional
 fields are allowed):
 
 ```json
-{"type":"autotrain_bench.agent_metadata","tool":"my-cli","tool_version":"1.0","model":"model-id","reasoning_effort":"high"}
-{"type":"autotrain_bench.agent_usage","usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":30,"reasoning_output_tokens":5},"usage_complete":true}
+{"type":"benchcore.agent_metadata","tool":"my-cli","tool_version":"1.0","model":"model-id","reasoning_effort":"high"}
+{"type":"benchcore.agent_usage","usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":30,"reasoning_output_tokens":5},"usage_complete":true}
 ```
 
 Without an adapter or these records, the episode itself still runs normally;
@@ -441,12 +441,12 @@ images continue to run their registered entrypoint unchanged.
 The Agent can use the benchmark package only as the control plane for training:
 
 ```bash
-python -m autotrain_bench.cli agent status
-python -m autotrain_bench.cli agent lease-start
-python -m autotrain_bench.cli agent lease-exec -- python /workspace/train.py
-python -m autotrain_bench.cli agent lease-commit /output/candidate
-python -m autotrain_bench.cli agent declare-incumbent sha256:<candidate-hash>
-python -m autotrain_bench.cli agent finish
+python -m benchcore.cli agent status
+python -m benchcore.cli agent lease-start
+python -m benchcore.cli agent lease-exec -- python /workspace/train.py
+python -m benchcore.cli agent lease-commit /output/candidate
+python -m benchcore.cli agent declare-incumbent sha256:<candidate-hash>
+python -m benchcore.cli agent finish
 ```
 
 The public task manifest at `$AUTOTRAIN_BENCH_TASK` declares the Agent-facing
@@ -717,7 +717,7 @@ Worker Protocol v15, but does not change development trust or formal eligibility
 See [Worker prediction storage](worker-protocol.md) for memory/swap needs,
 deployment support, cleanup limits and the v14 compatibility break.
 
-The Agent Container receives a generated, minimal `autotrain_bench.client`
+The Agent Container receives a generated, minimal `benchcore.client`
 package rather than the Core source tree. Its mailbox inbox and outbox are
 mounted as separate directory roots, so it cannot replace the shared control
 parent. Training Containers receive TRAIN, the participant workspace, scratch,

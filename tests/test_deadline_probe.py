@@ -7,13 +7,13 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from autotrain_bench.config import TrainingResources
-from autotrain_bench.deadline_probe import (
+from benchcore.config import TrainingResources
+from benchcore.deadline_probe import (
     LEASE_DEADLINE_PROBE_VERSION,
     LeaseDeadlineObservation,
     probe_worker_lease_deadline,
 )
-from autotrain_bench.worker_protocol import (
+from benchcore.worker_protocol import (
     LeaseState,
     ResearchTaskSpec,
     ResourceEnvelope,
@@ -140,8 +140,8 @@ class DeadlineProbeTests(unittest.TestCase):
             poll_interval_seconds=0.25,
         )
         inputs.update(overrides)
-        with patch("autotrain_bench.deadline_probe.time.monotonic", self.clock), patch(
-            "autotrain_bench.deadline_probe.time.sleep", self.clock.advance
+        with patch("benchcore.deadline_probe.time.monotonic", self.clock), patch(
+            "benchcore.deadline_probe.time.sleep", self.clock.advance
         ):
             return probe_worker_lease_deadline(self.worker, **inputs)
 

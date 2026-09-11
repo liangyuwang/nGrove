@@ -489,7 +489,7 @@ def supervise_start(
         lambda fd: [
             sys.executable,
             "-m",
-            "autotrain_bench.local_watchdog",
+            "benchcore.local_watchdog",
             str(fd),
             *argv,
         ],
@@ -538,6 +538,6 @@ def worker_main() -> None:
 
 if __name__ == "__main__":
     # Use the canonical module instance also imported by cli/runtime.
-    from autotrain_bench.local_watchdog import worker_main
+    from benchcore.local_watchdog import worker_main
 
     worker_main()

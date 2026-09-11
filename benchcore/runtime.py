@@ -1183,7 +1183,7 @@ class DockerRuntime:
         if not agent.image:  # guarded by AgentConfig.validate
             raise RuntimeFailure("container runner has no Agent image")
         agent_api_dir = public_task_path.parent / "agent_api"
-        if not (agent_api_dir / "autotrain_bench/client.py").is_file():
+        if not (agent_api_dir / "benchcore/client.py").is_file():
             raise RuntimeFailure("published Agent API is missing")
         missing_environment = [
             name for name in agent.environment if name not in os.environ
@@ -1405,7 +1405,7 @@ class DockerRuntime:
             "--log-opt",
             "max-file=1",
             "--mount",
-            self._mount(package_dir, "/opt/autotrain_bench", read_only=True),
+            self._mount(package_dir, "/opt/benchcore", read_only=True),
             "--mount",
             self._mount(audit_dir, "/audit", read_only=False),
             "--env",
@@ -1425,7 +1425,7 @@ class DockerRuntime:
                 gateway_image,
                 "python",
                 "-m",
-                "autotrain_bench.agent_gateway",
+                "benchcore.agent_gateway",
             ]
         )
         try:
@@ -1478,9 +1478,7 @@ class DockerRuntime:
             workspace, lease_dir / "scratch", lease_dir / "output"
         )
         training_image = self._storage_safe_image(workload_image or task.training_image)
-        public_helper = (
-            task.public_api_dir / "autotrain_bench" / "candidate_protocol.py"
-        )
+        public_helper = task.public_api_dir / "benchcore" / "candidate_protocol.py"
         if not public_helper.is_file():
             raise RuntimeFailure(
                 f"published training API is unavailable: {public_helper}"
@@ -2532,7 +2530,7 @@ class DockerRuntime:
         docker_scorer_adapter = (
             Path(__file__).resolve().parent / "docker_scorer_adapter.py"
         )
-        package = candidate_api_dir / "autotrain_bench"
+        package = candidate_api_dir / "benchcore"
         if not candidate_api_dir.exists():
             package.mkdir(parents=True)
             core_package = Path(__file__).resolve().parent
@@ -2615,7 +2613,7 @@ class DockerRuntime:
                 candidate_image,
                 "python",
                 "-m",
-                "autotrain_bench.candidate_offline_runner",
+                "benchcore.candidate_offline_runner",
                 "--candidate",
                 "/candidate",
                 "--contexts",
