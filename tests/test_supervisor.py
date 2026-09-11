@@ -1,4 +1,5 @@
 import hashlib
+import copy
 import errno
 import json
 import math
@@ -40,8 +41,16 @@ from autotrain_bench.local_mailbox import (
     write_untrusted_response,
 )
 from autotrain_bench.local_agent_execution import describe_local_agent_execution
+from autotrain_bench.gateway_execution import (
+    GatewayArtifactIdentity,
+    GatewayExecutionReceipt,
+)
 from autotrain_bench.local_run_guard import LocalResearchGuard
-from autotrain_bench.results import RESULT_SCHEMA_VERSION, normalize_result_report
+from autotrain_bench.results import (
+    RESULT_SCHEMA_VERSION,
+    ResultSchemaError,
+    normalize_result_report,
+)
 from autotrain_bench.training_data import verify_training_data, write_training_manifest
 from autotrain_bench.supervisor import (
     MAX_COMMAND_STREAM_BYTES,
@@ -68,6 +77,7 @@ from autotrain_bench.worker_protocol import (
     LeaseState,
     ResourceAllocationReceipt,
     ResourceObservation,
+    EvaluationResourceReceipt,
     ResourcePropertyEvidence,
     ResolvedHiddenDataset,
     TrustLevel,
@@ -309,9 +319,11 @@ class FakeWorker:
         output_dir,
         candidate_workload,
         evaluator_workload,
+        evaluation_id,
+        resource_envelope,
         timeout_seconds=None,
     ):
-        del episode_id, resources, candidate_dir, output_dir
+        del resources, candidate_dir, output_dir
         if not isinstance(candidate_workload, ResolvedWorkload):
             raise AssertionError("Candidate workload is not resolved")
         if not isinstance(evaluator_workload, ResolvedWorkload):
@@ -347,6 +359,29 @@ class FakeWorker:
             task_count=3,
             input_tokens=6,
             prediction_bytes=64,
+            resource_receipt=(
+                EvaluationResourceReceipt(
+                    episode_id=episode_id,
+                    evaluation_id=evaluation_id,
+                    worker_id="test-worker",
+                    resource_request_sha256=resource_envelope.sha256,
+                    receipt_id="receipt:" + evaluation_id,
+                    properties=tuple(
+                        ResourcePropertyEvidence(
+                            name=item.name,
+                            allocator_allocated=ResourceObservation("unavailable"),
+                            workload_visible=ResourceObservation(
+                                "observed", item.value, "test-worker"
+                            ),
+                            enforcement_level=EnforcementLevel.ENFORCED,
+                            enforcement_authority="test-worker",
+                        )
+                        for item in resource_envelope.requirements
+                    ),
+                )
+                if resource_envelope is not None
+                else None
+            ),
         )
 
 
@@ -448,6 +483,8 @@ class SupervisorTests(unittest.TestCase):
         worker_conformance=None,
         training_data_verification=None,
         operator_max_research_seconds=None,
+        evaluation_resource_envelope=None,
+        begin=True,
     ):
         resolved_config = config or self.config
         if training_data_verification is None:
@@ -478,8 +515,10 @@ class SupervisorTests(unittest.TestCase):
             monotonic=self.clock,
             wall_time=lambda: 1_700_000_000.0,
             operator_max_research_seconds=operator_max_research_seconds,
+            evaluation_resource_envelope=evaluation_resource_envelope,
         )
-        supervisor.begin()
+        if begin:
+            supervisor.begin()
         return supervisor
 
     def test_operator_limit_is_private_and_does_not_change_track_b_budget(self):
@@ -751,7 +790,8 @@ class SupervisorTests(unittest.TestCase):
             for digest in private_digests:
                 self.assertNotIn(digest, serialized)
 
-    def test_leaderboard_eligibility_requires_the_complete_formal_contract(self):
+    def formal_supervisor(self, *, inference=None, gateway_artifact=None, begin=True):
+        """A trusted test deployment with every formal contract input supplied."""
         digest = "@sha256:" + "a" * 64
         formal_task_dir = self.episode.parent / "formal-task"
         formal_task_dir.mkdir()
@@ -777,7 +817,7 @@ class SupervisorTests(unittest.TestCase):
             evaluator_image="example/evaluator" + digest,
             inference_gateway_image="example/gateway" + digest,
         )
-        agent = replace(self.agent, image="example/agent" + digest)
+        agent = replace(self.agent, image="example/agent" + digest, inference=inference)
         self.worker.trust_level = TrustLevel.CERTIFIED
         worker_conformance = ConformanceReceipt(
             receipt_version=CONFORMANCE_RECEIPT_VERSION,
@@ -810,6 +850,7 @@ class SupervisorTests(unittest.TestCase):
             self.resources,
             minimum_enforcement=EnforcementLevel.ENFORCED,
         ).public_manifest()
+        release["evaluation_resource_envelope"] = release["resource_envelope"]
         artifacts = {
             "challenge_manifest_sha256": release["challenge_manifest_sha256"],
             "task_manifest_sha256": release["task_manifest_sha256"],
@@ -832,6 +873,7 @@ class SupervisorTests(unittest.TestCase):
             core_revision=core_revision,
             artifact_sha256=artifacts,
             artifact_identity_algorithms=FORMAL_ARTIFACT_IDENTITY_ALGORITHMS,
+            inference_gateway_artifact=gateway_artifact,
         )
         with patch(
             "autotrain_bench.supervisor._core_identity",
@@ -850,7 +892,179 @@ class SupervisorTests(unittest.TestCase):
                 challenge_release=release,
                 release_verification=receipt,
                 worker_conformance=worker_conformance,
+                begin=begin,
             )
+        return supervisor, artifacts
+
+    def gateway_supervisor(self, *, expected_artifact=True):
+        artifact = GatewayArtifactIdentity("test-gateway-bundle-v1", "f" * 64)
+        supervisor, _ = self.formal_supervisor(
+            inference=InferenceConfig(
+                protocol="openai_compatible",
+                base_url="https://private.inference.example",
+                api_key_env="TEST_GATEWAY_KEY",
+                allowed_models=("model",),
+                allowed_paths=("/v1/responses",),
+                timeout_seconds=30,
+            ),
+            gateway_artifact=artifact if expected_artifact else None,
+            begin=False,
+        )
+        receipt = GatewayExecutionReceipt(
+            receipt_id="gateway:execution-1",
+            request_sha256=supervisor.gateway_execution_request.sha256,
+            source="test-trusted-launcher",
+            artifact=artifact,
+            enforcement=EnforcementLevel.ENFORCED,
+            trust_level=TrustLevel.CERTIFIED,
+        )
+        return supervisor, receipt
+
+    def finalize_gateway_supervisor(self, supervisor):
+        supervisor.begin()
+        supervisor.start_lease()
+        candidate = supervisor.commit_lease("/output/candidate")
+        supervisor.declare_incumbent(candidate["candidate_id"])
+        supervisor.finish()
+        return self.finalize_after_agent_stop(supervisor)
+
+    def test_formal_gateway_receipt_binds_execution_and_preserves_test_eligibility(
+        self,
+    ):
+        supervisor, receipt = self.gateway_supervisor()
+        supervisor.record_gateway_execution(receipt)
+        public_task = supervisor.public_task_path.read_text()
+        public_status = json.dumps(supervisor.public_status())
+        for private_value in (
+            receipt.request_sha256,
+            receipt.source,
+            receipt.artifact.sha256,
+            "private.inference.example",
+            "TEST_GATEWAY_KEY",
+            supervisor.gateway_execution_request.inference_registration_sha256,
+            supervisor.gateway_execution_request.inference_policy_sha256,
+        ):
+            self.assertNotIn(private_value, public_task)
+            self.assertNotIn(private_value, public_status)
+        self.assertEqual(
+            json.loads(supervisor.state_path.read_text())["gateway_execution"][
+                "receipt"
+            ],
+            receipt.private_manifest(),
+        )
+        final = self.finalize_gateway_supervisor(supervisor)
+        self.assertTrue(final["leaderboard_eligible"])
+        self.assertEqual(final["leaderboard_eligibility_violations"], [])
+        self.assertEqual(
+            normalize_result_report(supervisor.state)["gateway_execution"],
+            supervisor.state["gateway_execution"],
+        )
+        for changes in (
+            {"enforcement": "best_effort"},
+            {"trust_level": "development"},
+            {"limitations": ["mutable_code"]},
+            {"artifact": {"format": receipt.artifact.format, "sha256": "e" * 64}},
+        ):
+            payload = copy.deepcopy(supervisor.state)
+            payload["gateway_execution"]["receipt"].update(changes)
+            with self.subTest(changes=changes), self.assertRaisesRegex(
+                ResultSchemaError, "Gateway evidence is incomplete"
+            ):
+                normalize_result_report(payload)
+        for field in ("receipt", "release_artifact"):
+            payload = copy.deepcopy(supervisor.state)
+            if field == "receipt":
+                payload["gateway_execution"]["receipt"] = None
+            else:
+                payload["formal_release_verification"]["inference_gateway_artifact"] = (
+                    None
+                )
+            with self.subTest(field=field), self.assertRaisesRegex(
+                ResultSchemaError, "Gateway evidence is incomplete"
+            ):
+                normalize_result_report(payload)
+        for field, value in (
+            ("protocol", "another-protocol"),
+            ("allowed_models", ["another-model"]),
+            ("allowed_paths", ["/v1/unregistered"]),
+        ):
+            payload = copy.deepcopy(supervisor.state)
+            payload["agent_system"]["inference"][field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(
+                ResultSchemaError, "Gateway inference policy does not match"
+            ):
+                normalize_result_report(payload)
+
+    def test_gateway_receipt_cannot_be_replayed_or_changed_after_registration(self):
+        supervisor, receipt = self.gateway_supervisor()
+        other_request = replace(
+            supervisor.gateway_execution_request, episode_id="episode:other"
+        )
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            supervisor.record_gateway_execution(
+                replace(receipt, request_sha256=other_request.sha256)
+            )
+        self.assertIsNone(supervisor.state["gateway_execution"]["receipt"])
+        supervisor.record_gateway_execution(receipt)
+        with self.assertRaisesRegex(ValueError, "already fixed"):
+            supervisor.record_gateway_execution(receipt)
+        supervisor.begin()
+        with self.assertRaisesRegex(ProtocolError, "precede task reveal"):
+            supervisor.record_gateway_execution(receipt)
+
+    def test_gateway_receipt_cannot_be_added_after_a_missing_evidence_run_begins(self):
+        supervisor, receipt = self.gateway_supervisor()
+        supervisor.begin()
+        with self.assertRaisesRegex(ProtocolError, "precede task reveal"):
+            supervisor.record_gateway_execution(receipt)
+        self.assertIn(
+            "inference_gateway_workload_evidence_missing",
+            supervisor.state["leaderboard_eligibility_violations"],
+        )
+
+    def test_gateway_without_frozen_release_artifact_remains_ineligible(self):
+        supervisor, receipt = self.gateway_supervisor(expected_artifact=False)
+        supervisor.record_gateway_execution(receipt)
+        final = self.finalize_gateway_supervisor(supervisor)
+        self.assertFalse(final["leaderboard_eligible"])
+        self.assertEqual(
+            final["leaderboard_eligibility_violations"],
+            ["inference_gateway_release_artifact_missing"],
+        )
+        self.assertEqual(final["test_status"], "evaluated")
+
+    def test_gateway_artifact_substitution_remains_ineligible(self):
+        supervisor, receipt = self.gateway_supervisor()
+        receipt = replace(receipt, artifact=replace(receipt.artifact, sha256="e" * 64))
+        supervisor.record_gateway_execution(receipt)
+        final = self.finalize_gateway_supervisor(supervisor)
+        self.assertFalse(final["leaderboard_eligible"])
+        self.assertEqual(
+            final["leaderboard_eligibility_violations"],
+            ["inference_gateway_artifact_mismatch"],
+        )
+
+    def test_gateway_development_observation_cannot_certify_a_formal_run(self):
+        supervisor, receipt = self.gateway_supervisor()
+        supervisor.record_gateway_execution(
+            replace(receipt, trust_level=TrustLevel.DEVELOPMENT)
+        )
+        final = self.finalize_gateway_supervisor(supervisor)
+        self.assertFalse(final["leaderboard_eligible"])
+        self.assertEqual(
+            final["leaderboard_eligibility_violations"],
+            ["inference_gateway_execution_not_certified"],
+        )
+
+    def test_gateway_receipt_is_rejected_when_inference_is_disabled(self):
+        supervisor = self.supervisor(begin=False)
+        self.assertIsNone(supervisor.gateway_execution_request)
+        self.assertIsNone(supervisor.state["gateway_execution"])
+        with self.assertRaisesRegex(ValueError, "not enabled"):
+            supervisor.record_gateway_execution(None)
+
+    def test_leaderboard_eligibility_requires_the_complete_formal_contract(self):
+        supervisor, artifacts = self.formal_supervisor()
         self.assertFalse(supervisor.state["leaderboard_eligible"])
         self.assertEqual(
             supervisor.state["leaderboard_eligibility_violations"],
@@ -860,6 +1074,7 @@ class SupervisorTests(unittest.TestCase):
                 "workload_resolution_pending:candidate",
                 "workload_resolution_pending:evaluator",
                 "resource_allocation_pending",
+                "evaluation_resource_allocation_pending",
             ],
         )
         public_task = json.loads(

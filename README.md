@@ -90,7 +90,7 @@ ownership checks, supported scope and unresolved-outcome handling.
 
 The repository now contains an executable, single-host Docker prototype of the benchmark protocol. It is intended to validate episode lifecycle, Training Lease accounting, hidden evaluation, and the agent-facing control surface before the first official benchmark instance is selected.
 
-The current development snapshot uses Worker Protocol v15 but does not carry a
+The current development snapshot uses Worker Protocol v16 but does not carry a
 release package version yet. Protocol v7 introduced a breaking Worker API
 revision: every successful Training Lease startup returns operation-bound
 resource allocation evidence. The Release selects an extensible semantic resource
@@ -153,7 +153,7 @@ validation, independently of this private operator setting.
 
 The bundled `autotrain-bench prepare` and `autotrain-bench start` commands are
 the composition root for that local Docker implementation; they are not a
-generic backend loader. Worker Protocol v15 is currently a synchronous,
+generic backend loader. Worker Protocol v16 is currently a synchronous,
 in-process Python contract. Resolution calls receive explicit deadlines, and
 TEST workload/data resolution consumes the same operation budget as evaluation;
 those deadlines are cooperative, so a future asynchronous operation/cancellation
@@ -175,11 +175,15 @@ organizer-approved derived artifact, but may not silently substitute an
 environment.
 
 Slurm, Kubernetes, Apptainer, cloud-job, and other integrations belong in
-separately distributed Worker packages maintained by their platform or site.
-They must not add platform branches or dependencies to this core repository.
+external Worker deployments. These may be maintained platform packages or
+temporary implementations created by the trusted operator during authorized
+preparation, with source and identities preserved for the run. They must not
+add platform branches or dependencies to this core repository.
 See [Worker Protocol boundary](docs/worker-protocol.md) for the ownership rules
-and [Thin Core development plan](docs/thin-core-development-plan.md) for the
-incremental migration and its acceptance criteria.
+and [Worker integration](docs/worker-integration.md) for composition order,
+Agent tool admission, monitoring, cancellation/recovery responsibilities, and
+staged verification. The [Thin Core development plan](docs/thin-core-development-plan.md)
+describes the incremental migration and its acceptance criteria.
 
 The reference runtime requires a machine that can run Docker. AutoTrain-Bench
 consumes the environment the user has already obtained; it does **not** allocate
@@ -321,7 +325,18 @@ python3 -m autotrain_bench.cli start \
 ```
 
 The generic host runner captures stdout/stderr and enforces the same episode
-deadline. The optional Codex adapter invokes
+deadline. Short output is flushed to its log files while the process is still
+running. Each stream retains at most 10 MiB including its truncation marker;
+excess output is still drained so the log limit does not block the Agent.
+Truncated or malformed usage records remain explicitly incomplete.
+If a log write or flush fails (for example, disk space or quota exhaustion),
+the runner remembers the failure and continues draining that pipe. Final
+`agent_usage.log_capture` records each stream's completion, truncation, and
+first I/O error. Incomplete stdout capture makes `usage_complete: false` even
+if its retained prefix contains valid usage records; stderr diagnostic loss is
+recorded separately. Log-capture failure does not imply process-termination
+failure.
+The optional Codex adapter invokes
 `codex exec --ephemeral --json`, disables web search and user configuration, and
 reuses the CLI's existing login. It never copies `auth.json` into an Agent
 Container and does not require an inference Gateway. These behaviors follow the
@@ -498,19 +513,54 @@ ordinary Docker bridge egress and marks the run
 `policy_compliant: false`. It is not a closed AutoTrain-Bench result and exists
 only to make local integration easier.
 
-The Supervisor prints the episode directory. Its final state can be inspected later with:
+The Supervisor prints the episode directory. The trusted Operator can inspect
+the latest Core snapshot and, when supplied by the deployment, current execution
+evidence with:
+
+```bash
+autotrain-bench status \
+  --episode /path/to/autotrain-bench-runs/episodes/<episode-id>
+```
+
+Without fresh, episode-bound deployment evidence, this view reports current
+execution as unknown even if the Core snapshot says `active`. Finalized results
+remain authoritative. Add `--observation PATH` for a deployment observation or
+`--json` for the structured view; see [Operator status](docs/operator-status.md)
+for the schema, freshness rules, and separate cleanup evidence. This view does
+not query an allocator or change the Agent-visible status API.
+
+The full Core report remains available with:
 
 ```bash
 autotrain-bench report \
   --episode /path/to/autotrain-bench-runs/episodes/<episode-id>
 ```
 
-Episode states declare `result_schema_version: 13`. `report` also accepts v12
+Episode states declare `result_schema_version: 15`. `report` also accepts v12/v13/v14
 reports under their original semantics; v12 cannot contain operator-protection
-fields or aborted outcomes. Unversioned, earlier, and unknown future versions
+fields or aborted outcomes. V12/v13 carry no verified evaluation
+resource evidence. V15 adds private, request-bound
+[Gateway execution evidence](docs/gateway-execution.md), checked against the
+organizer's complete artifact identity for formal inference. Older reports
+cannot contain those new fields. Unversioned, earlier, and unknown future versions
 are rejected rather than guessed. This repository is still pre-preview. The first
 published preview establishes the result-compatibility baseline; later schema
 changes must then define an explicit compatibility policy.
+
+Worker v16 and Challenge schema v3 add an independent
+`evaluation_resource_contract` to a runtime profile. Core passes the selected
+envelope and a fresh evaluation ID to each TEST/ANALYSIS invocation, checks the
+Worker's allocation receipt before accepting metrics, and records the contract,
+receipt, and assessment in the v14 report. Missing contracts remain explicit
+(`evaluation_resource_envelope: null`) in previews; they do not establish cost
+comparability. Existing Challenge v2 profiles remain readable without this field.
+Formal releases require an enforced evaluation contract and accepted TEST
+resource evidence. See [evaluation resource contracts](docs/evaluation-resources.md)
+for the Worker interface, local limits, and remaining comparison conditions.
+The local `start` command preflights the selected evaluation contract before
+episode setup and task reveal, so known unsupported conditions fail before the
+research budget is spent. Every evaluation still rechecks the environment and
+its operation-bound resource evidence.
 
 In v13, `outcome: "success"` requires a finalized episode, a non-empty final
 Candidate ID, a valid TEST performance score with the exact release-declared raw
@@ -798,7 +848,7 @@ identity, not one materialization mechanism.
 
 Task schema v7 still retains `paths.analysis` and `paths.test` as compatibility
 inputs for the bundled local CLI. The Supervisor neither reads them nor sends
-them through Worker Protocol v15. An external launcher supplies its Evaluation
+them through Worker Protocol v16. An external launcher supplies its Evaluation
 Worker's private source mapping independently; the configured local paths may
 remain absent for that deployment. Replacing these compatibility fields in a
 future task schema is separate from the now path-free Worker boundary.

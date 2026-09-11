@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import signal
@@ -41,30 +42,95 @@ class _BoundedLogSink:
         self.limit = MAX_HOST_AGENT_LOG_BYTES - len(_LOG_TRUNCATION_MARKER)
         self.written = 0
         self.truncated = False
+        self.eof = False
+        self.finished = False
+        self.error: Optional[Dict[str, Any]] = None
+
+    def _record_error(self, operation: str, exc: Exception) -> None:
+        # Retain bounded evidence independently of the file that just failed.
+        if self.error is None:
+            self.error = {
+                "operation": operation,
+                "error_type": type(exc).__name__,
+                "errno": getattr(exc, "errno", None),
+            }
+
+    def _write(self, data: bytes) -> None:
+        try:
+            if self.stream.write(data) != len(data):
+                raise OSError(errno.EIO, "short host Agent log write")
+        except (OSError, ValueError) as exc:
+            self._record_error("write", exc)
+            return
+        try:
+            self.stream.flush()
+        except (OSError, ValueError) as exc:
+            self._record_error("flush", exc)
+
+    def close(self, source: Optional[BinaryIO] = None) -> None:
+        # A failed close/flush on one stream must not skip the other resource.
+        for operation, stream in (
+            ("close_source", source),
+            ("close_sink", self.stream),
+        ):
+            try:
+                if stream is not None and not stream.closed:
+                    stream.close()
+            except (OSError, ValueError) as exc:
+                self._record_error(operation, exc)
+
+    def capture_status(self) -> Dict[str, Any]:
+        finished = self.finished
+        return {
+            "complete": finished
+            and self.eof
+            and not self.truncated
+            and self.error is None,
+            "finished": finished,
+            "eof": self.eof,
+            "truncated": self.truncated,
+            "error": dict(self.error) if self.error is not None else None,
+        }
 
     def drain(self, source: BinaryIO) -> None:
+        # BufferedReader.read(n) can wait for n bytes or EOF on a live pipe.
+        # read1 returns the bytes available from one underlying read instead.
+        read = getattr(source, "read1", source.read)
         try:
             while True:
-                chunk = source.read(64 * 1024)
-                if not chunk:
+                try:
+                    chunk = read(64 * 1024)
+                except (OSError, ValueError) as exc:
+                    self._record_error("read", exc)
                     break
+                if not chunk:
+                    self.eof = True
+                    break
+                # A full/unavailable log filesystem must not close the read
+                # pipe or block the Agent. Discard further output until EOF.
+                if self.error is not None:
+                    continue
                 remaining = self.limit - self.written
                 if remaining > 0:
                     retained = chunk[:remaining]
-                    self.stream.write(retained)
-                    self.written += len(retained)
+                    self._write(retained)
+                    if self.error is None:
+                        self.written += len(retained)
                 if len(chunk) > remaining:
                     self.truncated = True
-            if self.truncated:
-                self.stream.write(_LOG_TRUNCATION_MARKER)
-            self.stream.flush()
+            if self.truncated and self.error is None:
+                self._write(_LOG_TRUNCATION_MARKER)
         finally:
-            source.close()
-            self.stream.close()
+            self.close(source)
+            self.finished = True
 
 
 def summarize_host_agent_trace(path: Path) -> Dict[str, Any]:
-    """Summarize the standard host-Agent records and known JSONL event streams."""
+    """Parse retained host-Agent records; this cannot detect lost capture bytes.
+
+    Live launchers should use ``HostAgentProcess.summarize_usage()`` after
+    stopping the Agent so capture failures also make usage incomplete.
+    """
 
     summary: Dict[str, Any] = {
         "source": "host_agent_stdout",
@@ -84,6 +150,7 @@ def summarize_host_agent_trace(path: Path) -> Dict[str, Any]:
         "usage_complete": True,
     }
     if not path.exists():
+        summary["usage_complete"] = False
         return summary
 
     saw_usage = False
@@ -188,6 +255,21 @@ class HostAgentProcess:
     def returncode(self) -> Optional[int]:
         return self.process.poll()
 
+    def summarize_usage(self) -> Dict[str, Any]:
+        """Combine retained usage records with trusted log-capture evidence."""
+
+        capture = {
+            "stdout": self._stdout_sink.capture_status(),
+            "stderr": self._stderr_sink.capture_status(),
+        }
+        summary = summarize_host_agent_trace(self.stdout_path)
+        summary["log_capture"] = capture
+        # Usage records are sourced from stdout. Loss of stderr diagnostics is
+        # recorded separately and does not invalidate intact stdout accounting.
+        if self.running or not capture["stdout"]["complete"]:
+            summary["usage_complete"] = False
+        return summary
+
     def stop(self, timeout_seconds: float = 3) -> int:
         termination_error: Optional[BaseException] = None
         try:
@@ -256,10 +338,7 @@ class HostAgentProcess:
                 thread.join(timeout=5)
                 complete = complete and not thread.is_alive()
             else:
-                if source is not None and not source.closed:
-                    source.close()
-                if not sink.stream.closed:
-                    sink.stream.close()
+                sink.close(source)
         self._closed = complete
 
 
@@ -346,8 +425,8 @@ def start_host_agent_process(
         )
     except BaseException:
         for sink in (stdout_sink, stderr_sink):
-            if sink is not None and not sink.stream.closed:
-                sink.stream.close()
+            if sink is not None:
+                sink.close()
         raise
     assert stdout_sink is not None
     assert stderr_sink is not None

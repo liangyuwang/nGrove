@@ -119,6 +119,9 @@ def _resource_fields():
     }
     return {
         "episode_id": "episode-1",
+        "gateway_execution": None,
+        "evaluation_resource_envelope": None,
+        "evaluation_resource_allocations": [],
         "performance_score_contract": {
             "definition_id": "uniform_normalized_log_score_v1",
             "range": {"minimum": 0.0, "maximum": 100.0},
@@ -196,6 +199,38 @@ def _finalized(**overrides):
         "test_raw_metrics": {"mean_nll": 0.0},
     }
     payload.update(overrides)
+    if payload["result_schema_version"] < 15:
+        payload.pop("gateway_execution", None)
+    if payload["result_schema_version"] >= 14:
+        payload.setdefault("evaluation_resource_envelope", None)
+        if "evaluation_resource_allocations" not in overrides:
+            measurements = (
+                [("test", payload.get("final_candidate_id"))]
+                if payload.get("test_cost") is not None
+                else []
+            )
+            trajectory = payload.get("analysis_trajectory")
+            if isinstance(trajectory, list):
+                measurements.extend(
+                    ("analysis", point.get("candidate_id"))
+                    for point in trajectory
+                    if isinstance(point, dict)
+                    and point.get("analysis_cost") is not None
+                )
+            payload["evaluation_resource_allocations"] = [
+                {
+                    "evaluation_id": "evaluation:" + str(index),
+                    "candidate_id": candidate,
+                    "split": split,
+                    "receipt": None,
+                    "assessment": None,
+                    "accepted": False,
+                }
+                for index, (split, candidate) in enumerate(measurements)
+            ]
+    else:
+        payload.pop("evaluation_resource_envelope", None)
+        payload.pop("evaluation_resource_allocations", None)
     # Derive the summary counts from whatever trajectory the test ended up with,
     # so a test that varies the trajectory does not also have to restate them.
     # A test that wants an inconsistent summary overrides them explicitly.
@@ -433,6 +468,9 @@ class ResultMetricTests(unittest.TestCase):
             {
                 "result_schema_version": RESULT_SCHEMA_VERSION,
                 **_resource_fields(),
+                "evaluation_resource_allocations": _finalized()[
+                    "evaluation_resource_allocations"
+                ],
                 "status": "finalized",
                 "outcome": "success",
                 "final_candidate_id": "sha256:candidate",
@@ -592,6 +630,9 @@ class ResultMetricTests(unittest.TestCase):
             {
                 "result_schema_version": RESULT_SCHEMA_VERSION,
                 **_resource_fields(),
+                "evaluation_resource_allocations": _finalized()[
+                    "evaluation_resource_allocations"
+                ],
                 "status": "finalized",
                 "outcome": "success",
                 "final_candidate_id": "sha256:candidate",

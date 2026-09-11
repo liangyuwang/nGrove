@@ -13,7 +13,6 @@ import math
 import os
 import signal
 import socket
-import stat
 import subprocess
 import sys
 import threading
@@ -25,6 +24,7 @@ from functools import wraps
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
+from .docker_recovery import DEFAULT_RECOVERY_TIMEOUT_SECONDS, recovery_timeout_seconds
 from .worker_protocol import WorkerFailure
 
 
@@ -200,51 +200,45 @@ def watched(*, timeout: str = "timeout_seconds", fallback=None, cleanup: bool = 
     return decorate
 
 
-def _recover(registration: dict) -> dict:
-    from .docker_recovery import DockerRecovery
-    from .runtime import DockerRuntime
+def _recover(registration: dict, *, timeout_seconds: float) -> dict:
+    from .local_recovery import recover_resources
 
-    runtime = DockerRuntime(docker_binary=registration["docker_binary"])
-    journal = DockerRecovery(Path(registration["state_dir"]))
-    runtime._recovery = journal
-    try:
-        if (
-            journal.state["owner"] != registration["owner"]
-            or journal.state["directory_identity"] != registration["directory_identity"]
-        ):
-            raise WorkerFailure("watchdog Worker ownership differs from registration")
-        return journal.recover(runtime._run_raw)
-    finally:
-        journal.close()
-
-
-def _write_report(registration: dict, report: dict) -> None:
-    root = Path(registration["state_dir"])
-    metadata = root.lstat()
-    if (
-        not stat.S_ISDIR(metadata.st_mode)
-        or metadata.st_uid != os.geteuid()
-        or metadata.st_mode & 0o077
-        or [metadata.st_dev, metadata.st_ino] != registration["directory_identity"]
-    ):
-        raise WorkerFailure("watchdog report directory ownership changed")
-    data = (json.dumps(report, sort_keys=True) + "\n").encode()
-    if len(data) > 1024 * 1024:
-        raise WorkerFailure("watchdog report capacity reached")
-    temporary = root / "watchdog-report.next"
-    fd = os.open(
-        temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600
+    return recover_resources(
+        Path(registration["state_dir"]),
+        docker_binary=registration["docker_binary"],
+        registration=registration,
+        timeout_seconds=timeout_seconds,
     )
-    with os.fdopen(fd, "wb") as stream:
-        stream.write(data)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, root / "watchdog-report.json")
-    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+
+
+def _write_report(registration: dict, report: dict, *, timeout_seconds: float) -> None:
+    from .local_recovery import write_watchdog_report
+
+    write_watchdog_report(registration, report, timeout_seconds=timeout_seconds)
+
+
+@contextmanager
+def _operator_signals(*, propagate: bool = False):
+    """Latch cancellation without unwinding process creation or owned cleanup."""
+    interruption = []
+    previous = {}
+
+    def interrupted(signum, frame):
+        if not interruption:
+            interruption.append(signum)
+
     try:
-        os.fsync(fd)
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            previous[signum] = signal.signal(signum, interrupted)
+        yield interruption
     finally:
-        os.close(fd)
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+        if propagate and interruption:
+            signum = interruption[0]
+            handler = previous[signum]
+            if callable(handler) and handler is not signal.default_int_handler:
+                handler(signum, None)
 
 
 def supervise(
@@ -252,10 +246,12 @@ def supervise(
     *,
     heartbeat_timeout: float = HEARTBEAT_TIMEOUT,
     grace_seconds: float = DEADLINE_GRACE_SECONDS,
-    recover: Callable[[dict], dict] = _recover,
+    recovery_seconds: float = DEFAULT_RECOVERY_TIMEOUT_SECONDS,
+    recover: Callable[..., dict] = _recover,
 ) -> int:
     """Run one trusted launcher, fence it before reaping, then reclaim ownership."""
 
+    recovery_seconds = recovery_timeout_seconds(recovery_seconds)
     if os.name != "posix" or signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
         raise WorkerFailure(
             "Docker watchdog requires POSIX and exclusive child reaping"
@@ -265,6 +261,29 @@ def supervise(
         for value in (heartbeat_timeout, grace_seconds)
     ):
         raise WorkerFailure("watchdog tolerances must be finite positive seconds")
+    # Keep handlers installed through fencing, recovery and report persistence.
+    # Raising from a handler can lose a just-created Popen handle or abort a
+    # cleanup that has already started. Further signals do not skip that work.
+    with _operator_signals() as interruption:
+        return _supervise(
+            command,
+            heartbeat_timeout=heartbeat_timeout,
+            grace_seconds=grace_seconds,
+            recovery_seconds=recovery_seconds,
+            recover=recover,
+            interruption=interruption,
+        )
+
+
+def _supervise(
+    command: Callable[[int], Sequence[str]],
+    *,
+    heartbeat_timeout: float,
+    grace_seconds: float,
+    recovery_seconds: float,
+    recover: Callable[..., dict],
+    interruption: list[int],
+) -> int:
     parent, child = socket.socketpair()
     process = None
     registration = None
@@ -274,12 +293,6 @@ def supervise(
     failures = []
     deadlines = {}
     buffer = b""
-    previous_term = signal.getsignal(signal.SIGTERM)
-
-    def interrupted(signum, frame):
-        raise KeyboardInterrupt()
-
-    signal.signal(signal.SIGTERM, interrupted)
     try:
         process = subprocess.Popen(
             command(child.fileno()),
@@ -290,6 +303,9 @@ def supervise(
         parent.settimeout(0.1)
         last_heartbeat = time.monotonic()
         while True:
+            if interruption:
+                reason = "operator_interrupted"
+                break
             now = time.monotonic()
             expired = [
                 label for deadline, label in deadlines.values() if now >= deadline
@@ -383,26 +399,47 @@ def supervise(
             except subprocess.TimeoutExpired:
                 failures.append("Worker process termination remains unconfirmed")
         parent.close()
-        signal.signal(signal.SIGTERM, previous_term)
 
     cleanup = None
+    recovery_deadline = time.monotonic() + recovery_seconds
     if registration is not None:
         try:
-            cleanup = recover(registration)
+            cleanup = recover(registration, timeout_seconds=recovery_seconds)
         except Exception as exc:
             failures.append("Worker recovery failed: " + str(exc))
+    if interruption and reason in {"worker_completed", "worker_exited"}:
+        reason = "operator_interrupted"
     report = {
         "reason": reason,
         "detail": detail,
+        "operator_signal": interruption[0] if interruption else None,
         "worker_exit_code": process.returncode if process is not None else None,
         "completed_exit_code": completed_code,
+        "recovery_timeout_seconds": recovery_seconds,
         "cleanup": cleanup,
+        "report_persisted": False,
         "failures": failures,
         "resumed": False,
     }
     if registration is not None:
         try:
-            _write_report(registration, report)
+            remaining = recovery_deadline - time.monotonic()
+            if remaining <= 0:
+                raise WorkerFailure(
+                    "recovery deadline exhausted before report persistence"
+                )
+            if cleanup is not None and not cleanup.get("process_supervision", {}).get(
+                "termination_confirmed", True
+            ):
+                raise WorkerFailure(
+                    "report deferred while recovery process termination is unconfirmed"
+                )
+            _write_report(
+                registration,
+                {**report, "report_persisted": True},
+                timeout_seconds=remaining,
+            )
+            report["report_persisted"] = True
         except Exception as exc:
             failures.append("cannot persist watchdog report: " + str(exc))
     cleanup_status = (
@@ -412,18 +449,26 @@ def supervise(
     )
     report_location = (
         f"report {registration['state_dir']}/watchdog-report.json"
+        if registration is not None and report["report_persisted"]
+        else "current report was not persisted; any retained report may be from an earlier attempt"
         if registration is not None
         else "no journal registered; pre-journal resources are outside recovery scope"
     )
     print(
-        f"Worker watchdog: {reason}; cleanup {cleanup_status}; {report_location}",
+        f"Worker watchdog: {reason}; cleanup {cleanup_status}; {report_location}"
+        + (
+            f"; recovery attempt {cleanup['process_supervision']['attempt_id']}"
+            if cleanup is not None and "process_supervision" in cleanup
+            else ""
+        ),
         file=sys.stderr,
         flush=True,
     )
     for failure in failures:
         print("Worker watchdog: " + failure, file=sys.stderr, flush=True)
     if (
-        reason != "worker_completed"
+        interruption
+        or reason != "worker_completed"
         or failures
         or (cleanup is not None and not cleanup["cleanup_complete"])
         or process is None
@@ -438,6 +483,7 @@ def supervise_start(
     *,
     heartbeat_timeout: float = HEARTBEAT_TIMEOUT,
     grace_seconds: float = DEADLINE_GRACE_SECONDS,
+    recovery_seconds: float = DEFAULT_RECOVERY_TIMEOUT_SECONDS,
 ) -> int:
     return supervise(
         lambda fd: [
@@ -449,6 +495,7 @@ def supervise_start(
         ],
         heartbeat_timeout=heartbeat_timeout,
         grace_seconds=grace_seconds,
+        recovery_seconds=recovery_seconds,
     )
 
 

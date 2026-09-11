@@ -39,6 +39,8 @@ jobs:
           tests.test_config
           tests.test_results
           tests.test_worker_protocol
+          tests.test_operator_status
+          tests.test_host_agent
       - run: >-
           python -m unittest -v
           tests.test_supervisor.SupervisorTests.test_mailbox_response_has_a_portable_non_dir_fd_path

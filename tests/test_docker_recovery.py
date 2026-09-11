@@ -7,6 +7,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import uuid
 from pathlib import Path
@@ -156,6 +157,354 @@ class DockerRecoveryTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(WorkerFailure, "cannot launch"):
             reopened.execute(["run", "--name", "restart", "image"], self.backend.run)
+
+    def test_recovery_shares_one_deadline_and_retries_unconfirmed_removal(self):
+        for kind, name in (
+            ("container", "agent"),
+            ("container", "training"),
+            ("container", "atb-prediction-holder-1"),
+            ("volume", "predictions"),
+        ):
+            self.create(kind, name)
+        private = self.journal.private_directory("hidden-")
+        recovered = self.reopen()
+        now = [100.0]
+        calls = []
+
+        def slow_run(args, **kwargs):
+            calls.append((list(args), kwargs["timeout"]))
+            result = self.backend.run(args, **kwargs)
+            now[0] += 1
+            return result
+
+        with patch(
+            "autotrain_bench.docker_recovery.time.monotonic", side_effect=lambda: now[0]
+        ):
+            report = recovered.recover(slow_run, timeout_seconds=4)
+        self.assertTrue(report["deadline_exceeded"])
+        self.assertFalse(report["cleanup_complete"])
+        self.assertEqual(report["timeout_seconds"], 4)
+        self.assertEqual([timeout for _, timeout in calls], [4, 3, 2, 1])
+        self.assertEqual(calls[-1][0][0], "rm")
+        # Docker removed the first container, but its response used the last
+        # allowance. No absence check, next workload, or storage deletion starts.
+        self.assertNotIn(("container", "agent"), self.backend.objects)
+        self.assertIn(("container", "training"), self.backend.objects)
+        self.assertIn(("container", "atb-prediction-holder-1"), self.backend.objects)
+        self.assertIn(("volume", "predictions"), self.backend.objects)
+        self.assertTrue(private.exists())
+        self.assertEqual(recovered.state["phase"], "recovering")
+        self.assertEqual(
+            recovered.state["resources"]["container:agent"]["state"], "identified"
+        )
+        self.assertEqual(self.result.read_text(), '{"TEST":"already_saved"}')
+        recovered.close()
+        retry = self.reopen()
+        report = retry.recover(self.backend.run, timeout_seconds=4)
+        self.assertTrue(report["cleanup_complete"])
+        self.assertFalse(report["deadline_exceeded"])
+        self.assertFalse(self.backend.objects)
+        self.assertFalse(private.exists())
+        self.assertEqual(self.result.read_text(), '{"TEST":"already_saved"}')
+
+    def recover_with_command_cost(self, *, timeout_seconds=10):
+        """Reopen the durable journal and charge one second per Docker command."""
+        recovered = self.reopen()
+        now = [0.0]
+        calls = []
+
+        def run(args, **kwargs):
+            calls.append(list(args))
+            now[0] += 1
+            return self.backend.run(args, **kwargs)
+
+        try:
+            with patch(
+                "autotrain_bench.docker_recovery.time.monotonic",
+                side_effect=lambda: now[0],
+            ):
+                report = recovered.recover(run, timeout_seconds=timeout_seconds)
+            saved = copy.deepcopy(recovered.state)
+        finally:
+            recovered.close()
+        return report, saved, calls
+
+    def test_removed_history_cannot_starve_a_live_container(self):
+        history = []
+        for index in range(4):
+            name = f"old-{index}"
+            self.create(name=name)
+            history.append(self.backend.objects[("container", name)]["Id"])
+            self.journal.remove("container", name, self.backend.run)
+        self.create(name="z-live")
+        private = self.journal.private_directory("hidden-")
+
+        for attempt in range(3):
+            with self.subTest(attempt=attempt):
+                report, saved, calls = self.recover_with_command_cost()
+                self.assertTrue(report["cleanup_complete"])
+                self.assertFalse(report["deadline_exceeded"])
+                self.assertNotIn(("container", "z-live"), self.backend.objects)
+                self.assertFalse(private.exists())
+                self.assertEqual(saved["phase"], "cleaned")
+                self.assertFalse(any(call[-1] in history for call in calls))
+                self.assertEqual(self.result.read_text(), '{"TEST":"already_saved"}')
+
+    def test_same_budget_recovery_retries_progress_through_workloads_and_storage(self):
+        for index in range(4):
+            name = f"old-{index}"
+            self.create(name=name)
+            self.journal.remove("container", name, self.backend.run)
+        for index in range(4):
+            self.create(name=f"z-live-{index}")
+        self.create(name="atb-prediction-holder-1")
+        self.create("network", "inference")
+        self.create("volume", "predictions")
+        private = self.journal.private_directory("hidden-")
+        previous_pending = 8  # Seven resources plus private-storage cleanup.
+
+        def check_deletion_order(args):
+            durable = json.loads((self.root / "worker/resources.json").read_text())
+            kind = "container" if args[0] == "rm" else args[0]
+            record = next(
+                record
+                for record in durable["resources"].values()
+                if record["kind"] == kind
+                and args[-1]
+                == (record["name"] if kind == "volume" else record["identity"])
+            )
+            if kind != "container" or record["name"] == "atb-prediction-holder-1":
+                for item in durable["resources"].values():
+                    if item["kind"] == "container" and (
+                        kind != "container" or item["name"] != "atb-prediction-holder-1"
+                    ):
+                        self.assertEqual(item["state"], "removed")
+
+        self.backend.after_remove = check_deletion_order
+
+        for attempt in range(7):
+            with self.subTest(attempt=attempt):
+                report, saved, _ = self.recover_with_command_cost()
+                pending = sum(
+                    record["state"] != "removed"
+                    for record in saved["resources"].values()
+                ) + int(private.exists())
+                self.assertLess(pending, previous_pending)
+                previous_pending = pending
+                if any(
+                    saved["resources"][f"container:z-live-{index}"]["state"]
+                    != "removed"
+                    for index in range(4)
+                ):
+                    self.assertTrue(private.exists())
+                    self.assertIn(
+                        ("container", "atb-prediction-holder-1"), self.backend.objects
+                    )
+                    self.assertIn(("volume", "predictions"), self.backend.objects)
+                self.assertEqual(self.result.read_text(), '{"TEST":"already_saved"}')
+                if report["cleanup_complete"]:
+                    break
+                self.assertTrue(report["deadline_exceeded"])
+        self.assertTrue(report["cleanup_complete"])
+        self.assertGreater(attempt, 0)
+        self.assertFalse(self.backend.objects)
+        self.assertFalse(private.exists())
+
+    def test_ram_only_removal_is_rechecked_when_journal_writes_fail(self):
+        self.create()
+        self.create(name="atb-prediction-holder-1")
+        self.create("volume", "predictions")
+        private = self.journal.private_directory("hidden-")
+        identity = self.backend.objects[("container", "candidate")]["Id"]
+        with patch.object(
+            self.journal, "_save", side_effect=WorkerFailure("disk full")
+        ):
+            with self.assertRaisesRegex(WorkerFailure, "disk full"):
+                self.journal.remove("container", "candidate", self.backend.run)
+            self.assertEqual(
+                self.journal.state["resources"]["container:candidate"]["state"],
+                "removed",
+            )
+            self.assertEqual(
+                self.journal._durable_state["resources"]["container:candidate"][
+                    "state"
+                ],
+                "identified",
+            )
+            self.backend.calls.clear()
+            report = self.journal.recover(self.backend.run)
+        self.assertFalse(report["cleanup_complete"])
+        self.assertIn(["container", "inspect", identity], self.backend.calls)
+        self.assertTrue(private.exists())
+        self.assertIn(("container", "atb-prediction-holder-1"), self.backend.objects)
+        self.assertIn(("volume", "predictions"), self.backend.objects)
+        self.assertTrue(self.reopen().recover(self.backend.run)["cleanup_complete"])
+
+    def test_reused_name_still_requires_new_ownership_verification(self):
+        self.create()
+        self.journal.remove("container", "candidate", self.backend.run)
+        old_token = self.journal.state["resources"]["container:candidate"]["token"]
+        self.create()
+        self.create("volume", "predictions")
+        private = self.journal.private_directory("hidden-")
+        record = self.journal.state["resources"]["container:candidate"]
+        self.assertNotEqual(record["token"], old_token)
+        self.backend.objects[("container", "candidate")]["Config"]["Labels"] = {}
+        self.backend.calls.clear()
+        report, _, _ = self.recover_with_command_cost()
+        self.assertFalse(report["cleanup_complete"])
+        self.assertIn("unverified", report["failures"][0]["reason"])
+        self.assertFalse(any(call[0] == "rm" for call in self.backend.calls))
+        self.assertIn(("container", "candidate"), self.backend.objects)
+        self.assertIn(("volume", "predictions"), self.backend.objects)
+        self.assertTrue(private.exists())
+
+    def test_recovery_command_timeouts_cannot_multiply_the_total_allowance(self):
+        for index in range(5):
+            self.create(name=f"agent-{index}")
+        recovered = self.reopen()
+        now = [0.0]
+        timeouts = []
+
+        def unavailable(args, **kwargs):
+            if len(timeouts) == 0:
+                timeouts.append(kwargs["timeout"])
+                return self.backend.run(args, **kwargs)
+            timeouts.append(kwargs["timeout"])
+            now[0] += kwargs["timeout"]
+            raise WorkerFailure("runtime command timed out")
+
+        with patch(
+            "autotrain_bench.docker_recovery.time.monotonic", side_effect=lambda: now[0]
+        ):
+            report = recovered.recover(unavailable, timeout_seconds=45)
+        self.assertEqual(timeouts, [20, 20, 20, 5])
+        self.assertEqual(now[0], 45)
+        self.assertTrue(report["deadline_exceeded"])
+        self.assertFalse(report["cleanup_complete"])
+        self.assertEqual(len(self.backend.objects), 5)
+        self.assertEqual(
+            [item["name"] for item in report["failures"]],
+            ["agent-0", "agent-1", "deadline"],
+        )
+
+    def test_backend_admission_timeout_preserves_storage_and_disables_creation(self):
+        self.create()
+        private = self.journal.private_directory("hidden-")
+        saved = (self.root / "worker/resources.json").read_bytes()
+        now = [0.0]
+        calls = []
+
+        def late_backend(args, **kwargs):
+            calls.append(list(args))
+            now[0] += kwargs["timeout"]
+            return self.backend.run(args, **kwargs)
+
+        with patch(
+            "autotrain_bench.docker_recovery.time.monotonic", side_effect=lambda: now[0]
+        ):
+            report = self.journal.recover(late_backend, timeout_seconds=1)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "info")
+        self.assertTrue(report["deadline_exceeded"])
+        self.assertFalse(report["cleanup_complete"])
+        self.assertTrue(private.exists())
+        self.assertEqual((self.root / "worker/resources.json").read_bytes(), saved)
+        with self.assertRaisesRegex(WorkerFailure, "cannot launch"):
+            self.journal.private_directory("new-")
+
+    def test_journal_io_consumes_recovery_allowance_before_runtime_deletion(self):
+        self.create()
+        private = self.journal.private_directory("hidden-")
+        recovered = self.reopen()
+        save = recovered._save
+        now = [0.0]
+
+        def slow_save():
+            save()
+            now[0] += 2
+
+        self.backend.calls.clear()
+        with patch(
+            "autotrain_bench.docker_recovery.time.monotonic", side_effect=lambda: now[0]
+        ), patch.object(recovered, "_save", slow_save):
+            report = recovered.recover(self.backend.run, timeout_seconds=1)
+        self.assertTrue(report["deadline_exceeded"])
+        self.assertFalse(report["cleanup_complete"])
+        self.assertEqual(len(self.backend.calls), 1)
+        self.assertEqual(self.backend.calls[0][0], "info")
+        self.assertTrue(private.exists())
+        self.assertTrue(self.backend.objects)
+
+    def test_late_private_storage_cleanup_cannot_report_success(self):
+        private = self.journal.private_directory("hidden-")
+        recovered = self.reopen()
+        now = [0.0]
+        remove = shutil.rmtree
+
+        def slow_remove(path):
+            remove(path)
+            now[0] += 2
+
+        with patch(
+            "autotrain_bench.docker_recovery.time.monotonic", side_effect=lambda: now[0]
+        ), patch("autotrain_bench.docker_recovery.shutil.rmtree", slow_remove):
+            report = recovered.recover(self.backend.run, timeout_seconds=1)
+        self.assertTrue(report["deadline_exceeded"])
+        self.assertFalse(report["cleanup_complete"])
+        self.assertFalse(private.exists())
+        self.assertEqual(recovered.state["phase"], "recovering")
+        self.assertTrue(recovered.recover(self.backend.run)["cleanup_complete"])
+
+    def test_invalid_recovery_allowances_do_not_touch_journal_or_runtime(self):
+        saved = (self.root / "worker/resources.json").read_bytes()
+        self.backend.calls.clear()
+        for value in (0, -1, float("nan"), float("inf"), True, None, 10**400):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                WorkerFailure, "finite positive"
+            ):
+                self.journal.recover(self.backend.run, timeout_seconds=value)
+            self.assertEqual((self.root / "worker/resources.json").read_bytes(), saved)
+        self.assertEqual(self.backend.calls, [])
+
+    def test_stuck_runtime_subprocess_obeys_shared_recovery_deadline(self):
+        from autotrain_bench.local_recovery import _perform
+        from autotrain_bench.runtime import DockerRuntime
+
+        self.create()
+        private = self.journal.private_directory("hidden-")
+        self.journal.close()
+        process = subprocess.run
+        attempted = []
+
+        def stuck_command(args, **kwargs):
+            attempted.append(kwargs["timeout"])
+            return process(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                **kwargs,
+            )
+
+        runtime = DockerRuntime(docker_binary=sys.executable)
+        started = time.monotonic()
+        with patch("autotrain_bench.runtime.subprocess.run", stuck_command), patch(
+            "autotrain_bench.runtime.DockerRuntime", return_value=runtime
+        ):
+            report = _perform(
+                {
+                    "operation": "recover",
+                    "state_dir": str(self.root / "worker"),
+                    "docker_binary": sys.executable,
+                    "registration": None,
+                    "timeout_seconds": 0.1,
+                }
+            )
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertEqual(len(attempted), 1)
+        self.assertLessEqual(attempted[0], 0.1)
+        self.assertTrue(report["deadline_exceeded"])
+        self.assertFalse(report["cleanup_complete"])
+        self.assertTrue(private.exists())
+        self.assertEqual(runtime._recovery.lock_fd, -1)
 
     def test_live_owner_blocks_recovery_without_docker_mutations(self):
         calls = list(self.backend.calls)

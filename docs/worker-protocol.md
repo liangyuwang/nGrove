@@ -44,10 +44,14 @@ Platform packages own:
 - platform logs and environment receipts;
 - site-specific security hardening.
 
-Platform packages are distributed separately.  Examples of possible package
+Platform implementations live outside Core, either as separately distributed
+packages or temporary deployments created during authorized preparation. Keep
+their source and dependency identities with run evidence. Examples of package
 names are `autotrain-worker-docker`, `autotrain-worker-apptainer`, and
 `autotrain-worker-kubernetes`; these names are examples, not core backends.
 Core must never grow platform selection branches or import their SDKs.
+See [Worker integration](worker-integration.md) for trusted composition,
+startup verification, supervision, cleanup, and resource-planning guidance.
 
 The trusted launcher or Worker verifies the public TRAIN view before task
 reveal. The launcher supplies that evidence to `Supervisor`, which checks its
@@ -123,10 +127,10 @@ Passing conformance does not certify a user-controlled deployment.  Likewise,
 an organizer-controlled deployment is not eligible when required technical
 capabilities are missing.  Missing or insufficient capabilities are recorded
 explicitly and never trigger a fallback. A receipt is conformant only for the
-suite version associated with the active Worker Protocol; a passing v13 receipt
-cannot certify a v14 Worker boundary.
+suite version associated with the active Worker Protocol; a passing v15 receipt
+cannot certify a v16 Worker boundary.
 
-Worker Protocol v15 retains the v9 evidence direction. `WorkerDescriptor`
+Worker Protocol v16 retains the v9 evidence direction. `WorkerDescriptor`
 contains only Worker self-description and cannot carry conformance. The trusted
 Operator composition supplies `ConformanceReceipt` independently to the
 Coordinator. The receipt binds its schema and suite versions, the assessed
@@ -135,17 +139,35 @@ decision. Core checks the Worker binding before using the receipt. This local
 trusted-input seam does not pretend to be a cryptographic remote attestation;
 authentication of a future remote receipt belongs to the deployment transport.
 
-`autotrain_bench.conformance` currently provides only a resolution diagnostic
-probe. It requires release-owned workload and hidden-data identities, uses a
-unique operation scope, separates public failure codes from trusted details,
-and always invokes deployment teardown. Because it does not test the complete
-Lease, evaluation, isolation, deadline, and teardown contract, it deliberately
-cannot issue a formal `ConformanceReceipt`. A complete organizer-controlled
-suite remains required before a formal deployment can receive one.
+`autotrain_bench.conformance` provides resolution,
+[Research Lease](worker-lease-probe.md), and
+[evaluation resource](worker-evaluation-probe.md) diagnostics. The Lease probe
+checks admission receipts, fixture command execution, stopped-state observations,
+repeated termination and rejected admission, with failed-start compensation.
+Its optional command timeout case adds independent command-start, timeout-event
+and descendant-absence observations before cleanup. A returned timeout flag alone
+cannot pass it; command return and observation share an explicit termination grace
+within the original case/Lease windows.
+The evaluation probe calls
+the supplied Evaluation Worker on public fixtures, checks per-invocation receipts
+and typed resource rejection, rejects late replies, and requires explicit
+deployment cleanup confirmation. The probes use unique operation scopes, separate
+public failure codes from trusted details, and invoke deployment teardown.
+The separate [idle Lease deadline diagnostic](worker-deadline-probe.md) uses an
+independent deployment observer to verify workload absence and a bound deadline
+event before any Worker cleanup call. Its observer must never enforce expiry
+as a side effect of inspection. The optional Worker pause/termination case uses
+deployment fault injection and independently verifies that the fault remains
+active through expiry. After injection is attempted, cleanup uses only external
+recovery and observation, with no further call into the potentially lost Worker.
+They do not test the complete physical enforcement, isolation, deadline and
+recovery contract or issue a formal `ConformanceReceipt`. A complete
+organizer-controlled suite remains required before a formal deployment can
+receive one.
 
 ## Research and evaluation roles
 
-Worker Protocol v15 models ResearchWorker and EvaluationWorker as separate
+Worker Protocol v16 models ResearchWorker and EvaluationWorker as separate
 interfaces because their trust domains differ:
 
 - ResearchWorker sees TRAIN, the Agent workspace, and training outputs, but
@@ -177,25 +199,27 @@ artifact is formally usable only when the evidence matches a
 `WorkloadResolutionAcceptance` supplied through the trusted organizer release
 receipt. Worker self-description is never organizer acceptance.
 
-Version 14 is a breaking interface revision in the current unreleased
+Version 15 is a breaking interface revision in the current unreleased
 development snapshot; it does not imply a package release version. Older
-Workers are rejected rather than adapted implicitly. Version 14 retains the v6
+Workers are rejected rather than adapted implicitly. Version 15 retains the v6
 workload-resolution rules, the v7 requirement that a successful `start_lease()`
 return a `ResourceAllocationReceipt`, and the v8 mandatory resolution
 deadlines, as well as the v9 trusted conformance input and v10 single-target
 semantics, the v11 offline two-artifact file contract, and the v12 hidden-bundle
 identity and prediction-storage rules. It also retains the v13 generic
-performance-score contract and adds the release-scoped cost contract. External
+performance-score contract and the v14 release-scoped cost contract. External
 Worker packages must implement workload and hidden-data resolution, bind
 operations to resolved identities and resource requests, accept TEST before
 ANALYSIS, return valid performance and cost measurements, and preserve the
 precise context/target/artifact visibility fields in
 `CandidateChannelRequirements` and the offline file ABI without assuming a
-particular storage or sandbox implementation.
+particular storage or sandbox implementation. Version 15 separates the bounded
+runtime prediction allocation from strict final artifact validation, as
+specified under [Candidate channel](#candidate-channel).
 
 A local development Worker may implement both roles in one process. A future
 formal deployment may place them on separate services connected only through
-an immutable artifact reference. The current version 14 Python interface does
+an immutable artifact reference. The current version 16 Python interface does
 not yet define that remote artifact transport.
 
 Worker operation failures and teardown failures have different episode
@@ -239,7 +263,7 @@ are not additive timeout grants.
 
 ### Known liveness limit: cooperative deadlines
 
-Worker Protocol v15 is a synchronous, in-process Python interface. Its timeout
+Worker Protocol v16 is a synchronous, in-process Python interface. Its timeout
 arguments are semantic deadlines and a conformance requirement, but they are
 cooperative rather than a Core-side preemption mechanism. Core can reject a
 result returned after its deadline; while a call has not returned, however,
@@ -263,7 +287,8 @@ instrumented Worker-operation timeouts. It fences the local process group,
 then uses the Worker journal to recover resources; it does not resume the
 episode or preempt an individual Core call safely. See
 [Worker recovery](worker-recovery.md) for tolerances, scope and reports.
-Worker Protocol v15 is unchanged. External launchers own equivalent protection
+The semantic Worker deadline contract is unchanged by this local supervision.
+External launchers own equivalent protection
 in their execution environment.
 
 A future platform-neutral seam should define asynchronous operation IDs,
@@ -591,7 +616,18 @@ context-file reading, participant-controlled scheduling/inference, and
 prediction writing. Hidden resolution, trusted validation, target joining, and
 score computation are outside that clock. Teardown is confirmed before the
 operation returns. Cost comparisons require the same benchmark release, hidden
-dataset identity, and runtime profile.
+dataset identity, and runtime profile. Matching profile names do not prove
+equivalent effective resources or cache/contending-workload conditions.
+
+Worker v16 additionally receives `evaluation_id` and `resource_envelope` on each
+evaluation. When the latter is non-null, `CandidateEvaluationResult` must carry
+an `EvaluationResourceReceipt` binding that ID, episode, Worker and request hash.
+Core validates effective normative values and enforcement before accepting the
+score, and records/revalidates the evidence in result v14. The Challenge v3
+`evaluation_resource_contract` is separate from Training requirements. A resource
+rejection is an infrastructure failure; a later ANALYSIS failure preserves an
+accepted TEST decision. See [evaluation resource contracts](evaluation-resources.md)
+for comparison limits, protocol migration, Docker support, and formal gating.
 
 ## Current migration stage
 
@@ -642,11 +678,39 @@ requirements. A future schema may remove that duplicate compatibility
 projection; until then the cross-check prevents two conflicting resource
 sources of truth.
 
-The bundled Docker Worker reports its existing count-based GPU allocation as
-`best_effort`, even when the workload-visible inventory matches the request.
-It therefore remains usable for preview profiles that permit that level but
-cannot satisfy an `enforced` formal GPU envelope until its own exact device
-binding is fixed. This is honest Worker evidence, not a Docker rule in Core.
+The bundled Docker Worker selects full NVIDIA GPUs matching the requested
+count, model and minimum memory, then freezes their UUIDs for that Worker
+instance. Selection is deterministic in UUID order, independent of inventory
+row order. Training and CUDA Candidate launches use the same explicit UUID
+grant through Docker's `--gpus` device parameter, including its CSV quoting for
+multiple devices; see [NVIDIA's device-selection documentation](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/docker-specialized.html#gpu-enumeration).
+No physical device identifiers are added to the semantic resource envelope.
+
+Before returning a Training Lease receipt, the Worker queries the idle
+Training container and requires the visible UUID set, model and memory to match
+the selection and requested profile. A mismatch fails startup and triggers the
+existing Lease cleanup; unconfirmed removal retains the retryable handle.
+Successful checks write private `gpu-binding.json` evidence in the Lease
+directory. The trusted environment manifest records
+`selected_nvidia_gpu_uuids` separately from its full host inventory.
+
+CUDA evaluation rechecks that the frozen devices remain eligible before
+starting Candidate code, using the remaining evaluation allowance. It never
+substitutes another matching device. A new GPU requirement needs a new Worker
+instance. Inventory queries are bounded; malformed/duplicate UUIDs and invalid
+memory evidence are rejected. This implementation selects full GPUs only;
+MIG-enabled devices are excluded instead of treating a partition as the
+profile's full GPU. It does not change MIG mode or allocate accelerators.
+
+GPU resource evidence remains `best_effort`: command-boundary regressions and
+inventory checks do not certify denial of access to every ungranted device,
+exclusive use, a remote allocator's ownership, or the independent Evaluation
+allocation contract. The local deployment must already be authorized to use
+the selectable host devices. Scheduler-specific ownership and grants remain
+external Worker responsibilities. A real heterogeneous-host and negative-access
+acceptance run is still required before strengthening these guarantees; the
+bundled Worker remains development-trust and does not satisfy an `enforced`
+formal GPU envelope.
 
 `CommandResult` streams are capped at 1 MiB each by the local Worker and again
 by the Supervisor before they enter the mailbox or `commands.jsonl`. Concrete

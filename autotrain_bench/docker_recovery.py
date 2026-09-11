@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 import re
 import shutil
@@ -25,12 +26,55 @@ from .worker_protocol import WorkerFailure
 OWNER_LABEL = "autotrain-bench.worker-owner"
 RESOURCE_LABEL = "autotrain-bench.resource-token"
 MAX_JOURNAL_BYTES = 4 * 1024 * 1024
+DEFAULT_RECOVERY_TIMEOUT_SECONDS = 120.0
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,254}\Z")
 _TOKEN = re.compile(r"[a-f0-9]{32}\Z")
 _IDENTITY = re.compile(r"[a-f0-9]{64}\Z")
 # Bound the serialized volume creation timestamp, including JSON quotes and
 # escapes, so its later identity capture has a finite admission reservation.
 _MAX_VOLUME_IDENTITY_JSON_BYTES = 128
+
+
+def recovery_timeout_seconds(value: float) -> float:
+    message = "Worker recovery timeout must be finite positive seconds"
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise WorkerFailure(message)
+    try:
+        seconds = float(value)
+    except OverflowError as exc:
+        raise WorkerFailure(message) from exc
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise WorkerFailure(message)
+    return seconds
+
+
+class _RecoveryDeadlineExceeded(WorkerFailure):
+    pass
+
+
+class _RecoveryDeadline:
+    def __init__(self, seconds: float) -> None:
+        self.seconds = recovery_timeout_seconds(seconds)
+        self.started = time.monotonic()
+
+    def remaining(self) -> float:
+        remaining = self.seconds - (time.monotonic() - self.started)
+        if remaining <= 0:
+            raise _RecoveryDeadlineExceeded("Worker recovery deadline exceeded")
+        return remaining
+
+    def run(self, run: Callable, args: Sequence[str], **kwargs):
+        kwargs["timeout"] = min(kwargs.get("timeout") or 20, self.remaining())
+        try:
+            result = run(args, **kwargs)
+        except (WorkerFailure, OSError, subprocess.TimeoutExpired):
+            # A command timeout may have used the last of the shared allowance.
+            # Stop the recovery pass instead of granting the next command anew.
+            self.remaining()
+            raise
+        # Even a runtime returning late success cannot complete this pass.
+        self.remaining()
+        return result
 
 
 class DockerRecovery:
@@ -567,11 +611,43 @@ class DockerRecovery:
             record["state"] = "removed"
             self._save()
 
-    def recover(self, run: Callable) -> Dict[str, Any]:
-        self.bind_backend(run)
+    def recover(
+        self,
+        run: Callable,
+        *,
+        timeout_seconds: float = DEFAULT_RECOVERY_TIMEOUT_SECONDS,
+    ) -> Dict[str, Any]:
+        deadline = _RecoveryDeadline(timeout_seconds)
         failures = []
+        deadline_exceeded = False
+
+        def bounded_run(args, **kwargs):
+            return deadline.run(run, args, **kwargs)
+
+        # Recovery is cleanup-only even if daemon admission times out before
+        # the recovering phase can be persisted.
+        self._can_create = False
+        try:
+            self._recover(bounded_run, deadline, failures)
+        except _RecoveryDeadlineExceeded as exc:
+            deadline_exceeded = True
+            failures.append(
+                {"kind": "recovery", "name": "deadline", "reason": str(exc)}
+            )
+        return {
+            "cleanup_complete": not failures,
+            "episode": self.state["episode"],
+            "resumed": False,
+            "timeout_seconds": deadline.seconds,
+            "deadline_exceeded": deadline_exceeded,
+            "failures": failures,
+        }
+
+    def _recover(
+        self, run: Callable, deadline: _RecoveryDeadline, failures: list
+    ) -> None:
+        self.bind_backend(run)
         with self._mutex:
-            self._can_create = False
             self.state["phase"] = "recovering"
             try:
                 self._save()
@@ -581,9 +657,37 @@ class DockerRecovery:
                 )
                 # Still stop durably identified workloads. Loaded journals
                 # cannot create resources even if phase persistence failed.
+
+        def remove_all(records):
+            for record in records:
+                deadline.remaining()
+                try:
+                    self.remove(record["kind"], record["name"], run)
+                except _RecoveryDeadlineExceeded:
+                    raise
+                except (WorkerFailure, OSError) as exc:
+                    failures.append(
+                        {
+                            "kind": record["kind"],
+                            "name": record["name"],
+                            "reason": str(exc),
+                        }
+                    )
+                deadline.remaining()
+
         # Kill every workload/control container before touching networks or
         # storage. The holder is a container too; consumers are stopped first.
-        records = list(self.state["resources"].values())
+        # A durable absence confirmation is completed work across retries.
+        # Rechecking all historical removals can consume every recovery pass
+        # before a live workload gets a turn. Ownership fences new creation;
+        # legitimate name reuse replaces the old record with a new intent.
+        # RAM-only removal state is not a durable confirmation and stays pending.
+        records = [
+            record
+            for key, record in self.state["resources"].items()
+            if record["state"] != "removed"
+            or self._durable_state["resources"].get(key) != record
+        ]
         containers = [
             record
             for record in records
@@ -595,53 +699,27 @@ class DockerRecovery:
             for record in records
             if record["kind"] == "container" and "prediction-holder" in record["name"]
         ]
-        for record in containers:
-            try:
-                self.remove(record["kind"], record["name"], run)
-            except (WorkerFailure, OSError) as exc:
-                failures.append(
-                    {"kind": record["kind"], "name": record["name"], "reason": str(exc)}
-                )
+        remove_all(containers)
         if not failures:
-            for record in holders:
-                try:
-                    self.remove(record["kind"], record["name"], run)
-                except (WorkerFailure, OSError) as exc:
-                    failures.append(
-                        {
-                            "kind": record["kind"],
-                            "name": record["name"],
-                            "reason": str(exc),
-                        }
-                    )
+            remove_all(holders)
         if not failures:
-            for record in (item for item in records if item["kind"] != "container"):
-                try:
-                    self.remove(record["kind"], record["name"], run)
-                except (WorkerFailure, OSError) as exc:
-                    failures.append(
-                        {
-                            "kind": record["kind"],
-                            "name": record["name"],
-                            "reason": str(exc),
-                        }
-                    )
+            remove_all(item for item in records if item["kind"] != "container")
         if not failures:
+            deadline.remaining()
             private = self.root / "private"
             try:
                 if private.is_symlink():
                     raise WorkerFailure("Worker private storage became a symlink")
                 if private.exists():
+                    deadline.remaining()
                     shutil.rmtree(private)
+                deadline.remaining()
                 self.state["phase"] = "cleaned"
                 self._save()
+            except _RecoveryDeadlineExceeded:
+                raise
             except (WorkerFailure, OSError) as exc:
                 failures.append(
                     {"kind": "private_storage", "name": "private", "reason": str(exc)}
                 )
-        return {
-            "cleanup_complete": not failures,
-            "episode": self.state["episode"],
-            "resumed": False,
-            "failures": failures,
-        }
+        deadline.remaining()

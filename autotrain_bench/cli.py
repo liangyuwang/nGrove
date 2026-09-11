@@ -34,8 +34,8 @@ from .config import (
 from .host_agent import (
     HostAgentProcess,
     HostAgentStartupFailure,
-    summarize_host_agent_trace,
 )
+from .docker_recovery import DEFAULT_RECOVERY_TIMEOUT_SECONDS, recovery_timeout_seconds
 from .inference import summarize_inference_trace
 from .local_mailbox import LocalFileMailbox
 from .local_agent_execution import describe_local_agent_execution
@@ -49,6 +49,11 @@ from .local_watchdog import (
     supervise_start,
 )
 from .results import normalize_result_report
+from .operator_status import (
+    DEFAULT_MAX_AGE_SECONDS,
+    format_operator_status,
+    read_operator_status,
+)
 from .runtime import DockerRuntime, RuntimeFailure
 from .supervisor import Supervisor
 from .training_data import verify_training_data
@@ -261,7 +266,7 @@ def _stop_and_record_host_agent(
     """Record host-Agent termination only after its process has stopped."""
 
     exit_code = host_agent.stop()
-    usage = summarize_host_agent_trace(host_agent.stdout_path)
+    usage = host_agent.summarize_usage()
     supervisor.record_agent_execution(
         exit_code=exit_code,
         usage=usage,
@@ -366,6 +371,7 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
     resolved_challenge = _resolve_challenge_run(args, config, release)
     comparison_key = None
     challenge_release = None
+    evaluation_resource_envelope = None
     if resolved_challenge is None:
         track = args.track
         resources = TrainingResources(
@@ -382,6 +388,7 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
         track = resolved_challenge.track
         resources = resolved_challenge.resources
         resource_envelope = resolved_challenge.resource_envelope
+        evaluation_resource_envelope = resolved_challenge.evaluation_resource_envelope
         comparison_key = resolved_challenge.comparison_key.public_manifest()
         challenge_release = resolved_challenge.release_manifest
     operator_limit = resolve_operator_research_limit(
@@ -493,6 +500,11 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
     reference_runtime = DockerRuntime(
         hidden_datasets={"analysis": config.analysis_path, "test": config.test_path}
     )
+    reference_runtime.preflight_evaluation_resources(
+        config,
+        resources=resources,
+        resource_envelope=evaluation_resource_envelope,
+    )
     if storage_limit is not None:
         reference_runtime.configure_operator_storage(
             root=episode_dir.parent,
@@ -572,9 +584,11 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
                     "deadline triggers termination and journaled cleanup. "
                     f"Heartbeat timeout {args.worker_watchdog_heartbeat_seconds:g}s; "
                     f"deadline grace {args.worker_watchdog_grace_seconds:g}s; "
-                    f"control-call fallback {args.worker_watchdog_control_seconds:g}s. "
+                    f"control-call fallback {args.worker_watchdog_control_seconds:g}s; "
+                    f"recovery allowance {args.worker_watchdog_recovery_seconds:g}s. "
                     "Adjust these before launch with --worker-watchdog-heartbeat-seconds, "
-                    "--worker-watchdog-grace-seconds and --worker-watchdog-control-seconds. "
+                    "--worker-watchdog-grace-seconds, --worker-watchdog-control-seconds "
+                    "and --worker-watchdog-recovery-seconds. "
                     "These are private operator settings; recovery does not resume the episode.",
                     flush=True,
                 )
@@ -591,6 +605,7 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
             resources=resources,
             training_data_verification=training_data_verification,
             resource_envelope=resource_envelope,
+            evaluation_resource_envelope=evaluation_resource_envelope,
             track=track,
             episode_dir=episode_dir,
             agent_api_dir=agent_api_dir,
@@ -1144,9 +1159,30 @@ def command_report(args: argparse.Namespace) -> int:
 
 
 def command_worker_recover(args: argparse.Namespace) -> int:
-    report = DockerRuntime().recover_resources(args.state_dir)
+    timeout_seconds = recovery_timeout_seconds(args.timeout_seconds)
+    report = DockerRuntime().recover_resources(
+        args.state_dir, timeout_seconds=timeout_seconds
+    )
     _print(report)
-    return 0 if report["cleanup_complete"] else 2
+    return (
+        0
+        if report["cleanup_complete"]
+        and not report.get("process_supervision", {}).get("operator_signal")
+        else 2
+    )
+
+
+def command_status(args: argparse.Namespace) -> int:
+    view = read_operator_status(
+        args.episode,
+        observation_path=args.observation,
+        max_age_seconds=args.max_age_seconds,
+    )
+    if args.json:
+        _print(view)
+    else:
+        print(format_operator_status(view))
+    return 0
 
 
 def command_challenge_info(args: argparse.Namespace) -> int:
@@ -1360,6 +1396,7 @@ def build_parser() -> argparse.ArgumentParser:
             CONTROL_TIMEOUT,
             "fallback for control/startup calls without a timeout",
         ),
+        ("recovery", DEFAULT_RECOVERY_TIMEOUT_SECONDS, "shared recovery allowance"),
     ):
         start.add_argument(
             f"--worker-watchdog-{name}-seconds",
@@ -1374,9 +1411,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="reclaim a stopped Docker Worker's resources without resuming",
     )
     recover.add_argument("--state-dir", type=Path, required=True)
+    recover.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=DEFAULT_RECOVERY_TIMEOUT_SECONDS,
+        metavar="SECONDS",
+        help=f"shared recovery allowance (default: {DEFAULT_RECOVERY_TIMEOUT_SECONDS:g})",
+    )
     recover.set_defaults(function=command_worker_recover)
 
-    report = subparsers.add_parser("report", help="print a completed episode report")
+    status = subparsers.add_parser(
+        "status", help="show trusted Operator execution evidence and Core snapshot"
+    )
+    status.add_argument("--episode", required=True, type=Path)
+    status.add_argument(
+        "--observation", type=Path, help="trusted deployment observation JSON"
+    )
+    status.add_argument(
+        "--max-age-seconds",
+        type=float,
+        default=DEFAULT_MAX_AGE_SECONDS,
+        help="maximum deployment observation age (default: 60 seconds)",
+    )
+    status.add_argument(
+        "--json", action="store_true", help="emit the structured Operator view"
+    )
+    status.set_defaults(function=command_status)
+
+    report = subparsers.add_parser(
+        "report", help="print the full trusted Core episode report"
+    )
     report.add_argument("--episode", required=True, type=Path)
     report.set_defaults(function=command_report)
 
@@ -1438,6 +1502,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                 args.worker_watchdog_control_seconds,
                 args.worker_watchdog_grace_seconds,
                 args.worker_watchdog_heartbeat_seconds,
+                args.worker_watchdog_recovery_seconds,
             ):
                 if not math.isfinite(value) or value <= 0:
                     raise ConfigError(
@@ -1460,6 +1525,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                 list(argv) if argv is not None else sys.argv[1:],
                 heartbeat_timeout=args.worker_watchdog_heartbeat_seconds,
                 grace_seconds=args.worker_watchdog_grace_seconds,
+                recovery_seconds=args.worker_watchdog_recovery_seconds,
             )
         else:
             return_code = args.function(args)

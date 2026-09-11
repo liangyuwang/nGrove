@@ -26,8 +26,8 @@ Agent, or execution backend by implication. Do not recommend, synthesize, or
 preselect a Tested Agent merely because the request is underspecified. The
 repository does not bundle a reference Agent.
 
-Before changing files, preparing data, pulling images, allocating resources, or
-starting an episode:
+For a launch request, before changing deployment files, preparing data, pulling
+images, allocating resources, or starting an episode:
 
 1. Inspect the repository and current environment with read-only operations.
 2. Explain briefly that this project is a benchmark runner rather than a
@@ -55,6 +55,10 @@ the supported choices when the repository defines a finite map. After showing
 the complete table, ask the unresolved questions progressively in small,
 related groups. Do not perform setup work merely to make one proposed option
 look ready before the user selects the run contract.
+
+Repository review, documentation, and implementation fixes do not by themselves
+request a benchmark run. Perform that work within its existing authorization;
+do not require a run-intake table unless an episode or deployment is requested.
 
 ## Establish the run contract with the user
 
@@ -168,9 +172,16 @@ retries, a different lane, relaxed isolation, or changes to benchmark policy.
    Record the exact Git revision and preserve unrelated user changes.
 2. Inspect the target environment read-only. Confirm that the destination is
    safe before copying the repository or creating artifacts.
-3. Use the existing platform Worker. If no compatible Worker exists, report
-   that boundary; keep any explicitly authorized site integration outside the
-   tracked core repository.
+3. Prefer an existing compatible Worker. When preparing the external deployment
+   is already authorized, implement or adapt a missing Worker within that
+   trusted working root and the approved resource limits, then verify it using
+   [Worker integration](docs/worker-integration.md). Temporary Worker source
+   created during preparation is a valid deployment; a separately maintained
+   repository is not a prerequisite. Preserve its source and dependencies as
+   run evidence, freeze its identity before launch, and keep it outside the
+   tracked Core repository. Report missing access, enforcement, or resource
+   authorization when it prevents further work; do not repeatedly ask for
+   permission for implementation already in scope.
 4. Keep the trusted Core checkout, task data, task images, and episode state
    separate from the Tested Agent workspace. Prepare and verify public TRAIN
    data and immutable images in the trusted execution environment. Freeze the
@@ -181,14 +192,23 @@ retries, a different lane, relaxed isolation, or changes to benchmark policy.
    is exact.
 5. Preflight only the hardware requirements declared by the selected runtime
    profile: host count and accelerator vendor, model, count, and minimum
-   memory. Do not expand preflight into unrelated diagnostics.
+   memory. Verify the launch environment and required Agent tools separately
+   using the staged integration checks. A version command or authentication
+   check alone does not establish that a real Agent session can use its file
+   and command tools. Do not expand preflight into unrelated diagnostics.
 6. Launch through the official Coordinator/Worker semantics. Do not bypass
    lease accounting, Candidate validation, incumbent declaration, evaluation
    isolation, or deadlines.
 7. Monitor the allocator job and episode state. Track leases, committed
    Candidates, incumbent changes, research sealing, postmortem ANALYSIS
-   completeness, final TEST result, Agent usage, failures, and policy flags. Do
-   not inspect hidden evaluation content.
+   completeness, final TEST result, Agent usage, failures, and policy flags.
+   Use the trusted [Operator status](docs/operator-status.md) view where useful;
+   check execution independently of the Core snapshot. Distinguish preparation,
+   allocation, Agent startup, and active Training Leases. Report the last
+   confirmed check, current work, any blocker, and the next step and responsible
+   party. Mark unavailable or stale evidence as unknown; one failed monitoring
+   source must not block checking the others. Do not inspect hidden evaluation
+   content or equate Lease consumption with research completion percentage.
 8. On failure, collect the smallest relevant logs, identify the direct cause
    and downstream effects, and report them. Do not cancel, mutate, relax policy,
    or submit a replacement job unless the user authorized that action.
@@ -196,6 +216,29 @@ retries, a different lane, relaxed isolation, or changes to benchmark policy.
    resource usage, postmortem Candidate/ANALYSIS trajectory, incumbent, TEST
    metric, Agent usage completeness, and compliance/eligibility status. Compare
    runs only when their full comparison keys match.
+
+Within the approved scope, continue to the next necessary stage after each
+stage completes. Answer status questions and then resume the ongoing work.
+Stop only for a concrete missing prerequisite, a user-requested pause, or work
+outside authorization; explain what is missing and who can resolve it.
+
+Before launch, record the separate clocks for resource allocation, Track
+accounting, private research protection, and evaluation/cleanup. If the user
+sets a resource reservation limit, do not silently add preparation or
+evaluation hours to it. Explain any shortfall caused by different start times
+and resolve the budget before submission. Retaining accelerators between
+Leases can be intentional; report reserved time separately from active Lease
+time. Private Operator limits never enter the Tested Agent's task or become a
+Track scoring budget.
+
+An external launcher must have bounded normal and cancellation cleanup plus
+an owned-resource inspection/recovery path usable after launcher loss. A
+`finally` block or a watchdog inside the same allocation does not guarantee
+cleanup when the whole allocation or host disappears. Confirm workload
+termination separately from archive verification and working-storage disposal;
+preserve unresolved evidence and the interrupted Core state. Arrange the
+recovery and retention scope before launch; cleanup does not authorize a new
+episode or additional training.
 
 ## Policy invariants
 

@@ -38,6 +38,67 @@ The Agent control transport and the Coordinator-to-Worker Protocol are
 different boundaries. A deployment may use a shared file mailbox for one and a
 remote Worker service for the other, or replace either independently.
 
+## Preview repair and acceptance sequence
+
+The external Worker follow-up uses this sequence alongside the architectural phases
+below. Implementation and deployment acceptance are tracked separately in the
+[Worker acceptance evidence matrix](worker-acceptance-matrix.md).
+
+| Step | Scope | Current disposition |
+| --- | --- | --- |
+| 1 | Host Agent log visibility | Implemented, including capture-loss handling and local process regressions |
+| 2 | Trusted Operator status | Implemented; external observation wiring/final refresh requires deployment evidence |
+| 3 | External Worker startup and exceptional cleanup | Integration, tool-admission, clocks and recovery guidance delivered; affected external packaging/cleanup remains deployment work |
+| 4 | Minimum acceptance for original issues 2/3/4/5/6/8 | Reliability fixes, diagnostics and evidence matrix delivered; next work is scoped deployment acceptance using existing tools and applicable historical evidence |
+| 5 | Original issue 7: cost comparison conditions | Evaluation contract, operation receipts and startup preflight implemented; release-selected cache/I/O/contention conditions and actual enforcement still need completion |
+| 6 | Original issues 10/12/13: formal evaluation | Gateway evidence and reusable Worker diagnostics implemented in Core; complete formal conformance (#10) and formal release/publication (#13) deferred to the formal evaluation milestone, still incomplete; actual deployment evidence remains separately pending |
+
+The matrix records historical successful Tracks and fault diagnostics without
+treating them as acceptance of later code. It also defines the next bounded
+diagnostic cases and the evidence needed to close them; it does not authorize a
+new allocation or require another full A/B run. Original issues 1/9 retain their
+main-item completion. Original issue 11 and full remote operation/cancellation
+semantics remain separately demand-driven.
+
+### Current preview closeout boundary
+
+The implementation review at `c13586b60b68c234837e5a8c552caed904cf3816`
+closes the planned generic-probe development for this preview repair cycle. Its
+last recorded full local test run passed 672 tests. Further work is the bounded
+[acceptance preparation and completion record](worker-acceptance-matrix.md#execution-order-and-completion-record),
+followed by authorized, targeted deployment checks. There is no planned next
+round of probe expansion solely to increase coverage.
+
+| Original item | Implementation disposition | Remaining work |
+| --- | --- | --- |
+| 4: stalled calls, deadlines and cancellation | The bundled supervised composition implements outer watchdog termination and cleanup-only recovery; reusable diagnostics cover returned command timeouts and idle Lease expiry, including Worker pause/termination | Verify the selected deployment's promised behavior. The synchronous v16 interface still cannot safely preempt or reconcile an individual wedged call; asynchronous operations remain an open protocol capability, outside this preview closeout |
+| 8: real Worker fault acceptance | The matrix and diagnostic tools are delivered; historical normal episodes and selected real fault cases retain their recorded passing scope | Select only applicable cases with missing or invalidated evidence for the frozen deployment; complete their observations and cleanup records |
+| 10: complete formal conformance | Trusted receipt binding and partial diagnostics are implemented | The complete organizer-controlled suite and certification workflow are deferred to formal evaluation, not marked complete |
+| 13: formal release and publication | Existing preview results retain their recorded status | Formal hidden release, frozen comparison conditions, submission and publication infrastructure remain deferred |
+
+Issue 12's Gateway evidence interface is implemented; actual formal launcher
+evidence and deployment certification remain part of formal readiness. These
+milestone decisions do not upgrade capability, trust, compliance or eligibility,
+or waive a required execution constraint.
+
+Reopen implementation only for a reproducible defect or a selected required
+acceptance case that the existing interfaces and deployment hooks cannot express.
+Identify that concrete gap, its owner and its passing check before adding code.
+A missing deployment observation alone is not a new Core feature request.
+
+Historical Worker source discovery and provenance review are now complete,
+with a repaired v15 snapshot recommended as the adaptation baseline. Exact
+identities and source comparisons remain in the trusted Operator record; the
+[matrix](worker-acceptance-matrix.md#source-provenance-review) records the
+remaining v16 adaptation and acceptance boundary. Source discovery alone does
+not complete deployment acceptance or select a new execution environment.
+
+Repository implementation closeout, deployment acceptance and formal readiness
+are reported separately. The first is complete for this repair scope; the second
+is pending for a selected current deployment; the third is deferred. New users
+apply the acceptance criteria to their own Worker; historical test sites and
+site-specific adapters are not prerequisites.
+
 ## Invariants throughout the migration
 
 - The Coordinator remains authoritative for Track A/B budgets, Lease
@@ -105,10 +166,10 @@ The v0 support statement is:
   integration, or non-Docker formal execution path yet.
 - The current local Docker and `host_cli` paths are development/preview paths;
   no official leaderboard challenge has been released.
-- The v0 Docker GPU preflight verifies that enough matching devices exist, but
-  its count-based Docker grant does not yet prove that those exact devices were
-  selected. GPU profile matching is therefore a known reference-Worker
-  limitation, not a Core allocation mechanism.
+- The bundled Docker Worker freezes matching GPU UUIDs and checks the Training
+  workload's visible set before returning a Lease. Hardware isolation and
+  independent evaluation-resource certification remain reference-Worker
+  acceptance gaps, not a Core allocation mechanism.
 - The local mailbox bounds the live entries and regular-file bytes it will
   process, but the bundled bind-mounted storage does not yet provide a hard
   filesystem quota. Pre-inspection disk containment is a known local Worker
@@ -353,9 +414,23 @@ complete formal receipt.
 
 Status: implemented in the development schemas.
 
-The current versions are Task schema v7, Challenge schema v2, Agent Protocol v12,
-Worker Protocol v15, and result schema v13. The entries below identify the
+The current versions are Task schema v7, Challenge schema v3 (v2 previews remain
+readable), Agent Protocol v12, Worker Protocol v16, and result schema v15. The entries below identify the
 versions that introduced each change.
+
+- Worker v16, Challenge v3, and result v14 add a separate evaluation resource
+  envelope and per-invocation allocation receipt. Core checks binding, effective
+  values and enforcement before accepting cost or performance, and attributes a
+  rejected receipt to infrastructure. TEST resource acceptance gates formal
+  eligibility; later ANALYSIS resource failures remain diagnostic. Docker can
+  apply CPU quota and memory caps with best-effort configuration evidence, while
+  unsupported normative cache/I/O/exclusivity conditions fail closed. The bundled
+  preview profiles remain unchanged and do not yet freeze a comparable evaluation
+  environment. Real deployment acceptance and organizer-selected conditions remain
+  outstanding; see [evaluation resources](evaluation-resources.md).
+  The local launcher now preflights these requirements before episode setup;
+  read-only support/inventory checks create no allocation receipt and do not
+  replace per-invocation verification. External launchers own equivalent admission.
 
 - Task schema v7, Worker Protocol v15 and Agent Protocol v12 separate prediction runtime
   allocations (temporary files allowed) from exact final artifact validation.
@@ -472,10 +547,14 @@ semantic fields instead of mechanism names, which changes the persisted
 structure and therefore requires a result schema revision. Once the first
 preview establishes a compatibility baseline, that revision must also define
 an explicit compatibility policy. Worker Protocol v14 resolves only Worker-owned training, Candidate,
-and Evaluator workloads. The v0 Agent evidence binds the Agent image but not a
-separate inference Gateway image, so formal runs using registered inference now
-fail closed with `inference_gateway_workload_evidence_missing` until C1 defines
-trusted evidence for that deployment boundary.
+and Evaluator workloads. The separate
+[Gateway execution evidence](gateway-execution.md) interface now lets a trusted
+launcher register an actual execution receipt before task reveal, bound to the
+episode and frozen inference registration. Result v15 verifies it against the
+organizer's complete Gateway artifact identity. The bundled development launcher
+does not issue that receipt and still fails closed for formal inference. This
+bounded issue-12 repair does not redesign Agent runner vocabulary or close C1's
+broader non-Docker sandbox trigger.
 
 ### C2. Remote immutable artifacts
 
@@ -577,12 +656,16 @@ profile still declares one. Authenticity still depends on the trusted Worker
 deployment and invocation channel. Remote cryptographic transport and
 deployment certification remain separate future work.
 
-The bundled Docker Worker reports count-based GPU selection as `best_effort`.
-That honestly satisfies current preview envelopes but not an `enforced` formal
-GPU envelope. Exact Docker GPU binding remains a reference-Worker issue rather
-than part of the C4 Core schema. Evaluation-operation allocation evidence is
-also deferred until a release demonstrates that resources outside Training
-Leases are independently normative.
+The bundled Docker Worker now uses matching, frozen GPU UUIDs for Training and
+CUDA Candidate grants and verifies Training visibility. It retains `best_effort`
+resource evidence pending real hardware/negative-access acceptance, satisfying
+preview envelopes but not an `enforced` formal GPU envelope. Physical device
+binding remains in the Worker rather than the C4 Core schema; see the current
+[resource-contract implementation](worker-protocol.md#current-migration-stage)
+for evidence and limitations. Worker v16 adds independent evaluation-operation
+allocation evidence through the same semantic property vocabulary; see
+[evaluation resource contracts](evaluation-resources.md). Real enforcement of
+the release-selected comparison conditions still needs deployment acceptance.
 
 ### C5. Trusted conformance evidence
 
@@ -603,9 +686,48 @@ requires release-owned identities, a unique run scope, a mandatory deployment
 teardown callback, and public/private diagnostic separation, but cannot issue a
 formal receipt because it does not exercise the complete v9 contract.
 
+A separate [evaluation resource diagnostic](worker-evaluation-probe.md) now
+exercises v16 TEST/ANALYSIS invocation receipts and typed resource rejection on
+public fixtures, sharing resolution/execution deadlines and requiring explicit
+deployment cleanup confirmation. This gives external Worker preparation a
+reusable check beyond resolution. It remains partial diagnostic coverage, not
+physical enforcement acceptance or a formal conformance suite; historical
+external preview runs are not retrospectively certified.
+
 The future formal suite belongs to organizer tooling and the external Worker
 SDK. Platform-specific deployment setup, outer watchdogs, destructive cleanup,
 and remote receipt authentication stay outside Core.
+Under the current closeout decision, the complete suite is deferred with formal
+release work; the diagnostic increments below are delivered tools, not a queue
+of further preview development stages.
+
+The [Research Lease diagnostic](worker-lease-probe.md) now adds admission and
+resource-receipt checks, fixture command execution, repeated termination,
+post-stop command rejection and rejected-admission observations. It registers
+starts before calling the Worker and compensates failed or late creation before
+the mandatory deployment teardown. This is another bounded issue-10 increment;
+independent deadlines, isolation, physical enforcement, crash recovery and
+organizer certification remain required for complete formal conformance.
+
+The Lease diagnostic's optional command timeout case now checks actual command
+start, timeout cause and descendant absence through an independent observer.
+It runs once before normal cleanup on the first Lease, adds no allocations,
+rejects early/late or false timeout claims, and preserves compensation failures.
+Local process tests reject a stopped exec client whose command descendants remain
+alive. This closes another reusable issue-10 diagnostic case; deployment acceptance
+and preemption of unreturned calls remain separate requirements.
+
+The [idle Lease deadline diagnostic](worker-deadline-probe.md) now adds an
+independent observer seam for live-state, deadline-event and stopped-state
+evidence, without invoking Worker state/command/cleanup methods during the idle
+window. Its optional fault case now injects a deployment-owned Worker pause or
+termination and requires independent evidence that the fault remains active
+through expiry. Injection and observation cannot extend the grant; after an
+attempted injection, external recovery replaces all further Worker calls.
+Deterministic regressions and local process fixtures cover this diagnostic,
+including failure when the paused Worker itself owns deadline enforcement.
+Actual Worker deployment acceptance, exact activation timing, command
+cancellation and allocation/host-loss recovery remain separate work.
 
 ### Other independently triggered work
 

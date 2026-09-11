@@ -11,8 +11,17 @@ from .artifact_identity import (
     HIDDEN_BUNDLE_IDENTITY_ALGORITHM,
 )
 from .config import AGENT_EGRESS_POLICIES, AGENT_RUNNERS
+from .gateway_execution import (
+    GatewayArtifactIdentity,
+    GatewayExecutionReceipt,
+    GatewayExecutionRequest,
+    gateway_eligibility_violations,
+    inference_policy_sha256,
+)
 from .worker_protocol import (
     CostContract,
+    EvaluationResourceReceipt,
+    assess_evaluation_resources,
     PerformanceScoreContract,
     ResourceAllocationReceipt,
     ResourceEnvelope,
@@ -20,7 +29,7 @@ from .worker_protocol import (
 )
 
 
-RESULT_SCHEMA_VERSION = 13
+RESULT_SCHEMA_VERSION = 15
 _VALID_STATUSES = {
     "created",
     "active",
@@ -57,7 +66,7 @@ def normalize_result_report(payload: Any) -> Dict[str, Any]:
     version = payload.get("result_schema_version")
     if isinstance(version, bool) or not isinstance(version, int):
         raise ResultSchemaError("result_schema_version must be an integer")
-    if version not in {12, RESULT_SCHEMA_VERSION}:
+    if version not in {12, 13, 14, RESULT_SCHEMA_VERSION}:
         raise ResultSchemaError(f"unsupported result schema version: {version}")
     if version == 12 and (
         payload.get("status") == "operator_stopped"
@@ -65,6 +74,20 @@ def normalize_result_report(payload: Any) -> Dict[str, Any]:
         or "operator_limits" in payload
     ):
         raise ResultSchemaError("operator protection requires result schema version 13")
+    if version < 14 and any(
+        name in payload
+        for name in ("evaluation_resource_envelope", "evaluation_resource_allocations")
+    ):
+        raise ResultSchemaError("evaluation resources require result schema version 14")
+    verification = payload.get("formal_release_verification")
+    if version < 15 and (
+        "gateway_execution" in payload
+        or (
+            isinstance(verification, dict)
+            and "inference_gateway_artifact" in verification
+        )
+    ):
+        raise ResultSchemaError("Gateway execution requires result schema version 15")
     result = dict(payload)
     result.setdefault("deployment_teardown_failures", [])
     result.pop("pending_result", None)
@@ -353,6 +376,223 @@ def _validate_resource_allocations(result: Dict[str, Any]) -> None:
             )
 
 
+def _validate_evaluation_resources(result: Dict[str, Any]) -> None:
+    if result["result_schema_version"] < 14:
+        return  # Historical reports carry no claim of per-evaluation verification.
+    if "evaluation_resource_envelope" not in result:
+        raise ResultSchemaError("evaluation_resource_envelope is required")
+    value = result["evaluation_resource_envelope"]
+    try:
+        envelope = ResourceEnvelope.from_manifest(value) if value is not None else None
+    except (TypeError, ValueError) as exc:
+        raise ResultSchemaError(f"invalid evaluation resource envelope: {exc}") from exc
+    records = result.get("evaluation_resource_allocations")
+    if not isinstance(records, list):
+        raise ResultSchemaError("evaluation_resource_allocations must be an array")
+    workers = result.get("workers")
+    worker = workers.get("evaluation") if isinstance(workers, dict) else None
+    worker_id = worker.get("worker_id") if isinstance(worker, dict) else None
+    commits = result.get("candidate_commits")
+    candidates = (
+        {
+            item["candidate_id"]
+            for item in commits
+            if isinstance(item, dict) and isinstance(item.get("candidate_id"), str)
+        }
+        if isinstance(commits, list)
+        else set()
+    )
+    seen_ids = set()
+    seen_receipts = set()
+    measurements = {}
+    for record in records:
+        if not isinstance(record, dict) or set(record) != {
+            "evaluation_id",
+            "split",
+            "candidate_id",
+            "receipt",
+            "assessment",
+            "accepted",
+        }:
+            raise ResultSchemaError("invalid evaluation resource allocation record")
+        evaluation_id = record["evaluation_id"]
+        candidate_id = record["candidate_id"]
+        if (
+            not isinstance(evaluation_id, str)
+            or not evaluation_id
+            or evaluation_id in seen_ids
+        ):
+            raise ResultSchemaError("evaluation IDs must be nonempty and unique")
+        seen_ids.add(evaluation_id)
+        if (
+            not isinstance(record["split"], str)
+            or record["split"] not in {"test", "analysis"}
+            or not isinstance(candidate_id, str)
+            or candidate_id not in candidates
+        ):
+            raise ResultSchemaError(
+                "evaluation resources must reference a Candidate and split"
+            )
+        key = (record["split"], candidate_id)
+        if key in measurements:
+            raise ResultSchemaError("duplicate evaluation resource measurement")
+        if not isinstance(record["accepted"], bool):
+            raise ResultSchemaError("evaluation resource accepted must be boolean")
+        if record["receipt"] is None:
+            if record["assessment"] is not None or record["accepted"]:
+                raise ResultSchemaError(
+                    "evaluation resources cannot be accepted without a receipt"
+                )
+        else:
+            try:
+                receipt = EvaluationResourceReceipt.from_manifest(record["receipt"])
+                assessment = assess_evaluation_resources(
+                    envelope,
+                    receipt,
+                    episode_id=result.get("episode_id"),
+                    evaluation_id=evaluation_id,
+                    worker_id=worker_id,
+                )
+            except (TypeError, ValueError) as exc:
+                raise ResultSchemaError(
+                    f"invalid evaluation resource receipt: {exc}"
+                ) from exc
+            if receipt.receipt_id in seen_receipts:
+                raise ResultSchemaError(
+                    "evaluation resource receipt IDs must be unique"
+                )
+            seen_receipts.add(receipt.receipt_id)
+            if (
+                record["assessment"] != assessment.public_manifest()
+                or record["accepted"] is not assessment.satisfied
+            ):
+                raise ResultSchemaError(
+                    "evaluation resource assessment differs from its evidence"
+                )
+        measurements[key] = record
+
+    measured = []
+    if result.get("test_cost") is not None:
+        measured.append(("test", result.get("final_candidate_id")))
+    for point in result.get("analysis_trajectory") or []:
+        if point.get("analysis_cost") is not None:
+            measured.append(("analysis", point.get("candidate_id")))
+    for key in measured:
+        record = measurements.get(key)
+        if record is None or (envelope is not None and not record["accepted"]):
+            raise ResultSchemaError(
+                "measured cost requires matching evaluation resource evidence"
+            )
+    if result.get("leaderboard_eligible") is True:
+        if (
+            envelope is None
+            or not envelope.requirements
+            or any(
+                item.minimum_enforcement.value != "enforced"
+                for item in envelope.requirements
+            )
+        ):
+            raise ResultSchemaError(
+                "leaderboard evaluation resources must require enforcement"
+            )
+        test_record = measurements.get(("test", result.get("final_candidate_id")))
+        if test_record is None or not test_record["accepted"]:
+            raise ResultSchemaError(
+                "leaderboard cost requires accepted TEST resource evidence"
+            )
+        release = result.get("challenge_release")
+        try:
+            frozen = ResourceEnvelope.from_manifest(
+                release.get("evaluation_resource_envelope")
+                if isinstance(release, dict)
+                else None
+            )
+        except (TypeError, ValueError) as exc:
+            raise ResultSchemaError(
+                "invalid frozen evaluation resource envelope"
+            ) from exc
+        if frozen.sha256 != envelope.sha256:
+            raise ResultSchemaError(
+                "leaderboard evaluation resources must match the frozen release"
+            )
+
+
+def _validate_gateway_execution(result: Dict[str, Any]) -> None:
+    if result["result_schema_version"] < 15:
+        return  # Historical reports make no claim of Gateway execution evidence.
+    if "gateway_execution" not in result:
+        raise ResultSchemaError("gateway_execution is required")
+    agent_system = result.get("agent_system")
+    inference = (
+        agent_system.get("inference") if isinstance(agent_system, dict) else None
+    )
+    if inference is not None and (
+        not isinstance(inference, dict)
+        or not isinstance(inference.get("enabled"), bool)
+    ):
+        raise ResultSchemaError("inference must declare a boolean enabled field")
+    enabled = isinstance(inference, dict) and inference.get("enabled") is True
+    record = result["gateway_execution"]
+    if record is None:
+        if enabled:
+            raise ResultSchemaError("enabled inference requires a Gateway request")
+        return
+    if not enabled:
+        raise ResultSchemaError("Gateway execution requires enabled inference")
+    if not isinstance(record, dict) or set(record) != {"request", "receipt"}:
+        raise ResultSchemaError("invalid gateway_execution record")
+    try:
+        request = GatewayExecutionRequest.from_manifest(record["request"])
+        if request.inference_policy_sha256 != inference_policy_sha256(
+            inference.get("protocol"),
+            inference.get("allowed_models"),
+            inference.get("allowed_paths"),
+        ):
+            raise ValueError("Gateway inference policy does not match the report")
+        receipt = (
+            GatewayExecutionReceipt.from_manifest(record["receipt"])
+            if record["receipt"] is not None
+            else None
+        )
+        if receipt is not None:
+            receipt.validate_request(request)
+        verification = result.get("formal_release_verification")
+        expected = (
+            verification.get("inference_gateway_artifact")
+            if isinstance(verification, dict)
+            else None
+        )
+        artifact = (
+            GatewayArtifactIdentity.from_manifest(expected)
+            if expected is not None
+            else None
+        )
+    except (TypeError, ValueError) as exc:
+        raise ResultSchemaError(f"invalid Gateway execution evidence: {exc}") from exc
+    identities = result.get("artifact_identities")
+    core = identities.get("core_git") if isinstance(identities, dict) else None
+    if (
+        request.episode_id != result.get("episode_id")
+        or request.requested_identity != inference.get("gateway_image")
+        or not isinstance(core, dict)
+        or request.core_revision != core.get("revision")
+    ):
+        raise ResultSchemaError("Gateway request does not match the episode")
+    if result.get("leaderboard_eligible") is True:
+        if (
+            request.core_revision is None
+            or not isinstance(verification, dict)
+            or request.core_revision != verification.get("core_revision")
+        ):
+            raise ResultSchemaError("Gateway Core revision does not match the release")
+        violations = gateway_eligibility_violations(receipt, artifact)
+        if violations:
+            raise ResultSchemaError(
+                "leaderboard-eligible Gateway evidence is incomplete: "
+                + ", ".join(violations)
+            )
+
+
 def _validate_agent_system(result: Dict[str, Any]) -> None:
     """Pin the current ``agent_system`` structure to the current schema version."""
 
@@ -392,6 +632,7 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
             "current results may not contain legacy TEST metric fields"
         )
     _validate_agent_system(result)
+    _validate_gateway_execution(result)
     performance_contract = _performance_score_contract(result)
     cost_contract = _cost_contract(result)
     _validate_artifact_identity_algorithms(result)
@@ -621,6 +862,7 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
             or test_cost is not None
         ):
             raise ResultSchemaError("an operator stop cannot be a benchmark result")
+    _validate_evaluation_resources(result)
 
 
 def _validate_analysis_summary_counts(

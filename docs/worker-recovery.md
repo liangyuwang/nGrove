@@ -28,6 +28,65 @@ After the Worker process has stopped, run in the **same Worker environment**:
 autotrain-bench worker-recover --state-dir /worker/private/run-state
 ```
 
+Each recovery pass has a shared 120-second allowance. Override it with
+`worker-recover --timeout-seconds SECONDS`; direct Python callers can pass
+`timeout_seconds` to `DockerRuntime.recover_resources()`. These entry points
+execute recovery in a fresh interpreter and dedicated process group. The
+supervisor starts its monotonic timer before helper launch; journal acquisition,
+daemon checks, journal writes, private-storage deletion and journal close all
+run inside the supervised process. The watchdog's subsequent report writer uses
+another supervised process with only the remainder of the same allowance.
+Each Docker command also retains its cooperative timeout of at most 20 seconds
+and the algorithm's remaining allowance. More resources or failed commands do
+not renew the parent's timer.
+
+On detecting expiry, no further runtime commands or cleanup stages are started.
+The report records `deadline_exceeded: true`, the configured
+`timeout_seconds`, and `cleanup_complete: false`. A late successful reply is
+not an absence confirmation; retained ownership records allow a later pass to
+verify what actually happened. Holders and private storage remain protected
+until prerequisite workload cleanup succeeds. A retry receives a new allowance
+and verifies the retained records; it does not resume the episode.
+
+The parent reads only bounded private socket messages and never opens the
+journal or writes report files itself. At completion or expiry it signals its
+own unreaped helper process group before waiting, preventing PID/PGID reuse.
+Termination confirmation has a separate allowance of at most five seconds;
+the parent returns an incomplete result instead of waiting indefinitely if
+termination or fencing remains unconfirmed. It never unlocks another process's
+journal. Every Docker recovery client inherits the ownership lock, so an
+uninterruptible client still blocks a competing recovery pass after helper
+loss. `process_supervision` records the attempt ID, helper exit code,
+termination/fencing confirmation, received operator signal and failures.
+Unavailable episode metadata remains null when journal acquisition failed.
+
+The recovery and report subprocesses inherit no Agent/control channel and have
+their stdout/stderr disconnected from the caller; only the bounded private
+response channel is used. Recovery supervision requires POSIX, a main-thread
+caller and exclusive child reaping. Direct `DockerRecovery.recover()` is the
+cooperative primitive used **inside** that boundary and does not install its
+own process supervisor. Custom launchers calling it directly need equivalent
+supervision, as do custom recovery callbacks supplied to `supervise()`.
+
+A resource whose absence was confirmed and whose complete `removed` record was
+persisted is finished work. Recovery checks the journal ownership and daemon
+binding on every pass, then processes only unresolved resource instances.
+Historical removals do not spend the next pass's command allowance, including
+when recovery is reopened in a new process. Workload containers still precede
+prediction holders, networks, volumes and private storage. A deletion with a
+lost acknowledgement, or a RAM-only `removed` state whose persistence failed,
+still requires verification. Legitimate name reuse creates a new intent/token
+and must pass the full ownership and identity checks again. These durable
+confirmations rely on creation remaining fenced and on resources not being
+recreated or relabelled outside the journaled lifecycle.
+
+Blocked recovery-storage syscalls no longer trap the waiting supervisor. This
+does not guarantee that a kernel will immediately terminate an uninterruptible
+task or that unavailable storage will be reclaimed. Unconfirmed resources and
+held locks remain for external recovery. The supervisor's own OS scheduling,
+trusted interpreter/source availability and the caller's final console/output
+delivery are outside the recovery-storage guarantee.
+
 Exit code 0 means all registered resources were confirmed absent and private
 temporary materializations were removed. Exit code 2 means recovery failed or
 remains unconfirmed; the JSON report lists unresolved resources. Repeating the
@@ -89,6 +148,11 @@ snapshots). Episode filesystem allocations and retained artifacts remain the
 deployment's retention/disposal responsibility. Historical Core state may still
 show the interrupted phase; cleanup success is not benchmark completion.
 
+The trusted [Operator status](operator-status.md) view keeps the Core snapshot,
+current deployment execution, workload cleanup and storage disposal separate.
+External recovery tools can report their checked observations through that
+optional format without rewriting interrupted Core state.
+
 ## Supported scope
 
 This implementation covers one local POSIX Docker Worker session after journal
@@ -99,6 +163,9 @@ standalone `prepare`, `host_cli`, external scheduler allocations and resources
 created through a custom Worker are not certified by this journal. Direct
 DockerRuntime integrations must call `enable_recovery` before their workloads
 and retain ownership until all Worker calls stop.
+Custom deployments must supply their own owned-resource inspection and
+recovery entry point; see [Worker integration](worker-integration.md) for its
+required evidence, cancellation handling, and verification stages.
 
 The container CLI now runs its trusted launcher in a dedicated process group
 under an independent parent watchdog. Once the journal is registered, the
@@ -130,6 +197,7 @@ The launcher prints these private settings before the first episode workload:
 | Missing heartbeat tolerance | 10 seconds | `--worker-watchdog-heartbeat-seconds` |
 | Deadline grace for cooperative handling | 5 seconds | `--worker-watchdog-grace-seconds` |
 | Control/startup operation without a declared timeout | 120 seconds | `--worker-watchdog-control-seconds` |
+| Shared recovery allowance after fencing | 120 seconds | `--worker-watchdog-recovery-seconds` |
 
 These are deployment protection settings, not comparison budgets. They do not
 appear in the Agent view. A heartbeat must arrive more often than the configured
@@ -148,12 +216,56 @@ for signalling. Only after this fence does recovery attempt the exclusive
 journal lock; a held lock still prevents takeover. Recovery verifies the
 registered Worker owner and directory identity as well as Docker identities.
 
+The parent records the first `SIGTERM` or `SIGINT` as a cancellation request
+without raising from the signal handler. It stops supervision and fences its
+owned process group even if the signal arrived while the child was being
+created. Both handlers remain installed through fencing, journal recovery and
+report writing, so repeated signals do not abandon cleanup. The previous
+handlers are restored before `supervise()` returns. Nested recovery/report
+supervision propagates cancellation back to this handler after its helper is
+fenced. Manual recovery likewise defers signals through bounded cleanup and
+returns exit code 2 after cancellation. Forced kill or host loss still requires
+the separate recovery path described below.
+
 `watchdog-report.json` records the trigger, process exit, completed launcher
-status when available, and cleanup result in the private Worker directory.
+status when available, the configured `recovery_timeout_seconds`, and cleanup
+result in the private Worker directory.
+Report persistence must finish within the remaining recovery allowance. If it
+times out, fails, or is skipped because recovery exhausted the allowance or its
+process termination is unconfirmed, the watchdog returns exit code 2 and
+explicitly says that the current report was not persisted. Any retained file
+may describe an earlier attempt; the printed recovery attempt ID can be matched
+against `cleanup.process_supervision.attempt_id` in a successfully persisted
+report. A failed writer does not cause a synchronous fallback write to the same
+storage. Successfully persisted reports contain `report_persisted: true`.
+`operator_signal` records the first observed cancellation signal number, or
+null when none was received before the report snapshot. Cancellation during
+recovery gives exit code 2 even if the launcher had already reported success;
+an earlier deadline or watchdog failure remains the primary trigger when
+present. Cleanup evidence remains separate from the saved benchmark result.
 An abnormal stop or unconfirmed cleanup gives CLI exit code 2. A normally
 completed launcher retains its exit status only if recovery succeeds. Existing
 Core state, research sealing and TEST decisions are preserved; the watchdog
 does not finalize, publish or resume an interrupted episode.
+
+Local regressions deliver real `SIGTERM` and `SIGINT` signals during process
+creation, active supervision, fencing and recovery. They verify child reaping,
+handler restoration, cleanup reports and preservation of saved Core state with
+the test Docker backend. These tests do not certify a live Docker daemon,
+allocator-wide cancellation, device isolation, or node-loss recovery.
+Recovery regressions also cover cumulative command timeouts, late deletion
+responses, elapsed filesystem work, retained handles and retry. Equal-budget
+retries with the same simulated per-command cost must advance past persisted
+removals through workload and storage cleanup; RAM-only removals and reused
+names must retain their verification requirements. A disposable
+real subprocess verifies runtime timeout propagation; the resource backend in
+these tests remains simulated.
+Fresh-process regressions stall journal reading, saving, private-tree removal,
+journal close and report writing until killed. They verify bounded return,
+ownership-lock retention by surviving runtime clients, retry from durable
+progress, cancellation, malformed/missing replies and unchanged Core results.
+These fixtures simulate the blocked filesystem operation; they do not certify
+real uninterruptible kernel I/O or a particular cluster/storage deployment.
 
 This covers one local POSIX execution host and its bundled Docker Worker, not
 a distributed lease/fencing protocol. It does not supply asynchronous Core

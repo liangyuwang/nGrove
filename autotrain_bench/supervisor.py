@@ -43,6 +43,13 @@ from .config import (
     operator_research_limit,
 )
 from .inference import summarize_inference_trace
+from .gateway_execution import (
+    GatewayExecutionReceipt,
+    GatewayExecutionRequest,
+    gateway_eligibility_violations,
+    inference_policy_sha256,
+    manifest_sha256,
+)
 from .results import (
     RESULT_SCHEMA_VERSION,
     normalize_result_report,
@@ -58,6 +65,8 @@ from .worker_protocol import (
     EvaluationWorker,
     EnforcementLevel,
     EvaluationTaskSpec,
+    EvaluationResourceFailure,
+    assess_evaluation_resources,
     HiddenDatasetIdentityMismatch,
     HiddenDatasetRequest,
     HiddenDatasetResolutionFailure,
@@ -255,6 +264,7 @@ class Supervisor:
         resources: TrainingResources,
         training_data_verification: Dict[str, Any],
         resource_envelope: Optional[ResourceEnvelope] = None,
+        evaluation_resource_envelope: Optional[ResourceEnvelope] = None,
         track: str,
         episode_dir: Path,
         agent_api_dir: Path,
@@ -333,6 +343,29 @@ class Supervisor:
         )
         if not isinstance(self.resource_envelope, ResourceEnvelope):
             raise TypeError("resource_envelope must be a ResourceEnvelope")
+        if evaluation_resource_envelope is not None and not isinstance(
+            evaluation_resource_envelope, ResourceEnvelope
+        ):
+            raise TypeError("evaluation_resource_envelope must be a ResourceEnvelope")
+        release_evaluation_envelope = (
+            challenge_release.get("evaluation_resource_envelope")
+            if isinstance(challenge_release, dict)
+            else None
+        )
+        frozen_evaluation_envelope = None
+        if release_evaluation_envelope is not None:
+            frozen_evaluation_envelope = ResourceEnvelope.from_manifest(
+                release_evaluation_envelope
+            )
+            if evaluation_resource_envelope is None:
+                evaluation_resource_envelope = frozen_evaluation_envelope
+            elif (
+                evaluation_resource_envelope.sha256 != frozen_evaluation_envelope.sha256
+            ):
+                raise ValueError(
+                    "evaluation resource envelope differs from the release"
+                )
+        self.evaluation_resource_envelope = evaluation_resource_envelope
         self.track = normalized
         if (
             not math.isfinite(worker_resolution_timeout_seconds)
@@ -379,6 +412,7 @@ class Supervisor:
                 workload_resolution_acceptance=dict(
                     verified_release.workload_resolution_acceptance
                 ),
+                inference_gateway_artifact=verified_release.inference_gateway_artifact,
             )
         self.monotonic = monotonic
         self.wall_time = wall_time
@@ -567,13 +601,17 @@ class Supervisor:
             eligibility_violations.append("agent_workload_identity_not_immutable")
         if not agent_execution.leaderboard_eligible:
             eligibility_violations.append("agent_execution_not_certified")
-        # Worker Protocol v14 covers Worker-owned training/Candidate/Evaluator
-        # workloads. AgentExecutionEvidence v0 binds the Agent image itself but
-        # has no trusted field for an inference Gateway workload. Fail closed
-        # instead of treating the task's configured Gateway reference as proof
-        # of what an external launcher actually ran.
+        # The launcher supplies actual Gateway evidence after startup and before
+        # begin(). A configured image is never proof of an executed artifact.
         if config.leaderboard_eligible and agent.inference is not None:
-            eligibility_violations.append("inference_gateway_workload_evidence_missing")
+            eligibility_violations.extend(
+                gateway_eligibility_violations(
+                    None,
+                    self.release_verification.inference_gateway_artifact
+                    if self.release_verification is not None
+                    else None,
+                )
+            )
         core_revision = core_identity.get("revision")
         if not isinstance(core_revision, str) or not core_revision:
             eligibility_violations.append("core_identity_unknown")
@@ -607,6 +645,21 @@ class Supervisor:
             # diagnostic axis and never gates an otherwise valid TEST result.
             eligibility_violations.append("formal_test_evaluation_pending")
         if config.leaderboard_eligible:
+            if (
+                self.evaluation_resource_envelope is None
+                or not self.evaluation_resource_envelope.requirements
+                or any(
+                    item.minimum_enforcement is not EnforcementLevel.ENFORCED
+                    for item in self.evaluation_resource_envelope.requirements
+                )
+            ):
+                eligibility_violations.append("evaluation_resource_envelope_not_formal")
+            if self.evaluation_resource_envelope is not None and (
+                frozen_evaluation_envelope is None
+                or frozen_evaluation_envelope.sha256
+                != self.evaluation_resource_envelope.sha256
+            ):
+                eligibility_violations.append("evaluation_resource_envelope_not_frozen")
             if not self.resource_envelope.requirements or any(
                 requirement.minimum_enforcement is not EnforcementLevel.ENFORCED
                 for requirement in self.resource_envelope.requirements
@@ -617,6 +670,7 @@ class Supervisor:
                 for role in ("training", "candidate", "evaluator")
             )
             eligibility_violations.append("resource_allocation_pending")
+            eligibility_violations.append("evaluation_resource_allocation_pending")
 
         leaderboard_eligible = (
             config.leaderboard_eligible
@@ -626,6 +680,32 @@ class Supervisor:
             and not eligibility_violations
         )
 
+        episode_id = "episode:" + uuid.uuid4().hex
+        self._gateway_execution_request = None
+        if self.agent.inference is not None:
+            inference = self.agent.inference
+            # Hash private registration values, never credential contents. Do
+            # not publish even this fingerprint to the Tested Agent.
+            self._gateway_execution_request = GatewayExecutionRequest(
+                episode_id=episode_id,
+                requested_identity=config.inference_gateway_image,
+                core_revision=core_identity.get("revision"),
+                inference_policy_sha256=inference_policy_sha256(
+                    inference.protocol,
+                    inference.allowed_models,
+                    inference.allowed_paths,
+                ),
+                inference_registration_sha256=manifest_sha256(
+                    {
+                        "protocol": inference.protocol,
+                        "base_url": inference.base_url,
+                        "api_key_env": inference.api_key_env,
+                        "allowed_models": sorted(inference.allowed_models),
+                        "allowed_paths": sorted(inference.allowed_paths),
+                        "timeout_seconds": inference.timeout_seconds,
+                    }
+                ),
+            )
         self.state: Dict[str, Any] = {
             "protocol_version": AGENT_PROTOCOL_VERSION,
             "result_schema_version": RESULT_SCHEMA_VERSION,
@@ -633,7 +713,15 @@ class Supervisor:
             # particular, an operator-selected directory may contain spaces or
             # Unicode that are valid on the host but invalid in opaque Worker
             # receipt IDs.  Keep the protocol identity stable and path-free.
-            "episode_id": "episode:" + uuid.uuid4().hex,
+            "episode_id": episode_id,
+            "gateway_execution": (
+                {
+                    "request": self._gateway_execution_request.private_manifest(),
+                    "receipt": None,
+                }
+                if self._gateway_execution_request is not None
+                else None
+            ),
             "task_id": config.task_id,
             "task_kind": config.task_kind,
             "leaderboard_eligible": leaderboard_eligible,
@@ -675,6 +763,12 @@ class Supervisor:
             },
             "resource_envelope": self.resource_envelope.public_manifest(),
             "resource_allocations": [],
+            "evaluation_resource_envelope": (
+                self.evaluation_resource_envelope.public_manifest()
+                if self.evaluation_resource_envelope is not None
+                else None
+            ),
+            "evaluation_resource_allocations": [],
             "policy_compliant": policy_compliant,
             "policy_violations": policy_violations,
             "workers": {
@@ -854,6 +948,52 @@ class Supervisor:
             and evaluation["leaderboard_eligible"]
             and not self.state["leaderboard_eligibility_violations"]
         )
+
+    @property
+    def gateway_execution_request(self) -> Optional[GatewayExecutionRequest]:
+        """Private, immutable request for the trusted Gateway launcher."""
+        return self._gateway_execution_request
+
+    def record_gateway_execution(self, receipt: GatewayExecutionReceipt) -> None:
+        """Freeze actual launcher evidence once, before task reveal.
+
+        The caller is the trusted composition, never the Tested Agent. Starting,
+        inspecting, enforcing and stopping the Gateway remain deployment-owned.
+        """
+        with self.lock:
+            if self.state["status"] != "created":
+                raise ProtocolError(
+                    "invalid_state", "Gateway evidence must precede task reveal"
+                )
+            request = self._gateway_execution_request
+            if request is None:
+                raise ValueError("Gateway inference is not enabled")
+            if not isinstance(receipt, GatewayExecutionReceipt):
+                raise TypeError("receipt must be a GatewayExecutionReceipt")
+            if self.state["gateway_execution"]["receipt"] is not None:
+                raise ValueError("Gateway execution evidence is already fixed")
+            receipt.validate_request(request)
+            self.state["gateway_execution"]["receipt"] = receipt.private_manifest()
+            if self.config.leaderboard_eligible:
+                violations = self.state["leaderboard_eligibility_violations"]
+                violations[:] = [
+                    item
+                    for item in violations
+                    if not item.startswith("inference_gateway_")
+                ]
+                violations.extend(
+                    gateway_eligibility_violations(
+                        receipt,
+                        self.release_verification.inference_gateway_artifact
+                        if self.release_verification is not None
+                        else None,
+                    )
+                )
+                self._refresh_leaderboard_eligibility()
+            self._event(
+                "INFERENCE_GATEWAY_EXECUTION_RECORDED", receipt_id=receipt.receipt_id
+            )
+            self._save_state()
 
     def begin(self) -> None:
         with self.lock:
@@ -2747,6 +2887,73 @@ class Supervisor:
             )
         self._save_state()
 
+    def _evaluate_candidate_with_resources(
+        self, *, candidate_id: str, **kwargs: Any
+    ) -> CandidateEvaluationResult:
+        evaluation_id = "evaluation:" + uuid.uuid4().hex
+        result = self.evaluation_worker.evaluate_candidate(
+            **kwargs,
+            evaluation_id=evaluation_id,
+            resource_envelope=self.evaluation_resource_envelope,
+        )
+        if not isinstance(result, CandidateEvaluationResult):
+            raise WorkerFailure("Evaluation Worker returned an invalid result type")
+        record = {
+            "evaluation_id": evaluation_id,
+            "candidate_id": candidate_id,
+            "split": kwargs["hidden_dataset"].name,
+            "receipt": None,
+            "assessment": None,
+            "accepted": False,
+        }
+        self.state["evaluation_resource_allocations"].append(record)
+        envelope = self.evaluation_resource_envelope
+        try:
+            if envelope is None:
+                if result.resource_receipt is not None:
+                    raise ValueError(
+                        "unexpected evaluation resource receipt without a contract"
+                    )
+            else:
+                assessment = assess_evaluation_resources(
+                    envelope,
+                    result.resource_receipt,
+                    episode_id=self.state["episode_id"],
+                    evaluation_id=evaluation_id,
+                    worker_id=self.state["workers"]["evaluation"]["worker_id"],
+                )
+                if any(
+                    previous["receipt"] is not None
+                    and previous["receipt"]["receipt_id"]
+                    == result.resource_receipt.receipt_id
+                    for previous in self.state["evaluation_resource_allocations"][:-1]
+                ):
+                    raise ValueError("evaluation resource receipt_id was reused")
+                record["receipt"] = result.resource_receipt.public_manifest()
+                record["assessment"] = assessment.public_manifest()
+                record["accepted"] = assessment.satisfied
+                if not assessment.satisfied:
+                    raise ValueError("evaluation resource contract is not satisfied")
+                if record["split"] == "test":
+                    violation = "evaluation_resource_allocation_pending"
+                    if violation in self.state["leaderboard_eligibility_violations"]:
+                        self.state["leaderboard_eligibility_violations"].remove(
+                            violation
+                        )
+                        self._refresh_leaderboard_eligibility()
+        except (TypeError, ValueError) as exc:
+            self._event(
+                "EVALUATION_RESOURCE_REJECTED",
+                evaluation_id=evaluation_id,
+                candidate_id=candidate_id,
+                split=record["split"],
+                message=str(exc),
+            )
+            raise EvaluationResourceFailure(str(exc)) from exc
+        finally:
+            self._save_state()
+        return result
+
     def _evaluate_test_for_postmortem(self) -> None:
         """Durably stage the primary TEST decision before any diagnostics."""
 
@@ -2795,7 +3002,8 @@ class Supervisor:
             if resolved is not None:
                 assert candidate_workload is not None
                 assert evaluator_workload is not None
-                evaluation_result = self.evaluation_worker.evaluate_candidate(
+                evaluation_result = self._evaluate_candidate_with_resources(
+                    candidate_id=candidate_id,
                     episode_id=self.state["episode_id"],
                     task=self.evaluation_task,
                     resources=self.resources,
@@ -2838,6 +3046,14 @@ class Supervisor:
                 "TEST_INFRASTRUCTURE_FAILURE",
                 candidate_id=candidate_id,
                 code="workload_resolution_failure",
+            )
+        except EvaluationResourceFailure as exc:
+            test_infrastructure_failure = str(exc)
+            test_infrastructure_failure_code = "evaluation_resource_contract_failure"
+            self._event(
+                "TEST_INFRASTRUCTURE_FAILURE",
+                candidate_id=candidate_id,
+                code="evaluation_resource_contract_failure",
             )
         except WorkerTeardownFailure as exc:
             test_teardown_failure = str(exc)
@@ -2941,7 +3157,8 @@ class Supervisor:
                     self.config.evaluator_timeout_seconds
                 )
                 try:
-                    evaluation_result = self.evaluation_worker.evaluate_candidate(
+                    evaluation_result = self._evaluate_candidate_with_resources(
+                        candidate_id=candidate_id,
                         episode_id=self.state["episode_id"],
                         task=self.evaluation_task,
                         resources=self.resources,
@@ -2977,6 +3194,20 @@ class Supervisor:
                         primary=False,
                         code="hidden_dataset_resolution_failure",
                         private_detail=str(exc),
+                    )
+                    break
+                except EvaluationResourceFailure as exc:
+                    metadata["analysis_status"] = "infrastructure_failure"
+                    metadata["analysis_error"] = "evaluation_resource_contract_failure"
+                    self._event(
+                        "ANALYSIS_INFRASTRUCTURE_FAILURE",
+                        candidate_id=candidate_id,
+                        code="evaluation_resource_contract_failure",
+                    )
+                    incomplete = (
+                        "analysis_evaluation_resource_contract_failure",
+                        str(exc),
+                        None,
                     )
                     break
                 except WorkerTeardownFailure as exc:

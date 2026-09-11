@@ -40,11 +40,21 @@ Missing evidence is recorded in
 A challenge release also publishes finite `track_configs` and
 `runtime_profiles` maps. The task remains hardware-independent; the runtime
 profile selects episode resources and the leaderboard compares results only
-when all four comparison-key fields match:
+when all four comparison-key fields match, within the same frozen release and
+hidden-data identity. The names alone do not establish equal cost conditions:
 
 ```text
 challenge_id + track + track_config + runtime_profile
 ```
+
+Challenge schema v3 profiles may declare `evaluation_resource_contract`,
+independently of the Training `resource_contract`. Its normative and observational
+properties use the existing extensible `ResourceEnvelope`. Formal releases must
+declare a nonempty evaluation contract requiring `enforced` evidence; the release
+owner selects the relevant CPU, memory, I/O, cache, and contention conditions.
+An accepted envelope covers only its declared properties. Schema v2 remains
+readable for existing previews and rejects the new field to prevent silent
+omission by older Core versions. See [evaluation resources](../docs/evaluation-resources.md).
 
 Agent-visible release metadata contains only the public release and selected
 profile identifiers, release stage, and eligibility setting. `challenge-info`
