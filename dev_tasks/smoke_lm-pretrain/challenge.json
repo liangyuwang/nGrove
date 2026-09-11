@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 4,
   "challenge_id": "tinystories-byte-lm-smoke-v1",
   "task_id": "tinystories-byte-lm-smoke-v1",
   "task": "task.json",
@@ -27,6 +27,30 @@
       "provisional": true,
       "accelerator": null
     },
+    "a100-sxm4-80gb-x1": {
+      "label": "Single host — 1× NVIDIA A100 SXM4 80GB",
+      "host_count": 1,
+      "provisional": true,
+      "accelerator": {
+        "vendor": "nvidia",
+        "model": "NVIDIA A100-SXM4-80GB",
+        "model_match": "A100-SXM4-80GB",
+        "count": 1,
+        "minimum_memory_mib": 80000
+      }
+    },
+    "a100-sxm4-80gb-x2": {
+      "label": "Single host — 2× NVIDIA A100 SXM4 80GB",
+      "host_count": 1,
+      "provisional": true,
+      "accelerator": {
+        "vendor": "nvidia",
+        "model": "NVIDIA A100-SXM4-80GB",
+        "model_match": "A100-SXM4-80GB",
+        "count": 2,
+        "minimum_memory_mib": 80000
+      }
+    },
     "a100-sxm4-80gb-x4": {
       "label": "Single host — 4× NVIDIA A100 SXM4 80GB",
       "host_count": 1,
@@ -48,6 +72,30 @@
         "model": "NVIDIA A100-SXM4-80GB",
         "model_match": "A100-SXM4-80GB",
         "count": 8,
+        "minimum_memory_mib": 80000
+      }
+    },
+    "h100-sxm-80gb-x1": {
+      "label": "Single host — 1× NVIDIA H100 SXM 80GB HBM3",
+      "host_count": 1,
+      "provisional": true,
+      "accelerator": {
+        "vendor": "nvidia",
+        "model": "NVIDIA H100 80GB HBM3",
+        "model_match": "H100 80GB HBM3",
+        "count": 1,
+        "minimum_memory_mib": 80000
+      }
+    },
+    "h100-sxm-80gb-x2": {
+      "label": "Single host — 2× NVIDIA H100 SXM 80GB HBM3",
+      "host_count": 1,
+      "provisional": true,
+      "accelerator": {
+        "vendor": "nvidia",
+        "model": "NVIDIA H100 80GB HBM3",
+        "model_match": "H100 80GB HBM3",
+        "count": 2,
         "minimum_memory_mib": 80000
       }
     },
@@ -73,6 +121,110 @@
         "model_match": "H100 80GB HBM3",
         "count": 8,
         "minimum_memory_mib": 80000
+      }
+    },
+    "h200-sxm-141gb-x1": {
+      "label": "Single host — 1× NVIDIA H200 SXM 141GB HBM3e",
+      "host_count": 1,
+      "provisional": true,
+      "accelerator": {
+        "vendor": "nvidia",
+        "model": "NVIDIA H200",
+        "model_match": "NVIDIA H200",
+        "model_match_mode": "exact",
+        "count": 1,
+        "minimum_memory_mib": 140000
+      }
+    },
+    "h200-sxm-141gb-x2": {
+      "label": "Single host — 2× NVIDIA H200 SXM 141GB HBM3e",
+      "host_count": 1,
+      "provisional": true,
+      "accelerator": {
+        "vendor": "nvidia",
+        "model": "NVIDIA H200",
+        "model_match": "NVIDIA H200",
+        "model_match_mode": "exact",
+        "count": 2,
+        "minimum_memory_mib": 140000
+      }
+    },
+    "h200-sxm-141gb-x4": {
+      "label": "Single host — 4× NVIDIA H200 SXM 141GB HBM3e",
+      "host_count": 1,
+      "provisional": true,
+      "accelerator": {
+        "vendor": "nvidia",
+        "model": "NVIDIA H200",
+        "model_match": "NVIDIA H200",
+        "model_match_mode": "exact",
+        "count": 4,
+        "minimum_memory_mib": 140000
+      }
+    },
+    "h200-sxm-141gb-x8": {
+      "label": "Single host — 8× NVIDIA H200 SXM 141GB HBM3e",
+      "host_count": 1,
+      "provisional": true,
+      "accelerator": {
+        "vendor": "nvidia",
+        "model": "NVIDIA H200",
+        "model_match": "NVIDIA H200",
+        "model_match_mode": "exact",
+        "count": 8,
+        "minimum_memory_mib": 140000
+      }
+    },
+    "h200-nvl-141gb-x1": {
+      "label": "Single host — 1× NVIDIA H200 NVL 141GB HBM3e",
+      "host_count": 1,
+      "provisional": true,
+      "accelerator": {
+        "vendor": "nvidia",
+        "model": "NVIDIA H200 NVL",
+        "model_match": "NVIDIA H200 NVL",
+        "model_match_mode": "exact",
+        "count": 1,
+        "minimum_memory_mib": 140000
+      }
+    },
+    "h200-nvl-141gb-x2": {
+      "label": "Single host — 2× NVIDIA H200 NVL 141GB HBM3e",
+      "host_count": 1,
+      "provisional": true,
+      "accelerator": {
+        "vendor": "nvidia",
+        "model": "NVIDIA H200 NVL",
+        "model_match": "NVIDIA H200 NVL",
+        "model_match_mode": "exact",
+        "count": 2,
+        "minimum_memory_mib": 140000
+      }
+    },
+    "h200-nvl-141gb-x4": {
+      "label": "Single host — 4× NVIDIA H200 NVL 141GB HBM3e",
+      "host_count": 1,
+      "provisional": true,
+      "accelerator": {
+        "vendor": "nvidia",
+        "model": "NVIDIA H200 NVL",
+        "model_match": "NVIDIA H200 NVL",
+        "model_match_mode": "exact",
+        "count": 4,
+        "minimum_memory_mib": 140000
+      }
+    },
+    "h200-nvl-141gb-x8": {
+      "label": "Single host — 8× NVIDIA H200 NVL 141GB HBM3e",
+      "host_count": 1,
+      "provisional": true,
+      "accelerator": {
+        "vendor": "nvidia",
+        "model": "NVIDIA H200 NVL",
+        "model_match": "NVIDIA H200 NVL",
+        "model_match_mode": "exact",
+        "count": 8,
+        "minimum_memory_mib": 140000
       }
     }
   }

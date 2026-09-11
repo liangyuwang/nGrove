@@ -536,6 +536,7 @@ class TrainingResources:
     required_gpu_model: Optional[str] = None
     minimum_gpu_memory_mib: Optional[int] = None
     devices: List[str] = dataclass_field(default_factory=list)
+    gpu_model_match_mode: str = "contains"
 
     def validate(self) -> "TrainingResources":
         _positive_int(
@@ -543,6 +544,10 @@ class TrainingResources:
             "--training-gpus",
             allow_zero=True,
         )
+        if self.gpu_model_match_mode not in ("contains", "exact"):
+            raise ConfigError("GPU model match mode must be 'contains' or 'exact'")
+        if self.gpu_model_match_mode == "exact" and self.required_gpu_model is None:
+            raise ConfigError("exact GPU model matching requires a GPU model")
         if self.required_gpu_model is not None:
             _string(self.required_gpu_model, "--training-gpu-model")
             if self.nvidia_gpu_count == 0:
@@ -583,13 +588,16 @@ class TrainingResources:
         return self
 
     def public_manifest(self) -> Dict[str, Any]:
-        return {
+        manifest = {
             "nvidia_gpu_count": self.nvidia_gpu_count,
             "required_gpu_model": self.required_gpu_model,
             "minimum_gpu_memory_mib": self.minimum_gpu_memory_mib,
             "devices": list(self.devices),
             "selection": "episode_runtime",
         }
+        if self.gpu_model_match_mode != "contains":
+            manifest["gpu_model_match_mode"] = self.gpu_model_match_mode
+        return manifest
 
 
 @dataclass(frozen=True)

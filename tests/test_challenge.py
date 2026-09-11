@@ -13,14 +13,17 @@ from benchcore.challenge import (
 from benchcore.config import ConfigError, TaskConfig
 from benchcore.gateway_execution import GatewayArtifactIdentity
 from benchcore.worker_protocol import (
+    EnforcementLevel,
     ResourceEnvelope,
     WorkloadResolutionAcceptance,
+    v0_resource_envelope,
 )
 
 
 ROOT = Path(__file__).resolve().parents[1]
 TASK = ROOT / "tests/fixtures/task/task.json"
 LM_PRETRAIN_PREVIEW = ROOT / "challenges/lm-pretrain/challenge.json"
+SMOKE_PREVIEW = ROOT / "dev_tasks/smoke_lm-pretrain/challenge.json"
 
 
 class ChallengeReleaseTests(unittest.TestCase):
@@ -76,7 +79,138 @@ class ChallengeReleaseTests(unittest.TestCase):
             ["challenge_id", "track", "track_config", "runtime_profile"],
         )
         self.assertEqual(len(public["track_configs"]), 2)
-        self.assertEqual(len(public["runtime_profiles"]), 4)
+        families = (
+            "a100-sxm4-80gb",
+            "h100-sxm-80gb",
+            "h200-sxm-141gb",
+            "h200-nvl-141gb",
+        )
+        self.assertEqual(
+            set(public["runtime_profiles"]),
+            {f"{family}-x{count}" for family in families for count in (1, 2, 4, 8)},
+        )
+
+    def test_preview_hardware_maps_resolve_both_tracks_without_scaling_budgets(self):
+        challenge = ChallengeRelease.load(LM_PRETRAIN_PREVIEW)
+        smoke = ChallengeRelease.load(SMOKE_PREVIEW)
+        self.assertEqual(
+            {
+                key: value
+                for key, value in smoke.public_manifest()["runtime_profiles"].items()
+                if key != "cpu-local"
+            },
+            challenge.public_manifest()["runtime_profiles"],
+        )
+        for release, budgets in (
+            (challenge, (28800, 6, 3600)),
+            (smoke, (300, 3, 75)),
+        ):
+            # Exercise the shipped task settings without preparing its corpus.
+            payload = json.loads(release.task_path.read_text())
+            payload["paths"] = {
+                key: str((release.source.parent / value).resolve())
+                for key, value in payload["paths"].items()
+            }
+            fixture_paths = json.loads(TASK.read_text())["paths"]
+            for name in ("train", "analysis", "test"):
+                payload["paths"][name] = str(TASK.parent / fixture_paths[name])
+            payload["evaluation"]["entrypoint"] = str(
+                (release.source.parent / payload["evaluation"]["entrypoint"]).resolve()
+            )
+            with tempfile.TemporaryDirectory() as directory:
+                task_path = Path(directory) / "task.json"
+                task_path.write_text(json.dumps(payload))
+                task = TaskConfig.load(task_path)
+            self.assertEqual(
+                task.evaluator_device, "cuda" if release is challenge else "cpu"
+            )
+            keys = set()
+            for profile_id, profile in release.runtime_profiles.items():
+                for track_id in release.track_configs:
+                    with self.subTest(
+                        release=release.challenge_id, profile=profile_id, track=track_id
+                    ):
+                        resolved = release.resolve(
+                            task,
+                            track_config_id=track_id,
+                            runtime_profile_id=profile_id,
+                        )
+                        expected_count = (
+                            0
+                            if profile_id == "cpu-local"
+                            else int(profile_id.rsplit("x", 1)[1])
+                        )
+                        self.assertEqual(
+                            resolved.resources.nvidia_gpu_count, expected_count
+                        )
+                        resolved.resources.validate_for(resolved.task)
+                        if resolved.track == "A":
+                            self.assertEqual(
+                                resolved.task.track_a_total_seconds, budgets[0]
+                            )
+                        else:
+                            self.assertEqual(
+                                resolved.task.track_b_max_leases, budgets[1]
+                            )
+                            self.assertEqual(
+                                resolved.task.track_b_lease_seconds, budgets[2]
+                            )
+                        self.assertEqual(
+                            resolved.resource_envelope,
+                            v0_resource_envelope(
+                                resolved.resources,
+                                minimum_enforcement=EnforcementLevel.BEST_EFFORT,
+                            ),
+                        )
+                        keys.add(
+                            tuple(resolved.comparison_key.public_manifest().values())
+                        )
+                        self.assertTrue(profile.provisional)
+            self.assertEqual(len(keys), len(release.runtime_profiles) * 2)
+            self.assertFalse(release.leaderboard_eligible)
+
+    def test_exact_model_matching_requires_new_schema_and_round_trips(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._write_release(directory)
+            payload = json.loads(path.read_text())
+            accelerator = payload["runtime_profiles"]["h100-80gb-x4"]["accelerator"]
+            accelerator["model_match_mode"] = "exact"
+            for version in (2, 3):
+                payload["schema_version"] = version
+                path.write_text(json.dumps(payload))
+                with self.assertRaisesRegex(ConfigError, "schema_version 4"):
+                    ChallengeRelease.load(path)
+            payload["schema_version"] = 4
+            path.write_text(json.dumps(payload))
+            release = ChallengeRelease.load(path)
+            profile = release.runtime_profiles["h100-80gb-x4"]
+            self.assertEqual(
+                profile.public_manifest()["accelerator"]["model_match_mode"], "exact"
+            )
+            self.assertEqual(
+                profile.training_resources().public_manifest()["gpu_model_match_mode"],
+                "exact",
+            )
+            envelope = profile.resource_envelope(
+                minimum_enforcement=EnforcementLevel.BEST_EFFORT
+            )
+            model = next(
+                item
+                for item in envelope.requirements
+                if item.name == "accelerator.model"
+            )
+            self.assertEqual((model.relation, model.value), ("exact", ("H100",) * 4))
+            self.assertEqual(
+                ResourceEnvelope.from_manifest(
+                    envelope.public_manifest()
+                ).public_manifest(),
+                envelope.public_manifest(),
+            )
+            for invalid in (None, True, [], {}, "regex"):
+                accelerator["model_match_mode"] = invalid
+                path.write_text(json.dumps(payload))
+                with self.subTest(invalid=invalid), self.assertRaises(ConfigError):
+                    ChallengeRelease.load(path)
 
     def test_public_catalog_does_not_fingerprint_private_manifest_content(self):
         with tempfile.TemporaryDirectory() as directory:

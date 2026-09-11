@@ -193,6 +193,7 @@ class RuntimeProfile:
     provisional: bool = False
     resource_contract: Optional[ResourceEnvelope] = None
     evaluation_resource_contract: Optional[ResourceEnvelope] = None
+    gpu_model_match_mode: str = "contains"
 
     @classmethod
     def load(cls, profile_id: str, value: Any) -> "RuntimeProfile":
@@ -251,6 +252,11 @@ class RuntimeProfile:
             raise ConfigError(
                 f"{field}.accelerator.vendor must be 'nvidia' in the v0 runtime"
             )
+        model_match_mode = accelerator.get("model_match_mode", "contains")
+        if model_match_mode not in ("contains", "exact"):
+            raise ConfigError(
+                f"{field}.accelerator.model_match_mode must be 'contains' or 'exact'"
+            )
         return cls(
             profile_id=profile_id,
             label=label,
@@ -273,6 +279,7 @@ class RuntimeProfile:
             provisional=provisional,
             resource_contract=resource_contract,
             evaluation_resource_contract=evaluation_resource_contract,
+            gpu_model_match_mode=model_match_mode,
         )
 
     def training_resources(self) -> TrainingResources:
@@ -280,6 +287,7 @@ class RuntimeProfile:
             nvidia_gpu_count=self.accelerator_count,
             required_gpu_model=self.gpu_model_match,
             minimum_gpu_memory_mib=self.minimum_memory_mib,
+            gpu_model_match_mode=self.gpu_model_match_mode,
         ).validate()
 
     def resource_envelope(
@@ -314,8 +322,10 @@ class RuntimeProfile:
                     ),
                     ResourceRequirement(
                         "accelerator.model",
-                        "contains",
-                        self.gpu_model_match,
+                        self.gpu_model_match_mode,
+                        (self.gpu_model_match,) * self.accelerator_count
+                        if self.gpu_model_match_mode == "exact"
+                        else self.gpu_model_match,
                         minimum_enforcement,
                     ),
                     ResourceRequirement(
@@ -367,6 +377,11 @@ class RuntimeProfile:
         )
         if self.resource_contract is not None:
             manifest["resource_contract"] = self.resource_contract.public_manifest()
+        if (
+            self.accelerator_vendor is not None
+            and self.gpu_model_match_mode != "contains"
+        ):
+            manifest["accelerator"]["model_match_mode"] = self.gpu_model_match_mode
         if self.evaluation_resource_contract is not None:
             manifest["evaluation_resource_contract"] = (
                 self.evaluation_resource_contract.public_manifest()
@@ -533,8 +548,8 @@ class ChallengeRelease:
             raise ConfigError(f"invalid JSON in {source}: {exc}") from exc
         root = _mapping(raw, "root")
         schema_version = _positive_int(root.get("schema_version"), "schema_version")
-        if schema_version not in {2, 3}:
-            raise ConfigError("challenge schema_version must be 2 or 3")
+        if schema_version not in {2, 3, 4}:
+            raise ConfigError("challenge schema_version must be 2, 3, or 4")
         release_stage = _string(root.get("release_stage"), "release_stage")
         if release_stage not in RELEASE_STAGES:
             allowed = ", ".join(sorted(RELEASE_STAGES))
@@ -551,6 +566,13 @@ class ChallengeRelease:
         runtime_profiles = {
             key: RuntimeProfile.load(key, value) for key, value in raw_runtimes.items()
         }
+        if schema_version < 4 and any(
+            profile.gpu_model_match_mode != "contains"
+            for profile in runtime_profiles.values()
+        ):
+            raise ConfigError(
+                "exact GPU model matching requires challenge schema_version 4"
+            )
         if schema_version < 3 and any(
             profile.evaluation_resource_contract is not None
             for profile in runtime_profiles.values()

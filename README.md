@@ -56,6 +56,12 @@ Core defines the benchmark rules. Workers implement execution and isolation in
 the user's environment. The repository includes a local Docker runtime;
 cluster and other platform integrations live in external Workers.
 
+Official benchmark comparisons will use a small set of published reference
+environments. You can adapt runtime profiles for your own hardware and are
+responsible for fair conditions across the Agents you compare. Custom runs do
+not automatically enter official rankings; see the
+[reference environment and comparison policy](challenges/README.md#reference-environments-and-custom-comparisons).
+
 ## Preview results
 
 More results will be added after further testing. A dedicated website is planned

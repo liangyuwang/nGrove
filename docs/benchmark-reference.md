@@ -2093,20 +2093,32 @@ be mixed into a single leaderboard comparison.
 
 A task fixes the corpus and evaluation semantics, but does not require one
 hardware platform. A challenge release publishes a deliberately finite map of
-named track configurations and named runtime profiles. The first preview keeps
-this surface small: provisional Track A/Track B budgets and single-host 4×/8×
-NVIDIA A100 SXM4 80GB or H100 SXM 80GB profiles.
+named track configurations and named runtime profiles. The preview publishes
+provisional Track A/Track B budgets and a finite single-host hardware map; see
+the [challenge's supported preview lanes](../challenges/lm-pretrain/README.md#supported-preview-lanes)
+or use `challenge-info` for its current profile IDs and requirements.
 
-Every profile-bound episode records the exact leaderboard comparison key:
+Official benchmark comparisons will use a small set of published, frozen
+reference environments. Runnable profiles may cover more hardware without
+creating an official leaderboard for each configuration. Users may define
+profiles in derived preview releases for their own hardware; they are
+responsible for consistent resources, task/data identities, budgets and
+evaluation rules across the Agents they compare, and for disclosing differences.
+Custom runs remain subject to Worker enforcement and do not automatically
+qualify for official rankings. See the
+[reference environment and comparison policy](../challenges/README.md#reference-environments-and-custom-comparisons).
+
+Every profile-bound episode records the complete comparison key:
 
 ```text
 challenge_id + track + track_config + runtime_profile
 ```
 
-Only results with the same four fields are directly comparable. CPU, B300,
-TPU, and future platforms may execute the same challenge without changing its
-identity, but each belongs to a separate runtime profile. The runtime profile
-is an episode-time allocation and eligibility input, not a field in `task.json`.
+Matching these fields is necessary for direct comparison, but also requires
+the same frozen release and data identities and consistent effective resource
+conditions. CPU, B300, TPU, and future platforms may execute the same challenge
+with compatible Workers and distinct runtime profiles. The runtime profile is
+an episode-time allocation and eligibility input, not a field in `task.json`.
 
 Inspect a release's supported maps with:
 
@@ -2387,7 +2399,7 @@ remain participant-owned.
 
 No frozen benchmark challenge has been released. The `lm-pretrain` preview under
 `challenges/` now defines provisional track configurations, a deliberately
-small set of single-host A100/H100 runtime profiles, the four-field comparison
+finite set of single-host runtime profiles, the four-field comparison
 key, the initial external-resource policy, a task/evaluator, and a builder that
 retains both raw TRAIN documents and GPT-2 token shards. Source bytes are checked
 against a pinned upstream inventory, and TRAIN files are fully verified before

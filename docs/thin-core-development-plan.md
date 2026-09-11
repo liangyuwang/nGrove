@@ -414,7 +414,7 @@ complete formal receipt.
 
 Status: implemented in the development schemas.
 
-The current versions are Task schema v7, Challenge schema v3 (v2 previews remain
+The current versions are Task schema v7, Challenge schema v4 (v2/v3 releases remain
 readable), Agent Protocol v12, Worker Protocol v16, and result schema v15. The entries below identify the
 versions that introduced each change.
 

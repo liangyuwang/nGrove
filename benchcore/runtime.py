@@ -896,6 +896,7 @@ class DockerRuntime:
             resources.nvidia_gpu_count,
             resources.required_gpu_model,
             resources.minimum_gpu_memory_mib,
+            resources.gpu_model_match_mode,
         )
 
     def _host_nvidia_gpus(
@@ -933,11 +934,16 @@ class DockerRuntime:
             gpu
             for gpu in inventory
             if not resources.required_gpu_model
-            or resources.required_gpu_model in gpu.name
+            or (
+                gpu.name == resources.required_gpu_model
+                if resources.gpu_model_match_mode == "exact"
+                else resources.required_gpu_model in gpu.name
+            )
         ]
         if len(matching) < resources.nvidia_gpu_count:
             raise RuntimeFailure(
-                "episode requires GPU model containing "
+                "episode requires GPU model "
+                f"{'equal to' if resources.gpu_model_match_mode == 'exact' else 'containing'} "
                 f"{resources.required_gpu_model!r}; "
                 f"found {[gpu.name for gpu in inventory]}"
             )

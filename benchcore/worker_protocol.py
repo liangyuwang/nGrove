@@ -1035,8 +1035,10 @@ def v0_resource_envelope(
             requirements.append(
                 ResourceRequirement(
                     "accelerator.model",
-                    "contains",
-                    resources.required_gpu_model,
+                    resources.gpu_model_match_mode,
+                    (resources.required_gpu_model,) * resources.nvidia_gpu_count
+                    if resources.gpu_model_match_mode == "exact"
+                    else resources.required_gpu_model,
                     minimum_enforcement,
                 )
             )

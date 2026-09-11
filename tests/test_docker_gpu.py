@@ -10,12 +10,18 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+from benchcore.challenge import ChallengeRelease
 from benchcore.config import TaskConfig, TrainingResources
 from benchcore.runtime import DockerRuntime, RuntimeFailure
 from benchcore.worker_protocol import (
+    EnforcementLevel,
     ResearchTaskSpec,
+    ResourceAllocationReceipt,
     WorkloadRequest,
     WorkerTeardownFailure,
+    assess_resource_allocation,
+    assess_resource_properties,
+    v0_resource_envelope,
 )
 from tests.test_runtime import (
     CapturingDockerRuntime,
@@ -118,6 +124,113 @@ class DockerGpuTests(unittest.TestCase):
             (self.root / "lease-1/gpu-binding.json").stat().st_mode & 0o777, 0o600
         )
         self.assertEqual(self.query.call_args.kwargs["timeout"], 20)
+
+    def test_release_gpu_matrix_binds_training_and_cuda_evaluation_resources(self):
+        release = ChallengeRelease.load(
+            Path(__file__).resolve().parents[1]
+            / "challenges/lm-pretrain/challenge.json"
+        )
+        for profile_id, profile in release.runtime_profiles.items():
+            with self.subTest(profile=profile_id):
+                resources = profile.training_resources()
+                count = resources.nvidia_gpu_count
+                rows = [
+                    f"GPU-00000000-0000-0000-0000-{index:012d}, {profile.accelerator_model}, {profile.minimum_memory_mib + 1000}, Disabled"
+                    for index in range(1, 9)
+                ]
+                self.query.return_value = gpu_inventory(*reversed(rows))
+                runtime = GpuRuntime("\n".join(reversed(rows[:count])))
+                receipt = self.start(runtime, resources=resources, lease=profile_id)
+                envelope = profile.resource_envelope(
+                    minimum_enforcement=EnforcementLevel.BEST_EFFORT
+                )
+                receipt = ResourceAllocationReceipt.from_manifest(
+                    receipt.public_manifest()
+                )
+                self.assertTrue(
+                    assess_resource_allocation(
+                        envelope,
+                        receipt,
+                        episode_id="episode",
+                        lease_id=profile_id,
+                        worker_id=receipt.worker_id,
+                    ).satisfied
+                )
+                launch = next(call for call in runtime.calls if call[0] == "run")
+                devices = [row.split(",", 1)[0] for row in rows[:count]]
+                self.assertEqual(
+                    next(csv.reader([launch[launch.index("--gpus") + 1]])),
+                    ["device=" + ",".join(devices)],
+                )
+                runtime.terminate_lease(episode_id="episode", lease_id=profile_id)
+                _, properties = runtime._evaluation_resource_properties(
+                    envelope=envelope,
+                    resources=resources,
+                    device="cuda",
+                    timeout_seconds=20,
+                )
+                self.assertTrue(
+                    assess_resource_properties(envelope, tuple(properties)).satisfied
+                )
+                self.assertEqual(runtime._nvidia_devices(resources), tuple(devices))
+
+    def test_exact_model_matching_rejects_variants_and_cannot_be_relaxed(self):
+        resources = TrainingResources(
+            nvidia_gpu_count=1,
+            required_gpu_model="NVIDIA H200",
+            minimum_gpu_memory_mib=140000,
+            gpu_model_match_mode="exact",
+        )
+        good = f"{GPU_TWO}, NVIDIA H200, 143771, Disabled"
+        variant = f"{GPU_ONE}, NVIDIA H200 NVL, 143771, Disabled"
+        self.query.return_value = gpu_inventory(variant, good)
+        runtime = GpuRuntime(good)
+        receipt = self.start(runtime, resources=resources)
+        self.assertEqual(runtime._nvidia_devices(resources), (GPU_TWO,))
+        envelope = v0_resource_envelope(
+            resources, minimum_enforcement=EnforcementLevel.BEST_EFFORT
+        )
+        # A Worker that ignores exact matching still cannot supply an accepted
+        # receipt for another model, even when its GPU count and memory match.
+        wrong_properties = tuple(
+            replace(
+                item,
+                workload_visible=replace(
+                    item.workload_visible, value=("NVIDIA H200 NVL",)
+                ),
+            )
+            if item.name == "accelerator.model"
+            else item
+            for item in receipt.properties
+        )
+        self.assertEqual(
+            assess_resource_properties(envelope, wrong_properties).mismatched,
+            ("accelerator.model",),
+        )
+        with self.assertRaisesRegex(RuntimeFailure, "requirements changed"):
+            runtime.validate_hardware(
+                replace(resources, gpu_model_match_mode="contains")
+            )
+        for row in (
+            variant,
+            good.replace("143771", "80000"),
+            good.replace("Disabled", "Enabled"),
+        ):
+            self.query.return_value = gpu_inventory(row)
+            with self.subTest(row=row), self.assertRaises(RuntimeFailure):
+                GpuRuntime(row).validate_hardware(resources)
+        self.query.return_value = gpu_inventory(good)
+        for count in (2, 4, 8):
+            with self.subTest(count=count), self.assertRaises(RuntimeFailure):
+                GpuRuntime(good).validate_hardware(
+                    replace(resources, nvidia_gpu_count=count)
+                )
+
+        # The same UUID reporting another variant must also fail inside a Lease.
+        runtime = GpuRuntime(good.replace("NVIDIA H200", "NVIDIA H200 NVL"))
+        with self.assertRaisesRegex(RuntimeFailure, "equal to"):
+            self.start(runtime, resources=resources, lease="wrong-variant")
+        self.assertEqual(len(runtime.stops), 1)
 
     def test_wrong_workload_devices_or_properties_reject_lease_and_clean_up(self):
         for visible in (

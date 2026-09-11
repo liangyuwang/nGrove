@@ -6,6 +6,12 @@ had equivalent CPU, I/O, cache or contention conditions. External Worker preview
 testing identified this gap; Training Lease evidence and host inventory do not
 establish the effective environment of a later evaluation.
 
+Official reference environments must define evaluation conditions as well as
+Training resources. Organizers of independent Agent comparisons are responsible
+for consistent effective conditions and disclosure of differences; adding a
+runtime profile does not create an official ranking category. See the
+[reference environment and comparison policy](../challenges/README.md#reference-environments-and-custom-comparisons).
+
 ## Release contract
 
 Challenge schema v3 adds an optional `evaluation_resource_contract` to each
@@ -40,8 +46,9 @@ release identity for comparison. Public profile names alone are insufficient.
 
 Existing Challenge v2 profiles remain readable without evaluation contracts. V2
 rejects this new field, and older Cores reject v3, avoiding silent omission of a
-selected contract. The bundled preview manifests are unchanged: no CPU, memory,
-cache, I/O or exclusivity values have been invented for those historical lanes.
+selected contract. The current preview profiles leave CPU, host-memory, cache,
+I/O and exclusivity conditions unspecified; their GPU declarations do not
+establish a verified cost environment.
 
 ## Startup preflight
 

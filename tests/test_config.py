@@ -587,6 +587,14 @@ class ConfigTests(unittest.TestCase):
             TrainingResources(minimum_gpu_memory_mib=80000).validate()
         with self.assertRaises(ConfigError):
             TrainingResources(devices=["relative-device"]).validate()
+        with self.assertRaises(ConfigError):
+            TrainingResources(
+                nvidia_gpu_count=1, gpu_model_match_mode="exact"
+            ).validate()
+        for invalid in (None, True, [], {}, "regex"):
+            with self.subTest(invalid=invalid), self.assertRaises(ConfigError):
+                replace(resources, gpu_model_match_mode=invalid).validate()
+        self.assertNotIn("gpu_model_match_mode", resources.public_manifest())
 
     def test_evaluator_backend_is_explicit_and_never_core_defaulted(self):
         with tempfile.TemporaryDirectory() as directory:

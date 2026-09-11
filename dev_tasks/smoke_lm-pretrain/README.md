@@ -66,13 +66,21 @@ does not make that recipe suitable as a secret formal evaluation.
 
 Training resources are selected from the finite map in `challenge.json`, never
 by `task.json` or ad-hoc launch flags. `cpu-local` keeps the smoke path cheap;
-the A100/H100 profiles exercise the same accelerator-profile contract as
-`lm-pretrain`. Inspect the supported Track and runtime choices before launch:
+the GPU profiles mirror the [lm-pretrain hardware map](../../challenges/lm-pretrain/README.md#supported-preview-lanes):
+A100 SXM4 80GB, H100 SXM 80GB, H200 SXM 141GB, and H200 NVL 141GB, each with
+1, 2, 4, or 8 full GPUs on one host. These select Training resources; this smoke
+task's trusted evaluation remains on CPU. The budgets remain five minutes for
+Track A and three 75-second Leases for Track B at every GPU count. Inspect the
+supported Track and runtime choices before launch:
 
 ```bash
 autotrain-bench challenge-info \
   --challenge dev_tasks/smoke_lm-pretrain/challenge.json
 ```
+
+These profiles are integration configurations, not official comparison
+environments. For custom hardware and independent Agent comparisons, follow the
+[reference environment and comparison policy](../../challenges/README.md#reference-environments-and-custom-comparisons).
 
 ## Prepare
 
