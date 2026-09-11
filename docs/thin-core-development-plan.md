@@ -49,9 +49,9 @@ below. Implementation and deployment acceptance are tracked separately in the
 | 1 | Host Agent log visibility | Implemented, including capture-loss handling and local process regressions |
 | 2 | Trusted Operator status | Implemented; external observation wiring/final refresh requires deployment evidence |
 | 3 | External Worker startup and exceptional cleanup | Integration, tool-admission, clocks and recovery guidance delivered; affected external packaging/cleanup remains deployment work |
-| 4 | Minimum acceptance for original issues 2/3/4/5/6/8 | Reliability fixes, v16 evaluation probe and evidence matrix delivered; current deployment acceptance remains pending per scenario |
+| 4 | Minimum acceptance for original issues 2/3/4/5/6/8 | Reliability fixes, diagnostics and evidence matrix delivered; next work is scoped deployment acceptance using existing tools and applicable historical evidence |
 | 5 | Original issue 7: cost comparison conditions | Evaluation contract, operation receipts and startup preflight implemented; release-selected cache/I/O/contention conditions and actual enforcement still need completion |
-| 6 | Original issues 10/12/13: formal evaluation | Gateway evidence and reusable Worker diagnostics, including command-timeout descendant checks and idle Lease expiry with optional Worker pause/termination, implemented in Core; actual deployment evidence, complete conformance and formal release/submission infrastructure remain open |
+| 6 | Original issues 10/12/13: formal evaluation | Gateway evidence and reusable Worker diagnostics implemented in Core; complete formal conformance (#10) and formal release/publication (#13) deferred to the formal evaluation milestone, still incomplete; actual deployment evidence remains separately pending |
 
 The matrix records historical successful Tracks and fault diagnostics without
 treating them as acceptance of later code. It also defines the next bounded
@@ -59,6 +59,45 @@ diagnostic cases and the evidence needed to close them; it does not authorize a
 new allocation or require another full A/B run. Original issues 1/9 retain their
 main-item completion. Original issue 11 and full remote operation/cancellation
 semantics remain separately demand-driven.
+
+### Current preview closeout boundary
+
+The implementation review at `c13586b60b68c234837e5a8c552caed904cf3816`
+closes the planned generic-probe development for this preview repair cycle. Its
+last recorded full local test run passed 672 tests. Further work is the bounded
+[acceptance preparation and completion record](worker-acceptance-matrix.md#execution-order-and-completion-record),
+followed by authorized, targeted deployment checks. There is no planned next
+round of probe expansion solely to increase coverage.
+
+| Original item | Implementation disposition | Remaining work |
+| --- | --- | --- |
+| 4: stalled calls, deadlines and cancellation | The bundled supervised composition implements outer watchdog termination and cleanup-only recovery; reusable diagnostics cover returned command timeouts and idle Lease expiry, including Worker pause/termination | Verify the selected deployment's promised behavior. The synchronous v16 interface still cannot safely preempt or reconcile an individual wedged call; asynchronous operations remain an open protocol capability, outside this preview closeout |
+| 8: real Worker fault acceptance | The matrix and diagnostic tools are delivered; historical normal episodes and selected real fault cases retain their recorded passing scope | Select only applicable cases with missing or invalidated evidence for the frozen deployment; complete their observations and cleanup records |
+| 10: complete formal conformance | Trusted receipt binding and partial diagnostics are implemented | The complete organizer-controlled suite and certification workflow are deferred to formal evaluation, not marked complete |
+| 13: formal release and publication | Existing preview results retain their recorded status | Formal hidden release, frozen comparison conditions, submission and publication infrastructure remain deferred |
+
+Issue 12's Gateway evidence interface is implemented; actual formal launcher
+evidence and deployment certification remain part of formal readiness. These
+milestone decisions do not upgrade capability, trust, compliance or eligibility,
+or waive a required execution constraint.
+
+Reopen implementation only for a reproducible defect or a selected required
+acceptance case that the existing interfaces and deployment hooks cannot express.
+Identify that concrete gap, its owner and its passing check before adding code.
+A missing deployment observation alone is not a new Core feature request.
+
+Historical Worker source discovery and provenance review are now complete,
+with a repaired v15 snapshot recommended as the adaptation baseline. Exact
+identities and source comparisons remain in the trusted Operator record; the
+[matrix](worker-acceptance-matrix.md#source-provenance-review) records the
+remaining v16 adaptation and acceptance boundary. Source discovery alone does
+not complete deployment acceptance or select a new execution environment.
+
+Repository implementation closeout, deployment acceptance and formal readiness
+are reported separately. The first is complete for this repair scope; the second
+is pending for a selected current deployment; the third is deferred. New users
+apply the acceptance criteria to their own Worker; historical test sites and
+site-specific adapters are not prerequisites.
 
 ## Invariants throughout the migration
 
@@ -658,6 +697,9 @@ external preview runs are not retrospectively certified.
 The future formal suite belongs to organizer tooling and the external Worker
 SDK. Platform-specific deployment setup, outer watchdogs, destructive cleanup,
 and remote receipt authentication stay outside Core.
+Under the current closeout decision, the complete suite is deferred with formal
+release work; the diagnostic increments below are delivered tools, not a queue
+of further preview development stages.
 
 The [Research Lease diagnostic](worker-lease-probe.md) now adds admission and
 resource-receipt checks, fixture command execution, repeated termination,

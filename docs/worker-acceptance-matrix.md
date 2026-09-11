@@ -6,11 +6,20 @@ current implementation checks to external Worker observations and identifies the
 remaining deployment tests. It does not issue conformance receipts or change
 capability, trust, policy or leaderboard eligibility.
 
-Reviewed code baseline: `70b8585df503375e15c0c6132abb8e06ab1365bd`;
-Worker Protocol v16, Task v7, Challenge v3, Result v14. The last recorded local
-full run at this code baseline passed 564 tests. Subsequent documentation-only
-changes do not supply new runtime evidence. Reassess affected rows when code,
-Worker source, runtime, launch configuration or fixtures change.
+Closeout review baseline: `c13586b60b68c234837e5a8c552caed904cf3816`;
+Worker Protocol v16, Task v7, Challenge v3, Result v15. The last recorded full
+local run at this baseline passed 672 tests. The initial matrix review was at
+`70b8585df503375e15c0c6132abb8e06ab1365bd` with Result v14 and 564 tests.
+The later diagnostics supply local evidence, not new real-deployment acceptance.
+Reassess affected cases when code, Worker source, runtime, launch configuration
+or fixtures change; a version change alone does not require repeating every
+historical test.
+
+Generic diagnostic development is closed for this preview repair cycle under
+the [development plan](thin-core-development-plan.md#current-preview-closeout-boundary).
+This document is a case catalog and closeout checklist. Complete formal
+conformance (#10) and formal release/publication (#13) are deferred to the formal
+evaluation milestone and remain incomplete.
 
 Use this matrix on the user's own authorized execution environment. Core defines
 the common Worker contract; the deployment supplies its platform integration.
@@ -27,11 +36,13 @@ configurations; this matrix does not require repeating them on the same sites.
 | Historical deployment observation | The stated scenario on the recorded Core/Worker/runtime combination | Acceptance of a later implementation or another deployment |
 | Current deployment acceptance | A completed, scoped real-runtime test with identities, observations and cleanup evidence | Unexercised scenarios, other releases, or formal certification |
 
-**Current deployment acceptance is recorded as pending for every remaining
-scenario below.** The repository tests and supplied historical records do not
-contain a real Worker v16 acceptance run for these changes. This is an evidence
-gap, not a claim that all implementations are absent or all historical tests
-must repeat.
+**A historical v15 source baseline has been recommended; a current v16 target
+deployment has not yet been adapted and frozen for this closeout.**
+The repository tests and supplied historical records do not contain a real
+Worker v16 acceptance run for these changes. Target-specific acceptance therefore
+remains pending. The cases below become a finite execution list only after their
+applicability and evidence-reuse decisions are recorded; they are not all required
+on every deployment. Historical passes remain valid for their recorded scope.
 
 Status is per scenario and deployment: `pending`, `passed`, `failed`, or
 `not_applicable` with a reason. A missing, stale, skipped or unconfirmed check is
@@ -294,20 +305,112 @@ its own evidence exists; a fix in another deployment does not establish its pass
 
 ## Execution order and completion record
 
-The next deployment work is R08-E, with R08-L attribution/publication checks and
-R08-O checks for the affected wrapper. Begin with a supported public CPU fixture
-where that deployment supports one; a CPU result covers only that fixture. Use
-the selected CUDA profile for the GPU-specific portion rather than substituting
-its hardware. Then exercise R02/R03/R04/R05 in fresh disposable fault scopes and
-R06 on an authorized device pool. Stop a sequence when ownership or teardown is
-unconfirmed; recover that scope before admitting more work.
+The next step is one acceptance-preparation pass using existing tools. Freeze
+one selected deployment's Worker source/dependencies, launcher, runtime and
+fixture identities, then attach its required guarantees and available evidence
+to the case list. A temporary Worker source snapshot is sufficient; a separately
+maintained Worker repository is not required. The source-provenance review below
+is complete; adaptation, fixture selection, target freezing and execution
+authorization remain pending.
 
-This order is a proposed diagnostic sequence, not a new resource authorization.
-Before execution, resolve the deployment, fixtures, case list, job/call counts,
-resource limits and retry scope under [the integration workflow](worker-integration.md).
-No particular host, backend or GPU allocation is selected here. Reuse valid,
-unchanged evidence when its full identity and scope apply; do not impose the
-whole adversarial matrix on every ordinary preview run.
+### Source provenance review
+
+The closeout review located both historical external Worker source revisions
+through the supplied run ledgers and result archives, then read their preserved
+source directories without launching workloads. The trusted Operator record
+retains their exact paths, revision identifiers, per-file hashes, original
+submission/admission references and evidence-reuse assessment. One deployment's
+original source manifest matches all 19 listed files. The other has a newly
+recorded 16-file inventory; that current inventory is not a substitute for a
+source hash recorded at the historical launch. Result archives identify the
+Worker revision but do not themselves contain the Worker source.
+
+Use the repaired historical snapshot with the broader relevant deadline,
+cleanup, storage and device diagnostics as the recommended adaptation baseline.
+Retain the other deployment's runtime and Agent-wrapper admission evidence for
+its own environment. This recommendation selects a source starting point, not
+a required platform for users or an authorized execution environment.
+
+Both reviewed Workers implement the historical v15 evaluation signature. They
+lack v16's `evaluation_id` and `resource_envelope` arguments and do not produce
+`EvaluationResourceReceipt` evidence. Preserve the historical snapshots and
+adapt a new external revision before current acceptance. Review affected GPU
+resource-failure classification, final Operator status and recovery wiring in
+that revision; unchanged old mechanism tests remain candidates for evidence
+reuse, not automatic acceptance of new interfaces or composition.
+
+### Evidence to retain or conditionally reuse
+
+The historical summaries have been reviewed against this repair scope. Actual
+reuse for a new target still requires the underlying artifact identities and a
+recorded assessment of changes affecting the tested boundary.
+
+| Existing evidence | Closeout disposition | What still needs checking for the target |
+| --- | --- | --- |
+| H-COMPLETE: normal A/B episodes and artifacts | Retain the completed preview objective, sealing/TEST/ANALYSIS sequence, archive verification and disposal facts; no replacement full A/B run is required merely for closeout | New v16 evaluation receipts and changed composition/result handling need their own focused evidence; differing hardware does not become a controlled A/B comparison |
+| H-FAULT: storage, deadlines, forced cleanup and device checks | Candidate for reuse of the same unchanged mechanism, fixture and resource boundary | Compare Worker/launcher changes and effective configuration. A later Core/probe version neither invalidates every mechanism test nor certifies new guarantees |
+| H-ADMISSION / H-MON: tools, logs and monitoring | Retain successful admission and heartbeat regression evidence for the implementation actually tested | Recheck changed wrapper/path/log/status wiring; an unresolved file-tool issue cannot inherit another wrapper's pass |
+| H-INTERRUPTED: cancellation and later disposal | Retain interruption, archive and disposal evidence separately | Missing cancellation-time workload cleanup remains unknown. Do not infer it from storage disposal or reopen historical cancellation-cause investigation as part of this closeout |
+
+Record an applicable reused pass with its original provenance and why changes
+do not affect it. If that cannot be established, retain the historical pass and
+leave the target case pending. Pure Core decision regressions remain useful for
+unchanged Core logic; they cannot stand in for physical deployment observations.
+
+### Finite case selection
+
+Prioritize the changed evaluation boundary, then any affected reliability or
+observability boundary lacking applicable evidence. For each chosen case, write
+the exact injection, expected outcome, observations and cleanup check before
+dispatch. Use these existing scenarios rather than creating another generic
+probe framework:
+
+| Cases | Select when | Existing means and bounded scope |
+| --- | --- | --- |
+| R08-E and affected R08-L | Adopting v16 evaluation resources or changing evaluation composition/receipts | Public supported/rejected TEST and ANALYSIS fixtures through the evaluation probe; independent allocation/cleanup inspection and targeted Supervisor classification/result checks. Retain unchanged Core regressions, and verify the actual deployment error/evidence handoff |
+| R04 and affected R05 | Command/Lease enforcement or recovery changed, or required fault behavior lacks applicable evidence | Existing Lease/command-timeout and idle/fault deadline probes plus the deployment recovery path. Select specific faults and same-budget recovery retries; record separate deadline and cleanup outcomes |
+| R08-O | The chosen Agent wrapper, live logs, heartbeat handling or final status wiring changed or remains unverified | Required file/command tools in a separate diagnostic workspace, live-log/capture-loss checks and final/stale status observations. No participant or inference path is selected by this checklist |
+| R02/R03/R06 and remaining R08-L subcases | A required clock, storage/device, visibility or publication boundary changed or lacks applicable evidence | Only the applicable public-fixture fault checks from the case catalog above; retain unchanged proven boundaries and use the selected hardware for device-specific claims |
+
+The evaluation probe attempts at most four calls. The Lease probe permits at
+most three starts and its optional timeout case adds one command; an idle or
+Worker-fault deadline probe attempts one Lease start per selected case. These
+are accounting inputs, not instructions to run every probe. Count the selected
+calls, possible partial creations, fault injections, cleanup and capped retries
+within the proposed resource allowance. A supported CPU fixture covers its CPU
+boundary only; it cannot substitute for a required CUDA/device test.
+
+Before execution, resolve the exact case list, fixtures, working root,
+resource/time limits and retry scope under
+[the integration workflow](worker-integration.md). This preparation does not
+authorize allocations, new benchmark episodes, expensive retries or looser
+constraints. Stop when ownership or teardown is unconfirmed and recover that
+scope before admitting more work.
+
+### Stop and reopen conditions
+
+The preparation deliverable is complete when the selected deployment and
+fixtures are frozen, every required case has an applicability/reuse decision,
+and the remaining execution list and bounds are reviewable. Until a deployment
+is selected, the repository checklist can be complete while that deliverable
+remains pending.
+
+Deployment acceptance closes when every selected required case has a passing
+new or applicable reused record, cleanup is confirmed, and limitations and
+policy status are reported accurately. A required failed guarantee must be
+fixed and retested or the corresponding run rejected; marking it unsupported
+does not turn that case into a pass. Optional or inapplicable cases need a
+reason, not a fabricated pass. Formal suite completion is not a condition for
+closing this explicitly non-formal preview scope.
+
+Reopen code work only for a reproduced defect or a required selected case that
+cannot be exercised through existing interfaces/hooks. State the concrete gap,
+Core/deployment owner and regression that will close it. Repair and rerun the
+affected case; do not automatically add another development round, full Track
+run or more general diagnostics. Report repository implementation closeout,
+target deployment acceptance and deferred formal readiness as separate statuses.
+
+### Per-case record
 
 For each case, retain a trusted record containing:
 
@@ -333,6 +436,8 @@ real-runtime acceptance. Step 5 still requires release owners to freeze and
 Workers to enforce the comparison conditions in
 [evaluation resources](evaluation-resources.md). Step 6 covers original issues
 10/12/13: formal conformance, Gateway execution identity and release/publication.
+The complete #10 and #13 deliverables are deferred to formal evaluation, still
+incomplete, rather than being the next preview repair tasks.
 The [Gateway execution evidence](gateway-execution.md) Core interface now
 supports issue 12; real launcher evidence and deployment certification remain
 pending independently of its regression tests.
