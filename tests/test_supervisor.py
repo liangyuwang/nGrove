@@ -1867,6 +1867,179 @@ class SupervisorTests(unittest.TestCase):
         self.assertIsNone(final["test_raw_metrics"])
         self.assertEqual(self.worker.evaluations, [])
 
+    def test_committed_candidates_without_incumbent_receive_postmortem_analysis(self):
+        supervisor = self.supervisor()
+        candidates = []
+        for index in range(2):
+            lease = supervisor.start_lease()
+            output = supervisor.runs_dir / lease["lease_id"] / "output/candidate"
+            (output / "weights.bin").write_bytes(bytes([index]))
+            candidates.append(
+                supervisor.commit_lease("/output/candidate")["candidate_id"]
+            )
+        supervisor.finish()
+
+        self.assertEqual(self.worker.evaluations, [])
+        self.assertEqual(self.worker.hidden_dataset_requests, [])
+        self.assertEqual(
+            [request.role for request in self.worker.workload_requests], ["training"]
+        )
+        with self.assertRaisesRegex(RuntimeError, "termination must precede"):
+            supervisor.evaluate_postmortem()
+
+        def assert_sealed(workload, _timeout):
+            self.assertEqual(supervisor.state["status"], "closed")
+            self.assertIsNotNone(supervisor.state["agent_system"]["termination_reason"])
+            self.assertTrue(supervisor.state["agent_control"]["cleanup_complete"])
+            self.assertFalse(self.worker.running)
+
+        self.worker.workload_resolution_hook = assert_sealed
+        final = self.finalize_after_agent_stop(supervisor)
+
+        self.assertEqual(final["status"], "finalized")
+        self.assertEqual(final["outcome"], "failed")
+        self.assertEqual(final["failure"], "no_candidate")
+        self.assertIsNone(final["final_candidate_id"])
+        self.assertIsNone(final["test_performance_score"])
+        self.assertIsNone(final["test_raw_metrics"])
+        self.assertIsNone(final["test_cost"])
+        self.assertEqual(final["incumbent_declarations"], [])
+        self.assertTrue(final["analysis_complete"])
+        self.assertEqual(final["analysis_status"], "complete")
+        self.assertIsNone(final["analysis_failure"])
+        self.assertEqual(final["analysis_selected_points"], 2)
+        self.assertEqual(final["analysis_evaluated_points"], 2)
+        self.assertEqual(
+            [point["candidate_id"] for point in final["analysis_trajectory"]],
+            candidates,
+        )
+        self.assertTrue(
+            all(
+                point["analysis_status"] == "evaluated"
+                for point in final["analysis_trajectory"]
+            )
+        )
+        self.assertEqual(self.worker.evaluations, ["analysis", "analysis"])
+        self.assertEqual(
+            [request.name for request in self.worker.hidden_dataset_requests],
+            ["analysis"],
+        )
+        self.assertEqual(
+            [request.role for request in self.worker.workload_requests],
+            ["training", "candidate", "evaluator"],
+        )
+        self.assertEqual(final["deployment_teardown_failures"], [])
+        normalize_result_report(supervisor.state)
+
+    def test_analysis_workload_resolution_failure_preserves_no_candidate_result(self):
+        private_detail = "/organizer/private/workload-resolution.log"
+        for role in ("candidate", "evaluator"):
+            with self.subTest(role=role):
+                self.episode = self.episode.parent / f"episode-{role}"
+                supervisor = self.supervisor()
+                supervisor.start_lease()
+                supervisor.commit_lease("/output/candidate")
+                supervisor.finish()
+                self.worker.workload_resolution_failures = {role: private_detail}
+
+                final = self.finalize_after_agent_stop(supervisor)
+
+                self.assertEqual(final["status"], "finalized")
+                self.assertEqual(final["failure"], "no_candidate")
+                self.assertEqual(final["test_status"], "failed")
+                self.assertEqual(final["analysis_status"], "incomplete")
+                self.assertEqual(
+                    final["analysis_failure"], "analysis_workload_resolution_failure"
+                )
+                self.assertEqual(
+                    final["analysis_trajectory"][0]["analysis_status"],
+                    "infrastructure_failure",
+                )
+                self.assertEqual(
+                    final["analysis_trajectory"][0]["analysis_error"],
+                    "workload_resolution_failure",
+                )
+                self.assertEqual(final["analysis_evaluated_points"], 0)
+                self.assertEqual(final["deployment_teardown_failures"], [])
+                self.assertEqual(self.worker.evaluations, [])
+                self.assertNotIn(private_detail, json.dumps(final))
+                self.assertIn(private_detail, supervisor.events_path.read_text())
+                normalize_result_report(supervisor.state)
+
+    def test_analysis_workload_resolution_shares_candidate_evaluation_deadline(self):
+        supervisor = self.supervisor(
+            config=replace(self.config, evaluator_timeout_seconds=30)
+        )
+        supervisor.start_lease()
+        supervisor.commit_lease("/output/candidate")
+        supervisor.finish()
+
+        def resolve_workload(workload, _timeout):
+            self.clock.advance(5 if workload.role == "candidate" else 7)
+
+        self.worker.workload_resolution_hook = resolve_workload
+        self.worker.evaluation_hook = lambda _split, _timeout: self.clock.advance(2)
+        final = self.finalize_after_agent_stop(supervisor)
+
+        self.assertTrue(final["analysis_complete"])
+        self.assertEqual(final["failure"], "no_candidate")
+        self.assertEqual(self.worker.workload_resolution_timeouts[-2:], [30, 25])
+        self.assertEqual(self.worker.evaluation_timeouts, [18])
+        self.assertEqual(final["timing"]["analysis_evaluation_seconds"], 14)
+        self.assertEqual(final["timing"]["test_evaluation_seconds"], 0)
+
+    def test_analysis_workload_resolution_overrun_prevents_evaluation(self):
+        for role in ("candidate", "evaluator"):
+            with self.subTest(role=role):
+                self.episode = self.episode.parent / f"episode-{role}"
+                supervisor = self.supervisor(
+                    config=replace(self.config, evaluator_timeout_seconds=30)
+                )
+                supervisor.start_lease()
+                supervisor.commit_lease("/output/candidate")
+                supervisor.finish()
+
+                def overrun(workload, timeout_seconds):
+                    if workload.role == role:
+                        self.clock.advance(timeout_seconds + 1)
+
+                self.worker.workload_resolution_hook = overrun
+                final = self.finalize_after_agent_stop(supervisor)
+
+                self.assertEqual(final["failure"], "no_candidate")
+                self.assertEqual(final["analysis_status"], "incomplete")
+                self.assertEqual(
+                    final["analysis_failure"], "analysis_workload_resolution_failure"
+                )
+                self.assertEqual(final["timing"]["analysis_evaluation_seconds"], 31)
+                self.assertEqual(final["deployment_teardown_failures"], [])
+                self.assertEqual(self.worker.evaluations, [])
+
+    def test_unexpected_analysis_workload_resolution_failure_keeps_teardown_evidence(
+        self,
+    ):
+        private_detail = "/organizer/private/workload-process.log"
+        supervisor = self.supervisor()
+        supervisor.start_lease()
+        supervisor.commit_lease("/output/candidate")
+        supervisor.finish()
+        self.worker.workload_resolution_exception = RuntimeError(private_detail)
+
+        final = self.finalize_after_agent_stop(supervisor)
+
+        self.assertEqual(final["failure"], "no_candidate")
+        self.assertEqual(final["analysis_failure"], "analysis_worker_teardown_failure")
+        self.assertEqual(
+            final["deployment_teardown_failures"],
+            ["evaluation_worker_teardown_failure"],
+        )
+        self.assertFalse(final["policy_compliant"])
+        self.assertEqual(self.worker.evaluations, [])
+        self.assertNotIn(private_detail, json.dumps(final))
+        self.assertIn(
+            "workload_resolver_state_unknown", supervisor.events_path.read_text()
+        )
+
     def test_failed_test_evaluation_has_no_metric(self):
         supervisor = self.supervisor()
         supervisor.start_lease()
@@ -2863,6 +3036,10 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(supervisor.state["elapsed_seconds"], 5.0)
         self.assertEqual(supervisor.state["timing"]["analysis_evaluation_seconds"], 0.0)
         self.assertIsNone(supervisor.state["final_candidate_id"])
+        self.assertTrue(supervisor.state["analysis_complete"])
+        self.assertEqual(supervisor.state["analysis_evaluated_points"], 1)
+        self.assertEqual(self.worker.evaluations, ["analysis"])
+        self.assertEqual(supervisor.state["deployment_teardown_failures"], [])
 
     def test_analysis_failures_expose_only_a_fixed_error_code(self):
         supervisor = self.supervisor()

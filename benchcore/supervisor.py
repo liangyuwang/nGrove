@@ -3156,7 +3156,24 @@ class Supervisor:
                 candidate_deadline = self.monotonic() + float(
                     self.config.evaluator_timeout_seconds
                 )
+
+                def remaining_seconds() -> float:
+                    remaining = candidate_deadline - self.monotonic()
+                    if remaining <= 0:
+                        raise WorkloadResolutionFailure(
+                            "ANALYSIS evaluation operation deadline reached"
+                        )
+                    return remaining
+
                 try:
+                    # TEST may have been skipped when no incumbent was declared.
+                    # Resolve independently; cached handles avoid repeated work.
+                    candidate_workload = self._resolve_workload(
+                        "candidate", timeout_seconds=remaining_seconds()
+                    )
+                    evaluator_workload = self._resolve_workload(
+                        "evaluator", timeout_seconds=remaining_seconds()
+                    )
                     evaluation_result = self._evaluate_candidate_with_resources(
                         candidate_id=candidate_id,
                         episode_id=self.state["episode_id"],
@@ -3165,9 +3182,9 @@ class Supervisor:
                         candidate_dir=self.candidates_dir / digest,
                         hidden_dataset=resolved,
                         output_dir=self.evaluations_dir / "analysis" / digest,
-                        candidate_workload=self._resolved_workloads["candidate"],
-                        evaluator_workload=self._resolved_workloads["evaluator"],
-                        timeout_seconds=max(0.0, candidate_deadline - self.monotonic()),
+                        candidate_workload=candidate_workload,
+                        evaluator_workload=evaluator_workload,
+                        timeout_seconds=remaining_seconds(),
                     )
                     if self.monotonic() >= candidate_deadline:
                         raise WorkerFailure(
@@ -3194,6 +3211,20 @@ class Supervisor:
                         primary=False,
                         code="hidden_dataset_resolution_failure",
                         private_detail=str(exc),
+                    )
+                    break
+                except WorkloadResolutionFailure as exc:
+                    metadata["analysis_status"] = "infrastructure_failure"
+                    metadata["analysis_error"] = "workload_resolution_failure"
+                    self._event(
+                        "ANALYSIS_INFRASTRUCTURE_FAILURE",
+                        candidate_id=candidate_id,
+                        code="workload_resolution_failure",
+                    )
+                    incomplete = (
+                        "analysis_workload_resolution_failure",
+                        str(exc),
+                        None,
                     )
                     break
                 except EvaluationResourceFailure as exc:
