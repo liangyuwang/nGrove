@@ -183,6 +183,43 @@ versions, balanced hidden context-length histograms, and preview hidden-dataset
 checksums. It does not force the canonical stream to contain exactly
 10,000,000,000 tokens.
 
+The upstream `sample-10BT` name denotes [around 10B GPT-2 tokens](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu#smaller-sample-versions),
+not a minimum TRAIN size. The default build processes the complete pinned sample
+under the preview split recipe. Tokenization, document separators and the local
+holdout affect the exact TRAIN count. A complete build below 10B is not a scale
+failure, and the builder never pads or repeats documents to reach that number.
+
+The generated `tokenized_train` metadata separates scale from completeness:
+
+| Field | Meaning |
+| --- | --- |
+| `nominal_scale_tokens` | The approximate 10B source-sample scale, not an acceptance threshold |
+| `exact_tokens` | Actual GPT-2 TRAIN tokens, including document separators |
+| `requested_token_limit` | Explicit `--target-train-tokens` stopping threshold, or `null` for the default full-source build |
+| `source_exhausted` | Whether the builder reached the end of the source iterator |
+| `train_truncated_by_token_limit` | Whether any TRAIN rows were skipped because the explicit token threshold had been reached |
+
+A full-source build has `source_exhausted: true` and
+`train_truncated_by_token_limit: false`. Successful publication still requires
+verified source identities, complete ANALYSIS/TEST quotas and the TRAIN integrity
+inventory. Report the exact token count alongside that completion evidence;
+reserve "below the required scale" for a release with an explicit exact or
+minimum-size requirement.
+
+For a smaller development build, pass `--target-train-tokens N`. The final TRAIN
+document remains whole, so its tokens can take the count above N. The builder
+may continue scanning to fill hidden quotas after it stops adding TRAIN rows;
+reaching the end of that scan does not make truncated TRAIN a full-source build.
+If the source ends below N, the actual count is retained without padding.
+
+Historical manifests remain readable and must not be rewritten. Their
+`target_scale_tokens` and `target_scale_reached` fields record the old numeric
+threshold comparison, not source completeness. When the new fields are absent,
+use the preserved build evidence to establish completeness; do not infer it from
+token count alone. New builds have new manifest identities, even when their
+corpus bytes are unchanged. This metadata change does not require rebuilding
+existing verified data.
+
 The root `public/manifest.json` also inventories every public TRAIN file,
 including the document index and nested tokenized manifest. Paths in both
 manifests are relative to the public TRAIN root; the nested manifest carries

@@ -1,9 +1,9 @@
 """Build the lm-pretrain-v1 preview from pinned FineWeb-Edu Parquet files.
 
-The default build downloads roughly 28.5 GB of source Parquet and emits about
-10 billion GPT-2 tokens. Optional dependencies are deliberately lazy-loaded so
-the deterministic sharding and split helpers can be tested without downloading
-the corpus.
+The default build processes the complete pinned source sample (roughly 28.5 GB
+of Parquet, nominally 10 billion GPT-2 tokens). Optional dependencies are
+lazy-loaded so the deterministic sharding and split helpers can be tested
+without downloading the corpus.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ UPSTREAM_SAMPLE = "sample/10BT"
 TOKENIZER = "gpt2"
 VOCAB_SIZE = 50_257
 EOT_TOKEN_ID = 50_256
-TARGET_TRAIN_TOKENS = 10_000_000_000
+NOMINAL_TRAIN_TOKENS = 10_000_000_000
 SHARD_TOKENS = 100_000_000
 RAW_SHARD_DOCUMENTS = 100_000
 PREVIEW_EVAL_EXAMPLES = 2_048
@@ -783,16 +783,19 @@ def prepare(
     *,
     source_dir: Optional[Path],
     output_dir: Path,
-    target_train_tokens: int,
+    target_train_tokens: Optional[int] = None,
     shard_tokens: int,
     eval_examples: int,
     eval_context_lengths: Sequence[int],
     accept_large_download: bool,
     force: bool,
 ) -> Dict[str, Any]:
+    limits = [shard_tokens, eval_examples]
+    if target_train_tokens is not None:
+        limits.append(target_train_tokens)
     if any(
         isinstance(value, bool) or not isinstance(value, int) or value <= 0
-        for value in (target_train_tokens, shard_tokens, eval_examples)
+        for value in limits
     ):
         raise PreparationError("all token and example limits must be positive")
     normalized_context_lengths = tuple(eval_context_lengths)
@@ -877,6 +880,8 @@ def prepare(
             boundary_token_id=EOT_TOKEN_ID,
         )
         train_documents = 0
+        source_exhausted = False
+        train_truncated_by_token_limit = False
 
         with document_index_path.open("w", encoding="utf-8") as document_index:
             for row in iter_documents(files, parquet):
@@ -886,7 +891,12 @@ def prepare(
                     split = "train"
                 elif split == "test" and test.complete:
                     split = "train"
-                if split == "train" and writer.total_tokens >= target_train_tokens:
+                if (
+                    split == "train"
+                    and target_train_tokens is not None
+                    and writer.total_tokens >= target_train_tokens
+                ):
+                    train_truncated_by_token_limit = True
                     if analysis.complete and test.complete:
                         break
                     continue
@@ -917,6 +927,8 @@ def prepare(
                     json.dumps(metadata, separators=(",", ":"), sort_keys=True) + "\n"
                 )
                 train_documents += 1
+            else:
+                source_exhausted = True
         shards = writer.close()
         raw_train_shards = raw_writer.close()
         _require_complete_holdouts(analysis, test)
@@ -970,9 +982,11 @@ def prepare(
             },
             "tokenized_train": {
                 "format": "little-endian uint16",
-                "target_scale_tokens": target_train_tokens,
+                "nominal_scale_tokens": NOMINAL_TRAIN_TOKENS,
                 "exact_tokens": writer.total_tokens,
-                "target_scale_reached": writer.total_tokens >= target_train_tokens,
+                "requested_token_limit": target_train_tokens,
+                "source_exhausted": source_exhausted,
+                "train_truncated_by_token_limit": train_truncated_by_token_limit,
                 "documents": train_documents,
                 "document_index": (f"tokenized/{document_index_path.name}"),
                 "document_index_format": "JSON Lines with shard token spans",
@@ -1034,7 +1048,15 @@ def main() -> None:
         help="existing directory containing the pinned sample/10BT Parquet files",
     )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--target-train-tokens", type=int, default=TARGET_TRAIN_TOKENS)
+    parser.add_argument(
+        "--target-train-tokens",
+        type=int,
+        default=None,
+        help=(
+            "optional TRAIN stopping threshold for smaller builds; preserves whole "
+            "documents and still fills hidden quotas (default: complete pinned source)"
+        ),
+    )
     parser.add_argument("--shard-tokens", type=int, default=SHARD_TOKENS)
     parser.add_argument(
         "--accept-large-download",

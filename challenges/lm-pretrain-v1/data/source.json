@@ -9,7 +9,8 @@
     "additional_terms": "Common Crawl Terms of Use"
   },
   "train": {
-    "target_scale_tokens": 10000000000,
+    "nominal_scale_tokens": 10000000000,
+    "default_build_scope": "complete_pinned_source",
     "exact_canonical_token_count": null,
     "document_boundaries": "preserved",
     "public_representations": [
