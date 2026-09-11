@@ -1,3 +1,7 @@
+[Project overview](../README.md) · [Quick start](#quick-start) · [Benchmark rules](#motivation)
+
+This reference preserves the detailed benchmark design and operating instructions. Run its commands from the repository root.
+
 # AutoTrain-Bench
 
 **An open-ended benchmark for autonomous training research and recursive self-improvement.**
@@ -85,7 +89,7 @@ that terminates an unresponsive Worker and invokes journaled cleanup. To retry
 unconfirmed cleanup, invoke
 `autotrain-bench worker-recover --state-dir PATH` in the same Worker environment
 to verify and reclaim its resources. This preserves existing results and does
-not resume the episode. See [Worker recovery](docs/worker-recovery.md) for the
+not resume the episode. See [Worker recovery](worker-recovery.md) for the
 ownership checks, supported scope and unresolved-outcome handling.
 
 The repository now contains an executable, single-host Docker prototype of the benchmark protocol. It is intended to validate episode lifecycle, Training Lease accounting, hidden evaluation, and the agent-facing control surface before the first official benchmark instance is selected.
@@ -179,10 +183,10 @@ external Worker deployments. These may be maintained platform packages or
 temporary implementations created by the trusted operator during authorized
 preparation, with source and identities preserved for the run. They must not
 add platform branches or dependencies to this core repository.
-See [Worker Protocol boundary](docs/worker-protocol.md) for the ownership rules
-and [Worker integration](docs/worker-integration.md) for composition order,
+See [Worker Protocol boundary](worker-protocol.md) for the ownership rules
+and [Worker integration](worker-integration.md) for composition order,
 Agent tool admission, monitoring, cancellation/recovery responsibilities, and
-staged verification. The [Thin Core development plan](docs/thin-core-development-plan.md)
+staged verification. The [Thin Core development plan](thin-core-development-plan.md)
 describes the incremental migration and its acceptance criteria.
 
 The reference runtime requires a machine that can run Docker. AutoTrain-Bench
@@ -239,7 +243,7 @@ and `start` launchers verify file names, byte lengths, and SHA-256 before task r
 old data without this inventory must be prepared again. These checks do not
 read hidden evaluation data. Core receives the trusted verification result and
 checks its binding to the root manifest without scanning the dataset. See
-[TRAIN integrity](docs/training-data.md) for
+[TRAIN integrity](training-data.md) for
 the manifest format and the Worker's responsibility to keep TRAIN immutable.
 
 The smoke task downloads about 0.98 MB of real text and uses 512 hidden
@@ -525,7 +529,7 @@ autotrain-bench status \
 Without fresh, episode-bound deployment evidence, this view reports current
 execution as unknown even if the Core snapshot says `active`. Finalized results
 remain authoritative. Add `--observation PATH` for a deployment observation or
-`--json` for the structured view; see [Operator status](docs/operator-status.md)
+`--json` for the structured view; see [Operator status](operator-status.md)
 for the schema, freshness rules, and separate cleanup evidence. This view does
 not query an allocator or change the Agent-visible status API.
 
@@ -540,7 +544,7 @@ Episode states declare `result_schema_version: 15`. `report` also accepts v12/v1
 reports under their original semantics; v12 cannot contain operator-protection
 fields or aborted outcomes. V12/v13 carry no verified evaluation
 resource evidence. V15 adds private, request-bound
-[Gateway execution evidence](docs/gateway-execution.md), checked against the
+[Gateway execution evidence](gateway-execution.md), checked against the
 organizer's complete artifact identity for formal inference. Older reports
 cannot contain those new fields. Unversioned, earlier, and unknown future versions
 are rejected rather than guessed. This repository is still pre-preview. The first
@@ -555,7 +559,7 @@ receipt, and assessment in the v14 report. Missing contracts remain explicit
 (`evaluation_resource_envelope: null`) in previews; they do not establish cost
 comparability. Existing Challenge v2 profiles remain readable without this field.
 Formal releases require an enforced evaluation contract and accepted TEST
-resource evidence. See [evaluation resource contracts](docs/evaluation-resources.md)
+resource evidence. See [evaluation resource contracts](evaluation-resources.md)
 for the Worker interface, local limits, and remaining comparison conditions.
 The local `start` command preflights the selected evaluation contract before
 episode setup and task reveal, so known unsupported conditions fail before the
@@ -710,7 +714,7 @@ A read-only trusted holder preserves outputs until scoring; all consumers must
 be confirmed stopped before holder/volume removal. Failed cleanup remains
 registered for retry. This supports `candidate_prediction_storage_quota` under
 Worker Protocol v15, but does not change development trust or formal eligibility.
-See [Worker prediction storage](docs/worker-protocol.md) for memory/swap needs,
+See [Worker prediction storage](worker-protocol.md) for memory/swap needs,
 deployment support, cleanup limits and the v14 compatibility break.
 
 The Agent Container receives a generated, minimal `autotrain_bench.client`
@@ -1404,7 +1408,7 @@ heartbeats or operation deadlines beyond a short grace trigger process-group
 termination and journaled cleanup. Its default heartbeat tolerance, deadline
 grace and control-call fallback are 10, 5 and 120 seconds; the launcher prints
 their `--worker-watchdog-*-seconds` overrides before workloads start. See
-[Worker recovery](docs/worker-recovery.md) for the precise scope and failure
+[Worker recovery](worker-recovery.md) for the precise scope and failure
 report. `host_cli` and direct Python integrations require their own external
 supervision. Runtime/host outages may still prevent termination; cleanup can
 outlast the research limit, which is not a token or monetary cap. This feature

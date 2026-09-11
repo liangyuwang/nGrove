@@ -1068,12 +1068,12 @@ class DockerRuntime:
             resolved_resources.validate()
         else:
             resolved_resources.validate_for(config)
-        # `README.md` promises that the discovered runtime inventory is recorded
-        # alongside the requested resources, so inspect the host whenever that is
-        # possible rather than only when accelerators were requested.  Recording
-        # an empty list for an uninspected host would claim the machine had no
-        # accelerator, which is how a profile declaring `accelerator: null` can
-        # occupy one without leaving a trace in the result.
+        # `docs/benchmark-reference.md` promises that the discovered runtime
+        # inventory is recorded alongside the requested resources, so inspect
+        # the host whenever that is possible rather than only when accelerators
+        # were requested. Recording an empty list for an uninspected host would
+        # claim the machine had no accelerator, which is how a profile declaring
+        # `accelerator: null` can occupy one without leaving a trace in the result.
         requested_gpus = resolved_resources.nvidia_gpu_count
         selected_gpus = (
             self._nvidia_devices(resolved_resources)

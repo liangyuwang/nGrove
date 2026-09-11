@@ -166,8 +166,9 @@ retries, a different lane, relaxed isolation, or changes to benchmark policy.
 
 ## Run workflow
 
-1. Read `README.md`, `challenges/README.md`, `docs/worker-protocol.md`, and the
-   selected challenge/task README and manifests before operating the benchmark.
+1. Read `README.md`, the [full benchmark reference](docs/benchmark-reference.md),
+   `challenges/README.md`, `docs/worker-protocol.md`, and the selected
+   challenge/task README and manifests before operating the benchmark.
    Inspect implementation entry points only as needed for the requested run.
    Record the exact Git revision and preserve unrelated user changes.
 2. Inspect the target environment read-only. Confirm that the destination is

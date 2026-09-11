@@ -1016,11 +1016,11 @@ class Supervisor:
     def _benchmark_overhead(self) -> float:
         """Wall clock spent on benchmark-owned preparation, not on the Agent.
 
-        `README.md` places "benchmark infrastructure startup" outside
-        participant timing.  Worker Lease materialization -- scheduler queueing,
-        image conversion, workload startup -- is that preparation, and its cost
-        varies by deployment, so billing it to the participant would make the
-        same budget mean different things at different sites.
+        `docs/benchmark-reference.md` places "benchmark infrastructure startup"
+        outside participant timing. Worker Lease materialization -- scheduler
+        queueing, image conversion, workload startup -- is that preparation,
+        and its cost varies by deployment, so billing it to the participant
+        would make the same budget mean different things at different sites.
         """
 
         return float(self.state["timing"]["benchmark_overhead_seconds"])

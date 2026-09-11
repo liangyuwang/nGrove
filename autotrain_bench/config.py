@@ -156,9 +156,9 @@ def _operator_default(task_source: Path, field: str) -> Any:
 
 
 # Phases a release may declare as benchmark-owned rather than participant time.
-# `README.md` requires this boundary to be release-defined and identical across
-# participants, so it belongs in the task manifest digest rather than in
-# whichever Core revision happens to execute the episode.
+# `docs/benchmark-reference.md` requires this boundary to be release-defined and
+# identical across participants, so it belongs in the task manifest digest
+# rather than in whichever Core revision happens to execute the episode.
 BENCHMARK_OWNED_PREPARATION_PHASES = {"worker_lease_startup"}
 DEFAULT_BENCHMARK_OWNED_PREPARATION = ("worker_lease_startup",)
 
