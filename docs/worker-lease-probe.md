@@ -85,6 +85,89 @@ started diagnostic, even if compensation fails or execution is interrupted.
 Interrupts propagate after cleanup; durable interruption/recovery evidence
 remains the launcher's responsibility.
 
+## Optional command timeout case
+
+The default probe checks a successful command and post-stop rejection. Supply a
+`CommandTimeoutCase` to additionally check one deliberately long-running public
+fixture command on the **first accepted Lease**, after its normal command and
+before any termination call. The timeout command must differ from the normal
+fixture command, keep owned work running beyond its requested timeout, and never
+launch work outside the disposable scope. Include a descendant that outlives its
+parent where the deployment needs to validate command-family termination.
+
+```python
+from autotrain_bench.conformance import CommandTimeoutCase
+
+timeout_case = CommandTimeoutCase(
+    command=public_timeout_fixture_command,
+    observe=independent_command_observer,
+    timeout_seconds=2,
+    termination_grace_seconds=1,
+    observation_timeout_seconds=1,
+)
+```
+
+Pass `command_timeout_case=timeout_case` to `probe_worker_leases()` above. This
+adds one command and two observations, with no additional Lease starts. Include
+that command, its resources and possible failed cleanup in the authorized fixture
+scope. The resulting probe version is
+`worker-v16-lease-command-timeout-probe-v1`; omitting the case retains
+`worker-v16-lease-probe-v1`. Both remain non-formal diagnostics.
+
+The independent, read-only observer receives `episode_id`, `lease_id`,
+`worker_id`, the exact `argv`, `command_sha256`, a fresh `observation_id`, and
+`timeout_seconds`. It returns a typed `CommandTimeoutObservation` with the same
+five identity fields (all except `argv` and the allowance), plus:
+
+| Field | Meaning |
+| --- | --- |
+| `source` | Stable independent observation boundary |
+| `running` | Whether any workload belonging to this exact command invocation is still running; `False` confirms all command-owned descendants stopped |
+| `start_evidence_id` | Reference to independently retained evidence that this command actually started, or `None` before dispatch |
+| `timeout_evidence_id` | Reference to the enforcement event for this command's requested timeout, or `None` before that event |
+
+The observer must inspect actual owned workloads and retained execution/enforcement
+events, without calling Worker status, executing another command, or initiating
+termination/reconciliation. It must raise if workload state cannot be determined.
+An exited launcher/client or command parent is insufficient when descendants
+survive. Event evidence must bind this episode, Lease, exact argument vector and
+timeout grant; Lease expiry, unrelated exit or Operator cleanup cannot substitute
+for command timeout enforcement. Worker return flags alone cannot supply these
+observations. Retain the underlying evidence in the trusted deployment.
+
+Worker v16 supplies no command operation ID. This fixture uses a fresh episode
+and Lease, a distinct timeout argument vector, and exactly one such invocation to
+establish the observed scope. `command_sha256` hashes the UTF-8 JSON argument array
+with ASCII escaping and separators `(',', ':')`; the observer receives it directly.
+The first observation must confirm no running command, prior start or timeout
+event. Fresh request IDs, all scope bindings and stable source identity are
+checked again on the second observation; replayed or misbound responses fail.
+
+The command must return a typed `CommandResult` with `timed_out=True` and a
+nonzero exit code. An ordinary failure, successful exit or premature timeout
+claim cannot pass this controlled case. Immediately after that return, **before
+another Worker method or cleanup**, the probe takes one fresh observation. It
+requires command-start evidence, command-timeout evidence and no surviving work.
+This establishes absence at that observation, not an exact remote stop timestamp.
+A running or unknown result fails; polling or subsequent cleanup cannot repair it.
+
+Command execution, return and the post-return observation share the command grant
+plus `termination_grace_seconds`. Each observation is additionally capped by
+`observation_timeout_seconds`. The entire command window must fit before both
+the case deadline and admission-call start plus the Lease grant. This conservative
+Lease bound avoids crediting Lease expiry as command timeout enforcement; it is
+not an atomic activation receipt. Slow startup, a slow normal command or initial
+observation can leave insufficient time, in which case dispatch is rejected
+without silently shortening the requested timeout or extending any budget.
+
+Private `leases[0].command_timeout` records the request, attempted/passed flags,
+command timestamps, bounded returned streams, and observations. Late replies are
+retained when available but cannot pass. Command timeout failure stops later cases
+and preserves normal compensation/external teardown. Conversely, later cleanup
+failure cannot erase an accepted timeout observation, but still fails the overall
+diagnostic. Synchronous wedges require the existing independent outer watchdog;
+this is not an asynchronous cancellation or crash-recovery implementation.
+
 ## Clocks and limits
 
 `duration_seconds` is the requested Worker Lease grant. It is not the startup
@@ -108,8 +191,10 @@ timeout argument. Checking elapsed time can reject a late reply but cannot
 preempt a wedged method or callback. No thread left behind by a local timeout is
 treated as terminated. The separate [idle deadline diagnostic](worker-deadline-probe.md)
 checks expiry through an independent deployment observer, optionally while the
-Worker is paused or terminated by a deployment-owned injector. Command cancellation,
-launcher loss and recovery still require separate deployment tests.
+Worker is paused or terminated by a deployment-owned injector. The optional
+command timeout case covers returned timeouts and independent descendant checks;
+wedged calls, external cancellation, launcher loss and recovery still require
+separate deployment tests.
 
 ## Evidence and remaining coverage
 

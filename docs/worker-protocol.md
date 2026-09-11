@@ -144,6 +144,10 @@ authentication of a future remote receipt belongs to the deployment transport.
 [evaluation resource](worker-evaluation-probe.md) diagnostics. The Lease probe
 checks admission receipts, fixture command execution, stopped-state observations,
 repeated termination and rejected admission, with failed-start compensation.
+Its optional command timeout case adds independent command-start, timeout-event
+and descendant-absence observations before cleanup. A returned timeout flag alone
+cannot pass it; command return and observation share an explicit termination grace
+within the original case/Lease windows.
 The evaluation probe calls
 the supplied Evaluation Worker on public fixtures, checks per-invocation receipts
 and typed resource rejection, rejects late replies, and requires explicit

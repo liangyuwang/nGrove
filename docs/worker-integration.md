@@ -267,6 +267,12 @@ The [Research Lease diagnostic](worker-lease-probe.md) checks two supported
 allocations and a rejected admission, resource receipt binding, fixture command
 execution, repeated termination and failed-start compensation. Its command is
 supplied by the disposable deployment; it creates no Agent or hidden evaluation.
+An optional `CommandTimeoutCase` adds one deliberately long-running fixture
+command on the first Lease. Supply an independent command-family observer that
+can detect surviving descendants and bind actual timeout enforcement, including
+when a client or parent has already exited. The case adds no Lease starts and
+requires no platform commands in Core; its false-timeout and cleanup evidence
+remains in the private diagnostic report.
 
 The [idle deadline diagnostic](worker-deadline-probe.md) observes one live Lease
 through expiry using the deployment's independent read-only observer and

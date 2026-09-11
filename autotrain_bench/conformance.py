@@ -1,7 +1,8 @@
 """Core-owned diagnostic probes for selected Worker Protocol semantics.
 
 These probes deliberately do not issue :class:`ConformanceReceipt`. They
-exercise resolution, Lease lifecycle and evaluation resource evidence, while
+exercise resolution, Lease lifecycle (including optional independently observed
+command timeouts) and evaluation resource evidence, while
 the active Worker Protocol also includes physical resource enforcement,
 isolation, full deadline/cancellation and recovery guarantees. The separate
 ``deadline_probe`` checks idle Lease expiry through a deployment observer,
@@ -18,12 +19,14 @@ remain outside Core.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .config import TrainingResources
 from .worker_protocol import (
@@ -54,6 +57,9 @@ from .worker_protocol import (
 RESOLUTION_PROBE_VERSION = f"worker-v{WORKER_PROTOCOL_VERSION}-resolution-probe-v1"
 EVALUATION_PROBE_VERSION = f"worker-v{WORKER_PROTOCOL_VERSION}-evaluation-probe-v1"
 LEASE_PROBE_VERSION = f"worker-v{WORKER_PROTOCOL_VERSION}-lease-probe-v1"
+LEASE_COMMAND_TIMEOUT_PROBE_VERSION = (
+    f"worker-v{WORKER_PROTOCOL_VERSION}-lease-command-timeout-probe-v1"
+)
 
 PASSED = "passed"
 FAILED = "failed"
@@ -171,6 +177,92 @@ class LeaseProbeReport(WorkerProbeReport):
         payload["task_id"] = self.task_id
         payload["leases"] = list(self.leases)
         return payload
+
+
+@dataclass(frozen=True)
+class CommandTimeoutObservation:
+    """Independent command-family observation, not Worker return/status evidence.
+
+    Evidence must bind the one exact argv invocation in this fresh Lease scope.
+    ``running=False`` confirms absence of every command-owned descendant, not
+    merely the local client. A source unable to establish that must raise.
+    """
+
+    episode_id: str
+    lease_id: str
+    worker_id: str
+    command_sha256: str
+    observation_id: str
+    source: str
+    running: bool
+    start_evidence_id: Optional[str] = None
+    timeout_evidence_id: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        for name in ("episode_id", "lease_id", "worker_id", "observation_id", "source"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"observation {name} must be a non-empty string")
+        if (
+            not isinstance(self.command_sha256, str)
+            or len(self.command_sha256) != 64
+            or any(char not in "0123456789abcdef" for char in self.command_sha256)
+        ):
+            raise ValueError("command_sha256 must be a lowercase SHA-256 digest")
+        if not isinstance(self.running, bool):
+            raise TypeError("observation running must be a boolean")
+        for name in ("start_evidence_id", "timeout_evidence_id"):
+            value = getattr(self, name)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ValueError(f"{name} must be a non-empty string when supplied")
+
+    def private_manifest(self) -> Dict[str, Any]:
+        return dict(self.__dict__)
+
+
+@dataclass(frozen=True)
+class CommandTimeoutCase:
+    """One public fixture command that keeps working past its requested timeout."""
+
+    command: Sequence[str]
+    observe: Callable[..., CommandTimeoutObservation]
+    timeout_seconds: float = 2.0
+    termination_grace_seconds: float = 1.0
+    observation_timeout_seconds: float = 1.0
+
+    def __post_init__(self) -> None:
+        if isinstance(self.command, (str, bytes)) or not isinstance(
+            self.command, Sequence
+        ):
+            raise TypeError("timeout command must be an argument sequence")
+        if not self.command or any(
+            not isinstance(arg, str) or not arg for arg in self.command
+        ):
+            raise ValueError("timeout command arguments must be non-empty strings")
+        object.__setattr__(self, "command", tuple(self.command))
+        if not callable(self.observe):
+            raise TypeError("timeout command observer must be callable")
+        for name in (
+            "timeout_seconds",
+            "termination_grace_seconds",
+            "observation_timeout_seconds",
+        ):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value <= 0
+            ):
+                raise ValueError(f"{name} must be finite and positive")
+        if not math.isfinite(self.timeout_seconds + self.termination_grace_seconds):
+            raise ValueError("command timeout and grace must have a finite sum")
+
+    @property
+    def command_sha256(self) -> str:
+        return hashlib.sha256(
+            json.dumps(self.command, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
 
 
 class _Recorder:
@@ -457,6 +549,12 @@ class _ProbeEvidenceError(ValueError):
     pass
 
 
+class _CommandTimeoutFailure(ValueError):
+    def __init__(self, code: str, detail: str) -> None:
+        super().__init__(detail)
+        self.code = code
+
+
 def probe_worker_leases(
     worker: Any,
     *,
@@ -472,6 +570,7 @@ def probe_worker_leases(
     duration_seconds: float = 30.0,
     timeout_seconds: float = 60.0,
     cleanup_timeout_seconds: float = 30.0,
+    command_timeout_case: Optional[CommandTimeoutCase] = None,
 ) -> LeaseProbeReport:
     """Exercise two accepted Leases and one rejected admission on public fixtures.
 
@@ -487,6 +586,10 @@ def probe_worker_leases(
     Every attempted start is registered for compensation before calling Worker
     code. Unconfirmed Leases get one cleanup attempt under a shared, separate
     allowance, followed by mandatory deployment teardown even after interrupts.
+
+    An optional public command timeout case runs once on the first accepted
+    Lease. An independent observer must confirm a clean scope, actual command
+    start, command-timeout enforcement and descendant absence before cleanup.
     """
 
     if not isinstance(task, ResearchTaskSpec):
@@ -506,6 +609,11 @@ def probe_worker_leases(
     if not command or any(not isinstance(arg, str) or not arg for arg in command):
         raise ValueError("command arguments must be non-empty strings")
     command = tuple(command)
+    if command_timeout_case is not None:
+        if not isinstance(command_timeout_case, CommandTimeoutCase):
+            raise TypeError("command_timeout_case must be a CommandTimeoutCase")
+        if command_timeout_case.command == command:
+            raise ValueError("normal and timeout fixture commands must differ")
     if not isinstance(expected_stdout, str) or not expected_stdout:
         raise ValueError("expected_stdout must be a non-empty fixture marker")
     if not callable(teardown):
@@ -597,6 +705,145 @@ def probe_worker_leases(
             "stderr_truncated": value.stderr_truncated or len(value.stderr) > 4096,
         }
 
+    def check_command_timeout(
+        record: Dict[str, Any], lease_id: str, deadline: float, lease_deadline: float
+    ) -> None:
+        fixture = command_timeout_case
+        assert fixture is not None
+        evidence: Dict[str, Any] = {
+            "command": list(fixture.command),
+            "command_sha256": fixture.command_sha256,
+            "timeout_seconds": fixture.timeout_seconds,
+            "termination_grace_seconds": fixture.termination_grace_seconds,
+            "observation_timeout_seconds": fixture.observation_timeout_seconds,
+            "case_deadline_monotonic": deadline,
+            "lease_earliest_expiry_monotonic": lease_deadline,
+            "attempted": False,
+            "passed": False,
+            "observations": [],
+        }
+        record["command_timeout"] = evidence
+        source = None
+
+        def observe(until: float, phase: str) -> CommandTimeoutObservation:
+            nonlocal source
+            observation_id = "observation:" + uuid.uuid4().hex
+            item: Dict[str, Any] = {
+                "phase": phase,
+                "observation_id": observation_id,
+                "started_monotonic": time.monotonic(),
+                "accepted": False,
+            }
+            evidence["observations"].append(item)
+            observation_deadline = min(
+                until, time.monotonic() + fixture.observation_timeout_seconds
+            )
+
+            def fetch(**kwargs: Any) -> Any:
+                try:
+                    value = fixture.observe(**kwargs)
+                finally:
+                    item["finished_monotonic"] = time.monotonic()
+                if isinstance(value, CommandTimeoutObservation):
+                    item["observation"] = value.private_manifest()
+                return value
+
+            value = call(
+                observation_deadline,
+                fetch,
+                episode_id=run_id,
+                lease_id=lease_id,
+                worker_id=worker_id,
+                argv=fixture.command,
+                command_sha256=fixture.command_sha256,
+                observation_id=observation_id,
+                timeout_seconds=remaining(observation_deadline),
+            )
+            if not isinstance(value, CommandTimeoutObservation):
+                raise _ProbeEvidenceError("invalid command timeout observation type")
+            if (
+                value.episode_id,
+                value.lease_id,
+                value.worker_id,
+                value.command_sha256,
+                value.observation_id,
+            ) != (run_id, lease_id, worker_id, fixture.command_sha256, observation_id):
+                raise _CommandTimeoutFailure(
+                    "command_observation_binding_mismatch",
+                    "stale or misbound command observation",
+                )
+            if source is not None and source != value.source:
+                raise _CommandTimeoutFailure(
+                    "command_observation_source_changed",
+                    "command observer changed identity",
+                )
+            source = value.source
+            item["accepted"] = True
+            return value
+
+        before = observe(min(deadline, lease_deadline), "before_command")
+        if (
+            before.running
+            or before.start_evidence_id is not None
+            or before.timeout_evidence_id is not None
+        ):
+            raise _CommandTimeoutFailure(
+                "command_scope_not_clean",
+                "timeout fixture has pre-existing work or events",
+            )
+        began = time.monotonic()
+        command_deadline = (
+            began + fixture.timeout_seconds + fixture.termination_grace_seconds
+        )
+        if command_deadline >= min(deadline, lease_deadline):
+            raise _CommandTimeoutFailure(
+                "command_timeout_allowance_insufficient",
+                "command timeout and observation must fit before case and Lease expiry",
+            )
+        evidence["attempted"] = True
+        evidence["started_monotonic"] = began
+        evidence["deadline_monotonic"] = command_deadline
+
+        def execute() -> Any:
+            try:
+                result = worker.exec_lease(
+                    episode_id=run_id,
+                    lease_id=lease_id,
+                    argv=fixture.command,
+                    timeout_seconds=fixture.timeout_seconds,
+                )
+            finally:
+                evidence["returned_monotonic"] = time.monotonic()
+            if isinstance(result, CommandResult):
+                evidence["result"] = command_result(result)
+            return result
+
+        result = call(command_deadline, execute)
+        if not isinstance(result, CommandResult):
+            raise _ProbeEvidenceError("invalid timeout command result type")
+        if not result.timed_out or result.exit_code == 0:
+            raise _CommandTimeoutFailure(
+                "command_timeout_not_reported",
+                "fixture command did not report a failed timeout",
+            )
+        if evidence["returned_monotonic"] < began + fixture.timeout_seconds:
+            raise _CommandTimeoutFailure(
+                "command_timeout_reported_early",
+                "command timeout reported before its grant elapsed",
+            )
+        after = observe(command_deadline, "after_command")
+        if after.start_evidence_id is None or after.timeout_evidence_id is None:
+            raise _CommandTimeoutFailure(
+                "command_timeout_cause_unconfirmed",
+                "independent command start and timeout evidence are required",
+            )
+        if after.running:
+            raise _CommandTimeoutFailure(
+                "command_workloads_still_running",
+                "command or descendants survived the timeout return",
+            )
+        evidence["passed"] = True
+
     try:
         descriptor = worker.describe_capabilities()
         if not isinstance(descriptor, WorkerDescriptor):
@@ -651,6 +898,7 @@ def probe_worker_leases(
             stage = f"{prefix}.admission"
             record["start_attempted"] = True
             pending[lease_id] = record
+            admission_started = time.monotonic()
             try:
                 receipt = call(
                     deadline,
@@ -721,6 +969,12 @@ def probe_worker_leases(
                     raise _ProbeEvidenceError(
                         "fixture command did not succeed as expected"
                     )
+                if case == "accepted_first" and command_timeout_case is not None:
+                    log.record(stage, PASSED)
+                    stage = f"{prefix}.command_timeout"
+                    check_command_timeout(
+                        record, lease_id, deadline, admission_started + duration_seconds
+                    )
             log.record(stage, PASSED)
             stage = f"{prefix}.termination"
             stop(deadline, lease_id)
@@ -764,7 +1018,9 @@ def probe_worker_leases(
             completed += 1
     except Exception as exc:  # noqa: BLE001 - diagnostic failure always compensates
         code = (
-            "operation_deadline_exceeded"
+            exc.code
+            if isinstance(exc, _CommandTimeoutFailure)
+            else "operation_deadline_exceeded"
             if isinstance(exc, _ProbeDeadline)
             else "worker_teardown_unconfirmed"
             if isinstance(exc, WorkerTeardownFailure)
@@ -814,7 +1070,11 @@ def probe_worker_leases(
                     code="deployment_teardown_unconfirmed",
                 )
     return LeaseProbeReport(
-        probe_version=LEASE_PROBE_VERSION,
+        probe_version=(
+            LEASE_COMMAND_TIMEOUT_PROBE_VERSION
+            if command_timeout_case is not None
+            else LEASE_PROBE_VERSION
+        ),
         run_id=run_id,
         worker_id=worker_id,
         checks=tuple(log.checks),

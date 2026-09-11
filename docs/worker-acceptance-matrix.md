@@ -127,6 +127,17 @@ handles followed by a successful authorized recovery check.
 
 ### R04: stalled calls, signals and loss of the launcher
 
+The optional [Lease command timeout case](worker-lease-probe.md#optional-command-timeout-case)
+checks a deliberately long-running public command on the first accepted Lease.
+An independent observer confirms a clean scope before dispatch, then actual start,
+command-timeout enforcement and descendant absence after the timeout reply, before
+any Worker cleanup. [Regression tests](../tests/test_command_timeout_probe.py)
+cover false/premature/late timeout replies, evidence binding and compensation.
+[Local process fixtures](../tests/test_command_timeout_probe_process.py) include
+an exited command parent with a surviving child: stopping only the exec client
+fails, even if later compensation removes the child. These fixtures are not real
+Worker deployment acceptance or proof that an unreturned call can be cancelled.
+
 The later [Lease deadline diagnostic](worker-deadline-probe.md) adds a reusable
 idle case and an optional Worker pause/termination case. Observe a live Lease,
 inject one selected deployment-owned fault, independently confirm a still-live
