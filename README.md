@@ -5,9 +5,10 @@
 Given a fixed task, data, evaluation contract, and research budget, how good a
 training system can an autonomous Agent discover?
 
-AutoTrain-Bench leaves the training stack open: the Agent chooses the model,
-optimizer, data strategy, kernels, and experiments, and builds the training
-system itself. There is no reference `train.py` to tune.
+**The entire training system is the search space.** We encourage exploration of
+any participant-controlled component, including approaches the benchmark authors
+have not anticipated. The Agent builds the system itself; there is no reference
+`train.py` to tune.
 
 > **Preview:** runnable development tasks and completed experimental runs.
 > No frozen, leaderboard-eligible challenge has been released yet.
@@ -16,6 +17,21 @@ system itself. There is no reference `train.py` to tune.
 [Get involved](#get-involved) · [Documentation](#documentation)
 
 ## The core idea
+
+Unless a release explicitly restricts it, the Agent is free to change any part
+of its training system or task-local research process:
+
+| Direction | Examples to explore |
+| --- | --- |
+| **Models** | Model scale, Transformers or other architectures, recurrence, sparsity, MoE |
+| **Optimization** | Optimizers, objectives, initialization, learning-rate schedules, batch strategies |
+| **Data** | Selection, filtering, mixtures, curricula, ordering, packing, training tokenization |
+| **Systems** | Kernels, precision, compilation, memory management, parallelism, communication, data loading |
+| **Research process** | Experiment design, profiling, tool creation, research memory, subagents, autonomous self-improvement |
+
+**These are examples, not an exhaustive list.** New directions and combinations
+are welcome. The fixed task, evaluation contract, resource budget, and isolation
+rules define the boundary; the research strategy remains open.
 
 **The initial system is fixed. Autonomous improvement is allowed.** After task
 reveal, the Agent can improve its own software, tools, and research workflow
