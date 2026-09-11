@@ -430,6 +430,7 @@ class DeadlineProbeTests(unittest.TestCase):
             {"deadline_triggered": True},
             {"deadline_evidence_id": "untriggered"},
             {"source": ""},
+            {"worker_fault": {}},
         ):
             with self.subTest(changes=changes), self.assertRaises(
                 (ValueError, TypeError)

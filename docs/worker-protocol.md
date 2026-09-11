@@ -152,7 +152,10 @@ public failure codes from trusted details, and invoke deployment teardown.
 The separate [idle Lease deadline diagnostic](worker-deadline-probe.md) uses an
 independent deployment observer to verify workload absence and a bound deadline
 event before any Worker cleanup call. Its observer must never enforce expiry
-as a side effect of inspection.
+as a side effect of inspection. The optional Worker pause/termination case uses
+deployment fault injection and independently verifies that the fault remains
+active through expiry. After injection is attempted, cleanup uses only external
+recovery and observation, with no further call into the potentially lost Worker.
 They do not test the complete physical enforcement, isolation, deadline and
 recovery contract or issue a formal `ConformanceReceipt`. A complete
 organizer-controlled suite remains required before a formal deployment can

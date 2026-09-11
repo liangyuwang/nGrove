@@ -11,6 +11,7 @@ import math
 import time
 import uuid
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
@@ -42,7 +43,45 @@ from .worker_protocol import (
 LEASE_DEADLINE_PROBE_VERSION = (
     f"worker-v{WORKER_PROTOCOL_VERSION}-idle-deadline-probe-v1"
 )
+WORKER_FAULT_DEADLINE_PROBE_VERSION = (
+    f"worker-v{WORKER_PROTOCOL_VERSION}-worker-fault-deadline-probe-v1"
+)
 MAX_DEADLINE_OBSERVATIONS = 4096
+
+
+class WorkerFaultKind(str, Enum):
+    PAUSED = "paused"
+    TERMINATED = "terminated"
+
+
+@dataclass(frozen=True)
+class WorkerFaultEvidence:
+    """Independent confirmation that the injected Worker fault is still active.
+
+    All control execution for this Worker's fixture scope must have remained
+    paused or terminated since injection, including automatic replacements.
+    An unreachable client or a failed status request does not establish either
+    condition. The enclosing observation binds the episode, Lease and Worker.
+    """
+
+    fault_id: str
+    kind: WorkerFaultKind
+    evidence_id: str
+
+    def __post_init__(self) -> None:
+        for name in ("fault_id", "evidence_id"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"fault {name} must be a non-empty string")
+        if not isinstance(self.kind, WorkerFaultKind):
+            raise TypeError("fault kind must be a WorkerFaultKind")
+
+    def private_manifest(self) -> Dict[str, Any]:
+        return {
+            "fault_id": self.fault_id,
+            "kind": self.kind.value,
+            "evidence_id": self.evidence_id,
+        }
 
 
 @dataclass(frozen=True)
@@ -63,6 +102,7 @@ class LeaseDeadlineObservation:
     state: LeaseState
     deadline_triggered: bool
     deadline_evidence_id: Optional[str] = None
+    worker_fault: Optional[WorkerFaultEvidence] = None
 
     def __post_init__(self) -> None:
         for name in ("episode_id", "lease_id", "worker_id", "observation_id", "source"):
@@ -81,9 +121,13 @@ class LeaseDeadlineObservation:
                 raise ValueError("a triggered deadline requires an evidence ID")
         elif self.deadline_evidence_id is not None:
             raise ValueError("an untriggered deadline cannot carry a termination event")
+        if self.worker_fault is not None and not isinstance(
+            self.worker_fault, WorkerFaultEvidence
+        ):
+            raise TypeError("worker_fault must be WorkerFaultEvidence")
 
     def private_manifest(self) -> Dict[str, Any]:
-        return {
+        payload = {
             "episode_id": self.episode_id,
             "lease_id": self.lease_id,
             "worker_id": self.worker_id,
@@ -93,6 +137,9 @@ class LeaseDeadlineObservation:
             "deadline_triggered": self.deadline_triggered,
             "deadline_evidence_id": self.deadline_evidence_id,
         }
+        if self.worker_fault is not None:
+            payload["worker_fault"] = self.worker_fault.private_manifest()
+        return payload
 
 
 @dataclass(frozen=True)
@@ -125,6 +172,9 @@ def probe_worker_lease_deadline(
     resource_envelope: ResourceEnvelope,
     observe: Callable[..., LeaseDeadlineObservation],
     teardown: Callable[[], bool],
+    worker_fault: Optional[WorkerFaultKind] = None,
+    inject_fault: Optional[Callable[..., None]] = None,
+    fault_timeout_seconds: float = 1.0,
     duration_seconds: float = 2.0,
     startup_timeout_seconds: float = 60.0,
     termination_grace_seconds: float = 1.0,
@@ -140,6 +190,11 @@ def probe_worker_lease_deadline(
     independent deadline-trigger evidence to pass. Observation latency counts
     inside the termination allowance. A deployment watchdog must bound wedged
     synchronous calls, observer calls and final teardown.
+
+    Optionally inject a deployment-owned Worker pause or termination after the
+    live observation. Independent observations must confirm the fault remains
+    active through expiry. No Worker method is called after injection begins,
+    including on injection failure; the external teardown owns recovery.
     """
 
     if not isinstance(task, ResearchTaskSpec):
@@ -153,6 +208,11 @@ def probe_worker_lease_deadline(
         raise ValueError("the diagnostic requires normative resource properties")
     if not callable(observe) or not callable(teardown):
         raise TypeError("observe and teardown must be callable")
+    if worker_fault is None:
+        if inject_fault is not None:
+            raise ValueError("inject_fault requires a selected worker_fault")
+    elif not isinstance(worker_fault, WorkerFaultKind) or not callable(inject_fault):
+        raise TypeError("worker_fault requires a typed kind and callable inject_fault")
     for name, value in (
         ("duration_seconds", duration_seconds),
         ("startup_timeout_seconds", startup_timeout_seconds),
@@ -160,6 +220,7 @@ def probe_worker_lease_deadline(
         ("observation_timeout_seconds", observation_timeout_seconds),
         ("poll_interval_seconds", poll_interval_seconds),
         ("cleanup_timeout_seconds", cleanup_timeout_seconds),
+        ("fault_timeout_seconds", fault_timeout_seconds),
     ):
         if (
             isinstance(value, bool)
@@ -171,7 +232,8 @@ def probe_worker_lease_deadline(
     window_seconds = duration_seconds + termination_grace_seconds
     if (
         not math.isfinite(window_seconds)
-        or poll_interval_seconds < window_seconds / (MAX_DEADLINE_OBSERVATIONS - 2)
+        or poll_interval_seconds
+        < window_seconds / (MAX_DEADLINE_OBSERVATIONS - (3 if worker_fault else 2))
         or poll_interval_seconds > termination_grace_seconds
     ):
         raise ValueError(
@@ -210,6 +272,24 @@ def probe_worker_lease_deadline(
         "cleanup_timeout_seconds": cleanup_timeout_seconds,
         "resource_envelope": resource_envelope.public_manifest(),
     }
+    fault_record: Dict[str, Any] = (
+        {
+            "fault_id": "fault:" + uuid.uuid4().hex,
+            "kind": worker_fault.value,
+            "timeout_seconds": fault_timeout_seconds,
+            "attempted": False,
+            "accepted": False,
+        }
+        if worker_fault is not None
+        else {}
+    )
+    if fault_record:
+        record["worker_fault"] = fault_record
+    expiry_check = (
+        "deadline.expiry_during_worker_fault"
+        if worker_fault is not None
+        else "deadline.idle_expiry"
+    )
     observations = []
     source = None
     stage = "descriptor.available"
@@ -288,6 +368,53 @@ def probe_worker_lease_deadline(
         item["accepted"] = True
         return value
 
+    def require_fault(value: LeaseDeadlineObservation) -> None:
+        evidence = value.worker_fault
+        if evidence is None:
+            raise _DeadlineCheckFailure(
+                "worker_fault_unconfirmed",
+                "Worker fault is not independently confirmed",
+            )
+        if (
+            evidence.fault_id != fault_record["fault_id"]
+            or evidence.kind != worker_fault
+        ):
+            raise _DeadlineCheckFailure(
+                "worker_fault_binding_mismatch",
+                "observation does not bind the injected fault",
+            )
+
+    def confirm_absence(deadline: float) -> None:
+        if observation(deadline, "cleanup").state is not LeaseState.STOPPED:
+            raise _ProbeEvidenceError("owned workload absence is unconfirmed")
+        record["cleanup_confirmed"] = True
+        log.record("lease.cleanup_confirmed", PASSED)
+
+    def cleanup_failure(exc: Exception) -> None:
+        log.record(
+            "lease.cleanup_confirmed",
+            FAILED,
+            code="lease_cleanup_unconfirmed",
+            private_detail=f"{type(exc).__name__}: {exc}",
+        )
+
+    def final_teardown(deadline: Optional[float] = None) -> None:
+        try:
+            confirmed = teardown() if deadline is None else call(deadline, teardown)
+        except Exception as exc:  # noqa: BLE001 - deployment owns this final boundary
+            log.record(
+                "deployment.teardown_confirmed",
+                FAILED,
+                code="deployment_teardown_failed",
+                private_detail=f"{type(exc).__name__}: {exc}",
+            )
+        else:
+            log.expect(
+                "deployment.teardown_confirmed",
+                confirmed is True,
+                code="deployment_teardown_unconfirmed",
+            )
+
     try:
         descriptor = worker.describe_capabilities()
         if not isinstance(descriptor, WorkerDescriptor):
@@ -358,13 +485,54 @@ def probe_worker_lease_deadline(
         record["latest_stop_monotonic"] = latest_stop
         stage = "deadline.initial_running"
         initial = observation(latest_stop, "initial")
-        if initial.state is not LeaseState.RUNNING or initial.deadline_triggered:
+        if (
+            initial.state is not LeaseState.RUNNING
+            or initial.deadline_triggered
+            or initial.worker_fault is not None
+        ):
             raise _DeadlineCheckFailure(
                 "initial_running_not_observed",
                 "fixture was not observed running before expiry",
             )
         log.record(stage, PASSED)
-        stage = "deadline.idle_expiry"
+        if worker_fault is not None:
+            stage = "deadline.worker_fault_injected"
+            # Injection and its live/fault confirmation must finish before even
+            # the earliest possible expiry, without extending the original grant.
+            fault_deadline = min(
+                earliest_expiry, time.monotonic() + fault_timeout_seconds
+            )
+            fault_allowance = remaining(fault_deadline)
+            fault_record["attempted"] = True
+            fault_record["started_monotonic"] = time.monotonic()
+            try:
+                injected = call(
+                    fault_deadline,
+                    inject_fault,
+                    episode_id=run_id,
+                    lease_id=lease_id,
+                    worker_id=worker_id,
+                    fault_id=fault_record["fault_id"],
+                    kind=worker_fault,
+                    timeout_seconds=fault_allowance,
+                )
+            finally:
+                fault_record["finished_monotonic"] = time.monotonic()
+            if injected is not None:
+                raise _ProbeEvidenceError("fault injection must return None")
+            after_fault = observation(fault_deadline, "post_fault")
+            require_fault(after_fault)
+            if (
+                after_fault.state is not LeaseState.RUNNING
+                or after_fault.deadline_triggered
+            ):
+                raise _DeadlineCheckFailure(
+                    "running_after_fault_not_observed",
+                    "a live Lease was not observed under fault before expiry",
+                )
+            fault_record["accepted"] = True
+            log.record(stage, PASSED)
+        stage = expiry_check
         deadline_started = True
         while True:
             allowance = latest_stop - time.monotonic()
@@ -380,6 +548,8 @@ def probe_worker_lease_deadline(
                     "idle workload absence was not confirmed in time",
                 )
             value = observation(latest_stop, "idle")
+            if worker_fault is not None:
+                require_fault(value)
             if value.deadline_triggered and time.monotonic() < earliest_expiry:
                 raise _DeadlineCheckFailure(
                     "deadline_triggered_early",
@@ -417,59 +587,45 @@ def probe_worker_lease_deadline(
             stage, FAILED, code=code, private_detail=f"{type(exc).__name__}: {exc}"
         )
         if not deadline_started:
-            log.record(
-                "deadline.idle_expiry", SKIPPED, code="probe_stopped_after_failure"
-            )
+            log.record(expiry_check, SKIPPED, code="probe_stopped_after_failure")
     finally:
-        try:
-            if record["start_attempted"]:
-                try:
-                    cleanup_deadline = time.monotonic() + cleanup_timeout_seconds
-                    stopped = call(
-                        cleanup_deadline,
-                        worker.terminate_lease,
-                        episode_id=run_id,
-                        lease_id=lease_id,
-                    )
-                    if stopped is not None:
-                        raise _ProbeEvidenceError(
-                            "termination returned an invalid result"
-                        )
-                    if (
-                        observation(cleanup_deadline, "cleanup").state
-                        is not LeaseState.STOPPED
-                    ):
-                        raise _ProbeEvidenceError(
-                            "owned workload absence is unconfirmed"
-                        )
-                except Exception as exc:  # noqa: BLE001 - callback cleanup still runs
-                    log.record(
-                        "lease.cleanup_confirmed",
-                        FAILED,
-                        code="lease_cleanup_unconfirmed",
-                        private_detail=f"{type(exc).__name__}: {exc}",
-                    )
-                else:
-                    record["cleanup_confirmed"] = True
-                    log.record("lease.cleanup_confirmed", PASSED)
-        finally:
+        if fault_record.get("attempted"):
+            # Even a failed/late injection can leave the Worker unavailable.
+            # Never risk a synchronous call into it on this recovery path.
+            cleanup_deadline = time.monotonic() + cleanup_timeout_seconds
             try:
-                confirmed = teardown()
-            except Exception as exc:  # noqa: BLE001 - deployment owns this final boundary
-                log.record(
-                    "deployment.teardown_confirmed",
-                    FAILED,
-                    code="deployment_teardown_failed",
-                    private_detail=f"{type(exc).__name__}: {exc}",
-                )
-            else:
-                log.expect(
-                    "deployment.teardown_confirmed",
-                    confirmed is True,
-                    code="deployment_teardown_unconfirmed",
-                )
+                final_teardown(cleanup_deadline)
+            finally:
+                try:
+                    confirm_absence(cleanup_deadline)
+                except Exception as exc:  # noqa: BLE001 - preserve cleanup uncertainty
+                    cleanup_failure(exc)
+        else:
+            try:
+                if record["start_attempted"]:
+                    try:
+                        cleanup_deadline = time.monotonic() + cleanup_timeout_seconds
+                        stopped = call(
+                            cleanup_deadline,
+                            worker.terminate_lease,
+                            episode_id=run_id,
+                            lease_id=lease_id,
+                        )
+                        if stopped is not None:
+                            raise _ProbeEvidenceError(
+                                "termination returned an invalid result"
+                            )
+                        confirm_absence(cleanup_deadline)
+                    except Exception as exc:  # noqa: BLE001 - callback cleanup still runs
+                        cleanup_failure(exc)
+            finally:
+                final_teardown()
     return LeaseDeadlineProbeReport(
-        probe_version=LEASE_DEADLINE_PROBE_VERSION,
+        probe_version=(
+            WORKER_FAULT_DEADLINE_PROBE_VERSION
+            if worker_fault is not None
+            else LEASE_DEADLINE_PROBE_VERSION
+        ),
         run_id=run_id,
         worker_id=worker_id,
         checks=tuple(log.checks),

@@ -51,7 +51,7 @@ below. Implementation and deployment acceptance are tracked separately in the
 | 3 | External Worker startup and exceptional cleanup | Integration, tool-admission, clocks and recovery guidance delivered; affected external packaging/cleanup remains deployment work |
 | 4 | Minimum acceptance for original issues 2/3/4/5/6/8 | Reliability fixes, v16 evaluation probe and evidence matrix delivered; current deployment acceptance remains pending per scenario |
 | 5 | Original issue 7: cost comparison conditions | Evaluation contract, operation receipts and startup preflight implemented; release-selected cache/I/O/contention conditions and actual enforcement still need completion |
-| 6 | Original issues 10/12/13: formal evaluation | Gateway evidence and reusable Worker diagnostics, including independent observation of idle Lease expiry, implemented in Core; actual deployment evidence, complete conformance and formal release/submission infrastructure remain open |
+| 6 | Original issues 10/12/13: formal evaluation | Gateway evidence and reusable Worker diagnostics, including idle Lease expiry with optional Worker pause/termination, implemented in Core; actual deployment evidence, complete conformance and formal release/submission infrastructure remain open |
 
 The matrix records historical successful Tracks and fault diagnostics without
 treating them as acceptance of later code. It also defines the next bounded
@@ -670,9 +670,14 @@ organizer certification remain required for complete formal conformance.
 The [idle Lease deadline diagnostic](worker-deadline-probe.md) now adds an
 independent observer seam for live-state, deadline-event and stopped-state
 evidence, without invoking Worker state/command/cleanup methods during the idle
-window. This closes the reusable diagnostic gap for that bounded case. Exact
-activation timing, command cancellation, paused/killed Worker behavior and
-allocation/host-loss recovery remain separate acceptance work.
+window. Its optional fault case now injects a deployment-owned Worker pause or
+termination and requires independent evidence that the fault remains active
+through expiry. Injection and observation cannot extend the grant; after an
+attempted injection, external recovery replaces all further Worker calls.
+Deterministic regressions and local process fixtures cover this diagnostic,
+including failure when the paused Worker itself owns deadline enforcement.
+Actual Worker deployment acceptance, exact activation timing, command
+cancellation and allocation/host-loss recovery remain separate work.
 
 ### Other independently triggered work
 

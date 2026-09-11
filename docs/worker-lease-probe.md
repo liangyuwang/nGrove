@@ -107,7 +107,8 @@ synchronous v16 `start_lease`, `lease_state` and `terminate_lease` methods have 
 timeout argument. Checking elapsed time can reject a late reply but cannot
 preempt a wedged method or callback. No thread left behind by a local timeout is
 treated as terminated. The separate [idle deadline diagnostic](worker-deadline-probe.md)
-checks expiry through an independent deployment observer. Command cancellation,
+checks expiry through an independent deployment observer, optionally while the
+Worker is paused or terminated by a deployment-owned injector. Command cancellation,
 launcher loss and recovery still require separate deployment tests.
 
 ## Evidence and remaining coverage

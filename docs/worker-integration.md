@@ -273,6 +273,10 @@ through expiry using the deployment's independent read-only observer and
 controller event evidence. Supply that observer separately from Worker state
 polling; the probe cannot validate independent expiry by asking the Worker to
 perform its own deferred cleanup.
+An explicitly selected pause/termination case adds a deployment-owned injector
+and continuous fault evidence from the observer. Fault injection and external
+recovery need their own authorized scope. Once injection starts, the probe makes
+no further Worker calls, including during failed-injection cleanup.
 
 The [evaluation Worker diagnostic](worker-evaluation-probe.md) supplies a reusable
 interface check for supported TEST/ANALYSIS resource receipts and deliberately

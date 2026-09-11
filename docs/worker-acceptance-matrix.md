@@ -127,12 +127,19 @@ handles followed by a successful authorized recovery check.
 
 ### R04: stalled calls, signals and loss of the launcher
 
-The later [idle deadline diagnostic](worker-deadline-probe.md) adds a reusable
-check before fault injection: observe a live Lease, then verify independent
-deadline-trigger evidence and workload absence without Worker status or command
-calls. Its tests include simulated controllers and a local process fixture with
-a separate controller process; neither is a real Worker v16 platform acceptance
-run. The observer must be read-only and independent of Worker reconciliation.
+The later [Lease deadline diagnostic](worker-deadline-probe.md) adds a reusable
+idle case and an optional Worker pause/termination case. Observe a live Lease,
+inject one selected deployment-owned fault, independently confirm a still-live
+Lease under that fault, then verify deadline-trigger evidence and workload absence
+while the fault remains active. No Worker calls occur after injection is attempted;
+bounded external recovery and independent absence observation own cleanup.
+[Deterministic regressions](../tests/test_deadline_probe_faults.py) cover missing,
+wrong, revived and late fault evidence plus failed-injection recovery. The
+[local process fixtures](../tests/test_deadline_probe_process.py) use actual pause
+and termination signals, a separate deadline controller and a failing case where
+pausing Worker control also disables deadline enforcement. These fixtures do not
+certify a real Worker v16 deployment. The observer must be read-only, independent
+of Worker reconciliation, and able to establish uninterrupted control loss.
 
 Exercise an operation that exceeds its allowance and a stopped/nonresponsive
 Worker; independently check Lease and private research deadlines. Deliver a

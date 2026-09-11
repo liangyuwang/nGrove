@@ -4,7 +4,8 @@ These probes deliberately do not issue :class:`ConformanceReceipt`. They
 exercise resolution, Lease lifecycle and evaluation resource evidence, while
 the active Worker Protocol also includes physical resource enforcement,
 isolation, full deadline/cancellation and recovery guarantees. The separate
-``deadline_probe`` checks idle Lease expiry through a deployment observer.
+``deadline_probe`` checks idle Lease expiry through a deployment observer,
+optionally with an independently observed Worker pause or termination.
 Treating this partial coverage as complete protocol conformance would create
 false formal evidence.
 
