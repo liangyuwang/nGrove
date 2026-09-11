@@ -13,10 +13,10 @@ have not anticipated. The Agent builds the system itself; there is no reference
 > **Preview:** runnable development tasks and completed experimental runs.
 > No frozen, leaderboard-eligible challenge has been released yet.
 
-[Core idea](#the-core-idea) · [Results](#preview-results) · [Try it](#try-it) ·
-[Get involved](#get-involved) · [Documentation](#documentation)
+[Overview](#overview) · [Results](#results) · [Getting Started](#getting-started) ·
+[Contributing](#contributing) · [Documentation](#documentation)
 
-## The core idea
+## Overview
 
 Unless a release explicitly restricts it, the Agent is free to change any part
 of its training system or task-local research process:
@@ -62,7 +62,7 @@ responsible for fair conditions across the Agents you compare. Custom runs do
 not automatically enter official rankings; see the
 [reference environment and comparison policy](challenges/README.md#reference-environments-and-custom-comparisons).
 
-## Preview results
+## Results
 
 More results will be added after further testing. A dedicated website is planned
 to present results in greater detail.
@@ -87,7 +87,7 @@ so they are not a controlled A/B comparison or a formal ranking. Historical
 success also does not certify the current Worker revision; see the
 [recorded evidence scope](docs/worker-acceptance-matrix.md#historical-evidence-catalog).
 
-## Try it
+## Getting Started
 
 Start with the small [Smoke LM pretrain task](dev_tasks/smoke_lm-pretrain/README.md) to exercise a
 complete episode before preparing the larger LM preview.
@@ -119,7 +119,7 @@ If an Agent is helping you operate the benchmark, it should follow
 [AGENTS.md](AGENTS.md) and read the [full reference](docs/benchmark-reference.md)
 before preparing or launching a run.
 
-## Get involved
+## Contributing
 
 Bring an Agent, an execution environment, or a contribution to the benchmark:
 
