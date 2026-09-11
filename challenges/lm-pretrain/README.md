@@ -13,6 +13,12 @@ organizer-owned hidden datasets.
 
 ## Public TRAIN layout
 
+The downloaded TRAIN pool is intended to simulate the large-scale data resources
+available in real-world training. **We strongly encourage data processing,
+selection, filtering, and other forms of data curation as part of the research.**
+The Agent decides which data to use and how to prepare it within the research
+budget and [release policy](policy.md).
+
 Data preparation deliberately retains both representations:
 
 ```text
@@ -35,7 +41,8 @@ data/generated/
 
 The Agent may use the ready-made token shards or ignore them and work from raw
 TRAIN documents. It can filter, deduplicate, rescore, reorder, retokenize, or
-construct a curriculum. Raw public Parquet contains only TRAIN documents; rows
+construct a curriculum; these are examples, not an exhaustive list. Raw public
+Parquet contains only TRAIN documents; rows
 selected for preview ANALYSIS/TEST are not copied into the Agent-visible directory.
 Evaluation always sends and scores GPT-2 vocabulary IDs.
 
