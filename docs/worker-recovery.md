@@ -166,6 +166,10 @@ and retain ownership until all Worker calls stop.
 Custom deployments must supply their own owned-resource inspection and
 recovery entry point; see [Worker integration](worker-integration.md) for its
 required evidence, cancellation handling, and verification stages.
+The `worker-recover` command does not archive episode storage. External
+deployments own [archive deadlines and CPU-side recovery](worker-integration.md#archive-deadlines-and-recovery),
+including separate workload/helper termination, archive verification and
+authorized source disposal.
 
 The container CLI now runs its trusted launcher in a dedicated process group
 under an independent parent watchdog. Once the journal is registered, the

@@ -206,6 +206,25 @@ Recovery must leave sealed research, saved TEST decisions, Candidate identities
 and publication history unchanged. Archive verification and authorized working
 storage disposal remain separate observations.
 
+For deployments that archive episode storage, select these focused cases when
+the archive/recovery path changes or applicable evidence is missing. Follow
+[the archive deadline and recovery requirements](worker-integration.md#archive-deadlines-and-recovery)
+using disposable public artifacts; these cases do not require a new benchmark
+episode or accelerators:
+
+- Complete archiving with representative byte and file counts, including full
+  inventory/checksum verification. Record phase durations, nested timeouts and
+  the outer deadline; all must fit the approved allowance.
+- After confirmed workload termination, inject an inner archive timeout or I/O
+  failure. Pass when partial output remains unverified, the source is retained,
+  workload termination remains confirmed and archive helper termination is
+  checked independently. Retention must not be mislabeled as a removal failure.
+- Lose the launcher during archiving and recover through the external CPU-side
+  entry point. Verify the complete archive before authorized source disposal,
+  preserve any saved TEST/ANALYSIS evidence and record the original failure.
+  With a live owner or unconfirmed storage users, reclamation must remain
+  blocked even when an archive is already verified.
+
 ### R06: granted and workload-visible devices
 
 Within an authorized dedicated device pool, request the selected profile and
@@ -286,6 +305,13 @@ event alone is not a finalized result. An in-process publication retry must not
 duplicate the decision; cleanup recovery after process loss must not resume or publish the
 episode. Validate the resulting authoritative report and retain external
 evidence when Core cannot write one.
+
+For external launchers with post-publication archiving, also check an archive
+failure after successful TEST and confirmed cleanup. The saved Core result must
+remain unchanged while the deployment reports the archive failure and retained
+storage separately. Use the R05 archive cases for bounded helper teardown and
+recovery; an aggregate launcher failure is not evidence that TEST failed or
+workloads remain alive.
 
 ### R08-O: observability and external tool compatibility
 
@@ -369,6 +395,7 @@ probe framework:
 | --- | --- | --- |
 | R08-E and affected R08-L | Adopting v16 evaluation resources or changing evaluation composition/receipts | Public supported/rejected TEST and ANALYSIS fixtures through the evaluation probe; independent allocation/cleanup inspection and targeted Supervisor classification/result checks. Retain unchanged Core regressions, and verify the actual deployment error/evidence handoff |
 | R04 and affected R05 | Command/Lease enforcement or recovery changed, or required fault behavior lacks applicable evidence | Existing Lease/command-timeout and idle/fault deadline probes plus the deployment recovery path. Select specific faults and same-budget recovery retries; record separate deadline and cleanup outcomes |
+| R05 archive cases and affected R08-L | External archiving, timeout composition or retention/recovery changed, or evidence is missing | Representative public artifact fixtures, archive failure and launcher-loss recovery through the deployment's CPU-side entry point; preserve saved Core results and record workload termination, helper termination, archive verification and disposal independently |
 | R08-O | The chosen Agent wrapper, live logs, heartbeat handling or final status wiring changed or remains unverified | Required file/command tools in a separate diagnostic workspace, live-log/capture-loss checks and final/stale status observations. No participant or inference path is selected by this checklist |
 | R02/R03/R06 and remaining R08-L subcases | A required clock, storage/device, visibility or publication boundary changed or lacks applicable evidence | Only the applicable public-fixture fault checks from the case catalog above; retain unchanged proven boundaries and use the selected hardware for device-specific claims |
 

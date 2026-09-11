@@ -243,6 +243,45 @@ success does not create a benchmark result, re-open research, or authorize a
 replacement job. The bundled [Docker recovery](worker-recovery.md) command covers
 its own journaled resources; it does not recover arbitrary external Workers.
 
+### Archive deadlines and recovery
+
+Budget archiving against representative artifact bytes, file counts and storage
+throughput, including inventory, copying/compression, full verification and
+report persistence. A small fixture proves the path, not its capacity for a full
+episode. Record a finite archive deadline and any phase limits before launch;
+pass the remaining allowance to nested helpers instead of using unrelated
+hard-coded timeouts. Include bounded helper termination and a declared outer
+watchdog grace. Progress does not renew the deadline. Fit this work within the
+authorized reservation or arrange a separate CPU-side recovery allowance.
+
+Keep these observations separate in durable deployment evidence; they are not
+new Core result fields:
+
+| Observation | Evidence and consequence |
+| --- | --- |
+| Workload/writer termination | Confirm absence of owned Agent, Research, Evaluation and control workloads independently of archive errors or the launcher's aggregate exit status. An archive failure must not erase an established termination receipt; unknown termination still blocks storage reclamation. |
+| Archive helper termination | Confirm that timed-out copy, compression and verification helpers have stopped before releasing storage they use. Workload termination alone does not prove those helpers are gone. |
+| Archive verification | Freeze the selected artifact inventory after its writers stop; verify completeness, sizes and checksums by reading the archive. A readable partial archive or successful copy command alone is insufficient. Publish a completion record atomically only after the verified archive and its manifest are durable. |
+| Working-storage disposition | Record retained pending archive verification, disposed, or cleanup failed, with the reason and owned handles. Intentional retention after an archive failure is distinct from a failed removal attempt. Dispose only within the authorized retention scope and after all storage users have stopped. |
+
+An archive timeout after a successful TEST remains an archive failure; preserve
+the TEST measurement, ANALYSIS disposition and independent termination evidence.
+Do not derive a `writers_stopped` condition from an empty global error list.
+Record genuine teardown failures separately, and retain the source artifacts
+when archive verification fails.
+
+Provide an entry point outside the original launcher/allocation that can use
+durable ownership records and retained artifacts to retry archiving on CPU.
+After excluding a live owner and confirming termination, recover through a
+read-only source view or a stable snapshot where supported. Use the same
+bounded helper supervision and verification requirements as normal archiving;
+preserve an existing verified archive until its replacement is verified. Record
+the recovered archive location, verification evidence and authorized disposal
+separately from the original failure. Missing source or termination evidence
+remains unresolved. This recovery does not require restarting an Agent,
+allocating accelerators or creating a new episode, and must preserve the saved
+Core state rather than resume or finalize it.
+
 ## Staged verification and resource clocks
 
 Use focused checks before a full run. Retain evidence against the exact Worker,
