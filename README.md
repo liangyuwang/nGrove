@@ -1,16 +1,15 @@
 # AutoTrain-Bench
 
-**An open-ended benchmark for autonomous training research and recursive self-improvement.**
+**Constrain resources, not ideas. Define the evaluator, not the solution.**
 
-Given a fixed task, data, evaluation contract, and research budget, how good a
-training system can an autonomous Agent discover?
+![An Agent explores many paths within a sandbox and resource limits. A final artifact passes through a narrow interface to an isolated evaluator: broad solution space, narrow interface, strong evaluator isolation.](docs/assets/design-philosophy.png)
 
-**The entire training system is the search space.** We encourage exploration of
-any participant-controlled component, including approaches the benchmark authors
-have not anticipated. The Agent builds the system itself; there is no reference
-`train.py` to tune.
+**A benchmark should define what success means, not tell an AI how to achieve it.**
+AutoTrain-Bench is built around this principle: leave the largest practical
+solution space open to the Agent within a defined sandbox and resource budget.
 
-> **Preview:** runnable development tasks and completed experimental runs.
+> **Preview:** a runnable LM pretraining challenge, a development smoke task,
+> and completed experimental runs.
 > No frozen, leaderboard-eligible challenge has been released yet.
 
 [Overview](#overview) · [Results](#results) · [Getting Started](#getting-started) ·
@@ -18,27 +17,50 @@ have not anticipated. The Agent builds the system itself; there is no reference
 
 ## Overview
 
-Unless a release explicitly restricts it, the Agent is free to change any part
-of its training system or task-local research process:
+We should minimize assumptions about what the Agent is supposed to do. The
+benchmark should provide only what is necessary:
 
-| Direction | Examples to explore |
+| Component | What it defines |
 | --- | --- |
-| **Models** | Model scale, Transformers or other architectures, recurrence, sparsity, MoE |
-| **Optimization** | Optimizers, objectives, initialization, learning-rate schedules, batch strategies |
-| **Data** | Selection, filtering, mixtures, curricula, ordering, packing, training tokenization |
-| **Systems** | Kernels, precision, compilation, memory management, parallelism, communication, data loading |
-| **Research process** | Experiment design, profiling, tool creation, research memory, subagents, autonomous self-improvement |
+| **Evaluator** | The objective and what counts as success |
+| **Sandbox** | The world the Agent can act within |
+| **Resource limits** | Time, compute, storage, network, and other scarce resources |
+| **Minimal interface** | The form of the final artifact and how it is evaluated |
 
-**These are examples, not an exhaustive list.** New directions and combinations
-are welcome. The fixed task, evaluation contract, resource budget, and isolation
-rules define the boundary; the research strategy remains open.
+Everything else should remain open: whether to train a model at all, which
+models and algorithms to use, what data to use or acquire, whether to reuse
+existing systems, and how to build infrastructure, organize research, or improve
+the Agent itself. These choices belong to the Agent within the sandbox and
+resource constraints. Our job is not to manually shrink the solution space
+toward approaches we expect.
+
+**Broad freedom requires a strong boundary.** A narrow artifact interface and
+strong evaluator isolation let the Agent explore without access to the hidden
+evaluator's data or results during research. The sandbox must enforce the resource
+budget. Inside those boundaries, the Agent should be left alone. Strategies
+unlike anything the designers imagined are a feature of the benchmark.
+
+**Current preview: LM pretraining.** The first implementation is
+[LM pretrain](challenges/lm-pretrain/README.md), with a smaller
+[development smoke task](dev_tasks/smoke_lm-pretrain/README.md). It still has
+task-specific restrictions: fixed task data and artifact requirements, plus
+[release policy](challenges/lm-pretrain/POLICY.md) limits on extra training
+corpora and pretrained target-model checkpoints. Within those bounds, the Agent
+can explore models, optimization, data curation, systems, and research methods;
+there is no reference `train.py` to tune.
+
+**Long-term goal: Open World Challenge (not yet developed).** This is the intended
+destination for the design philosophy: remove the current challenge's
+training-specific assumptions and open the solution space as broadly as
+practical, while retaining a defined evaluator, sandbox, resource budget, and
+minimal artifact interface.
 
 **The initial system is fixed. Autonomous improvement is allowed.** After task
 reveal, the Agent can improve its own software, tools, and research workflow
 within the benchmark boundary. External human intervention is excluded.
 
-A **Training Lease** gives the Agent bounded access to the training environment.
-Two tracks ask complementary questions:
+For the current training tasks, a **Training Lease** gives the Agent bounded
+access to the training environment. Two tracks ask complementary questions:
 
 | Track | Budget | Research question |
 | --- | --- | --- |
@@ -46,8 +68,10 @@ Two tracks ask complementary questions:
 | **B: lease-bounded research** | Number and maximum duration of Training Leases | How effectively can the Agent use a limited number of training opportunities? |
 
 The Agent receives TRAIN and no organizer-owned validation scores during
-research. It chooses its final model before research is sealed. Hidden TEST
-then evaluates that model; postmortem ANALYSIS evaluates the committed history.
+research. It commits immutable Candidates and explicitly declares its final
+incumbent before research is sealed. Once Agent and Research workloads and
+control capabilities are confirmed terminated, hidden TEST evaluates only that
+incumbent; postmortem ANALYSIS evaluates the committed history.
 
 Results keep two axes separate: **higher TEST performance** and **lower serving
 time per task**. Comparisons use the same release and comparison conditions.
@@ -61,6 +85,11 @@ environments. You can adapt runtime profiles for your own hardware and are
 responsible for fair conditions across the Agents you compare. Custom runs do
 not automatically enter official rankings; see the
 [reference environment and comparison policy](challenges/README.md#reference-environments-and-custom-comparisons).
+
+> **Related future work:** We also plan to build on this sandbox in separate
+> repositories to explore how Agents can develop and improve their research
+> methods, tools, and workflows. This repository will remain focused on the
+> benchmark.
 
 ## Results
 
@@ -89,8 +118,8 @@ success also does not certify the current Worker revision; see the
 
 ## Getting Started
 
-We recommend asking a coding agent to serve as your **benchmark agent**: the
-trusted operator that helps prepare, launch, monitor, and report your runs.
+A coding agent can serve as your **trusted benchmark operator**, helping you
+prepare, launch, monitor, and report your runs.
 Open this checkout in your preferred coding agent, ask it to follow
 [AGENTS.md](AGENTS.md) and the [full reference](docs/benchmark-reference.md), and
 give it one of the prompts below. The **Tested Agent** is the separate
@@ -239,7 +268,7 @@ an experiment, integration, or proposal, or
 
 ## Documentation
 
-The previous README's detailed content is preserved in the
+For the current benchmark rules and operating details, see the
 [benchmark reference](docs/benchmark-reference.md).
 
 | Read more | Contents |
