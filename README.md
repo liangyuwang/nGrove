@@ -45,9 +45,15 @@ unlike anything the designers imagined are a feature of the benchmark.
 [development smoke task](dev_tasks/smoke_lm-pretrain/README.md). It still has
 task-specific restrictions: fixed task data and artifact requirements, plus
 [release policy](challenges/lm-pretrain/POLICY.md) limits on extra training
-corpora and pretrained target-model checkpoints. Within those bounds, the Agent
-can explore models, optimization, data curation, systems, and research methods;
-there is no reference `train.py` to tune.
+corpora and pretrained target-model checkpoints. There is no reference
+`train.py` to tune.
+
+Transformers and MoE, new optimizers, data curation, custom kernels, and
+agent-built research tools are familiar examples of what an Agent might explore.
+The space extends to **any** participant-controlled part of the solution or research
+process, including approaches the benchmark authors have not anticipated. New
+directions and combinations are welcome; the task, evaluation contract, resource
+budget, and sandbox rules define the boundary.
 
 **Long-term goal: Open World Challenge (not yet developed).** This is the intended
 destination for the design philosophy: remove the current challenge's
