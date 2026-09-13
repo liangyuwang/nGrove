@@ -13,7 +13,7 @@ solution space open to the Agent within a defined sandbox and resource budget.
 > No frozen, leaderboard-eligible challenge has been released yet.
 
 [Overview](#overview) · [Results](#results) · [Getting Started](#getting-started) ·
-[Contributing](#contributing) · [Documentation](#documentation)
+[Roadmap](#roadmap) · [Contributing](#contributing) · [Documentation](#documentation)
 
 ## Overview
 
@@ -58,11 +58,10 @@ process, including approaches the benchmark authors have not anticipated. New
 directions and combinations are welcome; the task, evaluation contract, resource
 budget, and sandbox rules define the boundary.
 
-**Long-term goal: Open World Challenge (not yet developed).** This is the intended
-destination for the design philosophy: remove the current challenge's
-training-specific assumptions and open the solution space as broadly as
-practical, while retaining a defined evaluator, sandbox, resource budget, and
-minimal artifact interface.
+**Long-term goal: Open World Challenge (not yet developed).** We aim to open the
+solution space beyond the current training-specific assumptions. The
+[Roadmap](#roadmap) describes the sandbox, resource, and evaluator work toward
+that goal.
 
 **The Agent's starting configuration is fixed. Autonomous improvement is allowed.** After task
 reveal, the Agent can improve its own software, tools, and research workflow
@@ -94,11 +93,6 @@ environments. You can adapt runtime profiles for your own hardware and are
 responsible for fair conditions across the Agents you compare. Custom runs do
 not automatically enter official rankings; see the
 [reference environment and comparison policy](challenges/README.md#reference-environments-and-custom-comparisons).
-
-> **Related future work:** We also plan to build on this sandbox in separate
-> repositories to explore how Agents can develop and improve their research
-> methods, tools, and workflows. This repository will remain focused on the
-> benchmark.
 
 ## Results
 
@@ -257,6 +251,34 @@ outside the Core checkout.
 
 - **Existing host CLI Agent:** [host-native preview setup](docs/benchmark-reference.md#bring-your-own-agent-host-native-cli-tools).
 - **Your own execution environment:** [external Worker integration](docs/worker-integration.md).
+
+## Roadmap
+
+We plan to build on the existing Worker protocol, resource contracts, and
+isolated evaluation in three areas:
+
+- **Sandbox.** Add queryable, cancellable Worker operations and explicit recovery
+  semantics for interrupted calls, alongside targeted validation of current
+  deployments. For future challenges, design controlled data, tool, and network
+  access beyond the current denied/dev-only policies. Platform execution and
+  enforcement remain in external Workers.
+- **Resources.** Complete and validate training and evaluation profiles,
+  including CPU, host memory, cache, I/O, and contention conditions needed for
+  [fair cost comparisons](docs/evaluation-resources.md). Extend the current single-node and NVIDIA-only accelerator restrictions as real Worker deployments require multi-node execution or other accelerators.
+- **Evaluator.** Make artifact and evaluation interfaces challenge-owned, moving
+  the hard-coded next-token logits assumptions out of the common task contract
+  while retaining the current LM implementation. Establish organizer-controlled
+  hidden evaluation and frozen evaluation contracts for formal releases.
+
+Together, these extensions will support the first **Open World Challenge**,
+which is **not yet developed**. Current implementation status and deployment
+checks are documented in the [development plan](docs/thin-core-development-plan.md#current-preview-closeout-boundary)
+and [acceptance matrix](docs/worker-acceptance-matrix.md).
+
+> **Related future work:** We also plan to build on this sandbox in separate
+> repositories to explore how Agents can develop and improve their research
+> methods, tools, and workflows. This repository will remain focused on the
+> benchmark.
 
 ## Contributing
 
