@@ -52,6 +52,10 @@ class _RecoveryDeadlineExceeded(WorkerFailure):
     pass
 
 
+class WorkerOwnershipBusy(WorkerFailure):
+    """A live Worker or inherited runtime client still owns the journal lock."""
+
+
 class _RecoveryDeadline:
     def __init__(self, seconds: float) -> None:
         self.seconds = recovery_timeout_seconds(seconds)
@@ -114,7 +118,7 @@ class DockerRecovery:
             try:
                 fcntl.flock(self.lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as exc:
-                raise WorkerFailure(
+                raise WorkerOwnershipBusy(
                     "Worker or its runtime client still holds ownership"
                 ) from exc
             if episode is None:
@@ -617,7 +621,11 @@ class DockerRecovery:
         *,
         timeout_seconds: float = DEFAULT_RECOVERY_TIMEOUT_SECONDS,
     ) -> Dict[str, Any]:
-        deadline = _RecoveryDeadline(timeout_seconds)
+        return self._recover_with_deadline(run, _RecoveryDeadline(timeout_seconds))
+
+    def _recover_with_deadline(
+        self, run: Callable, deadline: _RecoveryDeadline
+    ) -> Dict[str, Any]:
         failures = []
         deadline_exceeded = False
 

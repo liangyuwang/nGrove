@@ -11,7 +11,8 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from benchcore import local_watchdog
-from benchcore.docker_recovery import DockerRecovery
+from benchcore.docker_recovery import DockerRecovery, _RecoveryDeadline
+from benchcore.local_recovery import _acquire_journal
 
 
 def signal_parent(directory, phase, signum):
@@ -39,14 +40,13 @@ def signal_parent(directory, phase, signum):
         killpg(pid, termination_signal)
 
     def recover(registration, *, timeout_seconds):
-        with_journal = DockerRecovery(Path(registration["state_dir"]))
+        deadline = _RecoveryDeadline(timeout_seconds)
+        with_journal = _acquire_journal(Path(registration["state_dir"]), deadline)
         try:
             if phase == "recovery":
                 os.kill(os.getpid(), signum)
                 os.kill(os.getpid(), signum)
-            report = with_journal.recover(
-                FakeDocker().run, timeout_seconds=timeout_seconds
-            )
+            report = with_journal._recover_with_deadline(FakeDocker().run, deadline)
             (root / "recovered").write_text(str(report["cleanup_complete"]))
             return report
         finally:

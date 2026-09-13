@@ -13,7 +13,12 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-from benchcore.docker_recovery import DockerRecovery, OWNER_LABEL, RESOURCE_LABEL
+from benchcore.docker_recovery import (
+    DockerRecovery,
+    OWNER_LABEL,
+    RESOURCE_LABEL,
+    WorkerOwnershipBusy,
+)
 from benchcore.worker_protocol import WorkerFailure
 
 
@@ -508,7 +513,7 @@ class DockerRecoveryTests(unittest.TestCase):
 
     def test_live_owner_blocks_recovery_without_docker_mutations(self):
         calls = list(self.backend.calls)
-        with self.assertRaisesRegex(WorkerFailure, "still holds ownership"):
+        with self.assertRaisesRegex(WorkerOwnershipBusy, "still holds ownership"):
             DockerRecovery(self.root / "worker")
         self.assertEqual(calls, self.backend.calls)
 

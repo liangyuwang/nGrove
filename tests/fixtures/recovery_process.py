@@ -83,6 +83,21 @@ def main():
                 stack.enter_context(
                     patch.object(local_recovery, "_persist_watchdog_report", block)
                 )
+            if mode == "ownership-wait":
+                import fcntl
+
+                flock = fcntl.flock
+
+                def observed_flock(*args):
+                    try:
+                        return flock(*args)
+                    except BlockingIOError:
+                        # The test releases its real inherited lock only after
+                        # the production acquisition path has observed it busy.
+                        (root / "ownership-busy").touch()
+                        raise
+
+                stack.enter_context(patch.object(fcntl, "flock", observed_flock))
             return local_recovery._perform(request)
 
     local_recovery.worker_main(int(fd), perform=perform)

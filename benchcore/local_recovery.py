@@ -21,12 +21,20 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
-from .docker_recovery import DEFAULT_RECOVERY_TIMEOUT_SECONDS, recovery_timeout_seconds
+from .docker_recovery import (
+    DEFAULT_RECOVERY_TIMEOUT_SECONDS,
+    DockerRecovery,
+    WorkerOwnershipBusy,
+    _RecoveryDeadline,
+    _RecoveryDeadlineExceeded,
+    recovery_timeout_seconds,
+)
 from .worker_protocol import WorkerFailure
 
 
 MAX_FRAME_BYTES = 1024 * 1024
 TERMINATION_WAIT_SECONDS = 5.0
+OWNERSHIP_RETRY_SECONDS = 0.05
 
 
 def _command(fd: int) -> list[str]:
@@ -257,17 +265,44 @@ def _persist_watchdog_report(registration: dict, report: dict) -> None:
         os.close(fd)
 
 
+def _acquire_journal(state_dir: Path, deadline: _RecoveryDeadline) -> DockerRecovery:
+    # Only the supervised helper waits on storage. Fencing a process group does
+    # not synchronously release descriptors inherited by its runtime clients.
+    while True:
+        deadline.remaining()
+        try:
+            return DockerRecovery(state_dir)
+        except WorkerOwnershipBusy:
+            time.sleep(min(OWNERSHIP_RETRY_SECONDS, deadline.remaining()))
+
+
 def _perform(request: dict):
     if request["operation"] == "report":
         _persist_watchdog_report(request["registration"], request["report"])
         return {"persisted": True}
     if request["operation"] != "recover":
         raise WorkerFailure("unknown recovery process operation")
-    from .docker_recovery import DockerRecovery
     from .runtime import DockerRuntime
 
+    deadline = _RecoveryDeadline(request["timeout_seconds"])
     runtime = DockerRuntime(docker_binary=request["docker_binary"])
-    journal = DockerRecovery(Path(request["state_dir"]))
+    try:
+        journal = _acquire_journal(Path(request["state_dir"]), deadline)
+    except _RecoveryDeadlineExceeded as exc:
+        return {
+            "cleanup_complete": False,
+            "episode": None,
+            "resumed": False,
+            "timeout_seconds": deadline.seconds,
+            "deadline_exceeded": True,
+            "failures": [
+                {
+                    "kind": "recovery",
+                    "name": "ownership",
+                    "reason": str(exc) + " while waiting for Worker ownership",
+                }
+            ],
+        }
     runtime._recovery = journal
     runtime._recovery_clients_hold_lock = True
     try:
@@ -277,9 +312,7 @@ def _perform(request: dict):
             or journal.state["directory_identity"] != registration["directory_identity"]
         ):
             raise WorkerFailure("watchdog Worker ownership differs from registration")
-        return journal.recover(
-            runtime._run_raw, timeout_seconds=request["timeout_seconds"]
-        )
+        return journal._recover_with_deadline(runtime._run_raw, deadline)
     finally:
         journal.close()
 

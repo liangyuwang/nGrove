@@ -40,6 +40,17 @@ Each Docker command also retains its cooperative timeout of at most 20 seconds
 and the algorithm's remaining allowance. More resources or failed commands do
 not renew the parent's timer.
 
+The recovery helper retries only a busy ownership lock, at short intervals
+within that allowance, so a fenced runtime client can finish exiting and release
+its inherited descriptor. Lock waiting and journal acquisition spend the same
+cooperative deadline as subsequent cleanup; they do not grant a fresh command
+budget. Ordinary `DockerRecovery(...)` opens still fail immediately with
+`WorkerOwnershipBusy` when the lock is held. Permission errors, damaged or
+replaced journals, and owner/directory mismatches are not retried. The helper
+checks the journal and registered identities after acquisition as before.
+A lock held through expiry leaves recovery incomplete and preserves the journal,
+lock file and unconfirmed resources.
+
 On detecting expiry, no further runtime commands or cleanup stages are started.
 The report records `deadline_exceeded: true`, the configured
 `timeout_seconds`, and `cleanup_complete: false`. A late successful reply is
@@ -219,6 +230,9 @@ No process identity from a journal or participant is used
 for signalling. Only after this fence does recovery attempt the exclusive
 journal lock; a held lock still prevents takeover. Recovery verifies the
 registered Worker owner and directory identity as well as Docker identities.
+Sending the group signal and reaping its leader do not confirm that every
+inherited descriptor has closed; bounded lock acquisition runs inside the
+supervised recovery helper, never in the watchdog parent.
 
 The parent records the first `SIGTERM` or `SIGINT` as a cancellation request
 without raising from the signal handler. It stops supervision and fences its
@@ -264,6 +278,9 @@ removals through workload and storage cleanup; RAM-only removals and reused
 names must retain their verification requirements. A disposable
 real subprocess verifies runtime timeout propagation; the resource backend in
 these tests remains simulated.
+Ownership regressions exercise delayed release of a real inherited lock through
+the supervised recovery entry point, persistent contention, non-retryable
+identity/storage failures, and shared lock-wait/cleanup/report allowances.
 Fresh-process regressions stall journal reading, saving, private-tree removal,
 journal close and report writing until killed. They verify bounded return,
 ownership-lock retention by surviving runtime clients, retry from durable

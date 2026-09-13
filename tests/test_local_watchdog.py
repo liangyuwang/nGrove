@@ -7,12 +7,14 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
-from benchcore.docker_recovery import DockerRecovery
+from benchcore.docker_recovery import DockerRecovery, _RecoveryDeadline
+from benchcore.local_recovery import _acquire_journal
 from benchcore.local_watchdog import supervise, watched
 from benchcore.worker_protocol import WorkerFailure
 from tests.test_docker_recovery import FakeDocker
@@ -115,13 +117,14 @@ class WatchdogProcessTests(unittest.TestCase):
             def recover(registration, *, timeout_seconds):
                 # This real lock acquisition also proves that all inherited
                 # creation-client ownership descriptors have been released.
-                journal = DockerRecovery(Path(registration["state_dir"]))
+                deadline = _RecoveryDeadline(timeout_seconds)
+                journal = _acquire_journal(Path(registration["state_dir"]), deadline)
                 try:
                     self.assertEqual(journal.state["owner"], registration["owner"])
                     recovered.append(True)
                     if failure is not None:
                         raise WorkerFailure(failure)
-                    now = [0.0]
+                    now = [time.monotonic()]
                     backend = FakeDocker()
 
                     def run(args, **kwargs):
@@ -132,11 +135,12 @@ class WatchdogProcessTests(unittest.TestCase):
                         "benchcore.docker_recovery.time.monotonic",
                         side_effect=lambda: now[0],
                     ):
-                        return journal.recover(run, timeout_seconds=timeout_seconds)
+                        return journal._recover_with_deadline(run, deadline)
                 finally:
                     journal.close()
 
-            with redirect_stderr(io.StringIO()):
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
                 code = supervise(
                     lambda fd: [sys.executable, str(FIXTURE), str(fd), str(root), mode],
                     heartbeat_timeout=0.8,
@@ -144,10 +148,13 @@ class WatchdogProcessTests(unittest.TestCase):
                     recovery_seconds=recovery_seconds,
                     recover=recover,
                 )
-            report = json.loads((root / "worker/watchdog-report.json").read_text())
-            self.assertEqual(state.read_text(), saved)
-            self.assertEqual(recovered, [True])
-            self.assertFalse(report["resumed"])
+            report_path = root / "worker/watchdog-report.json"
+            self.assertTrue(report_path.exists(), stderr.getvalue())
+            report = json.loads(report_path.read_text())
+            diagnostic = f"report={report!r}\nstderr={stderr.getvalue()}"
+            self.assertEqual(state.read_text(), saved, diagnostic)
+            self.assertEqual(recovered, [True], diagnostic)
+            self.assertFalse(report["resumed"], diagnostic)
             return code, report
 
     def test_normal_completion_and_cooperative_failure_keep_exit_status(self):
