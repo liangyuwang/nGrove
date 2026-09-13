@@ -45,8 +45,11 @@ unlike anything the designers imagined are a feature of the benchmark.
 [development smoke task](dev_tasks/smoke_lm-pretrain/README.md). It still has
 task-specific restrictions: fixed task data and artifact requirements, plus
 [release policy](challenges/lm-pretrain/POLICY.md) limits on extra training
-corpora and pretrained target-model checkpoints. There is no reference
-`train.py` to tune.
+corpora and pretrained target-model checkpoints.
+
+**The benchmark provides no initial solution or reference implementation.**
+The Agent chooses its own starting point, opening the search space to
+fundamentally different systems and research approaches.
 
 Transformers and MoE, new optimizers, data curation, custom kernels, and
 agent-built research tools are familiar examples of what an Agent might explore.
@@ -61,7 +64,7 @@ training-specific assumptions and open the solution space as broadly as
 practical, while retaining a defined evaluator, sandbox, resource budget, and
 minimal artifact interface.
 
-**The initial system is fixed. Autonomous improvement is allowed.** After task
+**The Agent's starting configuration is fixed. Autonomous improvement is allowed.** After task
 reveal, the Agent can improve its own software, tools, and research workflow
 within the benchmark boundary. External human intervention is excluded.
 
