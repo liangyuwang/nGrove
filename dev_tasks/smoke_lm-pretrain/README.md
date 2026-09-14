@@ -21,7 +21,7 @@ The smoke task owns only:
 - the release Policy.
 
 The participant owns the Agent image or CLI, its command, and every initial
-workspace file. If `--agent-workspace` is omitted, AutoTrain-Bench creates an
+workspace file. If `--agent-workspace` is omitted, Benchcore creates an
 empty episode workspace. The Agent must create its own training program, model,
 experiments, Candidate implementation, and incumbent decisions after task
 reveal. This task does not ship a reference or starter Agent. An egress-denied
@@ -256,7 +256,7 @@ manifest = {
 }
 ```
 
-The generated public task at `$AUTOTRAIN_BENCH_TASK` carries the same
+The generated public task at `$BENCHCORE_TASK` carries the same
 machine-readable contract under
 `evaluation.candidate_boundary.prediction_manifest`. The generated public
 `benchcore.candidate_protocol` API is explicitly allowed in Agent and

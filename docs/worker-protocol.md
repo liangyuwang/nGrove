@@ -1,12 +1,12 @@
 # Worker Protocol boundary
 
-AutoTrain-Bench Core owns benchmark decisions.  A Worker deployment owns
+Benchcore owns benchmark decisions.  A Worker deployment owns
 execution and enforcement.  The boundary between them is expressed in
 benchmark terms and must not expose a scheduler, container runtime, or cloud
 API.
 
 ```text
-AutoTrain-Bench Coordinator
+Benchcore Coordinator
   authoritative benchmark state
               │
               │ Worker Protocol
@@ -351,11 +351,11 @@ defines the ordering and frozen identity; the Worker defines and attests the
 materialization mechanism.
 
 `analysis_sha256` and `test_sha256` use the normative algorithm identifier
-`autotrain-bench-hidden-bundle-v1-sha256`. Its SHA-256 input is the following
+`benchcore-hidden-bundle-v1-sha256`. Its SHA-256 input is the following
 byte string, with no separators other than those shown:
 
 ```text
-"autotrain-bench-hidden-bundle-v1\0"
+"benchcore-hidden-bundle-v1\0"
 || for name in ("contexts.json", "targets.json"):
      u64be(len(utf8(name))) || utf8(name)
      || u64be(len(file_bytes)) || file_bytes
@@ -366,7 +366,7 @@ regular files. Lengths are unsigned 64-bit big-endian integers. The shared
 `benchcore.artifact_identity.hidden_bundle_sha256()` implementation is
 normative for Python Workers. The organizer release receipt declares
 `file: sha256` and
-`hidden_evaluation: autotrain-bench-hidden-bundle-v1-sha256`; the current result
+`hidden_evaluation: benchcore-hidden-bundle-v1-sha256`; the current result
 schema records the latter under
 `artifact_identity_algorithms.hidden_evaluation`.
 
@@ -738,7 +738,7 @@ Deliberately deferred work includes:
    outside Training Leases independently normative.
 
 Those features should be added to the Worker protocol and external Worker SDK,
-not by adding platform code to AutoTrain-Bench Core.
+not by adding platform code to Benchcore.
 
 The staged plan and the trigger for each deferred abstraction are recorded in
 [Thin Core development plan](thin-core-development-plan.md).

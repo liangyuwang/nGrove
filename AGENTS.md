@@ -9,7 +9,7 @@ participant being measured and must remain inside the benchmark boundary.
 
 Keep this repository platform-independent. Cluster schedulers, container
 runtimes, cloud APIs, and site-specific enforcement belong to the Worker
-deployment, not to AutoTrain-Bench Core. Do not add platform branches,
+deployment, not to Benchcore. Do not add platform branches,
 dependencies, or site configuration to the tracked core repository merely to
 make a run work.
 
@@ -117,10 +117,10 @@ access it:
 Default to a newly created empty episode workspace when the Agent image and
 command contain everything needed to begin. Snapshot initial files only when
 the user explicitly identifies a participant-owned source workspace. Never use
-the AutoTrain-Bench Core checkout, or any directory containing the operator's
+the Benchcore checkout, or any directory containing the operator's
 `AGENTS.md`, as the Tested Agent workspace.
 
-An empty leaf directory beneath the trusted AutoTrain-Benchmark Core/task
+An empty leaf directory beneath the trusted Benchcore/task
 checkout is not isolated when a host-native Agent discovers this project's
 instructions from ancestor directories. Before task reveal, resolve the final
 workspace path and reject it if it is inside that trusted checkout. Require an

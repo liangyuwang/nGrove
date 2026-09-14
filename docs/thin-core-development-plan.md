@@ -2,7 +2,7 @@
 
 ## Purpose
 
-AutoTrain-Bench Core defines what an episode is allowed to do. It does not
+Benchcore defines what an episode is allowed to do. It does not
 define where workloads run, how an Operator reaches a host, or which platform
 mechanism enforces the contract.
 

@@ -253,7 +253,7 @@ development workflow, Candidate ABI, Policy, and reproducibility details.
 Smoke-task scores are not benchmark results.
 
 Every episode must select an explicit `--episode-dir` or `--episodes-root` in a
-dedicated trusted working root outside the AutoTrain-Bench Core/task checkout.
+dedicated trusted working root outside the Benchcore/task checkout.
 This keeps episode state and the Tested Agent workspace separate from operator
 files. It also prevents host-native tools such as Codex from inheriting the
 Core's `AGENTS.md` through ancestor-directory instruction discovery. An empty
@@ -276,7 +276,7 @@ autotrain-bench start \
 
 ## Bring your own Agent: host-native CLI tools
 
-AutoTrain-Bench supports two Agent runners:
+Benchcore supports two Agent runners:
 
 * `container` runs a participant command in an Agent Container;
 * `host_cli` runs any autonomous, non-interactive CLI command on the host while
@@ -298,8 +298,8 @@ autotrain-bench start \
 
 The command starts with its working directory set to the private episode
 workspace and with stdin disconnected. It receives
-`AUTOTRAIN_BENCH_WORKSPACE`, `AUTOTRAIN_BENCH_TASK`, and
-`AUTOTRAIN_BENCH_CONTROL_DIR`; it must use the `autotrain-bench agent ...`
+`BENCHCORE_WORKSPACE`, `BENCHCORE_TASK`, and
+`BENCHCORE_CONTROL_DIR`; it must use the `autotrain-bench agent ...`
 mailbox commands for benchmark control and run without further user input. A
 custom wrapper may reuse the tool-independent prompt in
 `benchcore.agent_prompt.HOST_CLI_PROMPT`.
@@ -384,7 +384,7 @@ official Gateway sidecar rather than arbitrary public Internet access.
 
 In the default `denied` egress policy an Agent without remote inference uses
 `--network none`. When a registered inference channel is configured,
-AutoTrain-Bench creates an episode-private Docker `--internal` network shared
+Benchcore creates an episode-private Docker `--internal` network shared
 only by the Agent and a trusted OpenAI-compatible Gateway at:
 
 ```text
@@ -449,7 +449,7 @@ python -m benchcore.cli agent declare-incumbent sha256:<candidate-hash>
 python -m benchcore.cli agent finish
 ```
 
-The public task manifest at `$AUTOTRAIN_BENCH_TASK` declares the Agent-facing
+The public task manifest at `$BENCHCORE_TASK` declares the Agent-facing
 control protocol as `protocol_version`. Version 2 renamed the `agent status`
 field `agent_mode` to `agent_egress` and its `"sandboxed"` value to `"denied"`.
 An Agent that parses the version 1 field name must be updated; the benchmark
@@ -810,7 +810,7 @@ The local v0 reference separates trusted scoring from untrusted Candidate code.
 
 ```text
 User-owned host
-└── trusted AutoTrain-Bench Supervisor
+└── trusted Benchcore Supervisor
     ├── untrusted Agent Container
     ├── disposable Training Container
     └── offline evaluation sequence

@@ -11,7 +11,7 @@ nor recovery authority.
 
 After readiness checks complete, `start --agent-runner container` enables
 recording before the first episode workload is created. The default directory
-is `~/.autotrain-bench/workers/<episode-path-id>`, on the actual Worker host.
+is `~/.benchcore/workers/<episode-path-id>`, on the actual Worker host.
 The launcher prints the resolved directory and records it in its private
 Worker environment manifest. Override it with `--worker-state-dir PATH`.
 Use dedicated, trusted local storage outside the episode's bounded filesystem
