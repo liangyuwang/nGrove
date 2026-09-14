@@ -70,10 +70,11 @@ task-specific restrictions: fixed task data and artifact requirements, plus
 [release policy](challenges/lm-pretrain/POLICY.md) limits on extra training
 corpora and pretrained target-model checkpoints.
 
-**Long-term goal: Open World Challenge (not yet developed).** We aim to open the
-solution space beyond the current training-specific assumptions. The
-[Roadmap](#roadmap) describes the sandbox, resource, and evaluator work toward
-that goal.
+**Long-term goal: LM Open World (not implemented).** The challenge currently
+consists only of a [vision README and open design questions](challenges/lm-open-world/README.md).
+We invite the community to help shape a challenge that opens the solution space
+beyond the current training-specific assumptions. The [Roadmap](#roadmap)
+describes the sandbox, resource, and evaluator work toward that goal.
 
 **The Tested Agent's initial configuration is fixed before task reveal.
 Autonomous improvement is allowed.** After task reveal, the Agent can improve
@@ -283,9 +284,11 @@ isolated evaluation in three areas:
   while retaining the current LM implementation. Establish organizer-controlled
   hidden evaluation and frozen evaluation contracts for formal releases.
 
-Together, these extensions will support the first **Open World Challenge**,
-which is **not yet developed**. Current implementation status and deployment
-checks are documented in the [development plan](docs/thin-core-development-plan.md#current-preview-closeout-boundary)
+Together, these extensions are intended to support
+[LM Open World](challenges/lm-open-world/README.md), which currently has a vision
+README only and **no implementation**. Current Benchcore implementation status
+and deployment checks are documented in the
+[development plan](docs/thin-core-development-plan.md#current-preview-closeout-boundary)
 and [acceptance matrix](docs/worker-acceptance-matrix.md).
 
 > **Related future work:** We also plan to build on this sandbox in separate
