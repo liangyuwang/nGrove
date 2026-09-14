@@ -15,7 +15,7 @@ class AdapterError(RuntimeError):
 
 
 def _load_callable(path: Path, name: str) -> Callable[..., Any]:
-    module_name = f"autotrain_evaluator_{uuid.uuid4().hex}"
+    module_name = f"benchcore_evaluator_{uuid.uuid4().hex}"
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         raise AdapterError("Evaluator module could not be loaded")

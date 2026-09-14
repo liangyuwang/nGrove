@@ -1369,7 +1369,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             script = (
                 "import json, os; "
                 "print(json.dumps({'cwd': os.getcwd(), "
-                "'control': os.environ.get('AUTOTRAIN_BENCH_CONTROL_DIR'), "
+                "'control': os.environ.get('BENCHCORE_CONTROL_DIR'), "
                 "'visible': os.environ.get('VISIBLE'), "
                 "'leaked': os.environ.get('SHOULD_NOT_LEAK')}))"
             )
@@ -1789,7 +1789,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             holder = next(
                 call
                 for call in run_calls
-                if "autotrain-bench.role=prediction-output-holder" in call
+                if "benchcore.role=prediction-output-holder" in call
             )
             self.assertNotIn("contexts.json", "\n".join(holder))
             self.assertNotIn("targets.json", "\n".join(holder))
@@ -1806,7 +1806,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             self.assertNotIn("dst=/candidate", "\n".join(evaluator))
             evaluator_command = "\n".join(evaluator)
             self.assertNotIn(str(config.analysis_path), evaluator_command)
-            self.assertIn("autotrain-bench-hidden-", evaluator_command)
+            self.assertIn("benchcore-hidden-", evaluator_command)
             self.assertIn("dst=/eval-data/contexts.json,readonly", evaluator_command)
             self.assertIn("dst=/eval-data/targets.json,readonly", evaluator_command)
             self.assertIn(str(config.evaluator_entrypoint), "\n".join(evaluator))

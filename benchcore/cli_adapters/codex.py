@@ -52,19 +52,19 @@ def build_codex_command(
         "--json",
     ]
     controlled_environment = {
-        "AUTOTRAIN_BENCH_CONTROL_DIR": shell_environment["AUTOTRAIN_BENCH_CONTROL_DIR"],
-        "AUTOTRAIN_BENCH_HOST_RUNNER": "1",
-        "AUTOTRAIN_BENCH_TASK": shell_environment["AUTOTRAIN_BENCH_TASK"],
-        "AUTOTRAIN_BENCH_TRAIN_DIR": "/benchmark/train",
-        "AUTOTRAIN_BENCH_TRAIN_WORKSPACE": "/workspace",
-        "AUTOTRAIN_BENCH_WORKSPACE": str(workspace.resolve()),
+        "BENCHCORE_CONTROL_DIR": shell_environment["BENCHCORE_CONTROL_DIR"],
+        "BENCHCORE_HOST_RUNNER": "1",
+        "BENCHCORE_TASK": shell_environment["BENCHCORE_TASK"],
+        "BENCHCORE_TRAIN_DIR": "/benchmark/train",
+        "BENCHCORE_TRAIN_WORKSPACE": "/workspace",
+        "BENCHCORE_WORKSPACE": str(workspace.resolve()),
         "HOME": str(workspace.resolve()),
         "PATH": shell_environment.get("PATH", os.defpath),
         "PYTHONPATH": shell_environment["PYTHONPATH"],
     }
     try:
         forwarded_names = json.loads(
-            shell_environment.get("AUTOTRAIN_BENCH_FORWARDED_ENVIRONMENT", "[]")
+            shell_environment.get("BENCHCORE_FORWARDED_ENVIRONMENT", "[]")
         )
     except json.JSONDecodeError:
         forwarded_names = []
@@ -85,7 +85,7 @@ def build_codex_command(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="run a logged-in Codex CLI as an AutoTrain-Bench host Agent"
+        description="run a logged-in Codex CLI as a Benchcore host Agent"
     )
     parser.add_argument("--model", required=True)
     parser.add_argument("--reasoning-effort", default="high")
@@ -100,13 +100,12 @@ def main(
 ) -> None:
     args = build_parser().parse_args(argv)
     env = dict(environment or os.environ)
-    workspace_value = env.get("AUTOTRAIN_BENCH_WORKSPACE")
-    control_value = env.get("AUTOTRAIN_BENCH_CONTROL_DIR")
-    task_value = env.get("AUTOTRAIN_BENCH_TASK")
+    workspace_value = env.get("BENCHCORE_WORKSPACE")
+    control_value = env.get("BENCHCORE_CONTROL_DIR")
+    task_value = env.get("BENCHCORE_TASK")
     if not workspace_value or not control_value or not task_value:
         raise SystemExit(
-            "Codex CLI adapter must be launched by the AutoTrain-Bench "
-            "host_cli runner"
+            "Codex CLI adapter must be launched by the Benchcore " "host_cli runner"
         )
 
     codex_binary = shutil.which(args.codex_binary, path=env.get("PATH"))

@@ -1,6 +1,6 @@
 """Tool-independent instructions for host-native CLI Agents."""
 
-HOST_CLI_PROMPT = """You are the autonomous participant Agent in an AutoTrain-Benchmark episode.
+HOST_CLI_PROMPT = """You are the autonomous participant Agent in a Benchcore episode.
 Act as a benchmark participant, not as a reviewer of the benchmark implementation.
 
 The episode has started. Work autonomously without asking the user anything.
@@ -13,7 +13,7 @@ and how to validate using only release-permitted information; the benchmark does
 prescribe a method.
 
 Allowed information and actions:
-- Read the public manifest at $AUTOTRAIN_BENCH_TASK.
+- Read the public manifest at $BENCHCORE_TASK.
 - Treat evaluation.performance_score and evaluation.cost in that manifest as
   the normative evaluation-axis contracts. Cost covers the complete Candidate
   invocation and amortizes its wall time over the frozen evaluation task count.
@@ -33,7 +33,7 @@ Allowed information and actions:
   the normative, exact predictions.json contract. It names every required field,
   value source, and constant; additional fields are forbidden. Its logits_artifact
   declares the binary encoding, shape, and row/column order of logits.f32.
-- Read and edit only the current workspace ($AUTOTRAIN_BENCH_WORKSPACE).
+- Read and edit only the current workspace ($BENCHCORE_WORKSPACE).
 - Use only these mailbox commands as the benchmark control plane:
   python -m benchcore.cli agent status
   python -m benchcore.cli agent lease-start [--seconds N]

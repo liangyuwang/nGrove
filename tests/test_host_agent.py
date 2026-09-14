@@ -330,7 +330,7 @@ class HostAgentLogTests(unittest.TestCase):
                 handle.stop()
             for path in (handle.stdout_path, handle.stderr_path):
                 self.assertLessEqual(path.stat().st_size, 1024)
-                self.assertIn(b"[log truncated by AutoTrain-Bench]", path.read_bytes())
+                self.assertIn(b"[log truncated by Benchcore]", path.read_bytes())
             self.assertTrue(handle._stdout_sink.truncated)
             self.assertTrue(handle._stderr_sink.truncated)
             self.assertFalse(

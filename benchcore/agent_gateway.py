@@ -67,11 +67,11 @@ class GatewayServer(ThreadingHTTPServer):
 
 class GatewayHandler(BaseHTTPRequestHandler):
     server: GatewayServer
-    server_version = "AutoTrainBenchInferenceGateway/0"
+    server_version = "BenchcoreInferenceGateway/0"
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt: str, *args) -> None:
-        if os.environ.get("AUTOTRAIN_BENCH_GATEWAY_LOG") == "1":
+        if os.environ.get("BENCHCORE_GATEWAY_LOG") == "1":
             super().log_message(fmt, *args)
 
     def _json_error(self, status: int, code: str, message: str) -> None:
@@ -143,7 +143,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
         request_headers = {
             "Content-Type": self.headers.get("Content-Type", "application/json"),
             "Accept": self.headers.get("Accept", "application/json"),
-            "User-Agent": "AutoTrain-Bench-Inference-Gateway/0",
+            "User-Agent": "Benchcore-Inference-Gateway/0",
         }
         for header in ("OpenAI-Beta", "OpenAI-Organization", "OpenAI-Project"):
             value = self.headers.get(header)
@@ -347,19 +347,19 @@ def create_gateway_server(
 
 
 def main() -> None:
-    raw_config = os.environ.get("AUTOTRAIN_BENCH_INFERENCE_CONFIG_JSON")
+    raw_config = os.environ.get("BENCHCORE_INFERENCE_CONFIG_JSON")
     if not raw_config:
-        raise SystemExit("AUTOTRAIN_BENCH_INFERENCE_CONFIG_JSON is missing")
+        raise SystemExit("BENCHCORE_INFERENCE_CONFIG_JSON is missing")
     try:
         config = InferenceConfig.load(json.loads(raw_config), "gateway.inference")
     except (ConfigError, json.JSONDecodeError) as exc:
         raise SystemExit(f"invalid inference gateway configuration: {exc}") from exc
     if config is None:
         raise SystemExit("inference gateway configuration is disabled")
-    host = os.environ.get("AUTOTRAIN_BENCH_GATEWAY_HOST", "0.0.0.0")
-    port = int(os.environ.get("AUTOTRAIN_BENCH_GATEWAY_PORT", "8765"))
+    host = os.environ.get("BENCHCORE_GATEWAY_HOST", "0.0.0.0")
+    port = int(os.environ.get("BENCHCORE_GATEWAY_PORT", "8765"))
     audit_path = Path(
-        os.environ.get("AUTOTRAIN_BENCH_INFERENCE_AUDIT_PATH", "/audit/inference.jsonl")
+        os.environ.get("BENCHCORE_INFERENCE_AUDIT_PATH", "/audit/inference.jsonl")
     )
     server = create_gateway_server(host, port, config, audit_path)
     try:

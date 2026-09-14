@@ -23,8 +23,8 @@ from typing import Any, Callable, Dict, Optional, Sequence
 from .worker_protocol import WorkerFailure
 
 
-OWNER_LABEL = "autotrain-bench.worker-owner"
-RESOURCE_LABEL = "autotrain-bench.resource-token"
+OWNER_LABEL = "benchcore.worker-owner"
+RESOURCE_LABEL = "benchcore.resource-token"
 MAX_JOURNAL_BYTES = 4 * 1024 * 1024
 DEFAULT_RECOVERY_TIMEOUT_SECONDS = 120.0
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,254}\Z")

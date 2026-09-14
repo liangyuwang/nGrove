@@ -379,7 +379,7 @@ def load_candidate(candidate_dir: PathInput) -> Any:
     if not module_path.is_file():
         raise CandidateProtocolError("candidate.py is missing")
     sys.path.insert(0, str(root))
-    module_name = f"autotrain_candidate_{uuid.uuid4().hex}"
+    module_name = f"benchcore_candidate_{uuid.uuid4().hex}"
     spec = importlib.util.spec_from_file_location(module_name, module_path)
     if spec is None or spec.loader is None:
         raise CandidateProtocolError("candidate.py could not be imported")

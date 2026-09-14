@@ -550,7 +550,7 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
         if resolved_runner == "container":
             state_dir = args.worker_state_dir or (
                 Path.home()
-                / ".autotrain-bench"
+                / ".benchcore"
                 / "workers"
                 / uuid.uuid5(uuid.NAMESPACE_URL, str(episode_dir)).hex
             )
@@ -1220,8 +1220,8 @@ def command_agent(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="autotrain-bench",
-        description="AutoTrain-Bench local reference prototype",
+        prog="benchcore",
+        description="Benchcore local reference prototype",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -1386,7 +1386,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--worker-state-dir",
         type=Path,
         help="private local Worker recovery directory outside episode storage; "
-        "defaults to ~/.autotrain-bench/workers/<episode-path-id>",
+        "defaults to ~/.benchcore/workers/<episode-path-id>",
     )
     for name, default, help_text in (
         ("heartbeat", HEARTBEAT_TIMEOUT, "missing Worker heartbeat tolerance"),

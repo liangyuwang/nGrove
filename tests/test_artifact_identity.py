@@ -23,7 +23,7 @@ class ArtifactIdentityTests(unittest.TestCase):
                 (bundle / name).write_bytes(payload)
 
             expected = hashlib.sha256()
-            expected.update(b"autotrain-bench-hidden-bundle-v1\0")
+            expected.update(b"benchcore-hidden-bundle-v1\0")
             for name in HIDDEN_BUNDLE_FILENAMES:
                 encoded_name = name.encode("utf-8")
                 payload = payloads[name]
@@ -34,7 +34,7 @@ class ArtifactIdentityTests(unittest.TestCase):
 
             self.assertEqual(
                 HIDDEN_BUNDLE_IDENTITY_ALGORITHM,
-                "autotrain-bench-hidden-bundle-v1-sha256",
+                "benchcore-hidden-bundle-v1-sha256",
             )
             self.assertEqual(hidden_bundle_sha256(bundle), expected.hexdigest())
 

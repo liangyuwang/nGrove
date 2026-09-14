@@ -28,7 +28,7 @@ class Client:
         poll_seconds: float = 0.05,
     ) -> None:
         configured = control_dir or Path(
-            os.environ.get("AUTOTRAIN_BENCH_CONTROL_DIR", "/control")
+            os.environ.get("BENCHCORE_CONTROL_DIR", "/control")
         )
         self.control_dir = configured
         self.inbox = configured / "inbox"

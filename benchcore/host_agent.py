@@ -21,7 +21,7 @@ _USAGE_FIELDS = (
     "reasoning_output_tokens",
 )
 MAX_HOST_AGENT_LOG_BYTES = 10 * 1024 * 1024
-_LOG_TRUNCATION_MARKER = b"\n[log truncated by AutoTrain-Bench]\n"
+_LOG_TRUNCATION_MARKER = b"\n[log truncated by Benchcore]\n"
 
 
 class _BoundedLogSink:
@@ -395,15 +395,15 @@ def start_host_agent_process(
             environment[name] = os.environ[name]
     environment.update(
         {
-            "AUTOTRAIN_BENCH_CONTROL_DIR": str(control_dir.resolve()),
-            "AUTOTRAIN_BENCH_FORWARDED_ENVIRONMENT": json.dumps(
+            "BENCHCORE_CONTROL_DIR": str(control_dir.resolve()),
+            "BENCHCORE_FORWARDED_ENVIRONMENT": json.dumps(
                 list(forwarded_environment), separators=(",", ":")
             ),
-            "AUTOTRAIN_BENCH_HOST_RUNNER": "1",
-            "AUTOTRAIN_BENCH_TASK": str(public_task_path.resolve()),
-            "AUTOTRAIN_BENCH_TRAIN_DIR": "/benchmark/train",
-            "AUTOTRAIN_BENCH_TRAIN_WORKSPACE": "/workspace",
-            "AUTOTRAIN_BENCH_WORKSPACE": str(workspace.resolve()),
+            "BENCHCORE_HOST_RUNNER": "1",
+            "BENCHCORE_TASK": str(public_task_path.resolve()),
+            "BENCHCORE_TRAIN_DIR": "/benchmark/train",
+            "BENCHCORE_TRAIN_WORKSPACE": "/workspace",
+            "BENCHCORE_WORKSPACE": str(workspace.resolve()),
             "PYTHONPATH": str(package_root.resolve()),
         }
     )

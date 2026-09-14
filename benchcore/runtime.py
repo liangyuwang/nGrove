@@ -1,6 +1,6 @@
 """Container runtime used by the host-side reference supervisor.
 
-AutoTrain-Bench deliberately does not allocate machines or integrate with a
+Benchcore deliberately does not allocate machines or integrate with a
 cluster scheduler. The runtime only consumes devices already visible on the
 single host where the supervisor is started.
 """
@@ -80,7 +80,7 @@ from .worker_protocol import (
 RuntimeFailure = WorkerFailure
 ExecResult = CommandResult
 MAX_RUNTIME_STREAM_BYTES = 1024 * 1024
-_TRUNCATION_MARKER = b"\n[output truncated by AutoTrain-Bench]\n"
+_TRUNCATION_MARKER = b"\n[output truncated by Benchcore]\n"
 EVALUATION_DIAGNOSTIC_TIMEOUT_SECONDS = 5.0
 _NVIDIA_GPU_QUERY = "--query-gpu=uuid,name,memory.total,mig.mode.current"
 
@@ -515,7 +515,7 @@ class DockerRuntime:
         if not self.docker:
             raise RuntimeFailure(
                 "Docker was not found. Install Docker before running the reference "
-                "prototype; AutoTrain-Bench does not allocate remote resources."
+                "prototype; Benchcore does not allocate remote resources."
             )
 
     @staticmethod
@@ -652,7 +652,7 @@ class DockerRuntime:
         probe_image = self._storage_safe_image(
             probe_image, timeout_seconds=timeout_seconds
         )
-        root = self._private_directory("autotrain-bench-permissions-")
+        root = self._private_directory("benchcore-permissions-")
         names = []
 
         def probe(user: str, mounts: List[str], script: str) -> str:
@@ -1255,9 +1255,9 @@ class DockerRuntime:
             "--env",
             "PYTHONPATH=/opt/agent-api",
             "--env",
-            "AUTOTRAIN_BENCH_CONTROL_DIR=/control",
+            "BENCHCORE_CONTROL_DIR=/control",
             "--env",
-            "AUTOTRAIN_BENCH_TASK=/benchmark/task.json",
+            "BENCHCORE_TASK=/benchmark/task.json",
             "--env",
             "HOME=/agent-home",
             "--workdir",
@@ -1272,12 +1272,11 @@ class DockerRuntime:
             args.extend(
                 [
                     "--env",
-                    "AUTOTRAIN_BENCH_INFERENCE_BASE_URL="
-                    "http://inference-gateway:8765/v1",
+                    "BENCHCORE_INFERENCE_BASE_URL=" "http://inference-gateway:8765/v1",
                     "--env",
                     "OPENAI_BASE_URL=http://inference-gateway:8765/v1",
                     "--env",
-                    "OPENAI_API_KEY=autotrain-bench-gateway",
+                    "OPENAI_API_KEY=benchcore-gateway",
                 ]
             )
         args.extend([agent_image, *agent.command])
@@ -1419,9 +1418,9 @@ class DockerRuntime:
             "--env",
             "PYTHONDONTWRITEBYTECODE=1",
             "--env",
-            f"AUTOTRAIN_BENCH_INFERENCE_CONFIG_JSON={gateway_config}",
+            f"BENCHCORE_INFERENCE_CONFIG_JSON={gateway_config}",
             "--env",
-            "AUTOTRAIN_BENCH_INFERENCE_AUDIT_PATH=/audit/inference.jsonl",
+            "BENCHCORE_INFERENCE_AUDIT_PATH=/audit/inference.jsonl",
         ]
         if inference.api_key_env:
             # Docker copies the value from the host into the trusted Gateway only.
@@ -1536,9 +1535,9 @@ class DockerRuntime:
             "--env",
             "PYTHONPATH=/opt/training-api",
             "--env",
-            "AUTOTRAIN_TRAIN_DIR=/benchmark/train",
+            "BENCHCORE_TRAIN_DIR=/benchmark/train",
             "--env",
-            "AUTOTRAIN_OUTPUT_DIR=/output",
+            "BENCHCORE_OUTPUT_DIR=/output",
             "--workdir",
             "/workspace",
         ]
@@ -2071,7 +2070,7 @@ class DockerRuntime:
         if self._hidden_snapshot_root is None:
             try:
                 self._hidden_snapshot_root = self._private_directory(
-                    "autotrain-bench-hidden-"
+                    "benchcore-hidden-"
                 )
                 self._hidden_snapshot_root.chmod(0o700)
             except OSError as exc:
@@ -2981,7 +2980,7 @@ class DockerRuntime:
                 "--driver",
                 "local",
                 "--label",
-                "autotrain-bench.role=prediction-output",
+                "benchcore.role=prediction-output",
                 "--opt",
                 "type=tmpfs",
                 "--opt",
@@ -3018,7 +3017,7 @@ class DockerRuntime:
                 "--name",
                 resources.storage_holder,
                 "--label",
-                "autotrain-bench.role=prediction-output-holder",
+                "benchcore.role=prediction-output-holder",
                 "--user",
                 self._container_user(),
                 "--network",
