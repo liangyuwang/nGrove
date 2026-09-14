@@ -2,7 +2,7 @@
 
 **Constrain resources, not ideas. Define the evaluator, not the solution.**
 
-![An Agent explores many paths within a sandbox and resource limits. A final artifact passes through a narrow interface to an isolated evaluator: broad solution space, narrow interface, strong evaluator isolation.](docs/assets/design-philosophy.png)
+![An Agent explores many paths within a sandbox and resource limits, co-designing a complete final solution: a model, agent, or agent system. The whole artifact passes through a narrow interface to an isolated evaluator. The goal is better end-to-end performance.](docs/assets/design-philosophy.png)
 
 **A benchmark should define what success means, not tell an AI how to achieve it.**
 AutoTrain-Bench is built around this principle: leave the largest practical
@@ -17,8 +17,13 @@ solution space open to the Agent within a defined sandbox and resource budget.
 
 ## Overview
 
-We should minimize assumptions about what the Agent is supposed to do. The
-benchmark should provide only what is necessary:
+The goal is a final solution that performs well **end to end**. Depending on the
+challenge, this may be a model, an agent, or a complete agent system. The
+evaluator must define what makes the solution good by assessing its overall
+performance on the task.
+
+To leave the path to that result open, we should minimize assumptions about
+how the Agent gets there. The benchmark should provide only what is necessary:
 
 | Component | What it defines |
 | --- | --- |
@@ -34,6 +39,24 @@ the Agent itself. These choices belong to the Agent within the sandbox and
 resource constraints. Our job is not to manually shrink the solution space
 toward approaches we expect.
 
+**The benchmark provides no initial solution or reference implementation.**
+The Agent chooses its own starting point, opening the search space to
+fundamentally different systems and research approaches.
+
+Transformers and MoE, new optimizers, data curation, custom kernels, and
+agent-built research tools are familiar examples of what an Agent might explore.
+These choices interact, so the Agent must be free to **co-design across these
+areas**.
+A gain in one component does not necessarily improve the whole; the goal is a
+better final solution as judged by the evaluator. The intuition is similar to
+gradient descent: parameter updates are guided by the model's overall loss,
+not independent goals for individual parameters. (This analogy concerns the
+shared objective; hidden evaluation feedback remains unavailable during research.)
+
+The space extends to **any** participant-controlled part of the solution or
+research process, including approaches the benchmark authors have not
+anticipated. New directions and combinations are welcome.
+
 **Broad freedom requires a strong boundary.** A narrow artifact interface and
 strong evaluator isolation let the Agent explore without access to the hidden
 evaluator's data or results during research. The sandbox must enforce the resource
@@ -47,25 +70,15 @@ task-specific restrictions: fixed task data and artifact requirements, plus
 [release policy](challenges/lm-pretrain/POLICY.md) limits on extra training
 corpora and pretrained target-model checkpoints.
 
-**The benchmark provides no initial solution or reference implementation.**
-The Agent chooses its own starting point, opening the search space to
-fundamentally different systems and research approaches.
-
-Transformers and MoE, new optimizers, data curation, custom kernels, and
-agent-built research tools are familiar examples of what an Agent might explore.
-The space extends to **any** participant-controlled part of the solution or research
-process, including approaches the benchmark authors have not anticipated. New
-directions and combinations are welcome; the task, evaluation contract, resource
-budget, and sandbox rules define the boundary.
-
 **Long-term goal: Open World Challenge (not yet developed).** We aim to open the
 solution space beyond the current training-specific assumptions. The
 [Roadmap](#roadmap) describes the sandbox, resource, and evaluator work toward
 that goal.
 
-**The Agent's starting configuration is fixed. Autonomous improvement is allowed.** After task
-reveal, the Agent can improve its own software, tools, and research workflow
-within the benchmark boundary. External human intervention is excluded.
+**The Tested Agent's initial configuration is fixed before task reveal.
+Autonomous improvement is allowed.** After task reveal, the Agent can improve
+its own software, tools, and research workflow within the benchmark boundary.
+External human intervention is excluded.
 
 For the current training tasks, a **Training Lease** gives the Agent bounded
 access to the training environment. Two tracks ask complementary questions:
