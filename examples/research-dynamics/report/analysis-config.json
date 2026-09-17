@@ -1,0 +1,57 @@
+{
+  "schema": "autotrain-synthetic-demo-config-v1",
+  "synthetic": true,
+  "metric": {
+    "name": "mean_nll",
+    "direction": "minimize",
+    "unit": "nats/token"
+  },
+  "A": {
+    "domain_seconds": [
+      0,
+      28800
+    ],
+    "checkpoints_seconds": [
+      0,
+      3600,
+      7200,
+      10800,
+      14400,
+      18000,
+      21600,
+      25200,
+      28800
+    ],
+    "target": 3.5,
+    "aggregation": "continuous_step_integral"
+  },
+  "B": {
+    "checkpoints": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "weights": [
+      1,
+      1,
+      1,
+      1
+    ],
+    "target": 3.5,
+    "aggregation": "weighted_checkpoint_mean",
+    "cutoff": "before_next_lease_consumption_or_final_seal"
+  },
+  "missing_data": "unknown; never zero-filled or replaced by another candidate",
+  "hold_after_finish": false,
+  "usage": {
+    "source": null,
+    "reason": "not modeled by this synthetic fixture"
+  },
+  "cost_slices": [],
+  "exploratory": {
+    "curvature": false,
+    "fitting": false,
+    "significance": false
+  }
+}

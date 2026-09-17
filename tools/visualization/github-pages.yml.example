@@ -1,0 +1,27 @@
+# Optional, inactive example. Install only in a repository you control.
+name: Publish visualization demo
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: visualization-pages
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build explicitly synthetic demo
+        run: python3 tools/visualization/build.py --demo --output-dir .autotrain/visualization
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: .autotrain/visualization
+      - uses: actions/deploy-pages@v4
+        id: deployment

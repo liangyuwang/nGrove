@@ -11,6 +11,14 @@
 > distinguish existing interfaces, proposed behavior, and statistical conventions
 > that remain to be specified.
 
+**Available companion tools:** the repository now includes a
+[standalone result visualization](../tools/visualization/README.md), an
+[Operator analysis skill](../skills/autotrain-analysis/SKILL.md), and a
+[synthetic worked example](../examples/research-dynamics/README.md).
+These support display and guided analysis; they do not implement the proposed
+production `bench_analysis` package, input contract, or full acceptance suite.
+The design and implementation milestones below remain proposals.
+
 ## 1. Development objective
 
 The goal of v1 is to add an independent, read-only postmortem layer for research

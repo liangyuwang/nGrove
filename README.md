@@ -12,7 +12,7 @@ solution space open to the Agent within a defined sandbox and resource budget.
 > and completed experimental runs.
 > No frozen, leaderboard-eligible challenge has been released yet.
 
-[Overview](#overview) · [Results](#results) · [Getting Started](#getting-started) ·
+[Overview](#overview) · [Results](#results) · [Visualization and analysis](#visualization-and-analysis) · [Getting Started](#getting-started) ·
 [Roadmap](#roadmap) · [Contributing](#contributing) · [Documentation](#documentation)
 
 ## Overview
@@ -110,8 +110,9 @@ not automatically enter official rankings; see the
 
 ## Results
 
-More results will be added after further testing. A dedicated website is planned
-to present results in greater detail.
+More results will be added after further testing. The repository includes
+[local visualization and operator-assisted analysis](#visualization-and-analysis)
+for inspecting saved results.
 
 The `lm-pretrain` preview has completed full-data runs in both tracks, using
 a public TRAIN pool of approximately **9.95 billion tokens**. Both runs completed
@@ -132,6 +133,43 @@ Candidate serving, not training. These are non-compliant, leaderboard-ineligible
 so they are not a controlled A/B comparison or a formal ranking. Historical
 success also does not certify the current Worker revision; see the
 [recorded evidence scope](docs/worker-acceptance-matrix.md#historical-evidence-catalog).
+
+## Visualization and analysis
+
+Two complementary Operator features are included in this repository. They read
+saved artifacts and do not launch training or hidden evaluation.
+
+| Feature | Entry point | Scope |
+| --- | --- | --- |
+| **Visualization** | [Dashboard tool](tools/visualization/README.md) | Render compatible finalized LM reports as an offline interactive website; local use needs no token. |
+| **Analysis** | [English analysis skill](skills/autotrain-analysis/SKILL.md) | Guide input admission, research-curve reconstruction, budget metrics, and RSI evidence review, following the research-dynamics design. |
+
+Try the visualization with explicitly synthetic data:
+
+```sh
+python3 tools/visualization/build.py --demo
+python3 -m http.server 8000 --bind 127.0.0.1 --directory .autotrain/visualization
+```
+
+Open `http://127.0.0.1:8000/?lang=en`. To use saved results, see the tool's
+`--report` and `--label` instructions. The example GitHub Pages workflow is
+inactive and optional; users enable it in their own repository using that
+repository's credentials.
+
+For analysis, copy the complete `skills/autotrain-analysis/` folder into your
+coding agent's skill directory (for Codex, `$CODEX_HOME/skills`, or
+`~/.codex/skills` by default), or ask your Operator to read its `SKILL.md` directly:
+
+> Use the autotrain-analysis skill to analyze my completed episodes and produce
+> an auditable English report with quality curves, coverage, and RSI evidence.
+
+The [worked analysis demo](examples/research-dynamics/README.md) includes a
+report, input fixture, configuration, numerical outputs, evidence annotations,
+and static figures. All of its data is invented. The analysis skill and demo
+are available now; the production `bench_analysis` package proposed in
+[research-dynamics.md](docs/research-dynamics.md) remains unimplemented.
+The dashboard displays submitted-Candidate history, not a replacement for
+incumbent/oracle reconstruction or an independent certification of results.
 
 ## Getting Started
 
@@ -324,5 +362,6 @@ For the current benchmark rules and operating details, see the
 | [Challenges](challenges/README.md) | Preview tasks, release definitions, and comparison lanes |
 | [Worker Protocol](docs/worker-protocol.md) and [integration](docs/worker-integration.md) | Execution contracts and external deployment responsibilities |
 | [Operator status](docs/operator-status.md) and [recovery](docs/worker-recovery.md) | Monitoring, interruption evidence, and owned-resource cleanup |
+| [Visualization](tools/visualization/README.md) and [analysis skill](skills/autotrain-analysis/SKILL.md) | Local result dashboard, optional hosting, Operator analysis workflow, and a synthetic worked example |
 | [Research dynamics and RSI diagnostics](docs/research-dynamics.md) (design proposal) | Proposed read-only postmortem curves, metrics, process evidence, and data-quality reporting; not implemented |
 | [Development plan](docs/thin-core-development-plan.md#current-preview-closeout-boundary) and [acceptance matrix](docs/worker-acceptance-matrix.md) | Preview implementation status, remaining deployment checks, and deferred formal release work |

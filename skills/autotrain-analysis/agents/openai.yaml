@@ -1,0 +1,4 @@
+interface:
+  display_name: "AutoTrain Results and RSI Analysis"
+  short_description: "Analyze results, research curves, budgets, and RSI evidence"
+  default_prompt: "Use $autotrain-analysis to analyze completed AutoTrain episodes, reconstruct research curves, and assess RSI evidence in an auditable English report."

@@ -1,0 +1,288 @@
+{
+  "schema": "autotrain-synthetic-demo-fixture-v1",
+  "synthetic": true,
+  "notice": "Entirely invented teaching data. Not official results, actual Agent behavior, or lifecycle receipts.",
+  "episodes": [
+    {
+      "episode_id": "DEMO-A",
+      "track": "A",
+      "synthetic": true,
+      "candidates": [
+        {
+          "candidate_id": "A1",
+          "synthetic": true,
+          "analysis_raw_metrics": {
+            "mean_nll": 4.0
+          },
+          "time_per_task_seconds": 0.008,
+          "status": "evaluated",
+          "reason": null
+        },
+        {
+          "candidate_id": "A2",
+          "synthetic": true,
+          "analysis_raw_metrics": {
+            "mean_nll": 3.6
+          },
+          "time_per_task_seconds": 0.006,
+          "status": "evaluated",
+          "reason": null
+        },
+        {
+          "candidate_id": "A3",
+          "synthetic": true,
+          "analysis_raw_metrics": {
+            "mean_nll": 3.1
+          },
+          "time_per_task_seconds": 0.012,
+          "status": "evaluated",
+          "reason": null
+        },
+        {
+          "candidate_id": "A4",
+          "synthetic": true,
+          "analysis_raw_metrics": {
+            "mean_nll": 3.3
+          },
+          "time_per_task_seconds": 0.004,
+          "status": "evaluated",
+          "reason": null
+        },
+        {
+          "candidate_id": "A5",
+          "synthetic": true,
+          "analysis_raw_metrics": {
+            "mean_nll": 3.0
+          },
+          "time_per_task_seconds": 0.005,
+          "status": "evaluated",
+          "reason": null
+        }
+      ],
+      "events": [
+        {
+          "seq": 1,
+          "type": "CANDIDATE_COMMITTED",
+          "candidate_id": "A1",
+          "elapsed_seconds": 3600
+        },
+        {
+          "seq": 2,
+          "type": "INCUMBENT_DECLARED",
+          "candidate_id": "A1",
+          "elapsed_seconds": 3600
+        },
+        {
+          "seq": 3,
+          "type": "CANDIDATE_COMMITTED",
+          "candidate_id": "A2",
+          "elapsed_seconds": 7200
+        },
+        {
+          "seq": 4,
+          "type": "INCUMBENT_DECLARED",
+          "candidate_id": "A2",
+          "elapsed_seconds": 10800
+        },
+        {
+          "seq": 5,
+          "type": "CANDIDATE_COMMITTED",
+          "candidate_id": "A3",
+          "elapsed_seconds": 14400
+        },
+        {
+          "seq": 6,
+          "type": "INCUMBENT_DECLARED",
+          "candidate_id": "A1",
+          "elapsed_seconds": 18000
+        },
+        {
+          "seq": 7,
+          "type": "CANDIDATE_COMMITTED",
+          "candidate_id": "A4",
+          "elapsed_seconds": 21600
+        },
+        {
+          "seq": 8,
+          "type": "INCUMBENT_DECLARED",
+          "candidate_id": "A4",
+          "elapsed_seconds": 21600
+        },
+        {
+          "seq": 9,
+          "type": "CANDIDATE_COMMITTED",
+          "candidate_id": "A5",
+          "elapsed_seconds": 25200
+        },
+        {
+          "seq": 10,
+          "type": "INCUMBENT_DECLARED",
+          "candidate_id": "A5",
+          "elapsed_seconds": 25200
+        },
+        {
+          "seq": 11,
+          "type": "INCUMBENT_DECLARED",
+          "candidate_id": "A5",
+          "elapsed_seconds": 27000
+        },
+        {
+          "seq": 12,
+          "type": "RESEARCH_SEALED",
+          "elapsed_seconds": 28800
+        }
+      ],
+      "illustrative_test": {
+        "candidate_id": "A5",
+        "mean_nll": 3.04,
+        "time_per_task_seconds": 0.0052,
+        "performance_score": null,
+        "score_reason": "No release score mapping is defined in this demo."
+      }
+    },
+    {
+      "episode_id": "DEMO-B",
+      "track": "B",
+      "synthetic": true,
+      "candidates": [
+        {
+          "candidate_id": "B1",
+          "synthetic": true,
+          "analysis_raw_metrics": {
+            "mean_nll": 4.0
+          },
+          "time_per_task_seconds": 0.007,
+          "status": "evaluated",
+          "reason": null
+        },
+        {
+          "candidate_id": "B2",
+          "synthetic": true,
+          "analysis_raw_metrics": {
+            "mean_nll": null
+          },
+          "time_per_task_seconds": null,
+          "status": "failed",
+          "reason": "synthetic_evaluation_failure"
+        },
+        {
+          "candidate_id": "B3",
+          "synthetic": true,
+          "analysis_raw_metrics": {
+            "mean_nll": 3.2
+          },
+          "time_per_task_seconds": 0.005,
+          "status": "evaluated",
+          "reason": null
+        }
+      ],
+      "events": [
+        {
+          "seq": 1,
+          "type": "LEASE_CONSUMED",
+          "lease_id": "lease-one",
+          "leases_used": 1
+        },
+        {
+          "seq": 2,
+          "type": "CANDIDATE_COMMITTED",
+          "leases_used": 1,
+          "candidate_id": "B1"
+        },
+        {
+          "seq": 3,
+          "type": "INCUMBENT_DECLARED",
+          "leases_used": 1,
+          "candidate_id": "B1"
+        },
+        {
+          "seq": 4,
+          "type": "LEASE_CONSUMED",
+          "lease_id": "lease-two",
+          "leases_used": 2
+        },
+        {
+          "seq": 5,
+          "type": "CANDIDATE_COMMITTED",
+          "leases_used": 2,
+          "candidate_id": "B2"
+        },
+        {
+          "seq": 6,
+          "type": "INCUMBENT_DECLARED",
+          "leases_used": 2,
+          "candidate_id": "B2"
+        },
+        {
+          "seq": 7,
+          "type": "LEASE_CONSUMED",
+          "lease_id": "lease-three",
+          "leases_used": 3
+        },
+        {
+          "seq": 8,
+          "type": "CANDIDATE_COMMITTED",
+          "leases_used": 3,
+          "candidate_id": "B3"
+        },
+        {
+          "seq": 9,
+          "type": "INCUMBENT_DECLARED",
+          "leases_used": 3,
+          "candidate_id": "B3"
+        },
+        {
+          "seq": 10,
+          "type": "LEASE_CONSUMED",
+          "lease_id": "lease-four",
+          "leases_used": 4
+        },
+        {
+          "seq": 11,
+          "type": "LEASE_FAILED",
+          "lease_id": "lease-four",
+          "leases_used": 4,
+          "reason": "synthetic_failure_after_consumption"
+        },
+        {
+          "seq": 12,
+          "type": "RESEARCH_SEALED",
+          "leases_used": 4
+        }
+      ],
+      "illustrative_test": {
+        "candidate_id": "B3",
+        "mean_nll": 3.25,
+        "time_per_task_seconds": 0.0051,
+        "performance_score": null,
+        "score_reason": "No release score mapping is defined in this demo."
+      }
+    }
+  ],
+  "process_notes": [
+    {
+      "id": "note-1",
+      "episode_id": "DEMO-A",
+      "synthetic": true,
+      "kind": "illustrative_change",
+      "text": "A validation helper is changed to compare two candidates on the same participant-owned validation split.",
+      "associated_candidate": "A2"
+    },
+    {
+      "id": "note-2",
+      "episode_id": "DEMO-A",
+      "synthetic": true,
+      "kind": "illustrative_use",
+      "text": "The later selection step explicitly calls that same validation helper before declaring A2.",
+      "uses": "note-1",
+      "associated_candidate": "A2"
+    },
+    {
+      "id": "note-3",
+      "episode_id": "DEMO-A",
+      "synthetic": true,
+      "kind": "illustrative_limitation",
+      "text": "No record connects this helper to the creation, testing, or selection of a subsequent research mechanism."
+    }
+  ]
+}

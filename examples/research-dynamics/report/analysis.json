@@ -1,0 +1,337 @@
+{
+  "schema": "autotrain-analysis-synthetic-demo-report-v1",
+  "synthetic": true,
+  "notice": "Entirely invented teaching data. Not official results, actual Agent behavior, or lifecycle receipts.",
+  "admission": {
+    "status": "synthetic_demonstration_only",
+    "real_episode_admission": "not_applicable",
+    "reason": "No real episodes or workload lifecycle receipts are claimed; this is not an official-result validator."
+  },
+  "provenance": {
+    "input_hashes": {
+      "fixtures/demo.json": "af248ce8faddf4110f9397c0999861046a343bc61784ea484ff0f8800fcd1444",
+      "analysis-config.json": "bf4bc81cc8a3ddcc8860f6599f947335fd9c0a5a55955ce818fcd6d95ec2ad52"
+    },
+    "tool_sha256": "9114f382f248c5d4196a311093a52ef5f13b6e7807c72225028eef035621302a",
+    "original_result_version": null,
+    "identity_algorithms": null,
+    "compatibility_adapter": null,
+    "reason": "Demo-only schema; not official Benchcore state.",
+    "configuration": {
+      "schema": "autotrain-synthetic-demo-config-v1",
+      "synthetic": true,
+      "metric": {
+        "name": "mean_nll",
+        "direction": "minimize",
+        "unit": "nats/token"
+      },
+      "A": {
+        "domain_seconds": [
+          0,
+          28800
+        ],
+        "checkpoints_seconds": [
+          0,
+          3600,
+          7200,
+          10800,
+          14400,
+          18000,
+          21600,
+          25200,
+          28800
+        ],
+        "target": 3.5,
+        "aggregation": "continuous_step_integral"
+      },
+      "B": {
+        "checkpoints": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "weights": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "target": 3.5,
+        "aggregation": "weighted_checkpoint_mean",
+        "cutoff": "before_next_lease_consumption_or_final_seal"
+      },
+      "missing_data": "unknown; never zero-filled or replaced by another candidate",
+      "hold_after_finish": false,
+      "usage": {
+        "source": null,
+        "reason": "not modeled by this synthetic fixture"
+      },
+      "cost_slices": [],
+      "exploratory": {
+        "curvature": false,
+        "fitting": false,
+        "significance": false
+      }
+    }
+  },
+  "comparison": {
+    "combined_ranking": false,
+    "reason": "Independent illustrative Tracks; no cross-Track ranking."
+  },
+  "episodes": {
+    "DEMO-A": {
+      "mean": {
+        "value": null,
+        "status": "insufficient_coverage",
+        "reason": "Requested interval contains unknown incumbent quality.",
+        "known_integral": 91800.0,
+        "known_duration": 25200,
+        "requested_duration": 28800,
+        "coverage": 0.875
+      },
+      "attainment": {
+        "target": 3.5,
+        "first_observed_budget": 21600,
+        "exact_budget": 21600,
+        "status": "exact",
+        "reason": null
+      },
+      "points": [
+        {
+          "budget": 0,
+          "event_cutoff": 0,
+          "candidate_id": null,
+          "source_event_seq": null,
+          "loss": null,
+          "time_per_task": null,
+          "status": "unknown",
+          "reason": "no_incumbent",
+          "oracle_loss": null,
+          "oracle_candidate_id": null,
+          "loss_only_selection_gap": null
+        },
+        {
+          "budget": 3600,
+          "event_cutoff": 2,
+          "candidate_id": "A1",
+          "source_event_seq": 2,
+          "loss": 4.0,
+          "time_per_task": 0.008,
+          "status": "known",
+          "reason": null,
+          "oracle_loss": 4.0,
+          "oracle_candidate_id": "A1",
+          "loss_only_selection_gap": 0.0
+        },
+        {
+          "budget": 7200,
+          "event_cutoff": 3,
+          "candidate_id": "A1",
+          "source_event_seq": 2,
+          "loss": 4.0,
+          "time_per_task": 0.008,
+          "status": "known",
+          "reason": null,
+          "oracle_loss": 3.6,
+          "oracle_candidate_id": "A2",
+          "loss_only_selection_gap": 0.3999999999999999
+        },
+        {
+          "budget": 10800,
+          "event_cutoff": 4,
+          "candidate_id": "A2",
+          "source_event_seq": 4,
+          "loss": 3.6,
+          "time_per_task": 0.006,
+          "status": "known",
+          "reason": null,
+          "oracle_loss": 3.6,
+          "oracle_candidate_id": "A2",
+          "loss_only_selection_gap": 0.0
+        },
+        {
+          "budget": 14400,
+          "event_cutoff": 5,
+          "candidate_id": "A2",
+          "source_event_seq": 4,
+          "loss": 3.6,
+          "time_per_task": 0.006,
+          "status": "known",
+          "reason": null,
+          "oracle_loss": 3.1,
+          "oracle_candidate_id": "A3",
+          "loss_only_selection_gap": 0.5
+        },
+        {
+          "budget": 18000,
+          "event_cutoff": 6,
+          "candidate_id": "A1",
+          "source_event_seq": 6,
+          "loss": 4.0,
+          "time_per_task": 0.008,
+          "status": "known",
+          "reason": null,
+          "oracle_loss": 3.1,
+          "oracle_candidate_id": "A3",
+          "loss_only_selection_gap": 0.8999999999999999
+        },
+        {
+          "budget": 21600,
+          "event_cutoff": 8,
+          "candidate_id": "A4",
+          "source_event_seq": 8,
+          "loss": 3.3,
+          "time_per_task": 0.004,
+          "status": "known",
+          "reason": null,
+          "oracle_loss": 3.1,
+          "oracle_candidate_id": "A3",
+          "loss_only_selection_gap": 0.19999999999999973
+        },
+        {
+          "budget": 25200,
+          "event_cutoff": 10,
+          "candidate_id": "A5",
+          "source_event_seq": 10,
+          "loss": 3.0,
+          "time_per_task": 0.005,
+          "status": "known",
+          "reason": null,
+          "oracle_loss": 3.0,
+          "oracle_candidate_id": "A5",
+          "loss_only_selection_gap": 0.0
+        },
+        {
+          "budget": 27000,
+          "event_cutoff": 11,
+          "candidate_id": "A5",
+          "source_event_seq": 11,
+          "loss": 3.0,
+          "time_per_task": 0.005,
+          "status": "known",
+          "reason": null,
+          "oracle_loss": 3.0,
+          "oracle_candidate_id": "A5",
+          "loss_only_selection_gap": 0.0
+        },
+        {
+          "budget": 28800,
+          "event_cutoff": 12,
+          "candidate_id": "A5",
+          "source_event_seq": 11,
+          "loss": 3.0,
+          "time_per_task": 0.005,
+          "status": "known",
+          "reason": null,
+          "oracle_loss": 3.0,
+          "oracle_candidate_id": "A5",
+          "loss_only_selection_gap": 0.0
+        }
+      ],
+      "candidate_coverage": {
+        "evaluated": 5,
+        "unique_candidates": 5
+      },
+      "illustrative_test": {
+        "candidate_id": "A5",
+        "mean_nll": 3.04,
+        "time_per_task_seconds": 0.0052,
+        "performance_score": null,
+        "score_reason": "No release score mapping is defined in this demo."
+      }
+    },
+    "DEMO-B": {
+      "mean": {
+        "value": null,
+        "status": "insufficient_coverage",
+        "reason": "Checkpoint 2 has unknown incumbent quality.",
+        "coverage": 0.75,
+        "weights": [
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "attainment": {
+        "target": 3.5,
+        "first_observed_budget": 3,
+        "exact_budget": null,
+        "status": "observed_upper_bound",
+        "reason": "Earlier unknown incumbent quality may hide an earlier success."
+      },
+      "points": [
+        {
+          "budget": 1,
+          "event_cutoff": 3,
+          "candidate_id": "B1",
+          "source_event_seq": 3,
+          "loss": 4.0,
+          "time_per_task": 0.007,
+          "status": "known",
+          "reason": null,
+          "oracle_loss": 4.0,
+          "oracle_candidate_id": "B1",
+          "loss_only_selection_gap": 0.0
+        },
+        {
+          "budget": 2,
+          "event_cutoff": 6,
+          "candidate_id": "B2",
+          "source_event_seq": 6,
+          "loss": null,
+          "time_per_task": null,
+          "status": "unknown",
+          "reason": "synthetic_evaluation_failure",
+          "oracle_loss": 4.0,
+          "oracle_candidate_id": "B1",
+          "loss_only_selection_gap": null
+        },
+        {
+          "budget": 3,
+          "event_cutoff": 9,
+          "candidate_id": "B3",
+          "source_event_seq": 9,
+          "loss": 3.2,
+          "time_per_task": 0.005,
+          "status": "known",
+          "reason": null,
+          "oracle_loss": 3.2,
+          "oracle_candidate_id": "B3",
+          "loss_only_selection_gap": 0.0
+        },
+        {
+          "budget": 4,
+          "event_cutoff": 12,
+          "candidate_id": "B3",
+          "source_event_seq": 9,
+          "loss": 3.2,
+          "time_per_task": 0.005,
+          "status": "known",
+          "reason": null,
+          "oracle_loss": 3.2,
+          "oracle_candidate_id": "B3",
+          "loss_only_selection_gap": 0.0
+        }
+      ],
+      "candidate_coverage": {
+        "evaluated": 2,
+        "unique_candidates": 3
+      },
+      "illustrative_test": {
+        "candidate_id": "B3",
+        "mean_nll": 3.25,
+        "time_per_task_seconds": 0.0051,
+        "performance_score": null,
+        "score_reason": "No release score mapping is defined in this demo."
+      }
+    }
+  },
+  "warnings": [
+    "All numbers and process notes are invented.",
+    "No official performance-score mapping is defined.",
+    "No usage traces, causal controls, or independent repeat runs are modeled.",
+    "Curvature and significance are intentionally not computed."
+  ]
+}

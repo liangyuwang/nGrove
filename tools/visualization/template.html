@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="AutoTrain-Bench saved results: final quality, serving cost, and postmortem Candidate observations.">
+<title>AutoTrain · RSI / Meta-learning</title>
+<style>
+:root{color-scheme:light;--bg:#f5f6f9;--paper:#fff;--ink:#202337;--muted:#656c80;--line:#e5e7ef;--accent:#6154c7;--soft:#eeebff;--green:#178172;--orange:#bc7651}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans CJK SC",sans-serif}a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}button,select{font:inherit}button,a,select{touch-action:manipulation}button{cursor:pointer}button:focus-visible,a:focus-visible,select:focus-visible{outline:3px solid #aa9cf5;outline-offset:3px}header{background:var(--paper);border-bottom:1px solid var(--line)}.nav{max-width:1300px;margin:auto;padding:18px 30px;display:flex;align-items:center;gap:24px}.brand{font-weight:750;letter-spacing:-.5px;color:var(--ink)}.nav a{font-size:13px}.nav .active{background:var(--soft);padding:5px 12px;border-radius:7px}.grow{flex:1}.wrap{max-width:1300px;margin:auto;padding:35px 30px 50px}.eyebrow{font-size:11px;letter-spacing:1.6px;font-weight:750;color:var(--accent);text-transform:uppercase}h1{font-size:36px;line-height:1.3;letter-spacing:-1.2px;margin:10px 0}h2{font-size:18px;line-height:1.4;margin:0 0 7px}h3{font-size:15px;margin:0 0 8px}p{margin:0 0 12px}.muted{color:var(--muted)}.intro{max-width:930px}.stamp{font-size:12px;color:var(--muted);margin-top:15px}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:15px;margin:26px 0}.stat,.panel{background:var(--paper);border:1px solid var(--line);border-radius:12px}.stat{padding:17px 20px}.stat .value{font-size:25px;line-height:1.3;letter-spacing:-.5px;font-weight:700}.stat .label{font-size:12px;color:var(--muted);margin-top:4px}.notice{background:#f0edff;border-left:3px solid #8776d6;padding:13px 17px;font-size:13px;border-radius:0 8px 8px 0;margin-bottom:22px}.panel{padding:23px;margin-bottom:20px;min-width:0}.filters{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:16px 0}.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;padding:3px;background:#f7f7fa}.seg button{border:0;background:transparent;color:var(--muted);padding:6px 17px;border-radius:5px;font-size:13px}.seg button[aria-pressed=true]{background:var(--accent);color:#fff}.smallbutton{border:1px solid var(--line);background:white;border-radius:6px;font-size:12px;color:var(--muted);padding:5px 10px}.legend{display:flex;flex-wrap:wrap;gap:7px;margin-top:15px}.chip{border:1px solid var(--line);background:white;border-radius:30px;padding:5px 11px;color:var(--ink);font-size:12px;display:flex;gap:7px;align-items:center}.chip[aria-pressed=false]{opacity:.42;background:#f5f5f8}.dot{width:9px;height:9px;border-radius:50%;flex:none}.grid{display:grid;grid-template-columns:1.25fr 1fr;gap:20px}.grid .panel{margin:0}.charts{margin-bottom:20px}.chart{width:100%;aspect-ratio:1.55;min-height:230px;display:block;overflow:visible}.chart text{font-family:inherit}.caption{font-size:12px;color:var(--muted);margin-top:10px}.chartheading{display:flex;justify-content:space-between;gap:10px;align-items:start}.chartheading select{max-width:170px;background:white;border:1px solid var(--line);border-radius:6px;padding:5px 7px;font-size:12px}.tablewrap{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:13px}th,td{padding:11px 12px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}th{color:var(--muted);font-weight:500;font-size:12px;background:#fafafd}th:first-child,td:first-child{text-align:left}tbody tr:hover{background:#f8f7ff}.num{font-variant-numeric:tabular-nums}.badge{display:inline-block;padding:1px 6px;border-radius:4px;font-size:11px;background:var(--soft);color:var(--accent);margin-left:8px}.evidence{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:18px}.evidence p{font-size:13px;color:var(--muted)}.evidence .tag{font-size:11px;letter-spacing:.8px;color:var(--accent);margin-bottom:7px}.note-list{padding-left:20px;font-size:13px;color:var(--muted);margin:10px 0 0}.note-list li{margin:7px 0}footer{font-size:12px;color:var(--muted);display:flex;gap:20px;flex-wrap:wrap;padding:10px 0}details{font-size:12px;color:var(--muted);margin-top:14px}summary{cursor:pointer}.empty{fill:var(--muted)}.chart-point:focus{outline:none;stroke:#202337;stroke-width:3px}.hint{font-size:12px;color:var(--muted)}
+@media(max-width:900px){.grid{grid-template-columns:1fr}.chart{aspect-ratio:1.65}.evidence{grid-template-columns:1fr}.nav{gap:14px}.nav,.wrap{padding-left:20px;padding-right:20px}}
+@media(max-width:560px){h1{font-size:28px}.stats{grid-template-columns:repeat(2,1fr);gap:10px}.stat{padding:13px}.panel{padding:17px}.nav{gap:12px;flex-wrap:wrap}.nav .grow{display:none}.nav a{font-size:12px}.wrap{padding:25px 14px}.chartheading{flex-direction:column}.chart{min-height:205px}.seg button{padding:6px 12px}th,td{padding:10px 8px}}
+.chart-controls{display:grid;grid-template-columns:150px minmax(0,1fr) auto minmax(0,1fr);gap:16px;align-items:end;margin:20px 0 12px}.chart-controls label{display:block;font-size:12px;color:var(--muted)}.chart-controls select{background:white;border:1px solid #d5d8e4;border-radius:7px;padding:8px 10px;color:var(--ink);font-size:13px;width:100%;min-width:0;margin-top:6px}.axis-inputs{display:grid;grid-template-columns:minmax(0,1fr) 78px;gap:7px}.swap{height:39px;padding:0 12px;font-size:19px;color:var(--accent)}.plot-panel .chart{aspect-ratio:auto;height:440px;min-height:0}.point-detail{background:#f8f8fc;border:1px solid var(--line);border-radius:7px;padding:10px 13px;min-height:44px;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}.axis-note{font-size:12px;color:var(--muted);min-height:19px;margin-bottom:4px}.chart-point{cursor:pointer}.chart-point:hover{stroke:var(--ink);stroke-width:2.5px}
+@media(max-width:900px){.chart-controls{grid-template-columns:1fr 1fr;gap:12px}.chart-controls .view-field{grid-column:1/-1;max-width:220px}.swap{grid-column:1/-1;grid-row:3;justify-self:start;font-size:13px;height:31px}.swap::after{content:' ' attr(data-swap-label)}}
+@media(max-width:560px){.chart-controls{grid-template-columns:1fr}.chart-controls .view-field{max-width:none}.swap{grid-row:auto}.plot-panel .chart{height:330px}}
+.plot-presets{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.plot-presets button{color:var(--accent);background:#f5f3ff;border-color:#ddd8f4}.chart-point[data-active=true]{stroke:var(--ink);stroke-width:3px}.graph-tooltip{position:fixed;z-index:1000;width:340px;max-width:calc(100vw - 20px);padding:16px;background:rgba(255,255,255,.98);border:1px solid #ccc6e6;border-radius:11px;box-shadow:0 12px 38px #20233726;pointer-events:none;color:var(--ink);font-size:12px;line-height:1.45}.graph-tooltip[hidden]{display:none}.tooltip-title{font-size:15px;font-weight:700;margin-bottom:4px}.tooltip-subtitle{font-size:11px;color:var(--muted);margin-bottom:12px;overflow-wrap:anywhere}.tooltip-metrics{display:grid;grid-template-columns:1fr 1fr;gap:10px 15px;margin:0}.tooltip-metrics dt{font-size:11px;color:var(--muted)}.tooltip-metrics dd{margin:2px 0 0;font-size:14px;font-weight:600;font-variant-numeric:tabular-nums}.tooltip-metrics .primary dd{font-size:20px;color:var(--accent)}.tooltip-footer{border-top:1px solid var(--line);padding-top:9px;margin-top:12px;font-size:11px;color:var(--muted)}
+</style>
+<style>.nav{flex-wrap:wrap}.language-switch{flex-shrink:0}.language-switch button{padding:5px 10px;font-size:12px}.tooltip-metrics>div{min-width:0}.tooltip-metrics dd{overflow-wrap:anywhere}html[lang=en] .chart-controls{grid-template-columns:210px minmax(0,1fr) auto minmax(0,1fr)}@media(max-width:900px){html[lang=en] .chart-controls{grid-template-columns:1fr 1fr}}@media(max-width:560px){html[lang=en] .chart-controls{grid-template-columns:1fr}.nav{gap:10px}.language-switch{margin-left:auto}}</style>
+</head>
+<body>
+<header><nav class="nav" aria-label="页面导航"><a class="brand" href="#">AutoTrain-Bench</a><a class="active" href="#" aria-current="page">RSI 分析</a><a href="#table-title">最新实验结果</a><div class="grow"></div><a href="https://github.com/liangyuwang/AutoTrain-Bench">可视化脚本 ↗</a><div class="seg language-switch" role="group" aria-label="页面语言"><button type="button" data-lang="zh" lang="zh-CN" aria-pressed="true">中文</button><button type="button" data-lang="en" lang="en" aria-pressed="false">English</button></div></nav></header>
+<main class="wrap">
+<div class="intro"><div class="eyebrow">Research notes / Saved results</div><h1>从实验中学习，模型做得如何？</h1><p class="muted">把 RSI 看作 meta-learning：内层训练语言模型，外层根据实验反馈调整方法。一起看最终质量、候选轨迹，以及每次改进花掉的预算。</p><div class="stamp" id="stamp"></div></div>
+<section class="stats" aria-label="实验概况"><div class="stat"><div class="value" id="model-count"></div><div class="label">研究模型</div></div><div class="stat"><div class="value" id="complete-count"></div><div class="label">已完成实验</div></div><div class="stat"><div class="value" id="budget-summary" style="font-size:17px"></div><div class="label">Track A / Track B 预算上限</div></div><div class="stat"><div class="value" id="runtime-summary" style="font-size:17px"></div><div class="label">运行环境（来自记录）</div></div></section>
+<div class="notice" id="dataset-notice"></div>
+<div class="notice"><strong>如何解读：</strong>A 与 B 都允许自我改进，预算规则不同。这里展示观察结果，尚无同预算 RSI-off 对照。ANALYSIS 分数在研究结束后计算，并不是 Agent 当时获得的反馈。</div>
+<section class="panel" aria-labelledby="filter-title"><h2 id="filter-title">选择比较范围</h2><div class="filters"><div class="seg" aria-label="选择 Track"><button data-track="B" aria-pressed="true">Track B</button><button data-track="A" aria-pressed="false">Track A</button></div><span id="track-desc" class="hint"></span><span class="grow"></span><button id="all" class="smallbutton">全部模型</button><button id="leading" class="smallbutton">显示前五个模型</button></div><div class="legend" id="legend" aria-label="筛选模型"></div><p class="caption">点击模型名称可隐藏或恢复；图表和结果表会同步更新。默认显示全部模型。</p></section>
+<section class="panel plot-panel" aria-labelledby="plot-title">
+<h2 id="plot-title">自定义比较图</h2><p class="hint">横纵轴可选 Score、NLL、PPL、推理耗时、吞吐、预算等指标。悬停点附近即可查看详细信息。</p>
+<div class="plot-presets" aria-label="常用指标组合"><button type="button" class="smallbutton" data-preset="score-time">Score × 时间</button><button type="button" class="smallbutton" data-preset="nll-time">NLL × 时间</button><button type="button" class="smallbutton" data-preset="score-cost">Score × s/task</button></div>
+<div class="chart-controls">
+<label class="view-field">数据范围<select id="plot-view" aria-label="图表数据范围"><option value="trajectory">候选 · ANALYSIS</option><option value="final" selected>最终 · TEST</option></select></label>
+<div><label for="x-metric">横轴</label><div class="axis-inputs"><select id="x-metric" aria-label="横轴指标"></select><select id="x-scale" aria-label="横轴刻度"><option value="linear">线性</option><option value="log">对数</option></select></div></div>
+<button id="swap-axes" class="smallbutton swap" aria-label="交换横纵轴" title="交换横纵轴">⇄</button>
+<div><label for="y-metric">纵轴</label><div class="axis-inputs"><select id="y-metric" aria-label="纵轴指标"></select><select id="y-scale" aria-label="纵轴刻度"><option value="linear">线性</option><option value="log">对数</option></select></div></div>
+</div>
+<div class="axis-note" id="axis-note"></div><svg id="comparison-chart" class="chart" role="img" aria-label="按所选横纵轴比较模型"></svg>
+<div class="point-detail" id="point-detail" aria-live="polite">悬停、点击或键盘聚焦数据点，查看模型和精确数值。</div>
+<p class="caption" id="plot-caption"></p>
+</section>
+<section class="panel"><div class="chartheading"><div><h2 id="table-title">Track B · 最终结果</h2><p class="hint">按 NLL 升序排列；提交候选数与元学习次数不同。</p></div><a class="smallbutton" href="__DATA_URL__" download>下载汇总 JSON</a></div><div class="tablewrap"><table><thead><tr><th scope="col">模型</th><th scope="col">结果／合规／参榜资格</th><th scope="col">TEST NLL ↓</th><th scope="col">Score ↑</th><th scope="col">s/task ↓</th><th scope="col">租约小时</th><th scope="col">候选数</th><th scope="col">ANALYSIS 首 → 末</th></tr></thead><tbody id="results"></tbody></table></div><p class="caption">s/task 为每条任务的推理秒数（1 s = 1000 ms）。Score 与 NLL 来自同一个质量指标。租约小时包含运行环境内的全部占用，不等于纯 GPU 计算时间。</p></section>
+<section class="panel"><h2>同一模型在两种预算下的结果</h2><p class="hint">这是一组描述性配对，不合并成同一预算下的排名。</p><div class="tablewrap"><table><thead><tr><th scope="col">模型</th><th scope="col">A · TEST NLL</th><th scope="col">B · TEST NLL</th><th scope="col">B − A</th><th scope="col">较低 NLL</th></tr></thead><tbody id="pairs"></tbody></table></div><p class="caption">负值表示本次 B 的 NLL 更低。结果同时受初始配方、实际训练量、推理配置和随机性影响，差值不等于 RSI 增益。</p></section>
+<section class="panel"><h2>数据口径与复现</h2><ul class="note-list"><li>这是已保存结果的只读可视化，不会运行训练或评估。</li><li>候选图展示已提交产物，不代表 Agent 实际声明的 incumbent 曲线。</li><li>缺失指标保留为空；失败点不应被解释为零分或没有调用。</li><li>展示结果不等于验证部署终止、隐藏数据身份或正式排行榜资格。</li></ul><details><summary>查看数据身份</summary><p id="provenance" style="overflow-wrap:anywhere;margin-top:12px"></p></details></section>
+<footer><span>AutoTrain · RSI as meta-learning</span><a href="https://github.com/liangyuwang/AutoTrain-Bench">构建脚本</a><a href="https://github.com/liangyuwang/AutoTrain-Bench">页面模板</a><a href="https://arxiv.org/abs/2303.11366">Reflexion</a><a href="https://arxiv.org/abs/2210.14215">Algorithm Distillation</a></footer>
+</main>
+<div id="graph-tooltip" class="graph-tooltip" role="tooltip" hidden></div>
+<script type="application/json" id="rsi-data">__RSI_DATA__</script>
+<script type="application/json" id="i18n-data">__I18N_DATA__</script>
+<script>
+'use strict';
+const D=JSON.parse(document.getElementById('rsi-data').textContent), $=s=>document.querySelector(s);
+const EN=JSON.parse($('#i18n-data').textContent);
+const languageKey='autotrain-language';
+const normalizeLanguage=value=>/^zh(?:-|$)/i.test(value||'')?'zh':/^en(?:-|$)/i.test(value||'')?'en':null;
+let savedLanguage=null;try{savedLanguage=normalizeLanguage(localStorage.getItem(languageKey));}catch{}
+let language=normalizeLanguage(new URLSearchParams(location.search).get('lang'))||savedLanguage||normalizeLanguage(navigator.language)||'en';
+function t(source,params={}){
+ const value=language==='en'?(EN[source]??source):source;
+ return value.replace(/\{(\w+)\}/g,(match,key)=>params[key]??match);
+}
+// Retain original static text once. Dynamic chart strings use t() explicitly.
+const staticText=[],staticAttributes=[],walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
+while(walker.nextNode()){
+ const node=walker.currentNode,source=node.textContent.trim();
+ if(!node.parentElement.closest('script,style,[data-lang]')&&Object.hasOwn(EN,source))staticText.push({node,source,original:node.textContent});
+}
+document.querySelectorAll('[aria-label],[title]').forEach(node=>{
+ for(const attr of ['aria-label','title']){const source=node.getAttribute(attr);if(Object.hasOwn(EN,source))staticAttributes.push({node,attr,source});}
+});
+function applyLanguage(){
+ document.documentElement.lang=language==='en'?'en':'zh-CN';
+ staticText.forEach(({node,source,original})=>{node.textContent=original.replace(source,t(source));});
+ staticAttributes.forEach(({node,attr,source})=>node.setAttribute(attr,t(source)));
+ document.querySelectorAll('[data-lang]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.lang===language)));
+ $('#swap-axes').dataset.swapLabel=t('交换横纵轴');
+ $('#stamp').textContent=t('数据快照：{time} · {task}',{time:D.generated_at,task:D.task});
+ $('#runtime-summary').textContent=D.runtime;
+ $('#budget-summary').textContent=['A','B'].map(track=>`${track}: ${D.track_budgets?.[track]||'—'}`).join(' / ');
+ $('#dataset-notice').textContent=t(D.synthetic?'模拟示例：所有数值均为虚构，不是真实 Agent 结果。':'已保存结果：比较前请核对资源、数据身份和运行条件。');
+ $('#provenance').textContent=t('Core: {revision} · 源快照 SHA256: {hash}',{revision:D.core_revision,hash:D.source_sha256});
+}
+document.querySelectorAll('[data-lang]').forEach(button=>button.addEventListener('click',()=>{
+ language=button.dataset.lang;
+ try{localStorage.setItem(languageKey,language);}catch{}
+ try{const url=new URL(location.href);url.searchParams.set('lang',language);history.replaceState(null,'',url);}catch{}
+ applyLanguage();fillAxes();render();
+}));
+const palette=['#287dc1','#1c9681','#a43d75','#d98030','#9268c0','#73853d','#c45749','#4e97b3'];
+const models=[...new Set(D.rows.map(r=>r.model))];
+const defs=Object.fromEntries(models.map((m,i)=>[m,[m,palette[i%palette.length]]]));
+const visible=new Set(models);let track=D.rows.some(r=>r.track==='B')?'B':'A';
+const fmt=(n,d=4)=>n==null?'—':Number(n).toFixed(d), esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+$('#model-count').textContent=models.length;$('#complete-count').textContent=`${D.rows.filter(r=>r.test_nll!=null).length} / ${D.rows.length}`;
+models.forEach(m=>{const b=document.createElement('button');b.className='chip';b.setAttribute('aria-pressed','true');b.innerHTML=`<span class="dot" style="background:${defs[m][1]}"></span>${esc(defs[m][0])}`;b.dataset.model=m;b.addEventListener('click',()=>{visible.has(m)?visible.delete(m):visible.add(m);render()});$('#legend').append(b)});
+document.querySelectorAll('[data-track]').forEach(b=>b.addEventListener('click',()=>{track=b.dataset.track;render()}));
+$('#all').addEventListener('click',()=>{models.forEach(m=>visible.add(m));render()});
+$('#leading').addEventListener('click',()=>{visible.clear();models.slice(0,5).forEach(m=>visible.add(m));render()});
+const metricSets={
+ trajectory:{
+  score:{label:'Score ↑',get:(r,p)=>p.score},
+  nll:{label:'NLL ↓',get:(r,p)=>p.nll},
+  ppl:{label:'困惑度 PPL ↓',get:(r,p)=>p.ppl},
+  seconds_per_task:{label:'Seconds per task (s/task) ↓',get:(r,p)=>p.seconds_per_task,decimals:4},
+  ms:{label:'推理耗时 / ms per task ↓',get:(r,p)=>p.ms},
+  evaluation_seconds:{label:'评估总耗时 / s ↓',get:(r,p)=>p.evaluation_seconds},
+  tasks_per_second:{label:'推理吞吐 / tasks per s ↑',get:(r,p)=>p.tasks_per_second},
+  input_tokens_per_second:{label:'输入吞吐 / tokens per s ↑',get:(r,p)=>p.input_tokens_per_second},
+  hours:{label:'累计租约时间 / h',get:(r,p)=>p.hours,ordered:true},
+  research_hours:{label:'提交时研究用时 / h',get:(r,p)=>p.research_hours,ordered:true},
+  index:{label:'候选提交序号',get:(r,p)=>p.index,ordered:true,integer:true},
+  lease:{label:'已消耗租约数（有记录时）',get:(r,p)=>p.leases_used,ordered:true,integer:true},
+  score_gain:{label:'较首候选 Score 提升 ↑',get:(r,p)=>p.score==null||r.points[0]?.score==null?null:p.score-r.points[0].score},
+  improvement:{label:'较首候选 NLL 下降 ↑',get:(r,p)=>r.first_analysis==null||p.nll==null?null:r.first_analysis-p.nll}
+ },
+ final:{
+  score:{label:'Score ↑',get:r=>r.score},
+  nll:{label:'NLL ↓',get:r=>r.test_nll},
+  ppl:{label:'困惑度 PPL ↓',get:r=>r.ppl},
+  seconds_per_task:{label:'Seconds per task (s/task) ↓',get:r=>r.seconds_per_task,decimals:4},
+  ms:{label:'推理耗时 / ms per task ↓',get:r=>r.ms},
+  evaluation_seconds:{label:'评估总耗时 / s ↓',get:r=>r.evaluation_seconds},
+  tasks_per_second:{label:'推理吞吐 / tasks per s ↑',get:r=>r.tasks_per_second},
+  input_tokens_per_second:{label:'输入吞吐 / tokens per s ↑',get:r=>r.input_tokens_per_second},
+  lease_hours:{label:'总租约时间 / h',get:r=>r.lease_hours},
+  research_hours:{label:'研究用时 / h',get:r=>r.research_hours},
+  candidates:{label:'提交候选数',get:r=>r.candidates,integer:true},
+  leases:{label:'使用租约数',get:r=>r.leases,integer:true},
+  reasoning_tokens:{label:'Agent 推理 tokens',get:r=>r.reasoning_tokens,integer:true},
+  output_tokens:{label:'Agent 输出 tokens',get:r=>r.output_tokens,integer:true},
+  total_tokens:{label:'Agent 总 tokens（含缓存）',get:r=>r.total_tokens,integer:true},
+  agent_turns:{label:'Agent 对话轮数',get:r=>r.agent_turns,integer:true},
+  first_analysis:{label:'首候选 ANALYSIS NLL ↓',get:r=>r.first_analysis},
+  final_analysis:{label:'最终候选 ANALYSIS NLL ↓',get:r=>r.final_analysis},
+  improvement:{label:'首末 ANALYSIS NLL 下降 ↑',get:r=>r.first_analysis==null||r.final_analysis==null?null:r.first_analysis-r.final_analysis}
+ }
+};
+const axisChoices={trajectory:{x:'seconds_per_task',y:'score',xs:'linear',ys:'linear'},final:{x:'seconds_per_task',y:'score',xs:'linear',ys:'linear'}};
+if(!D.rows.some(r=>Number.isFinite(r.score)))axisChoices.final.y='nll';
+if(!D.rows.some(r=>r.points.some(p=>Number.isFinite(p.score))))axisChoices.trajectory.y='nll';
+function fillAxes(){
+ const view=$('#plot-view').value,metrics=metricSets[view],choice=axisChoices[view];
+ for(const axis of ['x','y']){
+  $(`#${axis}-metric`).innerHTML=Object.entries(metrics).map(([key,m])=>`<option value="${key}">${esc(t(m.label))}</option>`).join('');
+  $(`#${axis}-metric`).value=choice[axis];$(`#${axis}-scale`).value=choice[axis+'s'];
+ }
+}
+$('#plot-view').addEventListener('change',()=>{fillAxes();render()});
+for(const id of ['x-metric','y-metric','x-scale','y-scale'])$('#'+id).addEventListener('change',()=>{
+ const a=axisChoices[$('#plot-view').value];a.x=$('#x-metric').value;a.y=$('#y-metric').value;a.xs=$('#x-scale').value;a.ys=$('#y-scale').value;render();
+});
+$('#swap-axes').addEventListener('click',()=>{
+ const a=axisChoices[$('#plot-view').value];[a.x,a.y]=[a.y,a.x];[a.xs,a.ys]=[a.ys,a.xs];fillAxes();render();
+});
+document.querySelectorAll('[data-preset]').forEach(b=>b.addEventListener('click',()=>{
+ const view=$('#plot-view').value,a=axisChoices[view];
+ a.x=b.dataset.preset==='score-cost'?'seconds_per_task':view==='trajectory'?'hours':'lease_hours';
+ a.y=b.dataset.preset==='nll-time'?'nll':'score';a.xs=a.ys='linear';fillAxes();render();
+}));
+let plottedPoints=[],activePoint=null,tooltipPinned=false;
+const tooltip=$('#graph-tooltip');
+const pretty=(v,d=3)=>v==null?t('未记录'):Number(v).toLocaleString('en-US',{maximumFractionDigits:d,minimumFractionDigits:d});
+function hideTooltip(){
+ tooltip.hidden=true;tooltipPinned=false;
+ if(activePoint?.circle)activePoint.circle.removeAttribute('data-active');
+ activePoint=null;
+}
+function showTooltip(point,event){
+ const r=point.row,c=point.candidate,v=c||r,source=c?'ANALYSIS':'TEST';
+ if(activePoint!==point){
+  if(activePoint?.circle)activePoint.circle.removeAttribute('data-active');
+  activePoint=point;point.circle.setAttribute('data-active','true');
+  const entries=[
+   ['Score',pretty(v.score,4),'primary'],['NLL',pretty(c?c.nll:r.test_nll,6),'primary'],
+   ['困惑度 PPL',pretty(v.ppl,3)],['推理耗时 · s/task',pretty(v.seconds_per_task,6)],
+   ['评估总耗时 · s',pretty(v.evaluation_seconds,3)],['推理吞吐 · tasks/s',pretty(v.tasks_per_second,2)],
+   ['租约累计 · h',pretty(c?c.hours:r.lease_hours,3)],['研究用时 · h',pretty(v.research_hours,3)],
+  ];
+  if(c)entries.push(['较首候选 Score 提升',pretty(c.score-r.points[0].score,4)],['输入吞吐 · tokens/s',pretty(c.input_tokens_per_second,0)]);
+  else entries.push(['提交候选 / 使用租约',`${r.candidates} / ${r.leases}`],['Agent 推理 tokens',pretty(r.reasoning_tokens,0)]);
+  const stage=c?`${t('候选 #{index}',{index:c.index})} · ${c.lease}${c.final?' · '+t('最终选定'):''}`:t('最终选定结果');
+  const budget=`${pretty(r.budget_hours,0)} h ${t(r.track==='A'?'研究墙钟上限':'租约总上限')}`;
+  const choice=axisChoices[$('#plot-view').value],set=metricSets[$('#plot-view').value];
+  const axes=`${t('横轴')} ${esc(t(set[choice.x].label))}: ${pretty(point.x,set[choice.x].integer?0:6)}<br>${t('纵轴')} ${esc(t(set[choice.y].label))}: ${pretty(point.y,set[choice.y].integer?0:6)}`;
+  tooltip.innerHTML=`<div class="tooltip-title"><span style="color:${defs[r.model][1]}">●</span> ${esc(defs[r.model][0])} · Track ${r.track}</div><div class="tooltip-subtitle">${esc(stage)} · ${source}${c?`<br>${t('候选 ID')} ${esc(c.candidate_id)}`:''}</div><dl class="tooltip-metrics">${entries.map(([label,value,cls])=>`<div class="${cls||''}"><dt>${esc(t(label))}</dt><dd>${esc(value)}</dd></div>`).join('')}</dl><div class="tooltip-footer">${axes}<br>${t('样本数')} ${pretty(v.task_count,0)} · ${esc(budget)}<br>${t(c?'ANALYSIS 为研究结束后评估。':'TEST 仅评估最终候选。')}${t('PPL = exp(NLL)。')}</div>`;
+  $('#point-detail').textContent=`${defs[r.model][0]} · Track ${r.track} · ${stage} · ${source} Score ${pretty(v.score,4)} · NLL ${pretty(c?c.nll:r.test_nll,6)} · ${pretty(v.seconds_per_task,6)} s/task (${pretty(v.ms,4)} ms/task)`;
+ }
+ tooltip.hidden=false;
+ const anchor=point.circle.getBoundingClientRect(),x=event?.clientX??(anchor.left+anchor.width/2),y=event?.clientY??(anchor.top+anchor.height/2);
+ const rect=tooltip.getBoundingClientRect();
+ let left=x+18,top=y+16;
+ if(left+rect.width>innerWidth-10)left=x-rect.width-18;
+ if(top+rect.height>innerHeight-10)top=y-rect.height-16;
+ tooltip.style.left=Math.max(10,Math.min(left,innerWidth-rect.width-10))+'px';
+ tooltip.style.top=Math.max(10,Math.min(top,innerHeight-rect.height-10))+'px';
+}
+function nearestPoint(event){
+ const svg=$('#comparison-chart'),rect=svg.getBoundingClientRect(),box=svg.viewBox.baseVal;
+ let nearest=null,distance=24;
+ for(const p of plottedPoints){
+  const x=rect.left+p.cx*rect.width/box.width,y=rect.top+p.cy*rect.height/box.height,d=Math.hypot(event.clientX-x,event.clientY-y);
+  if(d<distance){distance=d;nearest=p;}
+ }
+ return nearest;
+}
+$('#comparison-chart').addEventListener('pointermove',event=>{
+ if(event.pointerType==='touch')return;
+ tooltipPinned=false;const p=nearestPoint(event);p?showTooltip(p,event):hideTooltip();
+});
+$('#comparison-chart').addEventListener('pointerleave',()=>{if(!tooltipPinned)hideTooltip();});
+$('#comparison-chart').addEventListener('click',event=>{const p=nearestPoint(event);if(p){tooltipPinned=true;showTooltip(p,event);}else hideTooltip();});
+document.addEventListener('keydown',event=>{if(event.key==='Escape')hideTooltip();});
+document.addEventListener('pointerdown',event=>{if(!event.target.closest('#comparison-chart'))hideTooltip();});
+window.addEventListener('scroll',()=>{
+ if(!activePoint)return;
+ const rect=activePoint.circle.getBoundingClientRect();
+ if(rect.bottom<0||rect.top>innerHeight||rect.right<0||rect.left>innerWidth)hideTooltip();
+ else showTooltip(activePoint);
+},{passive:true});
+const NS='http://www.w3.org/2000/svg';
+function el(parent,tag,attrs={},text){const n=document.createElementNS(NS,tag);Object.entries(attrs).forEach(([k,v])=>n.setAttribute(k,v));if(text!==undefined)n.textContent=text;parent.appendChild(n);return n}
+function axisDomain(values,log,integer,count=5){
+ const transform=v=>log?Math.log10(v):v;
+ let low=Math.min(...values.map(transform)),high=Math.max(...values.map(transform));
+ const span=high-low||Math.max(Math.abs(low)*.12,log?.08:integer?2:.1);
+ low-=span*.08;high+=span*.08;
+ if(!log&&Math.min(...values)>=0)low=Math.max(0,low);
+ let ticks=[];
+ if(integer&&!log){const step=Math.max(1,Math.ceil((high-low)/6));for(let v=Math.ceil(low/step)*step;v<=high;v+=step)ticks.push(v);}
+ else for(let i=0;i<=count;i++)ticks.push(low+(high-low)*i/count);
+ return {ratio:v=>(transform(v)-low)/(high-low),ticks:ticks.map(v=>({fraction:(v-low)/(high-low),value:log?10**v:v}))};
+}
+function drawPlot(rows){
+ hideTooltip();plottedPoints=[];
+ const view=$('#plot-view').value,choice=axisChoices[view],metrics=metricSets[view],xm={...metrics[choice.x],label:t(metrics[choice.x].label)},ym={...metrics[choice.y],label:t(metrics[choice.y].label)};
+ const points=[];
+ rows.forEach(r=>(view==='trajectory'?r.points:[null]).forEach(p=>{
+  const x=xm.get(r,p),y=ym.get(r,p);
+  if(Number.isFinite(x)&&Number.isFinite(y))points.push({x,y,row:r,candidate:p});
+ }));
+ const notes=[];
+ for(const axis of ['x','y']){
+  const select=$(`#${axis}-scale`),invalid=points.some(p=>p[axis]<=0);
+  select.querySelector('[value="log"]').disabled=invalid;
+  if(invalid){notes.push(t('{axis}含零或负值，使用线性刻度',{axis:t(axis==='x'?'横轴':'纵轴')}));if(select.value==='log'){select.value='linear';choice[axis+'s']='linear';}}
+ }
+ $('#axis-note').textContent=notes.join('; ');
+ const trajectory=view==='trajectory',connected=trajectory&&(xm.ordered||ym.ordered);
+ $('#plot-caption').textContent=trajectory?
+  [t('每个点是一份已提交候选，Score / NLL / 耗时均来自该候选的 ANALYSIS 评估。'),t(connected?'同色连线按提交顺序连接，不表示中间训练轨迹。':'当前组合显示散点；选择时间或序号指标可查看连线。'),t('租约时间包含测量、训练和打包。')].join(' '):
+  t('每个点是一个模型的最终 TEST 结果。Score / NLL / 耗时均来自 TEST；首末 ANALYSIS 下降单独标注。观察差值不等于 RSI 因果增益。');
+ $('#point-detail').textContent=t('悬停、点击或键盘聚焦数据点，查看模型和精确数值。');
+ const svg=$('#comparison-chart');svg.replaceChildren();
+ const width=Math.max(300,svg.clientWidth),height=svg.clientHeight;
+ svg.setAttribute('viewBox',`0 0 ${width} ${height}`);
+ svg.setAttribute('aria-label',t('Track {track} · {view}；横轴 {x}；纵轴 {y}',{track,view:t(trajectory?'候选过程':'最终结果'),x:xm.label,y:ym.label}));
+ if(!points.length){el(svg,'text',{x:width/2,y:height/2,'text-anchor':'middle',fill:'#656c80','font-size':14},t(rows.length?'当前指标没有可用数据':'请选择至少一个模型'));return;}
+ const xlog=choice.xs==='log',ylog=choice.ys==='log',tickCount=width<560?3:5,xd=axisDomain(points.map(p=>p.x),xlog,xm.integer,tickCount),yd=axisDomain(points.map(p=>p.y),ylog,ym.integer,tickCount);
+ const left=64,right=width-23,top=20,bottom=height-62,sx=x=>left+xd.ratio(x)*(right-left),sy=y=>bottom-yd.ratio(y)*(bottom-top);
+ const precision=(domain,metric)=>{if(metric.decimals==null)return undefined;const gaps=domain.ticks.slice(1).map((t,i)=>Math.abs(t.value-domain.ticks[i].value));return Math.min(8,Math.max(metric.decimals,Math.ceil(-Math.log10(Math.min(...gaps)||1))));};
+ const tick=(v,integer,decimals)=>decimals!=null?v.toFixed(decimals):Math.abs(v)>=1e6?(v/1e6).toFixed(1)+'M':Math.abs(v)>=1e4?(v/1e3).toFixed(1)+'k':integer&&Number.isInteger(v)?String(v):Math.abs(v)>=1000?v.toFixed(0):Math.abs(v)>=10?v.toFixed(1):v.toFixed(2);
+ yd.ticks.forEach(t=>{const y=bottom-t.fraction*(bottom-top);el(svg,'line',{x1:left,x2:right,y1:y,y2:y,stroke:'#e9eaf1'});el(svg,'text',{x:left-10,y:y+4,'text-anchor':'end',fill:'#656c80','font-size':11,class:'y-tick'},tick(t.value,ym.integer,precision(yd,ym)));});
+ xd.ticks.forEach(t=>{const x=left+t.fraction*(right-left);el(svg,'line',{x1:x,x2:x,y1:top,y2:bottom,stroke:'#f0f1f6'});el(svg,'text',{x,y:bottom+22,'text-anchor':'middle',fill:'#656c80','font-size':11,class:'x-tick'},tick(t.value,xm.integer,precision(xd,xm)));});
+ el(svg,'line',{x1:left,x2:right,y1:bottom,y2:bottom,stroke:'#c8ccda'});
+ el(svg,'text',{x:(left+right)/2,y:height-10,'text-anchor':'middle',fill:'#656c80','font-size':12,class:'x-label'},xm.label+(xlog?' · '+t('对数'):''));
+ el(svg,'text',{x:16,y:(top+bottom)/2,transform:`rotate(-90 16 ${(top+bottom)/2})`,'text-anchor':'middle',fill:'#656c80','font-size':12,class:'y-label'},ym.label+(ylog?' · '+t('对数'):''));
+ if(connected)rows.forEach(r=>{
+  let segment=[];
+  const flush=()=>{if(segment.length>1)el(svg,'polyline',{points:segment.map(p=>`${sx(p.x)},${sy(p.y)}`).join(' '),fill:'none',stroke:defs[r.model][1],'stroke-width':2.1,opacity:.85});segment=[];};
+  r.points.forEach(candidate=>{const point=points.find(p=>p.row===r&&p.candidate===candidate);if(point)segment.push(point);else flush();});flush();
+ });
+ points.forEach(p=>{
+  const r=p.row,stage=p.candidate?` · ${t('提交 {index}',{index:p.candidate.index})}${p.candidate.final?' · '+t('最终候选'):''}`:' · '+t('最终结果');
+  const label=`${defs[r.model][0]} · Track ${r.track}${stage} ｜ ${xm.label}：${fmt(p.x,xm.integer?0:6)} ｜ ${ym.label}：${fmt(p.y,ym.integer?0:6)}`;
+  const circle=el(svg,'circle',{cx:sx(p.x),cy:sy(p.y),r:!p.candidate||p.candidate.final?6:4.8,fill:defs[r.model][1],stroke:'white','stroke-width':1.5,tabindex:0,class:'chart-point','aria-label':label,'data-model-id':r.model,'data-x':p.x,'data-y':p.y});
+  p.circle=circle;p.cx=sx(p.x);p.cy=sy(p.y);plottedPoints.push(p);
+  circle.setAttribute('aria-describedby','point-detail');
+  circle.addEventListener('focus',()=>showTooltip(p));
+  circle.addEventListener('blur',()=>{if(!tooltipPinned)hideTooltip();});
+ });
+}
+function render(){
+ document.querySelectorAll('[data-track]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.track===track)));
+ document.querySelectorAll('[data-model]').forEach(b=>b.setAttribute('aria-pressed',String(visible.has(b.dataset.model))));
+ $('#track-desc').textContent=`Track ${track}: ${D.track_budgets?.[track]||t('未提供预算配置')}`;
+ $('#table-title').textContent=t('Track {track} · 最终结果',{track});
+ const rows=D.rows.filter(r=>r.track===track&&visible.has(r.model)).sort((a,b)=>(a.test_nll??Infinity)-(b.test_nll??Infinity));
+ drawPlot(rows);
+ $('#results').innerHTML=rows.length?rows.map(r=>`<tr><td><span style="color:${defs[r.model][1]}">●</span> ${esc(defs[r.model][0])}</td><td>${esc(r.outcome??'unknown')} / ${esc(String(r.policy_compliant??'unknown'))} / ${esc(String(r.leaderboard_eligible??'unknown'))}</td><td class="num">${fmt(r.test_nll)}</td><td class="num">${fmt(r.score,2)}</td><td class="num">${fmt(r.seconds_per_task,6)}</td><td class="num">${fmt(r.lease_hours,2)}</td><td>${r.candidates}</td><td class="num">${fmt(r.first_analysis,3)} → ${fmt(r.final_analysis,3)}</td></tr>`).join(''):`<tr><td colspan="8">${t('请选择模型。')}</td></tr>`;
+ $('#pairs').innerHTML=models.filter(m=>visible.has(m)).map(m=>{const a=D.rows.find(r=>r.model===m&&r.track==='A'),b=D.rows.find(r=>r.model===m&&r.track==='B'),diff=a?.test_nll!=null&&b?.test_nll!=null?b.test_nll-a.test_nll:null;return `<tr><td>${esc(defs[m][0])}</td><td class="num">${fmt(a?.test_nll)}</td><td class="num">${fmt(b?.test_nll)}</td><td class="num" style="color:${diff<0?'var(--green)':'var(--orange)'}">${diff==null?'—':(diff>0?'+':'')+fmt(diff)}</td><td>${diff==null?t('未完成'):diff<0?'B':diff>0?'A':t('相同')}</td></tr>`}).join('')||`<tr><td colspan="5">${t('请选择模型。')}</td></tr>`;
+}
+applyLanguage();
+fillAxes();
+render();
+let resizeFrame;window.addEventListener('resize',()=>{cancelAnimationFrame(resizeFrame);resizeFrame=requestAnimationFrame(render);});
+</script>
+</body>
+</html>
