@@ -134,6 +134,7 @@ const metricSets={
   improvement:{label:'首末 ANALYSIS NLL 下降 ↑',get:r=>r.first_analysis==null||r.final_analysis==null?null:r.first_analysis-r.final_analysis}
  }
 };
+if(!D.rows.some(r=>r.points.some(p=>Number.isFinite(p.leases_used))))delete metricSets.trajectory.lease;
 const axisChoices={trajectory:{x:'seconds_per_task',y:'score',xs:'linear',ys:'linear'},final:{x:'seconds_per_task',y:'score',xs:'linear',ys:'linear'}};
 if(!D.rows.some(r=>Number.isFinite(r.score)))axisChoices.final.y='nll';
 if(!D.rows.some(r=>r.points.some(p=>Number.isFinite(p.score))))axisChoices.trajectory.y='nll';
@@ -153,12 +154,12 @@ $('#swap-axes').addEventListener('click',()=>{
 });
 document.querySelectorAll('[data-preset]').forEach(b=>b.addEventListener('click',()=>{
  const view=$('#plot-view').value,a=axisChoices[view];
- a.x=b.dataset.preset==='score-cost'?'seconds_per_task':view==='trajectory'?'hours':'lease_hours';
+ a.x=b.dataset.preset==='score-cost'?'seconds_per_task':view==='trajectory'?'research_hours':'lease_hours';
  a.y=b.dataset.preset==='nll-time'?'nll':'score';a.xs=a.ys='linear';fillAxes();render();
 }));
 let plottedPoints=[],activePoint=null,tooltipPinned=false;
 const tooltip=$('#graph-tooltip');
-const pretty=(v,d=3)=>v==null?t('未记录'):Number(v).toLocaleString('en-US',{maximumFractionDigits:d,minimumFractionDigits:d});
+const pretty=(v,d=3)=>!Number.isFinite(v)?t('未记录'):v.toLocaleString('en-US',{maximumFractionDigits:d,minimumFractionDigits:d});
 function hideTooltip(){
  tooltip.hidden=true;tooltipPinned=false;
  if(activePoint?.circle)activePoint.circle.removeAttribute('data-active');
@@ -175,9 +176,9 @@ function showTooltip(point,event){
    ['评估总耗时 · s',pretty(v.evaluation_seconds,3)],['推理吞吐 · tasks/s',pretty(v.tasks_per_second,2)],
    ['租约累计 · h',pretty(c?c.hours:r.lease_hours,3)],['研究用时 · h',pretty(v.research_hours,3)],
   ];
-  if(c)entries.push(['较首候选 Score 提升',pretty(c.score-r.points[0].score,4)],['输入吞吐 · tokens/s',pretty(c.input_tokens_per_second,0)]);
+  if(c)entries.push(['较首候选 Score 提升',pretty(metricSets.trajectory.score_gain.get(r,c),4)],['输入吞吐 · tokens/s',pretty(c.input_tokens_per_second,0)]);
   else entries.push(['提交候选 / 使用租约',`${r.candidates} / ${r.leases}`],['Agent 推理 tokens',pretty(r.reasoning_tokens,0)]);
-  const stage=c?`${t('候选 #{index}',{index:c.index})} · ${c.lease}${c.final?' · '+t('最终选定'):''}`:t('最终选定结果');
+  const stage=c?`${t('候选 #{index}',{index:c.index})}${Number.isFinite(c.leases_used)?' · '+t('使用租约数')+' '+pretty(c.leases_used,0):''}${c.final?' · '+t('最终选定'):''}`:t('最终选定结果');
   const budget=`${pretty(r.budget_hours,0)} h ${t(r.track==='A'?'研究墙钟上限':'租约总上限')}`;
   const choice=axisChoices[$('#plot-view').value],set=metricSets[$('#plot-view').value];
   const axes=`${t('横轴')} ${esc(t(set[choice.x].label))}: ${pretty(point.x,set[choice.x].integer?0:6)}<br>${t('纵轴')} ${esc(t(set[choice.y].label))}: ${pretty(point.y,set[choice.y].integer?0:6)}`;

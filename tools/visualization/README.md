@@ -64,6 +64,14 @@ supporting lifecycle events, per-Candidate consumed Leases and training time
 remain unavailable. Usage is also left unknown instead of trusting an aggregate
 that may represent a missing trace as zero calls.
 
+The consumed-Lease axis is omitted when no Candidate has a recorded coordinate.
+Incumbent declarations record Lease consumption at declaration time, which can
+follow further training after a Candidate commit; their counts cannot be used as
+that commit's coordinate. The synthetic demo includes explicit commit-time Lease
+counts. Time presets use recorded research elapsed time for Candidate history.
+Missing or null task/runtime metadata is displayed as unavailable, and recorded
+Core revisions are preserved in the exported provenance.
+
 For multiple input files, source SHA-256 hashes the concatenation of their
 individual SHA-256 digests in command-line order. Output includes selected
 metrics and display labels, not Agent commands, transcripts, workspace files,

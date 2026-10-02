@@ -98,6 +98,47 @@ class VisualizationTests(unittest.TestCase):
             self.assertIsNone(row["test_nll"])
             self.assertIsNone(row["score"])
 
+    def test_missing_and_null_display_metadata_can_be_combined(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first = saved_result()
+            first.pop("task_id")
+            first["comparison_key"].pop("runtime_profile")
+            second = copy.deepcopy(first)
+            second["track"] = "B"
+            second["comparison_key"]["track"] = "B"
+            second["comparison_key"]["track_config"] = "synthetic-b"
+            second["comparison_key"]["runtime_profile"] = None
+            second["task_id"] = None
+            paths = [Path(directory) / "missing.json", Path(directory) / "null.json"]
+            for path, result in zip(paths, [first, second]):
+                path.write_text(json.dumps(result))
+            data = viewer.report_data(paths, None)
+            self.assertEqual(len(data["rows"]), 2)
+            self.assertEqual(data["task"], "Not recorded")
+            self.assertEqual(data["runtime"], "Not recorded")
+
+    def test_saved_core_revision_survives_page_export(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result = saved_result()
+            result["artifact_identities"]["core_git"] = {
+                "revision": "a" * 40,
+                "working_directory": "do-not-export-this-path",
+            }
+            path = Path(directory) / "report.json"
+            path.write_text(json.dumps(result))
+            data = viewer.report_data([path], None)
+            output = viewer.build(data, Path(directory) / "site", [path])
+            exported = json.loads((output / "data.json").read_text())
+            self.assertEqual(exported["core_revision"], "a" * 40)
+            self.assertNotIn("do-not-export-this-path", json.dumps(exported))
+
+    def test_demo_has_no_claim_of_a_recorded_core_revision(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = ROOT / "examples/research-dynamics/fixtures/demo.json"
+            output = viewer.build(viewer.demo_data(source), Path(directory), [source])
+            data = json.loads((output / "data.json").read_text())
+            self.assertEqual(data["core_revision"], "Not recorded")
+
     def test_unconfirmed_cleanup_and_old_identity_are_rejected(self):
         for change in ("cleanup", "identity"):
             with self.subTest(

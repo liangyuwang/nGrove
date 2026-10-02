@@ -24,6 +24,10 @@ def finite(value):
     )
 
 
+def recorded_text(value):
+    return value if isinstance(value, str) and value.strip() else "Not recorded"
+
+
 def perplexity(loss):
     if loss is None or not finite(loss) or loss > 700:
         return None
@@ -129,7 +133,15 @@ def report_data(paths, labels):
     sys.path.insert(0, str(ROOT))
     from benchcore.results import normalize_result_report
 
-    rows, groups, budgets, tasks, runtimes, seals = [], {}, {}, set(), set(), []
+    rows, groups, budgets, tasks, runtimes, seals, revisions = (
+        [],
+        {},
+        {},
+        set(),
+        set(),
+        [],
+        set(),
+    )
     for index, path in enumerate(paths):
         result = normalize_result_report(json.loads(path.read_text(encoding="utf-8")))
         if result["status"] != "finalized":
@@ -175,9 +187,11 @@ def report_data(paths, labels):
                 "Different or missing comparison conditions within a Track; render separately."
             )
         groups[track] = contract
-        budgets[track] = key.get("track_config", "Not recorded")
-        tasks.add(result.get("task_id", "Not recorded"))
-        runtimes.add(key.get("runtime_profile", "Not recorded"))
+        budgets[track] = recorded_text(key.get("track_config"))
+        tasks.add(recorded_text(result.get("task_id")))
+        runtimes.add(recorded_text(key.get("runtime_profile")))
+        core = (result.get("artifact_identities") or {}).get("core_git") or {}
+        revisions.add(recorded_text(core.get("revision")))
         seals.append(result["research_sealed_at"])
         points = []
         for point in sorted(
@@ -231,6 +245,7 @@ def report_data(paths, labels):
         "synthetic": False,
         "task": "; ".join(sorted(tasks)),
         "runtime": "; ".join(sorted(runtimes)),
+        "core_revision": "; ".join(sorted(revisions)),
         "track_budgets": budgets,
         "generated_at": max(seals),
         "rows": rows,
@@ -247,7 +262,7 @@ def build(data, output, inputs):
     data["source_sha256"] = hashlib.sha256(
         b"".join(hashlib.sha256(path.read_bytes()).digest() for path in inputs)
     ).hexdigest()
-    data["core_revision"] = "See original report provenance"
+    data.setdefault("core_revision", "Not recorded")
     payload = json.dumps(data, ensure_ascii=False, allow_nan=False, indent=2)
     template = (ASSETS / "template.html").read_text(encoding="utf-8")
     translations = json.loads(
