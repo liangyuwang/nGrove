@@ -1,7 +1,7 @@
 """Compose an environment with the existing autonomous-training task protocol.
 
-Hardware is run-owned here. Published benchmark lanes remain governed by
-ChallengeRelease.resolve and cannot be overridden by this composition.
+Compute resources and time budgets are run-owned here. Published lanes remain
+governed by ChallengeRelease.resolve and cannot be overridden by this composition.
 """
 
 from dataclasses import dataclass, replace
@@ -51,6 +51,8 @@ def resolve_environment_run(
         raise ConfigError("track must be A or B for the training protocol")
     # Only the run projection changes. Source task/release files remain intact.
     task = replace(task, leaderboard_eligible=False).validate()
+    environment = environment.resolve_budget(task, track)
+    task = environment.budget.apply(task)
     return EnvironmentRun(
         task=task,
         track=track,

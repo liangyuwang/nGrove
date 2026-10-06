@@ -4,8 +4,10 @@
 
 Envcore lets researchers configure the resources available to an Agent, run
 autonomous experiments, and retain their actions, artifacts and execution
-evidence. Hardware is a run-time experimental variable: the same task can run
-with different GPU counts and CPU/memory limits without editing its release.
+evidence. Compute resources and time budgets are experimental variables: the
+same task can run with different GPU types/counts, CPU/memory limits and research
+durations without editing its release. Each run freezes its resolved settings
+before task reveal.
 
 **AutoTrain-Bench is the bundled benchmark application.** Its Track A/B budgets,
 incumbent selection, research sealing and hidden evaluation remain available as
@@ -14,14 +16,14 @@ protocol without claiming membership in a published benchmark lane.
 
 | Layer | Responsibility |
 | --- | --- |
-| Environment configuration | Run-owned hardware profiles and resource contracts |
+| Environment configuration | Run-owned compute profiles, resource contracts and time budgets |
 | Worker | Resource admission, execution, isolation and cleanup |
 | Training-research protocol | Leases, immutable Candidates, research history and evaluation |
 | AutoTrain-Bench | Published lanes, fixed comparison conditions and formal eligibility |
 
 Start with [configurable environments](docs/environments.md), including examples
-for hardware scaling. The published GPU profiles remain unchanged. The initial
-implementation supports the existing single-host CPU/NVIDIA Worker; other
+for compute and time scaling. The published GPU profiles remain unchanged. The
+initial implementation supports the existing single-host CPU/NVIDIA Worker; other
 execution platforms remain external Worker deployments. General task protocols
 and configurable feedback policies are future extensions.
 

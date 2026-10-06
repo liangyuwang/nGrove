@@ -413,6 +413,7 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
     challenge_release = None
     evaluation_resource_envelope = None
     if resolved_environment is not None:
+        run_environment = resolved_environment.environment
         config = resolved_environment.task
         track = resolved_environment.track
         resources = resolved_environment.resources
@@ -1297,7 +1298,7 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument(
         "--environment",
         type=Path,
-        help="run-owned hardware JSON; does not modify the task or challenge release",
+        help="run-owned compute resource and time-budget JSON; freezes settings before task reveal",
     )
     start.add_argument(
         "--task",

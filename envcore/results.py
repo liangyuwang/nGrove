@@ -637,6 +637,20 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
             raise ResultSchemaError(
                 f"invalid environment configuration: {exc}"
             ) from exc
+        budget = result.get("budget")
+        if (
+            config.budget is None
+            or config.budget.track != result.get("track")
+            or not isinstance(budget, dict)
+            or any(
+                isinstance(value, bool) or not isinstance(value, int)
+                for value in budget.values()
+            )
+            or config.budget.public_budget() != budget
+        ):
+            raise ResultSchemaError(
+                "environment time budget does not match the recorded run budget"
+            )
         if (
             result.get("leaderboard_eligible") is not False
             or result.get("comparison_key") is not None

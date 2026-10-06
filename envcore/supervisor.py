@@ -24,7 +24,7 @@ from .agent_control import (
     ProtocolError,
 )
 from .agent_execution import AgentExecutionEvidence
-from .environment import EnvironmentConfig
+from .environment import EnvironmentConfig, ResearchBudget
 from .artifact_identity import (
     CANDIDATE_TREE_IDENTITY_ALGORITHM,
     FILE_IDENTITY_ALGORITHM,
@@ -368,10 +368,14 @@ class Supervisor:
                     "evaluation resource envelope differs from the release"
                 )
         self.evaluation_resource_envelope = evaluation_resource_envelope
-        self.environment = environment
         if environment is not None:
             if not isinstance(environment, EnvironmentConfig):
                 raise TypeError("environment must be an EnvironmentConfig")
+            environment = environment.resolve_budget(config, normalized)
+            if environment.budget != ResearchBudget.from_task(config, normalized):
+                raise ValueError(
+                    "environment time budget differs from the requested task configuration"
+                )
             if (
                 config.leaderboard_eligible
                 or comparison_key is not None
@@ -393,6 +397,7 @@ class Supervisor:
                 raise ValueError(
                     "environment hardware differs from the requested configuration"
                 )
+        self.environment = environment
         self.track = normalized
         if (
             not math.isfinite(worker_resolution_timeout_seconds)
@@ -735,6 +740,7 @@ class Supervisor:
             )
         self.state: Dict[str, Any] = {
             "environment": environment.record() if environment is not None else None,
+            "budget": config.public_manifest(normalized)["budget"],
             "protocol_version": AGENT_PROTOCOL_VERSION,
             "result_schema_version": RESULT_SCHEMA_VERSION,
             # A deployment path is not a semantic protocol identifier.  In
@@ -1334,6 +1340,7 @@ class Supervisor:
             active = self.state.get("active_lease")
             status: Dict[str, Any] = {
                 "environment": copy.deepcopy(self.state["environment"]),
+                "budget": dict(self.state["budget"]),
                 "result_schema_version": self.state["result_schema_version"],
                 "episode_id": self.state["episode_id"],
                 "task_id": self.config.task_id,

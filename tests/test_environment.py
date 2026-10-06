@@ -21,6 +21,7 @@ from envcore.config import ConfigError, TaskConfig, TrainingResources
 from envcore.environment import EnvironmentConfig, validate_environment_record
 from envcore.results import ResultSchemaError, normalize_result_report
 from envcore.run_config import resolve_environment_run
+from envcore.supervisor import ProtocolError
 from envcore.worker_protocol import (
     ResourceEnvelope,
     ResourceRequirement,
@@ -162,6 +163,7 @@ class EnvironmentTests(unittest.TestCase):
             ].public_manifest(),
         }
         raw["runtime_profile"]["accelerator"]["count"] = 16
+        raw["budget"] = {"track": "A", "total_seconds": 7200}
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             path = root / "environment.json"
@@ -200,6 +202,12 @@ class EnvironmentTests(unittest.TestCase):
                     16,
                 )
                 self.assertEqual(
+                    runtime.return_value.prepare.call_args.args[
+                        0
+                    ].track_a_total_seconds,
+                    7200,
+                )
+                self.assertEqual(
                     runtime.return_value.prepare.call_args.kwargs["agent"].environment,
                     [],
                 )
@@ -235,9 +243,186 @@ class EnvironmentTests(unittest.TestCase):
         self.assertTrue(task.leaderboard_eligible)
         self.assertFalse(run.task.leaderboard_eligible)
         self.assertEqual(run.task.track_b_max_leases, task.track_b_max_leases)
+        self.assertEqual(
+            run.environment.budget.public_budget(), task.public_manifest("B")["budget"]
+        )
         cuda = replace(task, evaluator_device="cuda")
         with self.assertRaisesRegex(ConfigError, "requires.*training-gpus"):
-            resolve_environment_run(cuda, environment=run.environment, track="A")
+            resolve_environment_run(
+                cuda,
+                environment=EnvironmentConfig.from_manifest(cpu_config()),
+                track="A",
+            )
+
+    def test_time_scaling_is_fingerprinted_and_preserves_task_and_release_files(self):
+        task_bytes, release_bytes = TASK.read_bytes(), CHALLENGE.read_bytes()
+        release = ChallengeRelease.load(CHALLENGE)
+        task = replace(
+            TaskConfig.load(TASK), source=release.task_path, task_id=release.task_id
+        )
+        fingerprints = set()
+        for seconds in (3600, 7200, 28800):
+            raw = cpu_config()
+            raw["budget"] = {"track": "A", "total_seconds": seconds}
+            environment = EnvironmentConfig.from_manifest(raw)
+            run = resolve_environment_run(
+                task,
+                environment=environment,
+                release=release,
+                track_config_id="preview-a-8h",
+            )
+            self.assertEqual(run.task.track_a_total_seconds, seconds)
+            self.assertEqual(run.environment, environment)
+            self.assertEqual(
+                validate_environment_record(environment.record()), environment
+            )
+            fingerprints.add(run.environment.configuration_sha256)
+        self.assertEqual(len(fingerprints), 3)
+        self.assertEqual(TASK.read_bytes(), task_bytes)
+        self.assertEqual(CHALLENGE.read_bytes(), release_bytes)
+        self.assertEqual(release.track_configs["preview-a-8h"].total_seconds, 28800)
+
+    def test_omitted_budget_is_frozen_from_the_selected_challenge_budget(self):
+        release = ChallengeRelease.load(CHALLENGE)
+        task = replace(
+            TaskConfig.load(TASK), source=release.task_path, task_id=release.task_id
+        )
+        inherited = resolve_environment_run(
+            task,
+            environment=EnvironmentConfig.from_manifest(cpu_config()),
+            release=release,
+            track_config_id="preview-a-8h",
+        )
+        raw = cpu_config()
+        raw["budget"] = {"track": "A", "total_seconds": 28800}
+        explicit = resolve_environment_run(
+            task,
+            environment=EnvironmentConfig.from_manifest(raw),
+            release=release,
+            track_config_id="preview-a-8h",
+        )
+        self.assertEqual(inherited.environment, explicit.environment)
+        self.assertNotEqual(task.track_a_total_seconds, 28800)
+
+    def test_invalid_and_wrong_track_budgets_fail_before_execution(self):
+        for budget in (
+            None,
+            {},
+            {"track": "C", "total_seconds": 1},
+            {"track": "A", "total_seconds": True},
+            {"track": "A", "total_seconds": 0},
+            {"track": "A", "total_seconds": -1},
+            {"track": "A", "total_seconds": 1.5},
+            {"track": "A", "total_seconds": 10**400},
+            {"track": "A", "total_seconds": 1, "lease_seconds": 1},
+            {"track": "B", "max_leases": 2},
+            {"track": "B", "max_leases": 2, "lease_seconds": 0},
+            {"track": "B", "max_leases": True, "lease_seconds": 1},
+            {"track": "B", "max_leases": 2, "lease_seconds": 1, "total_seconds": 2},
+        ):
+            raw = cpu_config()
+            raw["budget"] = budget
+            with self.subTest(budget=budget), self.assertRaises(ConfigError):
+                EnvironmentConfig.from_manifest(raw)
+        raw = cpu_config()
+        raw["budget"] = {"track": "B", "max_leases": 3, "lease_seconds": 4}
+        with self.assertRaisesRegex(ConfigError, "budget track differs"):
+            resolve_environment_run(
+                TaskConfig.load(TASK),
+                environment=EnvironmentConfig.from_manifest(raw),
+                track="A",
+            )
+        raw["budget"]["max_leases"] = 9
+        with self.assertRaisesRegex(ConfigError, "max_candidates"):
+            resolve_environment_run(
+                TaskConfig.load(TASK),
+                environment=EnvironmentConfig.from_manifest(raw),
+                track="B",
+            )
+
+    def test_track_a_deadline_uses_the_frozen_environment_budget(self):
+        fixture = test_supervisor.SupervisorTests()
+        fixture.setUp()
+        try:
+            path = fixture.episode.parent / "environment.json"
+            raw = cpu_config()
+            raw["budget"] = {"track": "A", "total_seconds": 3}
+            path.write_text(json.dumps(raw))
+            run = resolve_environment_run(
+                fixture.config,
+                environment=EnvironmentConfig.load(path),
+                track="A",
+            )
+            supervisor = fixture.supervisor(
+                track="A",
+                config=run.task,
+                environment=run.environment,
+            )
+            # Editing the input file after task reveal must not extend a run.
+            raw["budget"]["total_seconds"] = 1000
+            path.write_text(json.dumps(raw))
+            public = json.loads(supervisor.public_task_path.read_text())
+            self.assertEqual(public["budget"], {"total_wall_clock_seconds": 3})
+            self.assertEqual(public["environment"], run.environment.record())
+            supervisor.start_lease()
+            fixture.clock.advance(3)
+            supervisor.enforce_deadlines()
+            self.assertEqual(
+                supervisor.public_status()["remaining_wall_clock_seconds"], 0
+            )
+            self.assertNotEqual(supervisor.state["status"], "active")
+            self.assertIsNone(supervisor.state["active_lease"])
+            self.assertFalse(fixture.worker.running)
+            self.assertEqual(supervisor.state["environment"], run.environment.record())
+        finally:
+            fixture.tearDown()
+
+    def test_track_b_environment_enforces_lease_count_and_duration(self):
+        fixture = test_supervisor.SupervisorTests()
+        fixture.setUp()
+        try:
+            raw = cpu_config()
+            raw["budget"] = {"track": "B", "max_leases": 3, "lease_seconds": 4}
+            run = resolve_environment_run(
+                fixture.config,
+                environment=EnvironmentConfig.from_manifest(raw),
+                track="B",
+            )
+            supervisor = fixture.supervisor(
+                config=run.task, environment=run.environment
+            )
+            self.assertEqual(fixture.config.track_b_max_leases, 2)
+            self.assertEqual(fixture.config.track_b_lease_seconds, 10)
+            self.assertEqual(
+                supervisor.public_status()["budget"],
+                {"max_leases": 3, "max_seconds_per_lease": 4},
+            )
+            with self.assertRaisesRegex(ProtocolError, "at most 4s"):
+                supervisor.start_lease(5)
+            for _ in range(3):
+                supervisor.start_lease()
+                self.assertEqual(
+                    supervisor.public_status()["active_lease"]["remaining_seconds"], 4
+                )
+                fixture.clock.advance(4)
+                supervisor.enforce_deadlines()
+                self.assertIsNone(supervisor.state["active_lease"])
+            self.assertEqual(supervisor.public_status()["leases_remaining"], 0)
+            with self.assertRaises(ProtocolError):
+                supervisor.start_lease()
+        finally:
+            fixture.tearDown()
+
+    def test_supervisor_rejects_a_budget_different_from_its_execution_config(self):
+        fixture = test_supervisor.SupervisorTests()
+        fixture.setUp()
+        try:
+            raw = cpu_config()
+            raw["budget"] = {"track": "B", "max_leases": 3, "lease_seconds": 4}
+            with self.assertRaisesRegex(ValueError, "time budget differs"):
+                fixture.supervisor(environment=EnvironmentConfig.from_manifest(raw))
+        finally:
+            fixture.tearDown()
 
     def test_environment_survives_the_full_supervisor_lifecycle(self):
         # Exercise the same task protocol with a fake Worker, never an allocation.
@@ -246,6 +431,7 @@ class EnvironmentTests(unittest.TestCase):
         try:
             environment = EnvironmentConfig.from_manifest(cpu_config())
             supervisor = fixture.supervisor(environment=environment)
+            environment = environment.resolve_budget(fixture.config, "B")
             supervisor.start_lease()
             committed = supervisor.commit_lease("/output/candidate")
             supervisor.declare_incumbent(committed["candidate_id"])
@@ -260,6 +446,9 @@ class EnvironmentTests(unittest.TestCase):
                 ("leaderboard_eligible", True),
                 ("comparison_key", {"fake": "lane"}),
                 ("result_schema_version", 15),
+                ("budget", {"max_leases": 5, "max_seconds_per_lease": 10}),
+                ("budget", {"max_leases": 2.0, "max_seconds_per_lease": 10}),
+                ("track", "A"),
                 (
                     "resource_envelope",
                     ResourceEnvelope(requirements=()).public_manifest(),

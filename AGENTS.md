@@ -2,13 +2,18 @@
 
 Envcore is an autonomous research environment framework; AutoTrain-Bench is
 its bundled benchmark application. Environment runs may select a user-owned
-hardware configuration at launch using `--environment`, without editing task
-or challenge releases. Existing published runtime profiles remain available.
+compute resources and time budgets at launch using `--environment`, without
+editing task or challenge releases. Omitted time budgets inherit the selected
+task/Track settings; resolved budgets freeze before task reveal. Track A uses
+total research seconds; Track B uses Lease count and seconds per Lease, not a
+total research deadline. Private Operator protection remains separate.
+Existing published runtime profiles remain available.
 The current environment mode retains the training-research task protocol and
 its isolation, sealing and evaluation rules. It is always leaderboard-ineligible
 and has no benchmark comparison key. Benchmark mode still requires the release's
-finite profile map and rejects hardware overrides. Record effective resources
-and the environment configuration identity when reporting environment runs.
+finite profile map and rejects environment overrides. Record effective resources,
+resolved time budgets and the configuration identity when reporting environment
+runs.
 See [environment configuration](docs/environments.md).
 
 ## Role

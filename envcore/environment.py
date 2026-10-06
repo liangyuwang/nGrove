@@ -1,6 +1,6 @@
-"""Reusable hardware profiles and run-owned environment configurations.
+"""Reusable compute profiles and run-owned resource/time configurations.
 
-This layer contains no challenge, Track or leaderboard policy. Workers own
+Time budgets use the current training protocol's Track A/B clocks. Workers own
 admission and enforcement; configuration does not allocate any resources.
 """
 
@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from .config import ConfigError, TrainingResources
+from .config import ConfigError, TaskConfig, TrainingResources
 from .worker_protocol import EnforcementLevel, ResourceEnvelope, ResourceRequirement
 
 _IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
@@ -264,10 +265,97 @@ class RuntimeProfile:
 
 
 @dataclass(frozen=True)
+class ResearchBudget:
+    """A fixed participant budget, separate from private operator protection."""
+
+    track: str
+    total_seconds: Optional[int] = None
+    max_leases: Optional[int] = None
+    lease_seconds: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        if self.track == "A":
+            fields = {"total_seconds": self.total_seconds}
+            if self.max_leases is not None or self.lease_seconds is not None:
+                raise ConfigError("Track A budget may not contain Track B lease fields")
+        elif self.track == "B":
+            fields = {
+                "max_leases": self.max_leases,
+                "lease_seconds": self.lease_seconds,
+            }
+            if self.total_seconds is not None:
+                raise ConfigError("Track B budget may not contain total_seconds")
+        else:
+            raise ConfigError("environment.budget.track must be A or B")
+        for name, value in fields.items():
+            _positive_int(value, f"environment.budget.{name}")
+            try:
+                finite = math.isfinite(value)
+            except OverflowError:
+                finite = False
+            if not finite:
+                raise ConfigError(f"environment.budget.{name} is too large")
+
+    @classmethod
+    def from_manifest(cls, value: Any) -> "ResearchBudget":
+        raw = _mapping(value, "environment.budget")
+        track = raw.get("track")
+        expected = (
+            {"track", "total_seconds"}
+            if track == "A"
+            else {"track", "max_leases", "lease_seconds"}
+        )
+        if track not in ("A", "B"):
+            raise ConfigError("environment.budget.track must be A or B")
+        if set(raw) != expected:
+            raise ConfigError(
+                f"environment.budget for Track {track} requires exactly {sorted(expected)}"
+            )
+        return cls(**raw)
+
+    @classmethod
+    def from_task(cls, task: TaskConfig, track: str) -> "ResearchBudget":
+        if track == "A":
+            return cls(track, total_seconds=task.track_a_total_seconds)
+        return cls(
+            track,
+            max_leases=task.track_b_max_leases,
+            lease_seconds=task.track_b_lease_seconds,
+        )
+
+    def apply(self, task: TaskConfig) -> TaskConfig:
+        if self.track == "A":
+            return replace(task, track_a_total_seconds=self.total_seconds).validate()
+        return replace(
+            task,
+            track_b_max_leases=self.max_leases,
+            track_b_lease_seconds=self.lease_seconds,
+        ).validate()
+
+    def manifest(self) -> Dict[str, Any]:
+        if self.track == "A":
+            return {"track": self.track, "total_seconds": self.total_seconds}
+        return {
+            "track": self.track,
+            "max_leases": self.max_leases,
+            "lease_seconds": self.lease_seconds,
+        }
+
+    def public_budget(self) -> Dict[str, int]:
+        if self.track == "A":
+            return {"total_wall_clock_seconds": self.total_seconds}
+        return {
+            "max_leases": self.max_leases,
+            "max_seconds_per_lease": self.lease_seconds,
+        }
+
+
+@dataclass(frozen=True)
 class EnvironmentConfig:
-    """A user-owned hardware configuration, independent of a benchmark release."""
+    """Run-owned compute resources and an optional participant time budget."""
 
     profile: RuntimeProfile
+    budget: Optional[ResearchBudget] = None
 
     @classmethod
     def load(cls, path: Path) -> "EnvironmentConfig":
@@ -280,9 +368,11 @@ class EnvironmentConfig:
     @classmethod
     def from_manifest(cls, value: Any) -> "EnvironmentConfig":
         raw = _mapping(value, "environment")
-        if set(raw) != {"schema_version", "name", "runtime_profile"}:
+        required = {"schema_version", "name", "runtime_profile"}
+        if not required.issubset(raw) or set(raw) - required - {"budget"}:
             raise ConfigError(
-                "environment requires exactly schema_version, name and runtime_profile"
+                "environment requires schema_version, name and runtime_profile; "
+                "budget is optional"
             )
         version = raw["schema_version"]
         if isinstance(version, bool) or not isinstance(version, int) or version != 1:
@@ -311,7 +401,10 @@ class EnvironmentConfig:
             }
             if unknown:
                 raise ConfigError(f"unknown accelerator fields: {sorted(unknown)}")
-        result = cls(RuntimeProfile.load(name, profile))
+        result = cls(
+            RuntimeProfile.load(name, profile),
+            ResearchBudget.from_manifest(raw["budget"]) if "budget" in raw else None,
+        )
         # Validate compatibility projections even when no Worker is contacted.
         result.resource_envelope()
         return result
@@ -322,20 +415,39 @@ class EnvironmentConfig:
         )
 
     def manifest(self) -> Dict[str, Any]:
-        return {
+        result = {
             "schema_version": 1,
             "name": self.profile.profile_id,
             "runtime_profile": self.profile.public_manifest(),
         }
+        if self.budget is not None:
+            result["budget"] = self.budget.manifest()
+        return result
+
+    def resolve_budget(self, task: TaskConfig, track: str) -> "EnvironmentConfig":
+        """Freeze an explicit budget or inherit the selected task/Track budget."""
+        budget = (
+            ResearchBudget.from_task(task, track)
+            if self.budget is None
+            else self.budget
+        )
+        if not isinstance(budget, ResearchBudget):
+            raise ConfigError("environment.budget must be a ResearchBudget")
+        if budget.track != track:
+            raise ConfigError(
+                "environment budget track differs from the selected track"
+            )
+        return replace(self, budget=budget)
 
     @property
     def configuration_sha256(self) -> str:
-        # Display names and benchmark provisional status do not change hardware.
-        hardware = self.profile.public_manifest()
-        hardware.pop("label")
-        hardware.pop("provisional")
+        # Display names and provisional status do not change execution conditions.
+        configuration = self.manifest()
+        configuration.pop("name")
+        configuration["runtime_profile"].pop("label")
+        configuration["runtime_profile"].pop("provisional")
         encoded = json.dumps(
-            {"schema_version": 1, "runtime_profile": hardware},
+            configuration,
             sort_keys=True,
             separators=(",", ":"),
             allow_nan=False,
