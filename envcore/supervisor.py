@@ -93,7 +93,7 @@ MAX_COMMAND_LOG_BYTES = 64 * 1024 * 1024
 MAX_INCUMBENT_DECLARATIONS = 4096
 DEFAULT_WORKER_RESOLUTION_TIMEOUT_SECONDS = 300.0
 _OUTPUT_TRUNCATION_MARKER = "\n[output truncated by Envcore]\n"
-_TREE_HASH_DOMAIN = b"benchcore-tree-v2\0"
+_TREE_HASH_DOMAIN = b"envcore-tree-v2\0"
 _PARTICIPANT_ARTIFACT_ERRNOS = {
     errno.EACCES,
     errno.ELOOP,
@@ -946,7 +946,7 @@ class Supervisor:
             "violations": policy_violations,
         }
         public_manifest["leaderboard_eligible"] = leaderboard_eligible
-        public_manifest["candidate_artifact_identity"] = "benchcore-tree-v2-sha256"
+        public_manifest["candidate_artifact_identity"] = "envcore-tree-v2-sha256"
         public_manifest["incumbent_declaration_limit"] = MAX_INCUMBENT_DECLARATIONS
         public_manifest["formal_release_verified"] = (
             self.release_verification is not None

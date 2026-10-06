@@ -1369,7 +1369,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             script = (
                 "import json, os; "
                 "print(json.dumps({'cwd': os.getcwd(), "
-                "'control': os.environ.get('BENCHCORE_CONTROL_DIR'), "
+                "'control': os.environ.get('ENVCORE_CONTROL_DIR'), "
                 "'visible': os.environ.get('VISIBLE'), "
                 "'leaked': os.environ.get('SHOULD_NOT_LEAK')}))"
             )
@@ -1407,7 +1407,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             trace = Path(directory) / "agent.stdout.log"
             records = [
                 {
-                    "type": "benchcore.agent_metadata",
+                    "type": "envcore.agent_metadata",
                     "tool": "codex",
                     "tool_version": "codex-cli 1.2.3",
                     "model": "test-model",
@@ -1443,13 +1443,13 @@ class RuntimeBoundaryTests(unittest.TestCase):
             trace = Path(directory) / "agent.stdout.log"
             records = [
                 {
-                    "type": "benchcore.agent_metadata",
+                    "type": "envcore.agent_metadata",
                     "tool": "example-cli",
                     "tool_version": "4.2",
                     "model": "example-model",
                 },
                 {
-                    "type": "benchcore.agent_usage",
+                    "type": "envcore.agent_usage",
                     "usage": {
                         "input_tokens": 100,
                         "cached_input_tokens": 25,
@@ -1789,7 +1789,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             holder = next(
                 call
                 for call in run_calls
-                if "benchcore.role=prediction-output-holder" in call
+                if "envcore.role=prediction-output-holder" in call
             )
             self.assertNotIn("contexts.json", "\n".join(holder))
             self.assertNotIn("targets.json", "\n".join(holder))

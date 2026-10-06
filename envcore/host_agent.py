@@ -179,13 +179,13 @@ def summarize_host_agent_trace(path: Path) -> Dict[str, Any]:
             continue
 
         record_type = record.get("type")
-        if record_type == "benchcore.agent_metadata":
+        if record_type == "envcore.agent_metadata":
             for key in ("tool", "tool_version", "model", "reasoning_effort"):
                 value = record.get(key)
                 if isinstance(value, str) and value:
                     summary[key] = value
             continue
-        if record_type in {"benchcore.agent_usage", "turn.completed"}:
+        if record_type in {"envcore.agent_usage", "turn.completed"}:
             if record_type == "turn.completed":
                 summary["turns_completed"] += 1
             usage = record.get("usage")
@@ -194,7 +194,7 @@ def summarize_host_agent_trace(path: Path) -> Dict[str, Any]:
                 continue
             saw_usage = True
             if (
-                record_type == "benchcore.agent_usage"
+                record_type == "envcore.agent_usage"
                 and record.get("usage_complete") is False
             ):
                 summary["usage_complete"] = False
@@ -395,15 +395,15 @@ def start_host_agent_process(
             environment[name] = os.environ[name]
     environment.update(
         {
-            "BENCHCORE_CONTROL_DIR": str(control_dir.resolve()),
-            "BENCHCORE_FORWARDED_ENVIRONMENT": json.dumps(
+            "ENVCORE_CONTROL_DIR": str(control_dir.resolve()),
+            "ENVCORE_FORWARDED_ENVIRONMENT": json.dumps(
                 list(forwarded_environment), separators=(",", ":")
             ),
-            "BENCHCORE_HOST_RUNNER": "1",
-            "BENCHCORE_TASK": str(public_task_path.resolve()),
-            "BENCHCORE_TRAIN_DIR": "/benchmark/train",
-            "BENCHCORE_TRAIN_WORKSPACE": "/workspace",
-            "BENCHCORE_WORKSPACE": str(workspace.resolve()),
+            "ENVCORE_HOST_RUNNER": "1",
+            "ENVCORE_TASK": str(public_task_path.resolve()),
+            "ENVCORE_TRAIN_DIR": "/benchmark/train",
+            "ENVCORE_TRAIN_WORKSPACE": "/workspace",
+            "ENVCORE_WORKSPACE": str(workspace.resolve()),
             "PYTHONPATH": str(package_root.resolve()),
         }
     )

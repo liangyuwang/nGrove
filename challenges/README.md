@@ -139,7 +139,7 @@ count and accelerator vendor, model, count, and minimum memory.
 Preview profile maps can be inspected without preparing challenge data:
 
 ```bash
-autotrain-bench challenge-info \
+envcore challenge-info \
   --challenge challenges/lm-pretrain/challenge.json
 ```
 

@@ -43,6 +43,9 @@ class AgentApiBundleTests(unittest.TestCase):
             result = subprocess.run(
                 [
                     sys.executable,
+                    # Exclude installed Core import hooks and dependencies so
+                    # the subprocess really uses the standalone public bundle.
+                    "-S",
                     "-c",
                     "from pathlib import Path\n"
                     "from envcore.candidate_protocol import load_candidate\n"

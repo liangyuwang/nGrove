@@ -1,7 +1,6 @@
 # Worker Protocol boundary
 
-The canonical Python namespace is now `envcore.worker_protocol`; legacy
-`benchcore.worker_protocol` imports forward to the same protocol classes.
+The Python namespace is `envcore.worker_protocol`.
 Run-owned environment configurations use this same admission and evidence
 contract. They do not add a platform backend or weaken Worker requirements.
 See [configurable environments](environments.md) for the distinction between
@@ -358,11 +357,11 @@ defines the ordering and frozen identity; the Worker defines and attests the
 materialization mechanism.
 
 `analysis_sha256` and `test_sha256` use the normative algorithm identifier
-`benchcore-hidden-bundle-v1-sha256`. Its SHA-256 input is the following
+`envcore-hidden-bundle-v1-sha256`. Its SHA-256 input is the following
 byte string, with no separators other than those shown:
 
 ```text
-"benchcore-hidden-bundle-v1\0"
+"envcore-hidden-bundle-v1\0"
 || for name in ("contexts.json", "targets.json"):
      u64be(len(utf8(name))) || utf8(name)
      || u64be(len(file_bytes)) || file_bytes
@@ -373,7 +372,7 @@ regular files. Lengths are unsigned 64-bit big-endian integers. The shared
 `envcore.artifact_identity.hidden_bundle_sha256()` implementation is
 normative for Python Workers. The organizer release receipt declares
 `file: sha256` and
-`hidden_evaluation: benchcore-hidden-bundle-v1-sha256`; the current result
+`hidden_evaluation: envcore-hidden-bundle-v1-sha256`; the current result
 schema records the latter under
 `artifact_identity_algorithms.hidden_evaluation`.
 

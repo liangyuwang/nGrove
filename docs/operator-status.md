@@ -1,16 +1,16 @@
 # Trusted Operator status
 
-`autotrain-bench status` presents execution observations alongside the last
+`envcore status` presents execution observations alongside the last
 validated Core snapshot. It is a read-only Operator command. It does not
 control workloads, query a scheduler, recover resources, or publish an episode.
 Its module is excluded from the generated Agent API, and it does not change
 the Agent, Worker, or result protocols.
 
 ```sh
-autotrain-bench status --episode /trusted/runs/episode
-autotrain-bench status --episode /trusted/runs/episode \
+envcore status --episode /trusted/runs/episode
+envcore status --episode /trusted/runs/episode \
   --observation /trusted/monitor/observation.json
-autotrain-bench status --episode /trusted/runs/episode \
+envcore status --episode /trusted/runs/episode \
   --observation /trusted/monitor/observation.json --json
 ```
 

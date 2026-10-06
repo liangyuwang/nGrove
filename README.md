@@ -25,9 +25,9 @@ implementation supports the existing single-host CPU/NVIDIA Worker; other
 execution platforms remain external Worker deployments. General task protocols
 and configurable feedback policies are future extensions.
 
-The Python package and primary CLI are `envcore`. Existing `benchcore` imports,
-`python -m benchcore.cli`, and `autotrain-bench` commands remain compatibility
-entry points. The distribution name remains `autotrain-bench` during migration.
+The distribution, Python package and CLI are all named `envcore`.
+Use `envcore` or `python -m envcore`. Integrations use `ENVCORE_*` environment
+variables.
 
 ## AutoTrain-Bench application
 
@@ -285,7 +285,7 @@ configurations:
 
 ```bash
 python3 -m pip install -e .
-autotrain-bench challenge-info \
+envcore challenge-info \
   --challenge challenges/lm-pretrain/challenge.json
 ```
 

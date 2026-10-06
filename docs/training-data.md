@@ -32,7 +32,7 @@ outside this directory. Source inventories used to claim a particular upstream
 revision must be independently pinned by the task; generating an inventory of
 arbitrary local bytes does not establish their provenance.
 
-The local `autotrain-bench prepare` and `start` launchers verify TRAIN before
+The local `envcore prepare` and `start` launchers verify TRAIN before
 Worker setup or task reveal. Each `start` performs its own check instead of
 reusing an earlier preparation result. This local policy reads every TRAIN file
 in full; plan for the disk I/O of both checks. A missing or legacy manifest

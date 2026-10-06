@@ -52,19 +52,19 @@ def build_codex_command(
         "--json",
     ]
     controlled_environment = {
-        "BENCHCORE_CONTROL_DIR": shell_environment["BENCHCORE_CONTROL_DIR"],
-        "BENCHCORE_HOST_RUNNER": "1",
-        "BENCHCORE_TASK": shell_environment["BENCHCORE_TASK"],
-        "BENCHCORE_TRAIN_DIR": "/benchmark/train",
-        "BENCHCORE_TRAIN_WORKSPACE": "/workspace",
-        "BENCHCORE_WORKSPACE": str(workspace.resolve()),
+        "ENVCORE_CONTROL_DIR": shell_environment["ENVCORE_CONTROL_DIR"],
+        "ENVCORE_HOST_RUNNER": "1",
+        "ENVCORE_TASK": shell_environment["ENVCORE_TASK"],
+        "ENVCORE_TRAIN_DIR": "/benchmark/train",
+        "ENVCORE_TRAIN_WORKSPACE": "/workspace",
+        "ENVCORE_WORKSPACE": str(workspace.resolve()),
         "HOME": str(workspace.resolve()),
         "PATH": shell_environment.get("PATH", os.defpath),
         "PYTHONPATH": shell_environment["PYTHONPATH"],
     }
     try:
         forwarded_names = json.loads(
-            shell_environment.get("BENCHCORE_FORWARDED_ENVIRONMENT", "[]")
+            shell_environment.get("ENVCORE_FORWARDED_ENVIRONMENT", "[]")
         )
     except json.JSONDecodeError:
         forwarded_names = []
@@ -100,9 +100,9 @@ def main(
 ) -> None:
     args = build_parser().parse_args(argv)
     env = dict(environment or os.environ)
-    workspace_value = env.get("BENCHCORE_WORKSPACE")
-    control_value = env.get("BENCHCORE_CONTROL_DIR")
-    task_value = env.get("BENCHCORE_TASK")
+    workspace_value = env.get("ENVCORE_WORKSPACE")
+    control_value = env.get("ENVCORE_CONTROL_DIR")
+    task_value = env.get("ENVCORE_TASK")
     if not workspace_value or not control_value or not task_value:
         raise SystemExit(
             "Codex CLI adapter must be launched by the Envcore " "host_cli runner"
@@ -124,7 +124,7 @@ def main(
         version = "unknown"
 
     metadata = {
-        "type": "benchcore.agent_metadata",
+        "type": "envcore.agent_metadata",
         "tool": "codex",
         "tool_version": version or "unknown",
         "model": args.model,

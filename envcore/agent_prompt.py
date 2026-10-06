@@ -13,7 +13,7 @@ and how to validate using only release-permitted information; the benchmark does
 prescribe a method.
 
 Allowed information and actions:
-- Read the public manifest at $BENCHCORE_TASK.
+- Read the public manifest at $ENVCORE_TASK.
 - Treat evaluation.performance_score and evaluation.cost in that manifest as
   the normative evaluation-axis contracts. Cost covers the complete Candidate
   invocation and amortizes its wall time over the frozen evaluation task count.
@@ -33,7 +33,7 @@ Allowed information and actions:
   the normative, exact predictions.json contract. It names every required field,
   value source, and constant; additional fields are forbidden. Its logits_artifact
   declares the binary encoding, shape, and row/column order of logits.f32.
-- Read and edit only the current workspace ($BENCHCORE_WORKSPACE).
+- Read and edit only the current workspace ($ENVCORE_WORKSPACE).
 - Use only these mailbox commands as the benchmark control plane:
   python -m envcore.cli agent status
   python -m envcore.cli agent lease-start [--seconds N]

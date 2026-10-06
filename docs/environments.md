@@ -120,19 +120,19 @@ research budgets and relevant execution conditions. Record contention and cache
 differences; matching configuration hashes alone do not prove equal performance
 conditions.
 
-## Migration and scope
+## Package and scope
 
-New code imports `envcore`; `envcore.environment.RuntimeProfile` and
+Code imports `envcore`; `envcore.environment.RuntimeProfile` and
 `EnvironmentConfig` are independent of challenge catalogs. Benchmark resolution
-reuses that profile type. Prior `benchcore` module imports forward to the same
-Python objects, preserving protocol class identity. Both namespaces work in the
-restricted Agent/Candidate helper bundles without exposing trusted modules.
+reuses that profile type. Restricted Agent/Candidate helper bundles expose only
+the public `envcore` modules.
 
-`BENCHCORE_*` variables, existing trace event names, artifact hash algorithms,
-Worker ownership labels and `~/.benchcore` recovery storage retain their existing
-identities. Renaming must not invalidate artifacts or strand owned resources.
-The distribution remains `autotrain-bench`; both `envcore` and `autotrain-bench`
-CLI entry points are installed. `python -m envcore` also works.
+The distribution and CLI are named `envcore`; `python -m envcore` also works.
+Integrations use `ENVCORE_*` variables, `envcore.agent_metadata` and
+`envcore.agent_usage` trace events, `envcore-tree-v2-sha256` Candidate identities
+and `envcore-hidden-bundle-v1-sha256` hidden bundle identities. Worker ownership
+labels use the `envcore.` prefix; recovery journals default to
+`~/.envcore/workers/`.
 
 The bundled deployment supports one host with CPU or full NVIDIA GPUs. This
 change does not implement distributed execution, add other accelerator runtimes,

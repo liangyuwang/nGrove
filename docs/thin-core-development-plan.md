@@ -149,7 +149,7 @@ Status: complete.
 
 The v0 support statement is:
 
-- The bundled `autotrain-bench prepare` and `autotrain-bench start` commands
+- The bundled `envcore prepare` and `envcore start` commands
   are a single-host local Docker reference composition.
 - `envcore.worker_protocol` version 12 is a synchronous in-process
   Python contract. Its remaining TRAIN/workspace/Candidate/output `Path` values
@@ -415,7 +415,7 @@ complete formal receipt.
 Status: implemented in the development schemas.
 
 The current versions are Task schema v7, Challenge schema v4 (v2/v3 releases remain
-readable), Agent Protocol v12, Worker Protocol v16, and result schema v15. The entries below identify the
+readable), Agent Protocol v12, Worker Protocol v16, and result schema v16. The entries below identify the
 versions that introduced each change.
 
 - Worker v16, Challenge v3, and result v14 add a separate evaluation resource

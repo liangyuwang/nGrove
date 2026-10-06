@@ -71,7 +71,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt: str, *args) -> None:
-        if os.environ.get("BENCHCORE_GATEWAY_LOG") == "1":
+        if os.environ.get("ENVCORE_GATEWAY_LOG") == "1":
             super().log_message(fmt, *args)
 
     def _json_error(self, status: int, code: str, message: str) -> None:
@@ -347,19 +347,19 @@ def create_gateway_server(
 
 
 def main() -> None:
-    raw_config = os.environ.get("BENCHCORE_INFERENCE_CONFIG_JSON")
+    raw_config = os.environ.get("ENVCORE_INFERENCE_CONFIG_JSON")
     if not raw_config:
-        raise SystemExit("BENCHCORE_INFERENCE_CONFIG_JSON is missing")
+        raise SystemExit("ENVCORE_INFERENCE_CONFIG_JSON is missing")
     try:
         config = InferenceConfig.load(json.loads(raw_config), "gateway.inference")
     except (ConfigError, json.JSONDecodeError) as exc:
         raise SystemExit(f"invalid inference gateway configuration: {exc}") from exc
     if config is None:
         raise SystemExit("inference gateway configuration is disabled")
-    host = os.environ.get("BENCHCORE_GATEWAY_HOST", "0.0.0.0")
-    port = int(os.environ.get("BENCHCORE_GATEWAY_PORT", "8765"))
+    host = os.environ.get("ENVCORE_GATEWAY_HOST", "0.0.0.0")
+    port = int(os.environ.get("ENVCORE_GATEWAY_PORT", "8765"))
     audit_path = Path(
-        os.environ.get("BENCHCORE_INFERENCE_AUDIT_PATH", "/audit/inference.jsonl")
+        os.environ.get("ENVCORE_INFERENCE_AUDIT_PATH", "/audit/inference.jsonl")
     )
     server = create_gateway_server(host, port, config, audit_path)
     try:

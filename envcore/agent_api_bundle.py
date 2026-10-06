@@ -42,13 +42,6 @@ def publish_agent_api_bundle(
         "__all__ = ['Client', 'ClientError']\n",
         encoding="utf-8",
     )
-    # Publish the same restricted surface for existing participant software.
-    # Neither namespace may expose the trusted environment implementation.
-    legacy = destination / "benchcore"
-    shutil.copytree(package, legacy)
-    for path in legacy.iterdir():
-        path.chmod(0o444)
-    legacy.chmod(0o555)
     for path in package.iterdir():
         path.chmod(0o444)
     package.chmod(0o555)

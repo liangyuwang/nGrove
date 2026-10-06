@@ -14,9 +14,9 @@ class CodexAdapterTests(unittest.TestCase):
             workspace=Path("/episode/workspace"),
             control_dir=Path("/episode/control"),
             shell_environment={
-                "BENCHCORE_CONTROL_DIR": "/episode/control",
-                "BENCHCORE_FORWARDED_ENVIRONMENT": '["VISIBLE"]',
-                "BENCHCORE_TASK": "/episode/public/task.json",
+                "ENVCORE_CONTROL_DIR": "/episode/control",
+                "ENVCORE_FORWARDED_ENVIRONMENT": '["VISIBLE"]',
+                "ENVCORE_TASK": "/episode/public/task.json",
                 "PATH": "/usr/bin",
                 "PYTHONPATH": "/package",
                 "VISIBLE": "yes",

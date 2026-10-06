@@ -8,10 +8,10 @@ from pathlib import Path
 
 
 FILE_IDENTITY_ALGORITHM = "sha256"
-CANDIDATE_TREE_IDENTITY_ALGORITHM = "benchcore-tree-v2-sha256"
-HIDDEN_BUNDLE_IDENTITY_ALGORITHM = "benchcore-hidden-bundle-v1-sha256"
+CANDIDATE_TREE_IDENTITY_ALGORITHM = "envcore-tree-v2-sha256"
+HIDDEN_BUNDLE_IDENTITY_ALGORITHM = "envcore-hidden-bundle-v1-sha256"
 HIDDEN_BUNDLE_FILENAMES = ("contexts.json", "targets.json")
-_HIDDEN_BUNDLE_DOMAIN_SEPARATOR = b"benchcore-hidden-bundle-v1\0"
+_HIDDEN_BUNDLE_DOMAIN_SEPARATOR = b"envcore-hidden-bundle-v1\0"
 
 
 def hidden_bundle_sha256(path: Path) -> str:

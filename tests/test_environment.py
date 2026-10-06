@@ -1,7 +1,7 @@
-"""Run-owned environments, benchmark separation and namespace migration."""
+"""Run-owned environments, benchmark separation and public package boundaries."""
 
+import configparser
 import copy
-import importlib
 import io
 import json
 import os
@@ -365,36 +365,42 @@ class EnvironmentTests(unittest.TestCase):
                         )
                         stop.assert_not_called()
 
-    def test_old_imports_share_protocol_class_identity(self):
-        for module in ("config", "supervisor", "worker_protocol", "cli"):
-            self.assertIs(
-                importlib.import_module("benchcore." + module),
-                importlib.import_module("envcore." + module),
-            )
+    def test_distribution_exposes_one_package_and_command(self):
+        config = configparser.ConfigParser()
+        config.read(ROOT / "setup.cfg")
+        self.assertEqual(config["metadata"]["name"], "envcore")
+        self.assertEqual(config["options.packages.find"]["include"], "envcore*")
+        self.assertEqual(
+            config["options.entry_points"]["console_scripts"].strip(),
+            "envcore = envcore.cli:main",
+        )
 
-    def test_public_bundle_supports_both_names_without_trusted_modules(self):
+    def test_public_bundle_supports_envcore_without_trusted_modules(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             bundle = publish_agent_api_bundle(root / "api")
-            for namespace in ("envcore", "benchcore"):
-                code = f"""import importlib.util
-from {namespace}.candidate_protocol import prediction_storage_limit
+            self.assertEqual({path.name for path in bundle.iterdir()}, {"envcore"})
+            code = """import importlib.util
+from envcore.candidate_protocol import prediction_storage_limit
 assert prediction_storage_limit(examples=1, vocab_size=257)['max_bytes'] > 0
-assert importlib.util.find_spec('{namespace}.supervisor') is None
+assert importlib.util.find_spec('envcore.supervisor') is None
 """
-                for command in (
-                    ["-c", code],
-                    ["-m", namespace + ".cli", "agent", "--help"],
-                ):
-                    completed = subprocess.run(
-                        [sys.executable, *command],
-                        cwd=root,
-                        env={**os.environ, "PYTHONPATH": str(bundle)},
-                        capture_output=True,
-                        text=True,
-                        timeout=20,
-                    )
-                    self.assertEqual(completed.returncode, 0, completed.stderr)
+            for command in (
+                ["-c", code],
+                ["-m", "envcore.cli", "agent", "--help"],
+            ):
+                # Editable installs add import hooks via site-packages that can
+                # resolve trusted Core modules outside the public bundle.
+                # Test the bundle with only its PYTHONPATH and the standard library.
+                completed = subprocess.run(
+                    [sys.executable, "-S", *command],
+                    cwd=root,
+                    env={**os.environ, "PYTHONPATH": str(bundle)},
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
 
 
 if __name__ == "__main__":

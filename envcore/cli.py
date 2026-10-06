@@ -598,7 +598,7 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
         if resolved_runner == "container":
             state_dir = args.worker_state_dir or (
                 Path.home()
-                / ".benchcore"
+                / ".envcore"
                 / "workers"
                 / uuid.uuid5(uuid.NAMESPACE_URL, str(episode_dir)).hex
             )
@@ -672,7 +672,7 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
         # The public helper bundle is read-only. No Agent has started yet;
         # restore its directory permissions so a failed preflight can remove it.
         bundle = episode_dir / "public" / "agent_api"
-        for directory in (bundle / "envcore", bundle / "benchcore", bundle):
+        for directory in (bundle / "envcore", bundle):
             if directory.is_dir():
                 directory.chmod(0o755)
         shutil.rmtree(episode_dir, ignore_errors=True)
@@ -1452,7 +1452,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--worker-state-dir",
         type=Path,
         help="private local Worker recovery directory outside episode storage; "
-        "defaults to ~/.benchcore/workers/<episode-path-id>",
+        "defaults to ~/.envcore/workers/<episode-path-id>",
     )
     for name, default, help_text in (
         ("heartbeat", HEARTBEAT_TIMEOUT, "missing Worker heartbeat tolerance"),

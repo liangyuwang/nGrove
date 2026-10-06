@@ -149,7 +149,7 @@ about 20 GB, in addition to the public raw TRAIN Parquet:
 
 ```bash
 python3 challenges/lm-pretrain/prepare_data.py --accept-large-download
-autotrain-bench prepare --task challenges/lm-pretrain/task.json
+envcore prepare --task challenges/lm-pretrain/task.json
 ```
 
 An existing pinned FineWeb-Edu `sample/10BT` download can be reused:
@@ -317,7 +317,7 @@ challenge_id + track + track_config + runtime_profile
 Inspect the finite maps:
 
 ```bash
-autotrain-bench challenge-info \
+envcore challenge-info \
   --challenge challenges/lm-pretrain/challenge.json
 ```
 
@@ -342,11 +342,11 @@ must enforce this in their execution environment. See
 [storage protection requirements](../../docs/benchmark-reference.md#private-operator-storage-protection).
 
 ```bash
-autotrain-bench start \
+envcore start \
   --challenge challenges/lm-pretrain/challenge.json \
   --track-config preview-b-6x1h \
   --runtime-profile h100-sxm-80gb-x4 \
-  --episodes-root /path/to/autotrain-bench-runs/episodes \
+  --episodes-root /path/to/envcore-runs/episodes \
   --agent-runner container \
   --agent-image participant-agent@sha256:DIGEST \
   --agent-command "participant-agent run"

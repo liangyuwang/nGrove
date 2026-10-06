@@ -87,7 +87,7 @@ storage. The launcher prints its location; use `--worker-state-dir PATH` to
 select it. The container CLI additionally runs an independent parent watchdog
 that terminates an unresponsive Worker and invokes journaled cleanup. To retry
 unconfirmed cleanup, invoke
-`autotrain-bench worker-recover --state-dir PATH` in the same Worker environment
+`envcore worker-recover --state-dir PATH` in the same Worker environment
 to verify and reclaim its resources. This preserves existing results and does
 not resume the episode. See [Worker recovery](worker-recovery.md) for the
 ownership checks, supported scope and unresolved-outcome handling.
@@ -155,7 +155,7 @@ as a policy limitation rather than being hidden behind application-level mailbox
 limits. Prediction output uses its own bounded allocation and strict final
 validation, independently of this private operator setting.
 
-The bundled `autotrain-bench prepare` and `autotrain-bench start` commands are
+The bundled `envcore prepare` and `envcore start` commands are
 the composition root for that local Docker implementation; they are not a
 generic backend loader. Worker Protocol v16 is currently a synchronous,
 in-process Python contract. Resolution calls receive explicit deadlines, and
@@ -235,7 +235,7 @@ Prepare the TinyStories smoke-task data and pinned images:
 
 ```bash
 python3 dev_tasks/smoke_lm-pretrain/prepare_data.py
-autotrain-bench prepare --task dev_tasks/smoke_lm-pretrain/task.json
+envcore prepare --task dev_tasks/smoke_lm-pretrain/task.json
 ```
 
 Preparation writes a complete public TRAIN file inventory. The local `prepare`
@@ -264,11 +264,11 @@ own global configuration or participant-owned instructions.
 A participant Agent Container can be selected without changing the task:
 
 ```bash
-autotrain-bench start \
+envcore start \
   --challenge dev_tasks/smoke_lm-pretrain/challenge.json \
   --track-config smoke-b-3x75s \
   --runtime-profile cpu-local \
-  --episodes-root /path/to/autotrain-bench-runs/episodes \
+  --episodes-root /path/to/envcore-runs/episodes \
   --agent-runner container \
   --agent-image participant-agent:version \
   --agent-command "participant-agent run"
@@ -287,19 +287,19 @@ The core runner is tool-independent. A CLI can be used directly when it already
 knows how to operate the benchmark protocol:
 
 ```bash
-autotrain-bench start \
+envcore start \
   --challenge dev_tasks/smoke_lm-pretrain/challenge.json \
   --track-config smoke-a-5m \
   --runtime-profile cpu-local \
-  --episodes-root /path/to/autotrain-bench-runs/episodes \
+  --episodes-root /path/to/envcore-runs/episodes \
   --agent-runner host_cli \
   --agent-command "your-agent-cli --non-interactive ..."
 ```
 
 The command starts with its working directory set to the private episode
 workspace and with stdin disconnected. It receives
-`BENCHCORE_WORKSPACE`, `BENCHCORE_TASK`, and
-`BENCHCORE_CONTROL_DIR`; it must use the `autotrain-bench agent ...`
+`ENVCORE_WORKSPACE`, `ENVCORE_TASK`, and
+`ENVCORE_CONTROL_DIR`; it must use the `envcore agent ...`
 mailbox commands for benchmark control and run without further user input. A
 custom wrapper may reuse the tool-independent prompt in
 `envcore.agent_prompt.HOST_CLI_PROMPT`.
@@ -323,7 +323,7 @@ python3 -m envcore.cli start \
   --challenge dev_tasks/smoke_lm-pretrain/challenge.json \
   --track-config smoke-a-5m \
   --runtime-profile cpu-local \
-  --episodes-root /path/to/autotrain-bench-runs/episodes \
+  --episodes-root /path/to/envcore-runs/episodes \
   --agent-runner host_cli \
   --agent-command "python3 -m envcore.cli_adapters.codex --model YOUR_CODEX_MODEL --reasoning-effort high"
 ```
@@ -353,8 +353,8 @@ JSON to stdout. The runner recognizes these tool-independent records (additional
 fields are allowed):
 
 ```json
-{"type":"benchcore.agent_metadata","tool":"my-cli","tool_version":"1.0","model":"model-id","reasoning_effort":"high"}
-{"type":"benchcore.agent_usage","usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":30,"reasoning_output_tokens":5},"usage_complete":true}
+{"type":"envcore.agent_metadata","tool":"my-cli","tool_version":"1.0","model":"model-id","reasoning_effort":"high"}
+{"type":"envcore.agent_usage","usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":30,"reasoning_output_tokens":5},"usage_complete":true}
 ```
 
 Without an adapter or these records, the episode itself still runs normally;
@@ -401,10 +401,10 @@ receives the provider credential or chooses arbitrary destinations.
 A minimal launch looks like:
 
 ```bash
-autotrain-bench start \
+envcore start \
   --task path/to/task.json \
   --track B \
-  --episodes-root /path/to/autotrain-bench-runs/episodes \
+  --episodes-root /path/to/envcore-runs/episodes \
   --agent-runner container \
   --agent-image participant-agent@sha256:DIGEST \
   --agent-command "participant-agent run" \
@@ -449,7 +449,7 @@ python -m envcore.cli agent declare-incumbent sha256:<candidate-hash>
 python -m envcore.cli agent finish
 ```
 
-The public task manifest at `$BENCHCORE_TASK` declares the Agent-facing
+The public task manifest at `$ENVCORE_TASK` declares the Agent-facing
 control protocol as `protocol_version`. Version 2 renamed the `agent status`
 field `agent_mode` to `agent_egress` and its `"sandboxed"` value to `"denied"`.
 An Agent that parses the version 1 field name must be updated; the benchmark
@@ -522,8 +522,8 @@ the latest Core snapshot and, when supplied by the deployment, current execution
 evidence with:
 
 ```bash
-autotrain-bench status \
-  --episode /path/to/autotrain-bench-runs/episodes/<episode-id>
+envcore status \
+  --episode /path/to/envcore-runs/episodes/<episode-id>
 ```
 
 Without fresh, episode-bound deployment evidence, this view reports current
@@ -536,11 +536,13 @@ not query an allocator or change the Agent-visible status API.
 The full Core report remains available with:
 
 ```bash
-autotrain-bench report \
-  --episode /path/to/autotrain-bench-runs/episodes/<episode-id>
+envcore report \
+  --episode /path/to/envcore-runs/episodes/<episode-id>
 ```
 
-Episode states declare `result_schema_version: 15`. `report` also accepts v12/v13/v14
+Episode states declare `result_schema_version: 16`. V16 records the run-owned
+environment configuration described in [configurable environments](environments.md).
+`report` also accepts v12/v13/v14/v15
 reports under their original semantics; v12 cannot contain operator-protection
 fields or aborted outcomes. V12/v13 carry no verified evaluation
 resource evidence. V15 adds private, request-bound
@@ -2123,7 +2125,7 @@ an episode-time allocation and eligibility input, not a field in `task.json`.
 Inspect a release's supported maps with:
 
 ```bash
-autotrain-bench challenge-info \
+envcore challenge-info \
   --challenge challenges/lm-pretrain/challenge.json
 ```
 

@@ -1255,9 +1255,9 @@ class DockerRuntime:
             "--env",
             "PYTHONPATH=/opt/agent-api",
             "--env",
-            "BENCHCORE_CONTROL_DIR=/control",
+            "ENVCORE_CONTROL_DIR=/control",
             "--env",
-            "BENCHCORE_TASK=/benchmark/task.json",
+            "ENVCORE_TASK=/benchmark/task.json",
             "--env",
             "HOME=/agent-home",
             "--workdir",
@@ -1272,7 +1272,7 @@ class DockerRuntime:
             args.extend(
                 [
                     "--env",
-                    "BENCHCORE_INFERENCE_BASE_URL=" "http://inference-gateway:8765/v1",
+                    "ENVCORE_INFERENCE_BASE_URL=" "http://inference-gateway:8765/v1",
                     "--env",
                     "OPENAI_BASE_URL=http://inference-gateway:8765/v1",
                     "--env",
@@ -1418,9 +1418,9 @@ class DockerRuntime:
             "--env",
             "PYTHONDONTWRITEBYTECODE=1",
             "--env",
-            f"BENCHCORE_INFERENCE_CONFIG_JSON={gateway_config}",
+            f"ENVCORE_INFERENCE_CONFIG_JSON={gateway_config}",
             "--env",
-            "BENCHCORE_INFERENCE_AUDIT_PATH=/audit/inference.jsonl",
+            "ENVCORE_INFERENCE_AUDIT_PATH=/audit/inference.jsonl",
         ]
         if inference.api_key_env:
             # Docker copies the value from the host into the trusted Gateway only.
@@ -1536,9 +1536,9 @@ class DockerRuntime:
             "--env",
             "PYTHONPATH=/opt/training-api",
             "--env",
-            "BENCHCORE_TRAIN_DIR=/benchmark/train",
+            "ENVCORE_TRAIN_DIR=/benchmark/train",
             "--env",
-            "BENCHCORE_OUTPUT_DIR=/output",
+            "ENVCORE_OUTPUT_DIR=/output",
             "--workdir",
             "/workspace",
         ]
@@ -2609,7 +2609,6 @@ class DockerRuntime:
             (package / "__init__.py").write_text("", encoding="utf-8")
             (package / "__init__.py").chmod(0o444)
             package.chmod(0o555)
-            shutil.copytree(package, candidate_api_dir / "benchcore")
             candidate_api_dir.chmod(0o555)
         candidate_args: List[str] = [
             "run",
@@ -3045,7 +3044,7 @@ class DockerRuntime:
                 "--driver",
                 "local",
                 "--label",
-                "benchcore.role=prediction-output",
+                "envcore.role=prediction-output",
                 "--opt",
                 "type=tmpfs",
                 "--opt",
@@ -3082,7 +3081,7 @@ class DockerRuntime:
                 "--name",
                 resources.storage_holder,
                 "--label",
-                "benchcore.role=prediction-output-holder",
+                "envcore.role=prediction-output-holder",
                 "--user",
                 self._container_user(),
                 "--network",

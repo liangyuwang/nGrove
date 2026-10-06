@@ -74,7 +74,7 @@ Track A and three 75-second Leases for Track B at every GPU count. Inspect the
 supported Track and runtime choices before launch:
 
 ```bash
-autotrain-bench challenge-info \
+envcore challenge-info \
   --challenge dev_tasks/smoke_lm-pretrain/challenge.json
 ```
 
@@ -90,7 +90,7 @@ library.
 
 ```bash
 python3 dev_tasks/smoke_lm-pretrain/prepare_data.py
-autotrain-bench prepare --task dev_tasks/smoke_lm-pretrain/task.json
+envcore prepare --task dev_tasks/smoke_lm-pretrain/task.json
 ```
 
 Preparation downloads a deterministic slice of
@@ -100,7 +100,7 @@ and writes ignored generated artifacts under `dev_tasks/smoke_lm-pretrain/data/`
 
 `data/train/manifest.json` inventories the public TRAIN files without including
 hidden evaluation metadata. Cached preparation verifies this inventory;
-legacy or damaged data is rebuilt. `autotrain-bench prepare` and every new
+legacy or damaged data is rebuilt. `envcore prepare` and every new
 episode independently check the full TRAIN view before the Agent starts.
 See [TRAIN integrity](../../docs/training-data.md).
 
@@ -129,11 +129,11 @@ The image contains the Agent executable, while the writable episode workspace
 starts empty:
 
 ```bash
-autotrain-bench start \
+envcore start \
   --challenge dev_tasks/smoke_lm-pretrain/challenge.json \
   --track-config smoke-a-5m \
   --runtime-profile cpu-local \
-  --episodes-root /path/to/autotrain-bench-runs/episodes \
+  --episodes-root /path/to/envcore-runs/episodes \
   --agent-runner container \
   --agent-image participant-agent@sha256:DIGEST \
   --agent-command "participant-agent run"
@@ -143,11 +143,11 @@ The same smoke task can exercise a published accelerator profile without
 changing the task or using manual resource overrides:
 
 ```bash
-autotrain-bench start \
+envcore start \
   --challenge dev_tasks/smoke_lm-pretrain/challenge.json \
   --track-config smoke-a-5m \
   --runtime-profile h100-sxm-80gb-x4 \
-  --episodes-root /path/to/autotrain-bench-runs/episodes \
+  --episodes-root /path/to/envcore-runs/episodes \
   --agent-runner container \
   --agent-image participant-agent@sha256:DIGEST \
   --agent-command "participant-agent run"
@@ -162,11 +162,11 @@ reveal. The Tested Agent's own global configuration and participant-owned
 instructions remain in scope.
 
 ```bash
-autotrain-bench start \
+envcore start \
   --challenge dev_tasks/smoke_lm-pretrain/challenge.json \
   --track-config smoke-a-5m \
   --runtime-profile cpu-local \
-  --episodes-root /path/to/autotrain-bench-runs/episodes \
+  --episodes-root /path/to/envcore-runs/episodes \
   --agent-runner host_cli \
   --agent-command "python3 -m envcore.cli_adapters.codex --model MODEL --reasoning-effort high"
 ```
@@ -256,7 +256,7 @@ manifest = {
 }
 ```
 
-The generated public task at `$BENCHCORE_TASK` carries the same
+The generated public task at `$ENVCORE_TASK` carries the same
 machine-readable contract under
 `evaluation.candidate_boundary.prediction_manifest`. The generated public
 `envcore.candidate_protocol` API is explicitly allowed in Agent and

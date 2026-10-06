@@ -227,7 +227,7 @@ and commands described here are proposals, not existing functionality.
 
 | Interface | Purpose |
 | --- | --- |
-| [`envcore/results.py::normalize_result_report`](../envcore/results.py) | Validate existing results. The current core schema is v15; the normalizer accepts version numbers v12–v15, subject to the identity-compatibility limits below. |
+| [`envcore/results.py::normalize_result_report`](../envcore/results.py) | Validate results against their declared schema and active artifact identity algorithms. The current core schema is v16. |
 | [`envcore/cli.py::command_report`](../envcore/cli.py) | Reference for read-only reporting; preserve its output contract. |
 | `state.json` | Read `candidate_commits`, `incumbent_declarations`, `analysis_trajectory`, identities, resources, status, and coverage fields. |
 | `events.jsonl` | Authoritative event ordering and resource lifecycle. |
@@ -263,7 +263,7 @@ Check each point's status. Existing `analysis_selected_points` and
 `analysis_evaluated_points` count commit-trajectory entries; the analysis layer
 should also report quality coverage over unique Candidates.
 
-### 4.2 Independent package and version compatibility
+### 4.2 Independent package and result validation
 
 Prefer a separate `bench_analysis/` package that reuses the result normalizer.
 Supervisor, Worker, and Evaluator must not depend on the analysis package.
@@ -271,18 +271,11 @@ Supervisor, Worker, and Evaluator must not depend on the analysis package.
 Use a separate CLI and independent schemas for derived files. This feature does
 not require a core result-schema or Worker Protocol version change.
 
-Historical input support depends on the result version, artifact identity
-algorithms, and source revision together; accepting v12–v15 version numbers is
-not sufficient. The current normalizer requires identity algorithms to match
-its active constants. The Envcore rename changed both the identifiers and
-hash-input prefixes for Candidate trees and hidden bundles.
-
-If historical episodes must be read, use explicitly versioned, read-only
-compatibility adapters or matching-version validation logic in the analysis
-layer, and record the adapter used. Never replace old identity labels with new
-ones, rewrite original results, rerun Candidates, or read hidden data to perform
-a migration. Report unsupported combinations explicitly. A compatibility adapter
-does not by itself make runs comparable.
+The normalizer validates the declared result schema and requires artifact
+identity algorithms to match its active constants. The analysis layer should
+use these checks without rewriting source records, rerunning Candidates or
+reading hidden data. Schema validation alone does not make runs comparable;
+retain the task, resource and artifact identities needed for each comparison.
 
 ## 5. Curves, budget coordinates, and missing data
 
