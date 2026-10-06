@@ -6,9 +6,9 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from benchcore.challenge import ChallengeRelease
-from benchcore.config import TaskConfig
-from benchcore.training_data import verify_training_data
+from envcore.challenge import ChallengeRelease
+from envcore.config import TaskConfig
+from envcore.training_data import verify_training_data
 
 
 ROOT = Path(__file__).resolve().parents[1]

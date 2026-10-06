@@ -9,9 +9,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-from benchcore.agent_gateway import create_gateway_server
-from benchcore.config import InferenceConfig
-from benchcore.inference import summarize_inference_trace
+from envcore.agent_gateway import create_gateway_server
+from envcore.config import InferenceConfig
+from envcore.inference import summarize_inference_trace
 
 
 class _UpstreamHandler(BaseHTTPRequestHandler):

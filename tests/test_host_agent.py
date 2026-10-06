@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from benchcore.host_agent import (
+from envcore.host_agent import (
     _BoundedLogSink,
     start_host_agent_process,
     summarize_host_agent_trace,
@@ -81,7 +81,7 @@ class HostAgentLogTests(unittest.TestCase):
                             streams.append(sink.stream)
                         return sink
 
-                    with patch("benchcore.host_agent._BoundedLogSink", make_sink):
+                    with patch("envcore.host_agent._BoundedLogSink", make_sink):
                         handle = self.start(
                             root,
                             "import json, sys, time\n"
@@ -209,7 +209,7 @@ class HostAgentLogTests(unittest.TestCase):
                     sink.close = delayed_close
                 return sink
 
-            with patch("benchcore.host_agent._BoundedLogSink", make_sink):
+            with patch("envcore.host_agent._BoundedLogSink", make_sink):
                 handle = self.start(
                     root,
                     'print(\'{"type":"turn.completed","usage":{"input_tokens":20}}\')',
@@ -242,8 +242,8 @@ class HostAgentLogTests(unittest.TestCase):
                 sinks.append(sink)
                 return sink
 
-            with patch("benchcore.host_agent._BoundedLogSink", make_sink), patch(
-                "benchcore.host_agent.subprocess.Popen",
+            with patch("envcore.host_agent._BoundedLogSink", make_sink), patch(
+                "envcore.host_agent.subprocess.Popen",
                 side_effect=RuntimeError("launch failed"),
             ):
                 with self.assertRaisesRegex(RuntimeError, "launch failed"):
@@ -314,7 +314,7 @@ class HostAgentLogTests(unittest.TestCase):
     def test_excess_output_is_drained_without_exceeding_either_log_limit(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            with patch("benchcore.host_agent.MAX_HOST_AGENT_LOG_BYTES", 1024):
+            with patch("envcore.host_agent.MAX_HOST_AGENT_LOG_BYTES", 1024):
                 handle = self.start(
                     root,
                     "import sys\n"
@@ -330,7 +330,7 @@ class HostAgentLogTests(unittest.TestCase):
                 handle.stop()
             for path in (handle.stdout_path, handle.stderr_path):
                 self.assertLessEqual(path.stat().st_size, 1024)
-                self.assertIn(b"[log truncated by Benchcore]", path.read_bytes())
+                self.assertIn(b"[log truncated by Envcore]", path.read_bytes())
             self.assertTrue(handle._stdout_sink.truncated)
             self.assertTrue(handle._stderr_sink.truncated)
             self.assertFalse(

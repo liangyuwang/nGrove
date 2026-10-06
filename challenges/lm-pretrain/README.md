@@ -130,7 +130,7 @@ contain only `schema_version`, `candidate_protocol`, `dataset_id`, `examples`,
 `vocab_size`, `dtype`, and `logits_file`, with constants and request-derived
 values specified there. JSON member order and whitespace are irrelevant;
 additional fields are rejected. The same section identifies the optional
-generated `benchcore.candidate_protocol` reader and writer helpers.
+generated `envcore.candidate_protocol` reader and writer helpers.
 `prediction_manifest.logits_artifact` declares the binary file as headerless,
 row-major, little-endian IEEE-754 float32. Row `i` corresponds to `examples[i]`,
 column `j` to token ID `j`, and every value must be finite.

@@ -102,7 +102,7 @@ control capabilities confirmed terminated, before hidden evaluation begins.
 
 The sandbox should define the available world, including any permitted data,
 tools, and network access. Workers should enforce that boundary and its resource
-limits. Benchcore should retain platform-independent benchmark semantics.
+limits. Envcore should retain platform-independent benchmark semantics.
 
 Opening access to existing models and services also makes the interpretation of
 results central to the design. Final quality and execution cost describe the

@@ -1,12 +1,19 @@
 # Worker Protocol boundary
 
-Benchcore owns benchmark decisions.  A Worker deployment owns
+The canonical Python namespace is now `envcore.worker_protocol`; legacy
+`benchcore.worker_protocol` imports forward to the same protocol classes.
+Run-owned environment configurations use this same admission and evidence
+contract. They do not add a platform backend or weaken Worker requirements.
+See [configurable environments](environments.md) for the distinction between
+environment experiments and fixed benchmark lanes.
+
+Envcore owns benchmark decisions.  A Worker deployment owns
 execution and enforcement.  The boundary between them is expressed in
 benchmark terms and must not expose a scheduler, container runtime, or cloud
 API.
 
 ```text
-Benchcore Coordinator
+Envcore Coordinator
   authoritative benchmark state
               │
               │ Worker Protocol
@@ -95,7 +102,7 @@ paths; Core still owns Candidate acceptance and canonical identity.
 
 ## Capabilities, conformance, and trust
 
-`benchcore.worker_protocol` describes capabilities by semantic name and
+`envcore.worker_protocol` describes capabilities by semantic name and
 an enforcement level:
 
 ```text
@@ -139,7 +146,7 @@ decision. Core checks the Worker binding before using the receipt. This local
 trusted-input seam does not pretend to be a cryptographic remote attestation;
 authentication of a future remote receipt belongs to the deployment transport.
 
-`benchcore.conformance` provides resolution,
+`envcore.conformance` provides resolution,
 [Research Lease](worker-lease-probe.md), and
 [evaluation resource](worker-evaluation-probe.md) diagnostics. The Lease probe
 checks admission receipts, fixture command execution, stopped-state observations,
@@ -363,7 +370,7 @@ byte string, with no separators other than those shown:
 
 The bundle directory must not be a symlink and must contain exactly those two
 regular files. Lengths are unsigned 64-bit big-endian integers. The shared
-`benchcore.artifact_identity.hidden_bundle_sha256()` implementation is
+`envcore.artifact_identity.hidden_bundle_sha256()` implementation is
 normative for Python Workers. The organizer release receipt declares
 `file: sha256` and
 `hidden_evaluation: benchcore-hidden-bundle-v1-sha256`; the current result
@@ -738,7 +745,7 @@ Deliberately deferred work includes:
    outside Training Leases independently normative.
 
 Those features should be added to the Worker protocol and external Worker SDK,
-not by adding platform code to Benchcore.
+not by adding platform code to Envcore.
 
 The staged plan and the trigger for each deferred abstraction are recorded in
 [Thin Core development plan](thin-core-development-plan.md).

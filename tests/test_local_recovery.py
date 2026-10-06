@@ -13,11 +13,11 @@ from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from benchcore import local_recovery, local_watchdog
-from benchcore.docker_recovery import DockerRecovery, WorkerOwnershipBusy
-from benchcore.local_watchdog import supervise
-from benchcore.runtime import DockerRuntime
-from benchcore.worker_protocol import WorkerFailure
+from envcore import local_recovery, local_watchdog
+from envcore.docker_recovery import DockerRecovery, WorkerOwnershipBusy
+from envcore.local_watchdog import supervise
+from envcore.runtime import DockerRuntime
+from envcore.worker_protocol import WorkerFailure
 from tests.test_docker_recovery import FakeDocker
 
 
@@ -76,9 +76,9 @@ class RecoveryOwnershipTests(unittest.TestCase):
             return self.backend.run(args, **kwargs)
 
         with patch(
-            "benchcore.local_recovery.time.monotonic", side_effect=lambda: now[0]
-        ), patch("benchcore.local_recovery.time.sleep", side_effect=release), patch(
-            "benchcore.runtime.DockerRuntime._run_raw", side_effect=slow_run
+            "envcore.local_recovery.time.monotonic", side_effect=lambda: now[0]
+        ), patch("envcore.local_recovery.time.sleep", side_effect=release), patch(
+            "envcore.runtime.DockerRuntime._run_raw", side_effect=slow_run
         ), patch.object(DockerRecovery, "_read", slow_read):
             report = local_recovery._perform(self.request)
         self.assertEqual(len(sleeps), 4)
@@ -104,9 +104,9 @@ class RecoveryOwnershipTests(unittest.TestCase):
             now[0] += seconds
 
         with patch(
-            "benchcore.local_recovery.time.monotonic", side_effect=lambda: now[0]
-        ), patch("benchcore.local_recovery.time.sleep", side_effect=wait), patch(
-            "benchcore.runtime.DockerRuntime._run_raw"
+            "envcore.local_recovery.time.monotonic", side_effect=lambda: now[0]
+        ), patch("envcore.local_recovery.time.sleep", side_effect=wait), patch(
+            "envcore.runtime.DockerRuntime._run_raw"
         ) as run:
             report = local_recovery._perform({**self.request, "timeout_seconds": 0.12})
         run.assert_not_called()
@@ -133,9 +133,9 @@ class RecoveryOwnershipTests(unittest.TestCase):
                 owner = DockerRecovery(self.journal.root)
                 self.addCleanup(owner.close)
                 with patch(
-                    "benchcore.local_recovery.time.sleep",
+                    "envcore.local_recovery.time.sleep",
                     side_effect=lambda seconds: owner.close(),
-                ) as wait, patch("benchcore.runtime.DockerRuntime._run_raw") as run:
+                ) as wait, patch("envcore.runtime.DockerRuntime._run_raw") as run:
                     request = {
                         **self.request,
                         "registration": {**self.request["registration"], field: value},
@@ -161,8 +161,8 @@ class RecoveryOwnershipTests(unittest.TestCase):
                     b"{truncated" if mode == "damaged" else self.saved
                 )
                 self.journal.root.chmod(0o755 if mode == "permissions" else 0o700)
-                with patch("benchcore.local_recovery.time.sleep") as wait, patch(
-                    "benchcore.runtime.DockerRuntime._run_raw"
+                with patch("envcore.local_recovery.time.sleep") as wait, patch(
+                    "envcore.runtime.DockerRuntime._run_raw"
                 ) as run:
                     with self.assertRaises(WorkerFailure) as failure:
                         local_recovery._perform(
@@ -182,8 +182,8 @@ class RecoveryOwnershipTests(unittest.TestCase):
         self.journal.close()
         with patch(
             "fcntl.flock", side_effect=PermissionError("denied")
-        ) as flock, patch("benchcore.local_recovery.time.sleep") as wait, patch(
-            "benchcore.runtime.DockerRuntime._run_raw"
+        ) as flock, patch("envcore.local_recovery.time.sleep") as wait, patch(
+            "envcore.runtime.DockerRuntime._run_raw"
         ) as run:
             with self.assertRaisesRegex(WorkerFailure, "cannot open") as failure:
                 local_recovery._perform(self.request)
@@ -387,9 +387,9 @@ class LocalRecoveryProcessTests(unittest.TestCase):
 
                 try:
                     with patch(
-                        "benchcore.local_recovery.time.sleep", side_effect=release
+                        "envcore.local_recovery.time.sleep", side_effect=release
                     ), patch(
-                        "benchcore.runtime.DockerRuntime._run_raw",
+                        "envcore.runtime.DockerRuntime._run_raw",
                         side_effect=FakeDocker().run,
                     ):
                         return local_recovery._perform(
@@ -412,7 +412,7 @@ class LocalRecoveryProcessTests(unittest.TestCase):
 
             stderr = io.StringIO()
             with patch(
-                "benchcore.local_watchdog.time.monotonic",
+                "envcore.local_watchdog.time.monotonic",
                 side_effect=lambda: monotonic() + elapsed[0],
             ), patch.object(local_watchdog, "_write_report", persist), redirect_stderr(
                 stderr
@@ -476,7 +476,7 @@ class LocalRecoveryProcessTests(unittest.TestCase):
             self.assertEqual(target.read_text(), saved)
 
     def test_manual_recovery_uses_process_boundary_without_parent_journal_io(self):
-        from benchcore.cli import build_parser, command_worker_recover
+        from envcore.cli import build_parser, command_worker_recover
 
         with self.episode() as (root, registration):
             args = build_parser().parse_args(
@@ -557,7 +557,7 @@ class LocalRecoveryProcessTests(unittest.TestCase):
                 self.assertEqual(signal.getsignal(sig), handler)
 
     def test_manual_cancellation_returns_failure_even_when_cleanup_completes(self):
-        from benchcore.cli import build_parser, command_worker_recover
+        from envcore.cli import build_parser, command_worker_recover
 
         with self.episode() as (root, registration):
             args = build_parser().parse_args(
@@ -659,7 +659,7 @@ class LocalRecoveryProcessTests(unittest.TestCase):
                 raise WorkerFailure("simulated helper loss")
 
             try:
-                with patch("benchcore.runtime.subprocess.run", lose_helper):
+                with patch("envcore.runtime.subprocess.run", lose_helper):
                     with self.assertRaisesRegex(WorkerFailure, "simulated helper loss"):
                         runtime._run_raw(["info"], timeout=1)
                 journal.close()

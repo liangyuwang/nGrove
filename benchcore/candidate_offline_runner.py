@@ -1,29 +1,10 @@
-"""Invoke a submitted offline Candidate inside its isolated container."""
+"""Compatibility alias for :mod:`envcore.candidate_offline_runner`."""
 
-from __future__ import annotations
-
-import argparse
-from pathlib import Path
-
-from .candidate_protocol import load_candidate
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--candidate", required=True, type=Path)
-    parser.add_argument("--contexts", required=True, type=Path)
-    parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--device", choices=("cpu", "cuda"), required=True)
-    args = parser.parse_args()
-
-    module = load_candidate(args.candidate)
-    module.run_offline(
-        args.candidate.resolve(),
-        args.contexts.resolve(),
-        args.output.resolve(),
-        args.device,
-    )
-
+import importlib
+import runpy
+import sys
 
 if __name__ == "__main__":
-    main()
+    runpy.run_module("envcore.candidate_offline_runner", run_name="__main__")
+else:
+    sys.modules[__name__] = importlib.import_module("envcore.candidate_offline_runner")

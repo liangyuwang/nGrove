@@ -1,4 +1,15 @@
-# AutoTrain-Bench operator instructions
+# Envcore environment and AutoTrain-Bench operator instructions
+
+Envcore is an autonomous research environment framework; AutoTrain-Bench is
+its bundled benchmark application. Environment runs may select a user-owned
+hardware configuration at launch using `--environment`, without editing task
+or challenge releases. Existing published runtime profiles remain available.
+The current environment mode retains the training-research task protocol and
+its isolation, sealing and evaluation rules. It is always leaderboard-ineligible
+and has no benchmark comparison key. Benchmark mode still requires the release's
+finite profile map and rejects hardware overrides. Record effective resources
+and the environment configuration identity when reporting environment runs.
+See [environment configuration](docs/environments.md).
 
 ## Role
 
@@ -9,7 +20,7 @@ participant being measured and must remain inside the benchmark boundary.
 
 Keep this repository platform-independent. Cluster schedulers, container
 runtimes, cloud APIs, and site-specific enforcement belong to the Worker
-deployment, not to Benchcore. Do not add platform branches,
+deployment, not to Envcore. Do not add platform branches,
 dependencies, or site configuration to the tracked core repository merely to
 make a run work.
 
@@ -117,10 +128,10 @@ access it:
 Default to a newly created empty episode workspace when the Agent image and
 command contain everything needed to begin. Snapshot initial files only when
 the user explicitly identifies a participant-owned source workspace. Never use
-the Benchcore checkout, or any directory containing the operator's
+the Envcore checkout, or any directory containing the operator's
 `AGENTS.md`, as the Tested Agent workspace.
 
-An empty leaf directory beneath the trusted Benchcore/task
+An empty leaf directory beneath the trusted Envcore/task
 checkout is not isolated when a host-native Agent discovers this project's
 instructions from ancestor directories. Before task reveal, resolve the final
 workspace path and reject it if it is inside that trusted checkout. Require an

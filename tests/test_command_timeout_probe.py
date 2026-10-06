@@ -5,12 +5,12 @@ import unittest
 from dataclasses import replace
 from unittest.mock import patch
 
-from benchcore.conformance import (
+from envcore.conformance import (
     LEASE_COMMAND_TIMEOUT_PROBE_VERSION,
     CommandTimeoutCase,
     CommandTimeoutObservation,
 )
-from benchcore.worker_protocol import (
+from envcore.worker_protocol import (
     CommandResult,
     WorkerFailure,
     WorkerTeardownFailure,
@@ -95,7 +95,7 @@ class CommandTimeoutProbeTests(unittest.TestCase):
         fixture = CommandTimeoutCase(TIMEOUT_COMMAND, observe or self.observe)
         inputs = dict(command_timeout_case=fixture)
         inputs.update(overrides)
-        with patch("benchcore.conformance.time.monotonic", self.clock):
+        with patch("envcore.conformance.time.monotonic", self.clock):
             return leases.LeaseProbeTests.probe(self, **inputs)
 
     def test_timeout_is_observed_before_any_worker_cleanup_and_without_extra_leases(

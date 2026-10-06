@@ -11,13 +11,13 @@ import time
 import unittest
 from pathlib import Path
 
-from benchcore.config import TrainingResources
-from benchcore.conformance import (
+from envcore.config import TrainingResources
+from envcore.conformance import (
     CommandTimeoutCase,
     CommandTimeoutObservation,
     probe_worker_leases,
 )
-from benchcore.worker_protocol import CommandResult, ResearchTaskSpec
+from envcore.worker_protocol import CommandResult, ResearchTaskSpec
 from tests.test_lease_probe import LeaseWorker, contract
 
 

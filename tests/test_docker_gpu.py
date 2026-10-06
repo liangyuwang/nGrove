@@ -10,10 +10,10 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from benchcore.challenge import ChallengeRelease
-from benchcore.config import TaskConfig, TrainingResources
-from benchcore.runtime import DockerRuntime, RuntimeFailure
-from benchcore.worker_protocol import (
+from envcore.challenge import ChallengeRelease
+from envcore.config import TaskConfig, TrainingResources
+from envcore.runtime import DockerRuntime, RuntimeFailure
+from envcore.worker_protocol import (
     EnforcementLevel,
     ResearchTaskSpec,
     ResourceAllocationReceipt,
@@ -74,11 +74,11 @@ class DockerGpuTests(unittest.TestCase):
         self.patches = ExitStack()
         self.addCleanup(self.patches.close)
         self.smi = self.patches.enter_context(
-            patch("benchcore.runtime.shutil.which", return_value="nvidia-smi")
+            patch("envcore.runtime.shutil.which", return_value="nvidia-smi")
         )
         self.query = self.patches.enter_context(
             patch(
-                "benchcore.runtime.subprocess.run",
+                "envcore.runtime.subprocess.run",
                 return_value=gpu_inventory(GOOD),
             )
         )
@@ -303,9 +303,7 @@ class DockerGpuTests(unittest.TestCase):
                 timeout_seconds=7,
             )
         candidate = next(
-            call
-            for call in runtime.calls
-            if "benchcore.candidate_offline_runner" in call
+            call for call in runtime.calls if "envcore.candidate_offline_runner" in call
         )
         self.assertEqual(
             candidate[candidate.index("--gpus") + 1], f'"device={GPU_TWO}"'
@@ -323,7 +321,7 @@ class DockerGpuTests(unittest.TestCase):
                 output_dir=self.root / "later-evaluation",
             )
         self.assertFalse(
-            any("benchcore.candidate_offline_runner" in call for call in runtime.calls)
+            any("envcore.candidate_offline_runner" in call for call in runtime.calls)
         )
 
     def test_environment_records_selection_separately_from_host_inventory(self):

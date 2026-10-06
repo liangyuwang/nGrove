@@ -1,8 +1,8 @@
 import unittest
 from pathlib import Path
 
-from benchcore.agent_prompt import HOST_CLI_PROMPT
-from benchcore.cli_adapters.codex import build_codex_command
+from envcore.agent_prompt import HOST_CLI_PROMPT
+from envcore.cli_adapters.codex import build_codex_command
 
 
 class CodexAdapterTests(unittest.TestCase):

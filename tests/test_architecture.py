@@ -3,7 +3,7 @@ import unittest
 from dataclasses import fields
 from pathlib import Path
 
-from benchcore.worker_protocol import (
+from envcore.worker_protocol import (
     HiddenDatasetRequest,
     ResolvedHiddenDataset,
     ResolvedWorkload,
@@ -32,9 +32,9 @@ class ArchitectureBoundaryTests(unittest.TestCase):
             "local_mailbox",
             "local_agent_execution",
             "runtime",
-            "benchcore.local_mailbox",
-            "benchcore.local_agent_execution",
-            "benchcore.runtime",
+            "envcore.local_mailbox",
+            "envcore.local_agent_execution",
+            "envcore.runtime",
         }
         for filename in (
             "conformance.py",
@@ -44,7 +44,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
             "deadline_probe.py",
         ):
             with self.subTest(filename=filename):
-                modules = imported_modules(ROOT / "benchcore" / filename)
+                modules = imported_modules(ROOT / "envcore" / filename)
                 self.assertTrue(forbidden.isdisjoint(modules))
 
     def test_task_evaluators_do_not_select_a_candidate_transport(self):
@@ -73,7 +73,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
                         {"path", "url", "credential", "mount", "cache_path"}
                     )
                 )
-        supervisor_source = (ROOT / "benchcore" / "supervisor.py").read_text(
+        supervisor_source = (ROOT / "envcore" / "supervisor.py").read_text(
             encoding="utf-8"
         )
         self.assertNotIn("config.analysis_path", supervisor_source)

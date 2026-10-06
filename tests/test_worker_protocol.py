@@ -1,13 +1,13 @@
 import json
 import unittest
 
-from benchcore.artifact_identity import HIDDEN_BUNDLE_IDENTITY_ALGORITHM
-from benchcore.candidate_protocol import (
+from envcore.artifact_identity import HIDDEN_BUNDLE_IDENTITY_ALGORITHM
+from envcore.candidate_protocol import (
     PREDICTION_ARTIFACT_RETENTION,
     PREDICTION_MANIFEST_MAX_BYTES,
     prediction_storage_limit,
 )
-from benchcore.worker_protocol import (
+from envcore.worker_protocol import (
     BASELINE_REQUIREMENTS,
     CONFORMANCE_RECEIPT_VERSION,
     IMMUTABLE_WORKLOAD_IDENTITY,

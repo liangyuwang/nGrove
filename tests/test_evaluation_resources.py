@@ -9,10 +9,10 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from benchcore.challenge import ChallengeRelease
-from benchcore.config import ConfigError, TaskConfig, TrainingResources
-from benchcore.results import ResultSchemaError, normalize_result_report
-from benchcore.worker_protocol import (
+from envcore.challenge import ChallengeRelease
+from envcore.config import ConfigError, TaskConfig, TrainingResources
+from envcore.results import ResultSchemaError, normalize_result_report
+from envcore.worker_protocol import (
     EnforcementLevel,
     EvaluationResourceFailure,
     EvaluationResourceReceipt,
@@ -459,8 +459,8 @@ class EvaluationResourceDockerTests(unittest.TestCase):
                 else {"return_value": response}
             )
             with self.subTest(response=response), patch(
-                "benchcore.runtime.shutil.which", return_value="nvidia-smi"
-            ), patch("benchcore.runtime.subprocess.run", **options):
+                "envcore.runtime.shutil.which", return_value="nvidia-smi"
+            ), patch("envcore.runtime.subprocess.run", **options):
                 with self.assertRaises(EvaluationResourceFailure):
                     runtime._evaluation_resource_plan(
                         episode_id="episode",
@@ -500,7 +500,7 @@ class EvaluationResourceDockerTests(unittest.TestCase):
                         ),
                         "",
                     )
-                if "benchcore.candidate_offline_runner" in args:
+                if "envcore.candidate_offline_runner" in args:
                     self.now += 3
                 if "--mode" in args and args[args.index("--mode") + 1] == "score":
                     mount = next(item for item in args if item.endswith("dst=/output"))
@@ -546,9 +546,7 @@ class EvaluationResourceDockerTests(unittest.TestCase):
         result = self.evaluate(runtime, envelope())
         self.assertEqual(result.candidate_wall_seconds, 3)
         command = next(
-            call
-            for call in runtime.calls
-            if "benchcore.candidate_offline_runner" in call
+            call for call in runtime.calls if "envcore.candidate_offline_runner" in call
         )
         self.assertEqual(command[command.index("--cpus") + 1], "1.5")
         self.assertEqual(command[command.index("--memory") + 1], str(64 * 1024**2))
@@ -573,8 +571,7 @@ class EvaluationResourceDockerTests(unittest.TestCase):
                 self.evaluate(runtime, request)
             self.assertFalse(
                 any(
-                    "benchcore.candidate_offline_runner" in call
-                    for call in runtime.calls
+                    "envcore.candidate_offline_runner" in call for call in runtime.calls
                 )
             )
 
@@ -602,7 +599,7 @@ class EvaluationResourceDockerTests(unittest.TestCase):
                         )
                 self.assertFalse(
                     any(
-                        "benchcore.candidate_offline_runner" in call
+                        "envcore.candidate_offline_runner" in call
                         for call in runtime.calls
                     )
                 )

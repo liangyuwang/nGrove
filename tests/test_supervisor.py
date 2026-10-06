@@ -16,50 +16,50 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from benchcore.agent_control import AgentControlStepResult
-from benchcore.agent_api_bundle import publish_agent_api_bundle
-from benchcore.challenge import (
+from envcore.agent_control import AgentControlStepResult
+from envcore.agent_api_bundle import publish_agent_api_bundle
+from envcore.challenge import (
     FORMAL_ARTIFACT_DIGEST_FIELDS,
     FORMAL_ARTIFACT_IDENTITY_ALGORITHMS,
     ChallengeRelease,
     ReleaseVerificationReceipt,
 )
-from benchcore.artifact_identity import (
+from envcore.artifact_identity import (
     HIDDEN_BUNDLE_IDENTITY_ALGORITHM,
     hidden_bundle_sha256,
 )
-from benchcore.config import (
+from envcore.config import (
     AgentConfig,
     InferenceConfig,
     TaskConfig,
     TrainingResources,
 )
-from benchcore.client import Client
-from benchcore.local_mailbox import (
+from envcore.client import Client
+from envcore.local_mailbox import (
     MAX_MAILBOX_RESPONSE_BYTES,
     LocalFileMailbox,
     write_untrusted_response,
 )
-from benchcore.local_agent_execution import describe_local_agent_execution
-from benchcore.gateway_execution import (
+from envcore.local_agent_execution import describe_local_agent_execution
+from envcore.gateway_execution import (
     GatewayArtifactIdentity,
     GatewayExecutionReceipt,
 )
-from benchcore.local_run_guard import LocalResearchGuard
-from benchcore.results import (
+from envcore.local_run_guard import LocalResearchGuard
+from envcore.results import (
     RESULT_SCHEMA_VERSION,
     ResultSchemaError,
     normalize_result_report,
 )
-from benchcore.training_data import verify_training_data, write_training_manifest
-from benchcore.supervisor import (
+from envcore.training_data import verify_training_data, write_training_manifest
+from envcore.supervisor import (
     MAX_COMMAND_STREAM_BYTES,
     MAX_INCUMBENT_DECLARATIONS,
     ProtocolError,
     Supervisor,
     _core_identity,
 )
-from benchcore.worker_protocol import (
+from envcore.worker_protocol import (
     BASELINE_REQUIREMENTS,
     CANDIDATE_PREDICTION_STORAGE_QUOTA,
     CONFORMANCE_RECEIPT_VERSION,
@@ -455,7 +455,7 @@ class SupervisorTests(unittest.TestCase):
             test_path=self.episode.parent / "absent-test",
         )
         with patch(
-            "benchcore.training_data.verify_training_data",
+            "envcore.training_data.verify_training_data",
             side_effect=AssertionError("Core must not scan TRAIN"),
         ):
             supervisor = self.supervisor(
@@ -484,6 +484,7 @@ class SupervisorTests(unittest.TestCase):
         training_data_verification=None,
         operator_max_research_seconds=None,
         evaluation_resource_envelope=None,
+        environment=None,
         begin=True,
     ):
         resolved_config = config or self.config
@@ -516,6 +517,7 @@ class SupervisorTests(unittest.TestCase):
             wall_time=lambda: 1_700_000_000.0,
             operator_max_research_seconds=operator_max_research_seconds,
             evaluation_resource_envelope=evaluation_resource_envelope,
+            environment=environment,
         )
         if begin:
             supervisor.begin()
@@ -878,7 +880,7 @@ class SupervisorTests(unittest.TestCase):
             inference_gateway_artifact=gateway_artifact,
         )
         with patch(
-            "benchcore.supervisor._core_identity",
+            "envcore.supervisor._core_identity",
             return_value={"revision": core_revision, "dirty": False},
         ):
             supervisor = self.supervisor(
@@ -1354,7 +1356,7 @@ class SupervisorTests(unittest.TestCase):
             passed=True,
         )
         with patch(
-            "benchcore.supervisor._core_identity",
+            "envcore.supervisor._core_identity",
             return_value={"revision": "d" * 40, "dirty": True},
         ):
             supervisor = self.supervisor(
@@ -1401,7 +1403,7 @@ class SupervisorTests(unittest.TestCase):
             subprocess.CompletedProcess([], 0, revision + "\n", ""),
             subprocess.CompletedProcess([], 0, " M changed.py\n", ""),
         ]
-        with patch("benchcore.supervisor.subprocess.run", side_effect=results) as run:
+        with patch("envcore.supervisor.subprocess.run", side_effect=results) as run:
             first = _core_identity()
             second = _core_identity()
 
@@ -1423,7 +1425,7 @@ class SupervisorTests(unittest.TestCase):
             {
                 path.name
                 for path in (
-                    self.worker.research_tasks[0].public_api_dir / "benchcore"
+                    self.worker.research_tasks[0].public_api_dir / "envcore"
                 ).iterdir()
             },
             {
@@ -1436,7 +1438,7 @@ class SupervisorTests(unittest.TestCase):
         environment = os.environ.copy()
         environment["PYTHONPATH"] = str(self.worker.research_tasks[0].public_api_dir)
         smoke = subprocess.run(
-            [sys.executable, "-m", "benchcore.cli", "agent", "--help"],
+            [sys.executable, "-m", "envcore.cli", "agent", "--help"],
             cwd=self.workspace,
             env=environment,
             check=False,
@@ -2410,7 +2412,7 @@ class SupervisorTests(unittest.TestCase):
         private_detail = "/trusted/episode/lease directory is busy"
 
         with patch(
-            "benchcore.supervisor.shutil.rmtree",
+            "envcore.supervisor.shutil.rmtree",
             side_effect=OSError(private_detail),
         ):
             with self.assertRaises(ProtocolError) as caught:
@@ -3442,7 +3444,7 @@ class SupervisorTests(unittest.TestCase):
         (rejected / "nested").write_text("untrusted", encoding="utf-8")
 
         with patch(
-            "benchcore.local_mailbox.shutil.rmtree",
+            "envcore.local_mailbox.shutil.rmtree",
             side_effect=OSError("simulated cross-uid cleanup failure"),
         ):
             self.assertFalse(supervisor.cleanup_agent_control())
@@ -3771,7 +3773,7 @@ class SupervisorTests(unittest.TestCase):
     def test_mailbox_response_has_a_portable_non_dir_fd_path(self):
         self.supervisor()
         with patch(
-            "benchcore.local_mailbox.directory_fd_operations_available",
+            "envcore.local_mailbox.directory_fd_operations_available",
             return_value=False,
         ):
             write_untrusted_response(

@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from benchcore.config import TaskConfig
-from benchcore.training_data import verify_training_data
+from envcore.config import TaskConfig
+from envcore.training_data import verify_training_data
 
 
 ROOT = Path(__file__).resolve().parents[1]

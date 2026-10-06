@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "name": "cpu-2cores",
+  "runtime_profile": {
+    "host_count": 1,
+    "accelerator": null,
+    "resource_contract": {
+      "schema_version": 1,
+      "normative": [
+        {
+          "name": "accelerator.count",
+          "relation": "exact",
+          "value": 0,
+          "minimum_enforcement": "best_effort"
+        },
+        {
+          "name": "cpu.quota_cores",
+          "relation": "exact",
+          "value": 2,
+          "minimum_enforcement": "best_effort"
+        },
+        {
+          "name": "host.count",
+          "relation": "exact",
+          "value": 1,
+          "minimum_enforcement": "best_effort"
+        },
+        {
+          "name": "memory.limit_bytes",
+          "relation": "exact",
+          "value": 1073741824,
+          "minimum_enforcement": "best_effort"
+        }
+      ],
+      "observational": []
+    }
+  }
+}

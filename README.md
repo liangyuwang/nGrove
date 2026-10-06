@@ -1,4 +1,35 @@
-# AutoTrain-Bench
+# Envcore
+
+**Configurable environments for autonomous research.**
+
+Envcore lets researchers configure the resources available to an Agent, run
+autonomous experiments, and retain their actions, artifacts and execution
+evidence. Hardware is a run-time experimental variable: the same task can run
+with different GPU counts and CPU/memory limits without editing its release.
+
+**AutoTrain-Bench is the bundled benchmark application.** Its Track A/B budgets,
+incumbent selection, research sealing and hidden evaluation remain available as
+the current training-research protocol. Custom environment runs use that
+protocol without claiming membership in a published benchmark lane.
+
+| Layer | Responsibility |
+| --- | --- |
+| Environment configuration | Run-owned hardware profiles and resource contracts |
+| Worker | Resource admission, execution, isolation and cleanup |
+| Training-research protocol | Leases, immutable Candidates, research history and evaluation |
+| AutoTrain-Bench | Published lanes, fixed comparison conditions and formal eligibility |
+
+Start with [configurable environments](docs/environments.md), including examples
+for hardware scaling. The published GPU profiles remain unchanged. The initial
+implementation supports the existing single-host CPU/NVIDIA Worker; other
+execution platforms remain external Worker deployments. General task protocols
+and configurable feedback policies are future extensions.
+
+The Python package and primary CLI are `envcore`. Existing `benchcore` imports,
+`python -m benchcore.cli`, and `autotrain-bench` commands remain compatibility
+entry points. The distribution name remains `autotrain-bench` during migration.
+
+## AutoTrain-Bench application
 
 **Constrain resources, not ideas. Define the evaluator, not the solution.**
 
@@ -286,7 +317,7 @@ isolated evaluation in three areas:
 
 Together, these extensions are intended to support
 [LM Open World](challenges/lm-open-world/README.md), which currently has a vision
-README only and **no implementation**. Current Benchcore implementation status
+README only and **no implementation**. Current Envcore implementation status
 and deployment checks are documented in the
 [development plan](docs/thin-core-development-plan.md#current-preview-closeout-boundary)
 and [acceptance matrix](docs/worker-acceptance-matrix.md).

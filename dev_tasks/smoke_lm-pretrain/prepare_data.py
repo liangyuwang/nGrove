@@ -18,7 +18,7 @@ import urllib.request
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
 
-from benchcore.training_data import (
+from envcore.training_data import (
     TrainingDataError,
     verify_training_data,
     write_training_manifest,

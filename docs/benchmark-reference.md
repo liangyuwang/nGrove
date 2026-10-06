@@ -140,7 +140,7 @@ The Python package itself remains `0.0.0` while unreleased.
 
 Docker is the bundled v0 compatibility implementation, not a general platform
 abstraction. The benchmark Supervisor now depends on the semantic
-`benchcore.worker_protocol` boundary: it asks a Worker to start, execute,
+`envcore.worker_protocol` boundary: it asks a Worker to start, execute,
 inspect, and terminate a lease or evaluate a Candidate without referring to
 containers, scheduler jobs, Pods, or platform networks. Worker capabilities,
 deployment trust, and conformance are recorded independently, and there is no
@@ -253,7 +253,7 @@ development workflow, Candidate ABI, Policy, and reproducibility details.
 Smoke-task scores are not benchmark results.
 
 Every episode must select an explicit `--episode-dir` or `--episodes-root` in a
-dedicated trusted working root outside the Benchcore/task checkout.
+dedicated trusted working root outside the Envcore/task checkout.
 This keeps episode state and the Tested Agent workspace separate from operator
 files. It also prevents host-native tools such as Codex from inheriting the
 Core's `AGENTS.md` through ancestor-directory instruction discovery. An empty
@@ -276,7 +276,7 @@ autotrain-bench start \
 
 ## Bring your own Agent: host-native CLI tools
 
-Benchcore supports two Agent runners:
+Envcore supports two Agent runners:
 
 * `container` runs a participant command in an Agent Container;
 * `host_cli` runs any autonomous, non-interactive CLI command on the host while
@@ -302,7 +302,7 @@ workspace and with stdin disconnected. It receives
 `BENCHCORE_CONTROL_DIR`; it must use the `autotrain-bench agent ...`
 mailbox commands for benchmark control and run without further user input. A
 custom wrapper may reuse the tool-independent prompt in
-`benchcore.agent_prompt.HOST_CLI_PROMPT`.
+`envcore.agent_prompt.HOST_CLI_PROMPT`.
 
 The supplied prompt describes the evaluation objective, allowed interfaces, and
 episode lifecycle. Research methods, experiment scheduling, status polling, and
@@ -319,13 +319,13 @@ Codex CLI installation to be used without an API key. After `codex login status`
 confirms an existing login, run the TinyStories Track A with a fixed Codex model:
 
 ```bash
-python3 -m benchcore.cli start \
+python3 -m envcore.cli start \
   --challenge dev_tasks/smoke_lm-pretrain/challenge.json \
   --track-config smoke-a-5m \
   --runtime-profile cpu-local \
   --episodes-root /path/to/autotrain-bench-runs/episodes \
   --agent-runner host_cli \
-  --agent-command "python3 -m benchcore.cli_adapters.codex --model YOUR_CODEX_MODEL --reasoning-effort high"
+  --agent-command "python3 -m envcore.cli_adapters.codex --model YOUR_CODEX_MODEL --reasoning-effort high"
 ```
 
 The generic host runner captures stdout/stderr and enforces the same episode
@@ -384,7 +384,7 @@ official Gateway sidecar rather than arbitrary public Internet access.
 
 In the default `denied` egress policy an Agent without remote inference uses
 `--network none`. When a registered inference channel is configured,
-Benchcore creates an episode-private Docker `--internal` network shared
+Envcore creates an episode-private Docker `--internal` network shared
 only by the Agent and a trusted OpenAI-compatible Gateway at:
 
 ```text
@@ -441,12 +441,12 @@ images continue to run their registered entrypoint unchanged.
 The Agent can use the benchmark package only as the control plane for training:
 
 ```bash
-python -m benchcore.cli agent status
-python -m benchcore.cli agent lease-start
-python -m benchcore.cli agent lease-exec -- python /workspace/train.py
-python -m benchcore.cli agent lease-commit /output/candidate
-python -m benchcore.cli agent declare-incumbent sha256:<candidate-hash>
-python -m benchcore.cli agent finish
+python -m envcore.cli agent status
+python -m envcore.cli agent lease-start
+python -m envcore.cli agent lease-exec -- python /workspace/train.py
+python -m envcore.cli agent lease-commit /output/candidate
+python -m envcore.cli agent declare-incumbent sha256:<candidate-hash>
+python -m envcore.cli agent finish
 ```
 
 The public task manifest at `$BENCHCORE_TASK` declares the Agent-facing
@@ -717,7 +717,7 @@ Worker Protocol v15, but does not change development trust or formal eligibility
 See [Worker prediction storage](worker-protocol.md) for memory/swap needs,
 deployment support, cleanup limits and the v14 compatibility break.
 
-The Agent Container receives a generated, minimal `benchcore.client`
+The Agent Container receives a generated, minimal `envcore.client`
 package rather than the Core source tree. Its mailbox inbox and outbox are
 mounted as separate directory roots, so it cannot replace the shared control
 parent. Training Containers receive TRAIN, the participant workspace, scratch,
@@ -810,7 +810,7 @@ The local v0 reference separates trusted scoring from untrusted Candidate code.
 
 ```text
 User-owned host
-└── trusted Benchcore Supervisor
+└── trusted Envcore Supervisor
     ├── untrusted Agent Container
     ├── disposable Training Container
     └── offline evaluation sequence

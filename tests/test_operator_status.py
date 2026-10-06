@@ -8,8 +8,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from benchcore.cli import build_parser, command_report
-from benchcore.operator_status import format_operator_status, read_operator_status
+from envcore.cli import build_parser, command_report
+from envcore.operator_status import format_operator_status, read_operator_status
 from tests.test_results import _finalized
 
 
@@ -272,7 +272,7 @@ class OperatorStatusTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()) as output:
             command_report(args)
         report = json.loads(output.getvalue())
-        self.assertEqual(report["result_schema_version"], 15)
+        self.assertEqual(report["result_schema_version"], 16)
         self.assertEqual(report["outcome"], "success")
         self.assertNotIn("deployment", report)
 
@@ -310,7 +310,7 @@ class OperatorStatusTests(unittest.TestCase):
         def at_fixed_time(*args, **kwargs):
             return read_operator_status(*args, now=NOW, **kwargs)
 
-        with patch("benchcore.cli.read_operator_status", side_effect=at_fixed_time):
+        with patch("envcore.cli.read_operator_status", side_effect=at_fixed_time):
             with redirect_stdout(io.StringIO()) as output:
                 args.function(args)
         view = json.loads(output.getvalue())

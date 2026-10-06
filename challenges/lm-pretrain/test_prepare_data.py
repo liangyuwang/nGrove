@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from benchcore.training_data import verify_training_data
+from envcore.training_data import verify_training_data
 
 
 PREPARE = Path(__file__).with_name("prepare_data.py")

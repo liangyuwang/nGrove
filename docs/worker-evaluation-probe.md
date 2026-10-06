@@ -6,7 +6,7 @@ that an older temporary deployment may not implement. The resolution probe
 cannot detect a Worker that resolves inputs correctly but omits, misbinds or
 reuses evaluation receipts.
 
-`benchcore.conformance.probe_worker_evaluation()` provides a reusable,
+`envcore.conformance.probe_worker_evaluation()` provides a reusable,
 platform-independent diagnostic for that gap. It calls the actual supplied
 Evaluation Worker interface. It does not create an Agent, launch a benchmark
 episode, select an incumbent, publish a benchmark result or issue a
@@ -52,7 +52,7 @@ preparation so that these diagnostics can be repeated against that deployment.
 After the deployment prepares the inputs above, its trusted launcher can call:
 
 ```python
-from benchcore.conformance import probe_worker_evaluation
+from envcore.conformance import probe_worker_evaluation
 
 report = probe_worker_evaluation(
     evaluation_worker,

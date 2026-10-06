@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from benchcore.agent_api_bundle import (
+from envcore.agent_api_bundle import (
     PUBLIC_AGENT_API_FILES,
     publish_agent_api_bundle,
 )
@@ -45,7 +45,7 @@ class AgentApiBundleTests(unittest.TestCase):
                     sys.executable,
                     "-c",
                     "from pathlib import Path\n"
-                    "from benchcore.candidate_protocol import load_candidate\n"
+                    "from envcore.candidate_protocol import load_candidate\n"
                     "candidate = Path('candidate').resolve()\n"
                     "load_candidate(candidate).run_offline(\n"
                     "    candidate, Path('contexts.json').resolve(),\n"
@@ -73,7 +73,7 @@ class AgentApiBundleTests(unittest.TestCase):
 
             published = publish_agent_api_bundle(destination)
 
-            package = published / "benchcore"
+            package = published / "envcore"
             self.assertEqual(
                 {path.name for path in package.iterdir()},
                 set(PUBLIC_AGENT_API_FILES.values()) | {"__init__.py"},

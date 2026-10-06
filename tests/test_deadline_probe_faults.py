@@ -5,12 +5,12 @@ import unittest
 from dataclasses import replace
 from unittest.mock import patch
 
-from benchcore.deadline_probe import (
+from envcore.deadline_probe import (
     WORKER_FAULT_DEADLINE_PROBE_VERSION,
     WorkerFaultEvidence,
     WorkerFaultKind,
 )
-from benchcore.worker_protocol import LeaseState, WorkerFailure
+from envcore.worker_protocol import LeaseState, WorkerFailure
 from tests import test_deadline_probe as idle
 
 

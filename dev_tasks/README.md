@@ -1,6 +1,6 @@
 # Development tasks
 
-Development tasks exercise the Benchcore runtime and Agent integration
+Development tasks exercise the Envcore runtime and Agent integration
 surface. They are not leaderboard challenges and their results must not be
 placed on a leaderboard. They use the same profile-bound release launch,
 Policy, and trusted Evaluator contract as challenge packages; task-scale data

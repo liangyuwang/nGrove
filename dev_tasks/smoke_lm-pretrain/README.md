@@ -21,7 +21,7 @@ The smoke task owns only:
 - the release Policy.
 
 The participant owns the Agent image or CLI, its command, and every initial
-workspace file. If `--agent-workspace` is omitted, Benchcore creates an
+workspace file. If `--agent-workspace` is omitted, Envcore creates an
 empty episode workspace. The Agent must create its own training program, model,
 experiments, Candidate implementation, and incumbent decisions after task
 reveal. This task does not ship a reference or starter Agent. An egress-denied
@@ -168,7 +168,7 @@ autotrain-bench start \
   --runtime-profile cpu-local \
   --episodes-root /path/to/autotrain-bench-runs/episodes \
   --agent-runner host_cli \
-  --agent-command "python3 -m benchcore.cli_adapters.codex --model MODEL --reasoning-effort high"
+  --agent-command "python3 -m envcore.cli_adapters.codex --model MODEL --reasoning-effort high"
 ```
 
 The `host_cli` run reports `policy_compliant: false` because a host process can
@@ -188,7 +188,7 @@ Training commands write Candidate artifacts beneath the lease-owned `/output`
 mount. A participant commits an artifact through the mailbox:
 
 ```bash
-python -m benchcore.cli agent lease-commit /output/candidate
+python -m envcore.cli agent lease-commit /output/candidate
 ```
 
 Commit stops the Training sandbox before validating and snapshotting the
@@ -259,7 +259,7 @@ manifest = {
 The generated public task at `$BENCHCORE_TASK` carries the same
 machine-readable contract under
 `evaluation.candidate_boundary.prediction_manifest`. The generated public
-`benchcore.candidate_protocol` API is explicitly allowed in Agent and
+`envcore.candidate_protocol` API is explicitly allowed in Agent and
 Training environments: `load_context_request(path)` reads the request and
 `write_prediction_artifact(output_dir, *, dataset_id, logits, examples,
 vocab_size)` writes both output files. The reader returns the parsed dictionary

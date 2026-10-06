@@ -10,8 +10,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from benchcore import local_recovery
-from benchcore.docker_recovery import DockerRecovery
+from envcore import local_recovery
+from envcore.docker_recovery import DockerRecovery
 from tests.test_docker_recovery import FakeDocker
 
 
@@ -67,7 +67,7 @@ def main():
 
         with ExitStack() as stack:
             stack.enter_context(
-                patch("benchcore.runtime.DockerRuntime._run_raw", side_effect=run)
+                patch("envcore.runtime.DockerRuntime._run_raw", side_effect=run)
             )
             if mode in {"open-block", "signals"}:
                 stack.enter_context(patch.object(DockerRecovery, "_read", block))
@@ -75,7 +75,7 @@ def main():
                 stack.enter_context(patch.object(DockerRecovery, "_save", block))
             if mode == "delete-block":
                 stack.enter_context(
-                    patch("benchcore.docker_recovery.shutil.rmtree", block)
+                    patch("envcore.docker_recovery.shutil.rmtree", block)
                 )
             if mode in {"close-block", "complete-signals"}:
                 stack.enter_context(patch.object(DockerRecovery, "close", close))

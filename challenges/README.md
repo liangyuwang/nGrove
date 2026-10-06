@@ -49,6 +49,12 @@ challenge_id + track + track_config + runtime_profile
 
 ## Reference environments and custom comparisons
 
+For research on hardware scaling, Envcore also supports run-owned
+[environment configurations](../docs/environments.md). Select `--environment`
+at launch to reuse a task and budget with custom hardware without editing this
+challenge release. Such runs have no benchmark comparison key and remain
+leaderboard-ineligible. The published-lane rules below apply to benchmark mode.
+
 Official benchmark comparisons will use a small set of designated reference
 environments, published and frozen with each release. Organizers are responsible
 for verifying those environments and the conditions under which official results

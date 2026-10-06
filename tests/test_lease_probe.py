@@ -7,9 +7,9 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from benchcore.config import TrainingResources
-from benchcore.conformance import LEASE_PROBE_VERSION, probe_worker_leases
-from benchcore.worker_protocol import (
+from envcore.config import TrainingResources
+from envcore.conformance import LEASE_PROBE_VERSION, probe_worker_leases
+from envcore.worker_protocol import (
     CommandResult,
     EnforcementLevel,
     LeaseState,
@@ -439,7 +439,7 @@ class LeaseProbeTests(unittest.TestCase):
             clock.now += 3
             return original_start(**kwargs)
 
-        with patch("benchcore.conformance.time.monotonic", clock), patch.object(
+        with patch("envcore.conformance.time.monotonic", clock), patch.object(
             self.worker, "resolve_workload", side_effect=resolve
         ), patch.object(self.worker, "start_lease", side_effect=start):
             report = self.probe(timeout_seconds=10)
@@ -456,7 +456,7 @@ class LeaseProbeTests(unittest.TestCase):
             clock.now += 10
             return result
 
-        with patch("benchcore.conformance.time.monotonic", clock), patch.object(
+        with patch("envcore.conformance.time.monotonic", clock), patch.object(
             self.worker, "start_lease", side_effect=start
         ):
             report = self.probe(timeout_seconds=10)
@@ -478,7 +478,7 @@ class LeaseProbeTests(unittest.TestCase):
                     clock.now += 11
                     raise error("late rejection")
 
-            with patch("benchcore.conformance.time.monotonic", clock), patch.object(
+            with patch("envcore.conformance.time.monotonic", clock), patch.object(
                 self.worker, "start_lease", side_effect=start
             ):
                 report = self.probe(timeout_seconds=10)
@@ -501,7 +501,7 @@ class LeaseProbeTests(unittest.TestCase):
                     return None
                 raise WorkerTeardownFailure("still running")
 
-            with patch("benchcore.conformance.time.monotonic", clock), patch.object(
+            with patch("envcore.conformance.time.monotonic", clock), patch.object(
                 self.worker, "exec_lease", side_effect=WorkerFailure("failed")
             ), patch.object(self.worker, "terminate_lease", side_effect=stop):
                 report = self.probe(cleanup_timeout_seconds=30)
@@ -553,7 +553,7 @@ class LeaseProbeTests(unittest.TestCase):
             clock.now += 11
             return result
 
-        with patch("benchcore.conformance.time.monotonic", clock), patch.object(
+        with patch("envcore.conformance.time.monotonic", clock), patch.object(
             self.worker, "exec_lease", side_effect=execute
         ):
             report = self.probe(timeout_seconds=10)

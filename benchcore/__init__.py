@@ -1,3 +1,3 @@
-"""Benchcore coordinator and protocol core."""
+"""Compatibility namespace; new integrations should import envcore."""
 
-__version__ = "0.0.0"
+from envcore import __version__ as __version__

@@ -1,4 +1,4 @@
-from benchcore.candidate_protocol import (
+from envcore.candidate_protocol import (
     load_context_request,
     write_prediction_artifact,
 )

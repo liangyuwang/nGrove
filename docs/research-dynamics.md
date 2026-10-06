@@ -29,7 +29,7 @@ complete account of internal update mechanisms before implementation can begin.
 
 Metric interpretation and baseline calibration can develop through analysis of
 real runs. They need not block engineering. This layer measures existing research
-records and leaves Benchcore's supervision and evaluation responsibilities intact.
+records and leaves Envcore's supervision and evaluation responsibilities intact.
 
 ## 2. Intuition: from training loss to a researcher's learning curve
 
@@ -227,11 +227,11 @@ and commands described here are proposals, not existing functionality.
 
 | Interface | Purpose |
 | --- | --- |
-| [`benchcore/results.py::normalize_result_report`](../benchcore/results.py) | Validate existing results. The current core schema is v15; the normalizer accepts version numbers v12–v15, subject to the identity-compatibility limits below. |
-| [`benchcore/cli.py::command_report`](../benchcore/cli.py) | Reference for read-only reporting; preserve its output contract. |
+| [`envcore/results.py::normalize_result_report`](../envcore/results.py) | Validate existing results. The current core schema is v15; the normalizer accepts version numbers v12–v15, subject to the identity-compatibility limits below. |
+| [`envcore/cli.py::command_report`](../envcore/cli.py) | Reference for read-only reporting; preserve its output contract. |
 | `state.json` | Read `candidate_commits`, `incumbent_declarations`, `analysis_trajectory`, identities, resources, status, and coverage fields. |
 | `events.jsonl` | Authoritative event ordering and resource lifecycle. |
-| [`benchcore/supervisor.py::_analysis_trajectory`](../benchcore/supervisor.py) | Existing links among commits, ANALYSIS metrics, costs, and declaration events. |
+| [`envcore/supervisor.py::_analysis_trajectory`](../envcore/supervisor.py) | Existing links among commits, ANALYSIS metrics, costs, and declaration events. |
 | `inference/inference.jsonl` | Call times, models, usage, and completeness when available; do not assume full prompts or responses are present. |
 | `agent.log`, Lease logs, and other Operator-retained traces | Optional tool-call, experimental-feedback, code-change, and behavioral evidence. Host runners may also use `agent.stdout.log` and `agent.stderr.log`. |
 | [`challenges/lm-pretrain/evaluator/evaluator.py`](../challenges/lm-pretrain/evaluator/evaluator.py) | The current loss is `analysis_raw_metrics.mean_nll`, with lower values better. The analyzer does not execute this scorer. |
@@ -274,7 +274,7 @@ not require a core result-schema or Worker Protocol version change.
 Historical input support depends on the result version, artifact identity
 algorithms, and source revision together; accepting v12–v15 version numbers is
 not sufficient. The current normalizer requires identity algorithms to match
-its active constants. The Benchcore rename changed both the identifiers and
+its active constants. The Envcore rename changed both the identifiers and
 hash-input prefixes for Candidate trees and hidden bundles.
 
 If historical episodes must be read, use explicitly versioned, read-only
@@ -638,7 +638,7 @@ limits output and truncates logs; Gateway usage records are not full inference
 transcripts. Additional traces retained by deployments can enter through adapters.
 
 A missing file must not be interpreted as zero calls. Currently,
-[`summarize_inference_trace`](../benchcore/inference.py) can return zero calls
+[`summarize_inference_trace`](../envcore/inference.py) can return zero calls
 and `usage_complete=true` when the file does not exist. The analysis layer must
 not treat that return value alone as proof of completeness. Distinguish an
 unconfigured collection source, a missing file, an empty record, corruption,
@@ -864,18 +864,18 @@ It need not prove that every high-scoring Agent has RSI capability.
 
 Repository facts refer to these files at the revision recorded above:
 
-- [`benchcore/supervisor.py`](../benchcore/supervisor.py): `_elapsed`,
+- [`envcore/supervisor.py`](../envcore/supervisor.py): `_elapsed`,
   `commit_lease`, `declare_incumbent`, `_analysis_trajectory`, sealing, cleanup,
   and result publication.
-- [`benchcore/results.py`](../benchcore/results.py): result schema and binding
+- [`envcore/results.py`](../envcore/results.py): result schema and binding
   validation.
-- [`benchcore/artifact_identity.py`](../benchcore/artifact_identity.py): identity
+- [`envcore/artifact_identity.py`](../envcore/artifact_identity.py): identity
   algorithms.
-- [`benchcore/inference.py`](../benchcore/inference.py),
-  [`benchcore/host_agent.py`](../benchcore/host_agent.py), and
-  [`benchcore/agent_gateway.py`](../benchcore/agent_gateway.py): usage, logging,
+- [`envcore/inference.py`](../envcore/inference.py),
+  [`envcore/host_agent.py`](../envcore/host_agent.py), and
+  [`envcore/agent_gateway.py`](../envcore/agent_gateway.py): usage, logging,
   and their limitations.
-- [`benchcore/operator_status.py`](../benchcore/operator_status.py): the distinction
+- [`envcore/operator_status.py`](../envcore/operator_status.py): the distinction
   between Core state and independent execution observations.
 
 For benchmark semantics, see the [full reference](benchmark-reference.md),

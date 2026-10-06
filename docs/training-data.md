@@ -26,7 +26,7 @@ Only the root manifest itself is excluded, avoiding a self-referential hash.
 Missing or additional files, unsafe paths, symlinks, hard links, and special
 files are rejected. Empty directories are not part of the file identity.
 
-Builders can call `benchcore.training_data.write_training_manifest()`
+Builders can call `envcore.training_data.write_training_manifest()`
 after writing all public files. Hidden evaluation data and metadata must stay
 outside this directory. Source inventories used to claim a particular upstream
 revision must be independently pinned by the task; generating an inventory of
