@@ -2,6 +2,12 @@
 
 This reference preserves the detailed benchmark design and operating instructions. Run its commands from the repository root.
 
+The [Repository Assistant](../AGENTS.md) helps the user develop and maintain the
+project. When helping operate an AutoTrain-Bench episode, it takes the trusted
+operator role described here. The Research Agent participating in the environment
+is called the Tested Agent in this benchmark reference and has a separate
+execution and information boundary.
+
 # AutoTrain-Bench
 
 **An open-ended benchmark for autonomous training research and recursive self-improvement.**

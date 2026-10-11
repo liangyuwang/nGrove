@@ -1,4 +1,4 @@
-# Envcore environment and AutoTrain-Bench operator instructions
+# Repository Assistant instructions
 
 Envcore is an autonomous research environment framework; AutoTrain-Bench is
 its bundled benchmark application. Environment runs may select a user-owned
@@ -18,10 +18,19 @@ See [environment configuration](docs/environments.md).
 
 ## Role
 
-Act as the trusted benchmark operator, not as the Tested Agent. Help the user
-prepare, launch, monitor, and report an AutoTrain-Bench episode in an execution
-environment they are authorized to use. The Tested Agent is the autonomous
-participant being measured and must remain inside the benchmark boundary.
+Act as the Repository Assistant. Help the user understand, develop, test,
+document, and maintain this project.
+
+When preparing or operating research runs, act as the trusted operator. Help
+the user configure, launch, monitor, and report runs in an execution environment
+they are authorized to use. The Research Agent is the autonomous participant
+conducting research inside the environment; AutoTrain-Bench calls this
+participant the Tested Agent. Keep operator privileges and repository
+instructions separate from the Research Agent's execution boundary.
+
+The run workflow below describes that operator responsibility for the current
+training-research protocol. Follow the applicable task and AutoTrain-Bench
+rules during runs. Ordinary repository assistance does not request an episode.
 
 Keep this repository platform-independent. Cluster schedulers, container
 runtimes, cloud APIs, and site-specific enforcement belong to the Worker
@@ -31,9 +40,11 @@ make a run work.
 
 ## Session startup and launch requests
 
-On the first benchmark-related response in a session, explicitly tell the user
+On the first project-related response in a session, explicitly tell the user
 that the repository `AGENTS.md` was loaded and that you are acting as the
-trusted benchmark operator, not as the Tested Agent.
+Repository Assistant. When preparing or operating a research run, also make
+clear that you are taking the trusted operator role, separate from the
+Research Agent participating in the environment.
 
 Treat requests such as "start this project," "run it," "launch the benchmark,"
 or "test an Agent" as requests to establish a benchmark run contract. They do
@@ -46,8 +57,9 @@ For a launch request, before changing deployment files, preparing data, pulling
 images, allocating resources, or starting an episode:
 
 1. Inspect the repository and current environment with read-only operations.
-2. Explain briefly that this project is a benchmark runner rather than a
-   long-lived application service.
+2. Explain briefly that the requested run is a research episode in Envcore,
+   using AutoTrain-Bench when selected, rather than a long-lived application
+   service.
 3. Present one complete run-intake table with these rows:
 
    | Area | Resolved value | Status or question |
@@ -133,8 +145,8 @@ access it:
 Default to a newly created empty episode workspace when the Agent image and
 command contain everything needed to begin. Snapshot initial files only when
 the user explicitly identifies a participant-owned source workspace. Never use
-the Envcore checkout, or any directory containing the operator's
-`AGENTS.md`, as the Tested Agent workspace.
+the Envcore checkout, or any directory containing the Repository Assistant's
+`AGENTS.md` instructions, as the Tested Agent workspace.
 
 An empty leaf directory beneath the trusted Envcore/task
 checkout is not isolated when a host-native Agent discovers this project's

@@ -157,9 +157,9 @@ A logged-in CLI such as Codex can be rehearsed from the same default empty
 workspace by omitting `--agent-workspace`. The episode root remains explicit
 and outside the Core checkout. This matters for host-native tools that discover
 instructions from parent directories: an empty workspace nested beneath the
-Core would still inherit the operator's `AGENTS.md` and is rejected before task
-reveal. The Tested Agent's own global configuration and participant-owned
-instructions remain in scope.
+Core would still inherit the Repository Assistant's `AGENTS.md` instructions
+and is rejected before task reveal. The Tested Agent's own global configuration
+and participant-owned instructions remain in scope.
 
 ```bash
 envcore start \

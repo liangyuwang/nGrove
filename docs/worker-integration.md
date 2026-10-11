@@ -1,7 +1,9 @@
 # Integrating an external Worker
 
-This guide is for the trusted benchmark operator preparing a deployment outside
-Core. It complements the [Worker Protocol](worker-protocol.md); it does not
+This guide is for the trusted operator preparing a deployment outside Core.
+The Repository Assistant takes this role when helping with authorized run
+preparation; see [repository instructions](../AGENTS.md).
+It complements the [Worker Protocol](worker-protocol.md); it does not
 select a platform, Tested Agent, task, or resource budget. The bundled
 `prepare`/`start` commands compose the local Docker implementation. They are not
 an external backend loader.

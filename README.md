@@ -168,12 +168,18 @@ success also does not certify the current Worker revision; see the
 
 ## Getting Started
 
-A coding agent can serve as your **trusted benchmark operator**, helping you
-prepare, launch, monitor, and report your runs.
-Open this checkout in your preferred coding agent, ask it to follow
-[AGENTS.md](AGENTS.md) and the [full reference](docs/benchmark-reference.md), and
-give it one of the prompts below. The **Tested Agent** is the separate
-participant whose research ability is being measured.
+A coding agent can serve as your **Repository Assistant**, helping you
+understand, develop, test, document, and maintain the project. Open this checkout
+in your preferred coding agent and ask it to follow [AGENTS.md](AGENTS.md).
+
+When helping you prepare, launch, monitor, and report research runs, the
+Repository Assistant takes the **trusted operator** role. The **Research Agent**
+is the separate autonomous participant inside the environment, called the
+**Tested Agent** in AutoTrain-Bench.
+
+For an AutoTrain-Bench run, ask the Repository Assistant to follow the
+[full reference](docs/benchmark-reference.md) and give it one of the prompts
+below. Repository development and review do not by themselves request a run.
 
 Choose a [benchmark challenge](challenges/README.md), such as
 [LM pretrain](challenges/lm-pretrain/README.md), and select its published Track

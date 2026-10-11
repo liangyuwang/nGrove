@@ -3,9 +3,10 @@
 The bundled container launcher records episode-owned runtime resources in a
 private Worker journal. Recovery reclaims resources; it does not resume an
 episode, retry training/evaluation, change budgets, reopen research, or publish
-results. The trusted operator Agent may invoke the same recovery command that
-a deployment supervisor invokes. The Tested Agent receives neither the journal
-nor recovery authority.
+results. When authorized to perform recovery, the Repository Assistant acting
+as trusted operator may invoke the same recovery command that a deployment
+supervisor invokes. The Tested Agent receives neither the journal nor recovery
+authority.
 
 ## Launch and recover
 
