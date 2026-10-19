@@ -2,6 +2,7 @@ import ast
 import hashlib
 import io
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -543,6 +544,52 @@ class BranchingTests(unittest.TestCase):
                 self.assertFalse(result["ok"])
                 self.assertIsInstance(result["error"], str)
 
+    def test_combined_bundle_supports_both_clients_without_trusted_modules(self):
+        bundle = publish_client_bundle(
+            self.root / "combined-api", include_episode_api=True
+        )
+        code = """import importlib.util
+from envcore.client import Client
+from ngrove.branching.client import BranchClient
+for name in ('envcore.supervisor', 'envcore.operator_status',
+             'ngrove.branching.session', 'ngrove.branching.control',
+             'ngrove.branching.monitor', 'ngrove.branching.artifacts',
+             'ngrove.branching.cli'):
+    assert importlib.util.find_spec(name) is None, name
+print(Client.__name__, BranchClient.__name__)
+"""
+        environment = {
+            **os.environ,
+            # Keep the trusted source later on the path to verify that neither
+            # public package extends its namespace into it.
+            "PYTHONPATH": os.pathsep.join(
+                [str(bundle), str(Path(__file__).resolve().parents[1])]
+            ),
+        }
+        for arguments, expected_code, expected_text in (
+            (["-c", code], 0, "Client BranchClient"),
+            (["-m", "ngrove", "agent", "--help"], 0, "lease-start"),
+            (["-m", "ngrove", "start", "--help"], 2, "invalid choice"),
+            (["-m", "ngrove", "report", "--help"], 2, "invalid choice"),
+            (["-m", "ngrove", "branches", "--help"], 2, "invalid choice"),
+        ):
+            with self.subTest(arguments=arguments):
+                result = subprocess.run(
+                    [sys.executable, "-B", "-S", *arguments],
+                    cwd=self.root,
+                    env=environment,
+                    text=True,
+                    capture_output=True,
+                    timeout=20,
+                )
+                self.assertEqual(result.returncode, expected_code, result.stderr)
+                self.assertIn(expected_text, result.stdout + result.stderr)
+        if os.name == "posix":
+            for path in (bundle, *bundle.rglob("*")):
+                self.assertEqual(
+                    path.stat().st_mode & 0o777, 0o555 if path.is_dir() else 0o444
+                )
+
     def test_ready_cannot_bind_an_allocation_or_episode_twice(self):
         work, receipt, _ = self.ready()
         self.client.fork(
@@ -708,6 +755,107 @@ class ArtifactAndProjectionTests(unittest.TestCase):
             self.assertFalse(segment["complete_agent_context"])
         finally:
             fixture.doCleanups()
+
+    def test_projection_rejects_missing_or_corrupt_events_in_its_interval(self):
+        from tests.test_recording import RecordingIntegrationTests
+
+        fixture = RecordingIntegrationTests()
+        fixture.setUp()
+        try:
+            supervisor = fixture.fixture.supervisor()
+            fixture.exchange(supervisor, "status")
+            fixture.exchange(supervisor, "status")
+            journal = supervisor.events_path
+            lines = journal.read_text().splitlines()
+            index = next(
+                i
+                for i, line in enumerate(lines)
+                if json.loads(line)["type"] == "ACTION_RETURNED"
+            )
+            for replacement in ([], ["invalid JSON"]):
+                with self.subTest(replacement=replacement):
+                    journal.write_text(
+                        "\n".join(lines[:index] + replacement + lines[index + 1 :])
+                        + "\n"
+                    )
+                    with self.assertRaisesRegex(
+                        BranchError, "recording_interval_incomplete"
+                    ):
+                        episode_segment(
+                            supervisor.episode_dir, through_seq=supervisor.sequence
+                        )
+        finally:
+            fixture.doCleanups()
+
+    def test_projection_completion_is_scoped_to_the_selected_boundary(self):
+        from tests.test_recording import RecordingIntegrationTests
+
+        fixture = RecordingIntegrationTests()
+        fixture.setUp()
+        try:
+            supervisor = fixture.fixture.supervisor()
+            fixture.exchange(supervisor, "status")
+            events = [
+                json.loads(line)
+                for line in supervisor.events_path.read_text().splitlines()
+            ]
+            start = next(e for e in events if e["type"] == "ACTION_STARTED")
+            end = next(e for e in events if e["type"] == "ACTION_RETURNED")
+            expected_issue = {
+                "code": "action_completion_unknown",
+                "event_id": start["event_id"],
+            }
+            prefix = episode_segment(supervisor.episode_dir, through_seq=start["seq"])
+            self.assertEqual(prefix["issues"], [expected_issue])
+            complete = episode_segment(supervisor.episode_dir, through_seq=end["seq"])
+            self.assertEqual(complete["issues"], [])
+
+            # A complete journal can still record an interrupted action. Record
+            # a public start without a return and keep the uncertainty explicit.
+            with patch.object(
+                supervisor, "_handle_request", side_effect=KeyboardInterrupt
+            ):
+                with self.assertRaises(KeyboardInterrupt):
+                    supervisor.handle({"op": "status"})
+            pending = episode_segment(
+                supervisor.episode_dir, through_seq=supervisor.sequence
+            )
+            self.assertEqual(len(pending["issues"]), 1)
+            self.assertEqual(pending["issues"][0]["code"], "action_completion_unknown")
+        finally:
+            fixture.doCleanups()
+
+    def test_projection_ignores_gaps_and_private_issues_outside_its_interval(self):
+        events = [
+            {
+                "seq": seq,
+                "event_id": f"ep:{seq}",
+                "type": "CONTROL_RESPONSE",
+                "phase": "research",
+                "visibility": "agent_exchange",
+            }
+            for seq in (1, 3, 4, 6)
+        ]
+        recording = {
+            "episode_id": "ep",
+            "events": events,
+            "payloads": {},
+            "issues": [
+                {"code": "event_gap", "event_id": "ep:3"},
+                {"code": "event_gap", "event_id": "ep:6"},
+                {
+                    "code": "action_completion_unknown",
+                    "action_id": "private-action",
+                },
+                {"code": "invalid_event", "detail": "private-diagnostic"},
+            ],
+        }
+        with patch("ngrove.branching.recording.read_recording", return_value=recording):
+            segment = episode_segment(Path("unused"), after_seq=2, through_seq=4)
+        self.assertEqual(segment["issues"], [])
+        self.assertEqual([e["seq"] for e in segment["events"]], [3, 4])
+        self.assertNotIn("private-action", json.dumps(segment))
+        self.assertNotIn("private-diagnostic", json.dumps(segment))
 
     def test_demo_exercises_full_shared_copy_merge_and_cleanup_lifecycle(self):
         root = Path(__file__).resolve().parents[1]

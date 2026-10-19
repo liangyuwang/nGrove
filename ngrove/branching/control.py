@@ -73,15 +73,44 @@ class ControlEndpoint:
             return {"ok": False, "error": "branch_service_unavailable"}
 
 
-def publish_client_bundle(destination: Path) -> Path:
-    """Publish only the client, without importing trusted package initializers."""
-    destination = Path(destination)
-    package = destination / "ngrove" / "branching"
-    package.mkdir(parents=True, exist_ok=False)
-    for directory in (package.parent, package):
-        path = directory / "__init__.py"
-        path.write_text('"""Public branching client bundle."""\n', encoding="utf-8")
-        path.chmod(0o444)
-    shutil.copyfile(Path(__file__).with_name("client.py"), package / "client.py")
-    (package / "client.py").chmod(0o444)
+def publish_client_bundle(
+    destination: Path, *, include_episode_api: bool = False
+) -> Path:
+    """Publish a restricted client bundle, optionally with episode API helpers.
+
+    Use the combined bundle as one import root for an Agent needing both APIs.
+    Separate regular ``ngrove`` packages shadow each other on PYTHONPATH; extending
+    their search path could also expose trusted modules from an installed package.
+    """
+    destination = Path(destination).resolve()
+    launcher = destination / "ngrove"
+    if include_episode_api:
+        from envcore.agent_api_bundle import publish_agent_api_bundle
+
+        publish_agent_api_bundle(destination)
+        # This newly created bundle is not handed to a runner until publication
+        # returns. Reopen only its launcher directory to add the public client.
+        launcher.chmod(0o755)
+    else:
+        launcher.mkdir(parents=True, exist_ok=False)
+        initializer = launcher / "__init__.py"
+        initializer.write_text(
+            '"""Public branching client bundle."""\n', encoding="utf-8"
+        )
+        initializer.chmod(0o444)
+    package = launcher / "branching"
+    try:
+        package.mkdir()
+        initializer = package / "__init__.py"
+        initializer.write_text(
+            '"""Public branching client bundle."""\n', encoding="utf-8"
+        )
+        initializer.chmod(0o444)
+        shutil.copyfile(Path(__file__).with_name("client.py"), package / "client.py")
+        (package / "client.py").chmod(0o444)
+    finally:
+        if package.is_dir():
+            package.chmod(0o555)
+        launcher.chmod(0o555)
+        destination.chmod(0o555)
     return destination

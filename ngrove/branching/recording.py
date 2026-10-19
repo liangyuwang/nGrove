@@ -17,6 +17,9 @@ def episode_segment(episode: Path, *, after_seq: int = 0, through_seq: int) -> d
 
     Only explicitly Agent-visible exchanges are exported. Private events, usage,
     Operator diagnostics, observations and all postmortem measurements are excluded.
+    A missing event in the selected interval prevents publication. Completion
+    issues are derived from public exchanges as of through_seq, not private issues
+    or later evidence in the source recording.
     This is history, not a restorable context export. It makes no consumption claim.
     """
     if (
@@ -32,10 +35,23 @@ def episode_segment(episode: Path, *, after_seq: int = 0, through_seq: int) -> d
     events = recording["events"]
     if not any(e.get("seq") == through_seq for e in events):
         raise BranchError("recording_boundary_missing")
+    interval = [e for e in events if after_seq < e.get("seq", 0) <= through_seq]
+    # read_recording validates increasing sequence numbers and skips corrupt
+    # entries. Count the entire interval before filtering private event types so
+    # omissions cannot be mistaken for intentional visibility filtering.
+    if len(interval) != through_seq - after_seq:
+        raise BranchError("recording_interval_incomplete")
+    returned_actions = {
+        e["action_id"]
+        for e in interval
+        if e.get("phase") == "research"
+        and e.get("visibility") == "agent_exchange"
+        and e.get("type") == "ACTION_RETURNED"
+        and isinstance(e.get("action_id"), str)
+    }
     selected = []
-    for event in events:
-        if not after_seq < event.get("seq", 0) <= through_seq:
-            continue
+    issues = []
+    for event in interval:
         if (
             event.get("phase") != "research"
             or event.get("type") not in _EXCHANGES
@@ -56,11 +72,19 @@ def episode_segment(episode: Path, *, after_seq: int = 0, through_seq: int) -> d
         elif ref.get("status") == "saved":
             item["payload_status"] = "unavailable_or_corrupt"
         selected.append(item)
+        if (
+            event["type"] == "ACTION_STARTED"
+            and event.get("action_id") not in returned_actions
+        ):
+            issues.append(
+                {"code": "action_completion_unknown", "event_id": event["event_id"]}
+            )
     segment = {
         "episode_id": recording["episode_id"],
         "after_seq": after_seq,
         "through_seq": through_seq,
         "events": selected,
+        "issues": issues,
         "scope": "agent_exchange_only",
         "complete_agent_context": False,
     }

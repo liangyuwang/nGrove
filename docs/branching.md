@@ -49,6 +49,12 @@ no bundled proprietary-model adapter or automatic plug-in to `ngrove start`.
 - `BranchClient(transport)` is the small target-facing client. Use
   `publish_client_bundle()` to publish only that client; never mount the session
   database, monitor credentials or full Python package into an Agent sandbox.
+  For an Agent that also uses episode control, publish one combined bundle with
+  `publish_client_bundle(path, include_episode_api=True)`. Use that returned path
+  as the public import root: it contains both the branching client and the
+  restricted `python -m ngrove agent ...` interface. Separate bundles each own a
+  regular `ngrove` package and must not be stacked on `PYTHONPATH`. The combined
+  bundle remains read-only and excludes trusted Core and branching service modules.
 - A monitor/assistant claims requests and implements environment operations.
   Common handlers can be reused without an LLM. New platform mechanisms may be
   prepared online within the frozen contract. The monitor does not invent a
@@ -164,9 +170,13 @@ preserves each node's own event order and does not claim a total causal order
 between sibling branches. Checkpoints retain local evidence deltas; imports can
 use `episode_segment(episode, after_seq=previous_boundary, through_seq=boundary)`.
 That projection verifies recorded payload identities and includes only explicitly
-Agent-visible exchanges before sealing. Missing capture remains explicit; handler
-return/publication does not prove consumption. The complete private Core export
-is not used as a branch prefix.
+Agent-visible exchanges before sealing. It rejects a selected interval with missing
+or corrupt events as `recording_interval_incomplete`; gaps outside that interval
+do not invalidate it. Payload capture omissions remain explicit. Its `issues`
+list marks public actions started in the interval whose completion is unknown at
+`through_seq`, even if a later event records their return. Private source diagnostics
+are not copied into that list. Handler return/publication does not prove consumption.
+The complete private Core export is not used as a branch prefix.
 
 ## Three clocks and resource admission
 
