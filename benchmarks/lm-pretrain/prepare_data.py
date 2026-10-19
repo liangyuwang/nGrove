@@ -53,8 +53,8 @@ DATA_DIR = ROOT / "data"
 SOURCE_MANIFEST_PATH = DATA_DIR / "source-files.json"
 DEFAULT_RAW_DIR = DATA_DIR / "raw" / DATASET_REVISION
 DEFAULT_OUTPUT_DIR = DATA_DIR / "generated"
-# Stable data provenance identity, independent of display names or module paths.
-BUILDER_ID = "autotrain-bench/lm-pretrain"
+# Data provenance identity owned by the lm-pretrain benchmark.
+BUILDER_ID = "benchmarks/lm-pretrain"
 
 
 class PreparationError(RuntimeError):
@@ -155,8 +155,7 @@ def _directory_metadata_digest(path: Path) -> str:
     """Fingerprint every entry without rereading a multi-billion-token corpus."""
 
     digest = hashlib.sha256()
-    # Keep the fingerprint namespace stable when renaming the framework.
-    digest.update(b"autotrain-bench-directory-metadata-v1\0")
+    digest.update(b"benchmarks/lm-pretrain/directory-metadata-v1\0")
     try:
         entries = sorted(path.rglob("*"), key=lambda item: os.fsencode(str(item)))
         for entry in entries:
