@@ -19,7 +19,9 @@ def episode_segment(episode: Path, *, after_seq: int = 0, through_seq: int) -> d
     Operator diagnostics, observations and all postmortem measurements are excluded.
     A missing event in the selected interval prevents publication. Completion
     issues are derived from public exchanges as of through_seq, not private issues
-    or later evidence in the source recording.
+    or later evidence in the source recording. Their scope is limited to public
+    actions started in this interval; cross-interval completion is not checked.
+    An empty issues list cannot clear earlier uncertainty or authorize restoration.
     This is history, not a restorable context export. It makes no consumption claim.
     """
     if (
@@ -85,6 +87,9 @@ def episode_segment(episode: Path, *, after_seq: int = 0, through_seq: int) -> d
         "through_seq": through_seq,
         "events": selected,
         "issues": issues,
+        "issues_scope": "public_actions_started_in_interval",
+        "cross_interval_completion": "not_checked",
+        "restore_readiness": "not_assessed",
         "scope": "agent_exchange_only",
         "complete_agent_context": False,
     }

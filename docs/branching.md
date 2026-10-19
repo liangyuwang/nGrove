@@ -178,6 +178,27 @@ list marks public actions started in the interval whose completion is unknown at
 are not copied into that list. Handler return/publication does not prove consumption.
 The complete private Core export is not used as a branch prefix.
 
+Each segment explicitly declares the limits of this check:
+
+```json
+{
+  "issues_scope": "public_actions_started_in_interval",
+  "cross_interval_completion": "not_checked",
+  "restore_readiness": "not_assessed",
+  "complete_agent_context": false
+}
+```
+
+An empty `issues` list says only that no completion uncertainty was found for
+public actions started in `(after_seq, through_seq]`. An action started in an
+earlier segment may still be running. Consumers must not clear earlier uncertainty
+when a later segment has no issues. Cross-interval completion remains explicitly
+unchecked, including when gaps outside the selected interval are present.
+`restore_readiness` stays `not_assessed` even for a complete recording with every
+public action returned. The runner must separately establish quiescence, consistent
+capture, and restoration of context, tools and execution state before releasing
+a continuation through the checkpoint/READY protocol.
+
 ## Three clocks and resource admission
 
 The frozen session policy defines a capacity vector, a global wall-time limit,

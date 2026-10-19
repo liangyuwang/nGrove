@@ -809,6 +809,10 @@ class ArtifactAndProjectionTests(unittest.TestCase):
             self.assertEqual(prefix["issues"], [expected_issue])
             complete = episode_segment(supervisor.episode_dir, through_seq=end["seq"])
             self.assertEqual(complete["issues"], [])
+            # A returned action and a complete log do not certify runner state.
+            for segment in (prefix, complete):
+                self.assertEqual(segment["restore_readiness"], "not_assessed")
+                self.assertFalse(segment["complete_agent_context"])
 
             # A complete journal can still record an interrupted action. Record
             # a public start without a return and keep the uncertainty explicit.
@@ -822,6 +826,48 @@ class ArtifactAndProjectionTests(unittest.TestCase):
             )
             self.assertEqual(len(pending["issues"]), 1)
             self.assertEqual(pending["issues"][0]["code"], "action_completion_unknown")
+        finally:
+            fixture.doCleanups()
+
+    def test_projection_delta_does_not_clear_an_earlier_pending_action(self):
+        from tests.test_recording import RecordingIntegrationTests
+
+        fixture = RecordingIntegrationTests()
+        fixture.setUp()
+        try:
+            supervisor = fixture.fixture.supervisor()
+            with patch.object(
+                supervisor, "_handle_request", side_effect=KeyboardInterrupt
+            ):
+                with self.assertRaises(KeyboardInterrupt):
+                    supervisor.handle({"op": "status"})
+            boundary = supervisor.sequence
+            prefix = episode_segment(supervisor.episode_dir, through_seq=boundary)
+            self.assertEqual(len(prefix["issues"]), 1)
+            pending = prefix["issues"][0]
+            self.assertEqual(pending["code"], "action_completion_unknown")
+
+            # A separate action completes in the next segment while the earlier
+            # action has no recorded return. Empty local issues are not an all-clear.
+            fixture.exchange(supervisor, "status")
+            delta = episode_segment(
+                supervisor.episode_dir,
+                after_seq=boundary,
+                through_seq=supervisor.sequence,
+            )
+            self.assertTrue(delta["events"])
+            self.assertEqual(delta["issues"], [])
+            self.assertEqual(
+                delta["issues_scope"], "public_actions_started_in_interval"
+            )
+            self.assertEqual(delta["cross_interval_completion"], "not_checked")
+            self.assertEqual(delta["restore_readiness"], "not_assessed")
+            self.assertFalse(delta["complete_agent_context"])
+            self.assertNotIn(pending["event_id"], json.dumps(delta))
+            whole_prefix = episode_segment(
+                supervisor.episode_dir, through_seq=supervisor.sequence
+            )
+            self.assertEqual(whole_prefix["issues"], [pending])
         finally:
             fixture.doCleanups()
 
@@ -853,6 +899,8 @@ class ArtifactAndProjectionTests(unittest.TestCase):
         with patch("ngrove.branching.recording.read_recording", return_value=recording):
             segment = episode_segment(Path("unused"), after_seq=2, through_seq=4)
         self.assertEqual(segment["issues"], [])
+        self.assertEqual(segment["cross_interval_completion"], "not_checked")
+        self.assertEqual(segment["restore_readiness"], "not_assessed")
         self.assertEqual([e["seq"] for e in segment["events"]], [3, 4])
         self.assertNotIn("private-action", json.dumps(segment))
         self.assertNotIn("private-diagnostic", json.dumps(segment))
