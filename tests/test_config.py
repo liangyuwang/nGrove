@@ -4,7 +4,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from benchcore.config import (
+from envcore.config import (
     AGENT_PROTOCOL_VERSION,
     AgentConfig,
     ConfigError,
@@ -173,6 +173,29 @@ class ConfigTests(unittest.TestCase):
         destination.write_text(json.dumps(payload), encoding="utf-8")
         return destination
 
+    def test_preparation_timing_round_trips_through_task_and_public_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = self._write_task(directory)
+            payload = json.loads(task.read_text(encoding="utf-8"))
+            for phases, expected in (
+                (None, ("worker_lease_startup",)),
+                ([], ()),
+                (["worker_lease_startup"], ("worker_lease_startup",)),
+            ):
+                with self.subTest(phases=phases):
+                    payload["timing"] = (
+                        {}
+                        if phases is None
+                        else {"environment_owned_preparation": phases}
+                    )
+                    task.write_text(json.dumps(payload), encoding="utf-8")
+                    config = TaskConfig.load(task)
+                    self.assertEqual(config.environment_owned_preparation, expected)
+                    self.assertEqual(
+                        config.public_manifest("A")["timing"],
+                        {"environment_owned_preparation": list(expected)},
+                    )
+
     def test_public_task_manifest_hides_private_splits_and_has_no_participant(self):
         config = TaskConfig.load(TASK)
         public = config.public_manifest("B")
@@ -227,7 +250,7 @@ class ConfigTests(unittest.TestCase):
         )
         self.assertEqual(
             boundary["public_helper_api"]["module"],
-            "benchcore.candidate_protocol",
+            "envcore.candidate_protocol",
         )
         self.assertEqual(boundary["prediction_storage"]["artifact_max_entries"], 2)
         self.assertEqual(boundary["prediction_storage"]["max_inodes"], 128)
@@ -349,11 +372,11 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ConfigError, "may not be leaderboard"):
                 TaskConfig.load(task)
 
-            payload["task_kind"] = "benchmark_challenge"
+            payload["task_kind"] = "research"
             payload["leaderboard_eligible"] = False
             task.write_text(json.dumps(payload), encoding="utf-8")
             config = TaskConfig.load(task)
-            self.assertEqual(config.task_kind, "benchmark_challenge")
+            self.assertEqual(config.task_kind, "research")
             self.assertFalse(config.leaderboard_eligible)
 
     def test_task_requires_the_generic_performance_score_contract(self):
@@ -404,7 +427,7 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             task = self._write_task(directory)
             payload = json.loads(task.read_text(encoding="utf-8"))
-            payload["task_kind"] = "benchmark_challenge"
+            payload["task_kind"] = "research"
             payload["leaderboard_eligible"] = True
             task.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaisesRegex(ConfigError, "digest-pinned"):

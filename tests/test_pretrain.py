@@ -7,12 +7,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from benchcore.config import TaskConfig
-from benchcore.training_data import verify_training_data
+from envcore.config import TaskConfig
+from envcore.training_data import verify_training_data
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PRETRAIN_ROOT = ROOT / "challenges/lm-pretrain"
+PRETRAIN_ROOT = ROOT / "research_tasks/lm-pretrain"
 TASK = PRETRAIN_ROOT / "task.json"
 PREPARE = PRETRAIN_ROOT / "prepare_data.py"
 
@@ -294,7 +294,7 @@ class PretrainTests(unittest.TestCase):
             task_path.write_text(json.dumps(payload), encoding="utf-8")
             task = TaskConfig.load(task_path)
             self.assertEqual(task.task_id, "lm-pretrain")
-            self.assertEqual(task.task_kind, "benchmark_challenge")
+            self.assertEqual(task.task_kind, "research")
             self.assertEqual(task.vocab_size, 50_257)
             self.assertEqual(task.context_length, 2_048)
             self.assertEqual(

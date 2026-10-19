@@ -10,15 +10,15 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from benchcore.cli import build_parser, command_start
-from benchcore.config import TaskConfig, TrainingResources
-from benchcore.worker_protocol import (
+from envcore.cli import build_parser, command_start
+from envcore.config import TaskConfig, TrainingResources
+from envcore.worker_protocol import (
     EnforcementLevel,
     EvaluationResourceFailure,
     ResourceEnvelope,
     ResourceRequirement,
 )
-from tests import test_challenge, test_evaluation_resources
+from tests import test_benchmark, test_evaluation_resources
 from tests.test_runtime import GPU_ONE, GPU_TWO, TASK, gpu_inventory
 
 
@@ -47,7 +47,7 @@ class EvaluationPreflightTests(unittest.TestCase):
             return original(args, **kwargs)
 
         with patch.object(self.runtime, "_run", side_effect=read_only), patch(
-            "benchcore.runtime.EvaluationResourceReceipt",
+            "envcore.runtime.EvaluationResourceReceipt",
             side_effect=AssertionError(
                 "preflight must not issue an allocation receipt"
             ),
@@ -86,7 +86,7 @@ class EvaluationPreflightTests(unittest.TestCase):
                 self.fixture.evaluate(self.runtime, self.request)
         self.assertFalse(
             any(
-                "benchcore.candidate_offline_runner" in call
+                "envcore.candidate_offline_runner" in call
                 for call in self.runtime.calls
             )
         )
@@ -104,8 +104,8 @@ class EvaluationPreflightTests(unittest.TestCase):
             self.runtime.now += 2
             return gpu_inventory(f"{GPU_ONE}, NVIDIA H100, 81920, Disabled")
 
-        with patch("benchcore.runtime.shutil.which", return_value="nvidia-smi"), patch(
-            "benchcore.runtime.subprocess.run", side_effect=query
+        with patch("envcore.runtime.shutil.which", return_value="nvidia-smi"), patch(
+            "envcore.runtime.subprocess.run", side_effect=query
         ):
             with self.assertRaisesRegex(EvaluationResourceFailure, "deadline"):
                 self.runtime.preflight_evaluation_resources(
@@ -120,8 +120,8 @@ class EvaluationPreflightTests(unittest.TestCase):
     def test_preflight_gpu_selection_is_not_substituted_when_it_disappears(self):
         config = replace(self.config, evaluator_device="cuda")
         resources = TrainingResources(nvidia_gpu_count=1, required_gpu_model="H100")
-        with patch("benchcore.runtime.shutil.which", return_value="nvidia-smi"), patch(
-            "benchcore.runtime.subprocess.run",
+        with patch("envcore.runtime.shutil.which", return_value="nvidia-smi"), patch(
+            "envcore.runtime.subprocess.run",
             return_value=gpu_inventory(f"{GPU_ONE}, NVIDIA H100, 81920, Disabled"),
         ) as query:
             self.runtime.preflight_evaluation_resources(
@@ -141,13 +141,13 @@ class EvaluationPreflightTests(unittest.TestCase):
                 )
         self.assertFalse(
             any(
-                "benchcore.candidate_offline_runner" in call
+                "envcore.candidate_offline_runner" in call
                 for call in self.runtime.calls
             )
         )
 
     def launch_args(self, root, request):
-        release = test_challenge.ChallengeReleaseTests()._write_release(str(root))
+        release = test_benchmark.BenchmarkReleaseTests()._write_release(str(root))
         payload = json.loads(release.read_text())
         payload["schema_version"] = 3
         payload["runtime_profiles"] = {
@@ -162,7 +162,7 @@ class EvaluationPreflightTests(unittest.TestCase):
         return build_parser().parse_args(
             [
                 "start",
-                "--challenge",
+                "--benchmark",
                 str(release),
                 "--track-config",
                 "b-3x10m",
@@ -199,11 +199,11 @@ class EvaluationPreflightTests(unittest.TestCase):
                 args = self.launch_args(root, request)
                 runtime = self.fixture.runtime(supported=supported)
                 with patch(
-                    "benchcore.cli.TaskConfig.load", return_value=self.config
-                ), patch("benchcore.cli.DockerRuntime", return_value=runtime), patch(
-                    "benchcore.cli.Supervisor"
+                    "envcore.cli.TaskConfig.load", return_value=self.config
+                ), patch("envcore.cli.DockerRuntime", return_value=runtime), patch(
+                    "envcore.cli.Supervisor"
                 ) as supervisor, patch(
-                    "benchcore.cli._initialize_agent_workspace"
+                    "envcore.cli._initialize_agent_workspace"
                 ) as workspace, patch.object(
                     runtime, "configure_operator_storage"
                 ) as storage, patch.object(runtime, "prepare") as prepare, patch.object(
@@ -223,10 +223,8 @@ class EvaluationPreflightTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             args = self.launch_args(root, self.request)
-            with patch(
-                "benchcore.cli.TaskConfig.load", return_value=self.config
-            ), patch(
-                "benchcore.cli.DockerRuntime", return_value=self.runtime
+            with patch("envcore.cli.TaskConfig.load", return_value=self.config), patch(
+                "envcore.cli.DockerRuntime", return_value=self.runtime
             ), patch.object(
                 self.runtime,
                 "preflight_evaluation_resources",
@@ -238,7 +236,7 @@ class EvaluationPreflightTests(unittest.TestCase):
             ), patch.object(
                 self.runtime, "environment_manifest", return_value={}
             ), patch(
-                "benchcore.cli.Supervisor",
+                "envcore.cli.Supervisor",
                 side_effect=RuntimeError("stop before reveal"),
             ) as supervisor, redirect_stdout(io.StringIO()):
                 with self.assertRaisesRegex(RuntimeError, "stop before reveal"):
@@ -252,7 +250,7 @@ class EvaluationPreflightTests(unittest.TestCase):
                 self.request,
             )
             self.assertEqual(
-                supervisor.call_args.kwargs["challenge_release"][
+                supervisor.call_args.kwargs["benchmark_release"][
                     "evaluation_resource_envelope"
                 ],
                 self.request.public_manifest(),

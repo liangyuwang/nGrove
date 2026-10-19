@@ -9,10 +9,10 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from benchcore.challenge import ChallengeRelease
-from benchcore.config import ConfigError, TaskConfig, TrainingResources
-from benchcore.results import ResultSchemaError, normalize_result_report
-from benchcore.worker_protocol import (
+from envcore.benchmark import BenchmarkRelease
+from envcore.config import ConfigError, TaskConfig, TrainingResources
+from envcore.results import ResultSchemaError, normalize_result_report
+from envcore.worker_protocol import (
     EnforcementLevel,
     EvaluationResourceFailure,
     EvaluationResourceReceipt,
@@ -26,7 +26,7 @@ from benchcore.worker_protocol import (
     WorkerTeardownFailure,
     assess_evaluation_resources,
 )
-from tests import test_challenge, test_results, test_supervisor
+from tests import test_benchmark, test_results, test_supervisor
 from tests.test_runtime import CapturingDockerRuntime, GPU_ONE, TASK, gpu_inventory
 
 
@@ -115,16 +115,16 @@ class EvaluationResourceProtocolTests(unittest.TestCase):
 class EvaluationResourceReleaseTests(unittest.TestCase):
     def test_separate_evaluation_contract_roundtrips_and_requires_new_schema(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = test_challenge.ChallengeReleaseTests()._write_release(directory)
+            path = test_benchmark.BenchmarkReleaseTests()._write_release(directory)
             payload = json.loads(path.read_text())
             profile = payload["runtime_profiles"]["h100-80gb-x4"]
             profile["evaluation_resource_contract"] = envelope().public_manifest()
             path.write_text(json.dumps(payload))
             with self.assertRaisesRegex(ConfigError, "schema_version 3"):
-                ChallengeRelease.load(path)
+                BenchmarkRelease.load(path)
             payload["schema_version"] = 3
             path.write_text(json.dumps(payload))
-            release = ChallengeRelease.load(path)
+            release = BenchmarkRelease.load(path)
             resolved = release.resolve(
                 TaskConfig.load(TASK),
                 track_config_id="a-1h",
@@ -147,7 +147,7 @@ class EvaluationResourceReleaseTests(unittest.TestCase):
 
     def test_formal_release_requires_its_own_enforced_evaluation_contract(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = test_challenge.ChallengeReleaseTests()._write_release(directory)
+            path = test_benchmark.BenchmarkReleaseTests()._write_release(directory)
             payload = json.loads(path.read_text())
             payload.update(
                 schema_version=3, leaderboard_eligible=True, release_stage="official"
@@ -166,13 +166,13 @@ class EvaluationResourceReleaseTests(unittest.TestCase):
                 with self.subTest(contract=value), self.assertRaisesRegex(
                     ConfigError, "evaluation_resource_contract"
                 ):
-                    ChallengeRelease.load(path)
+                    BenchmarkRelease.load(path)
             for profile in payload["runtime_profiles"].values():
                 profile["evaluation_resource_contract"] = envelope(
                     EnforcementLevel.ENFORCED
                 ).public_manifest()
             path.write_text(json.dumps(payload))
-            ChallengeRelease.load(path)
+            BenchmarkRelease.load(path)
 
 
 class EvaluationResourceSupervisorTests(unittest.TestCase):
@@ -189,7 +189,7 @@ class EvaluationResourceSupervisorTests(unittest.TestCase):
             self.formal_supervisor()[0]
             if formal
             else self.supervisor(
-                challenge_release={
+                benchmark_release={
                     "evaluation_resource_envelope": envelope().public_manifest()
                     if contract
                     else None,
@@ -221,7 +221,7 @@ class EvaluationResourceSupervisorTests(unittest.TestCase):
         )
         self.assertEqual(request.sha256, reordered.sha256)
         supervisor = self.supervisor(
-            challenge_release={
+            benchmark_release={
                 "evaluation_resource_envelope": request.public_manifest()
             },
             evaluation_resource_envelope=reordered,
@@ -250,7 +250,7 @@ class EvaluationResourceSupervisorTests(unittest.TestCase):
                 ValueError, "differs from the release"
             ):
                 self.supervisor(
-                    challenge_release={
+                    benchmark_release={
                         "evaluation_resource_envelope": request.public_manifest()
                     },
                     evaluation_resource_envelope=explicit,
@@ -260,12 +260,12 @@ class EvaluationResourceSupervisorTests(unittest.TestCase):
         constructor = test_supervisor.Supervisor
 
         def reordered_release(**kwargs):
-            release = copy.deepcopy(kwargs["challenge_release"])
+            release = copy.deepcopy(kwargs["benchmark_release"])
             raw = copy.deepcopy(release["evaluation_resource_envelope"])
             release["evaluation_resource_envelope"] = raw
             kwargs["evaluation_resource_envelope"] = ResourceEnvelope.from_manifest(raw)
             raw["normative"].reverse()
-            kwargs["challenge_release"] = release
+            kwargs["benchmark_release"] = release
             return constructor(**kwargs)
 
         with patch.object(test_supervisor, "Supervisor", side_effect=reordered_release):
@@ -274,7 +274,7 @@ class EvaluationResourceSupervisorTests(unittest.TestCase):
         self.assertEqual(state["leaderboard_eligibility_violations"], [])
         normalize_result_report(state)
         changed = copy.deepcopy(state)
-        changed["challenge_release"]["evaluation_resource_envelope"]["normative"][0][
+        changed["benchmark_release"]["evaluation_resource_envelope"]["normative"][0][
             "value"
         ] = 99
         with self.assertRaisesRegex(ResultSchemaError, "must match the frozen release"):
@@ -459,8 +459,8 @@ class EvaluationResourceDockerTests(unittest.TestCase):
                 else {"return_value": response}
             )
             with self.subTest(response=response), patch(
-                "benchcore.runtime.shutil.which", return_value="nvidia-smi"
-            ), patch("benchcore.runtime.subprocess.run", **options):
+                "envcore.runtime.shutil.which", return_value="nvidia-smi"
+            ), patch("envcore.runtime.subprocess.run", **options):
                 with self.assertRaises(EvaluationResourceFailure):
                     runtime._evaluation_resource_plan(
                         episode_id="episode",
@@ -500,7 +500,7 @@ class EvaluationResourceDockerTests(unittest.TestCase):
                         ),
                         "",
                     )
-                if "benchcore.candidate_offline_runner" in args:
+                if "envcore.candidate_offline_runner" in args:
                     self.now += 3
                 if "--mode" in args and args[args.index("--mode") + 1] == "score":
                     mount = next(item for item in args if item.endswith("dst=/output"))
@@ -546,9 +546,7 @@ class EvaluationResourceDockerTests(unittest.TestCase):
         result = self.evaluate(runtime, envelope())
         self.assertEqual(result.candidate_wall_seconds, 3)
         command = next(
-            call
-            for call in runtime.calls
-            if "benchcore.candidate_offline_runner" in call
+            call for call in runtime.calls if "envcore.candidate_offline_runner" in call
         )
         self.assertEqual(command[command.index("--cpus") + 1], "1.5")
         self.assertEqual(command[command.index("--memory") + 1], str(64 * 1024**2))
@@ -573,8 +571,7 @@ class EvaluationResourceDockerTests(unittest.TestCase):
                 self.evaluate(runtime, request)
             self.assertFalse(
                 any(
-                    "benchcore.candidate_offline_runner" in call
-                    for call in runtime.calls
+                    "envcore.candidate_offline_runner" in call for call in runtime.calls
                 )
             )
 
@@ -602,7 +599,7 @@ class EvaluationResourceDockerTests(unittest.TestCase):
                         )
                 self.assertFalse(
                     any(
-                        "benchcore.candidate_offline_runner" in call
+                        "envcore.candidate_offline_runner" in call
                         for call in runtime.calls
                     )
                 )

@@ -1,11 +1,11 @@
 # Research Worker Lease diagnostic
 
-`benchcore.conformance.probe_worker_leases()` exercises the supplied
+`envcore.conformance.probe_worker_leases()` exercises the supplied
 Research Worker through Worker Protocol v16. It adds reusable Lease lifecycle
 coverage toward original issue 10, alongside the resolution and
 [evaluation resource](worker-evaluation-probe.md) diagnostics. It does not
-create a Tested Agent, run hidden evaluation, select an incumbent, publish a
-benchmark result, or issue a formal `ConformanceReceipt`.
+create a Tested Agent, run hidden evaluation, select an incumbent, publish an
+evaluation result, or issue a formal `ConformanceReceipt`.
 
 ## Disposable inputs
 
@@ -40,7 +40,7 @@ according to the approved evidence-retention policy.
 After preparing and authorizing those inputs, the deployment can call:
 
 ```python
-from benchcore.conformance import probe_worker_leases
+from envcore.conformance import probe_worker_leases
 
 report = probe_worker_leases(
     research_worker,
@@ -96,7 +96,7 @@ launch work outside the disposable scope. Include a descendant that outlives its
 parent where the deployment needs to validate command-family termination.
 
 ```python
-from benchcore.conformance import CommandTimeoutCase
+from envcore.conformance import CommandTimeoutCase
 
 timeout_case = CommandTimeoutCase(
     command=public_timeout_fixture_command,

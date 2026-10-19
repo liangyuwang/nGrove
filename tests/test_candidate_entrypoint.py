@@ -6,8 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from benchcore.config import TaskConfig
-from benchcore.worker_protocol import CandidateChannelRequirements
+from envcore.config import TaskConfig
+from envcore.worker_protocol import CandidateChannelRequirements
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,7 +34,7 @@ class CandidateEntrypointTests(unittest.TestCase):
     def test_public_candidate_contracts_agree_with_worker_for_both_tasks_and_tracks(
         self,
     ):
-        for task in ("dev_tasks/smoke_lm-pretrain", "challenges/lm-pretrain"):
+        for task in ("dev_tasks/smoke_lm-pretrain", "research_tasks/lm-pretrain"):
             config = self._task_config(task)
             worker = CandidateChannelRequirements(
                 protocol=config.candidate_protocol
@@ -157,7 +157,7 @@ class CandidateEntrypointTests(unittest.TestCase):
                     [
                         sys.executable,
                         "-m",
-                        "benchcore.candidate_offline_runner",
+                        "envcore.candidate_offline_runner",
                         "--candidate",
                         candidate.name,
                         "--contexts",

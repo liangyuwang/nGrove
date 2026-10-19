@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "name": "h100-x4",
+  "runtime_profile": {
+    "label": "Single host \u2014 4\u00d7 NVIDIA H100 SXM 80GB HBM3",
+    "host_count": 1,
+    "accelerator": {
+      "vendor": "nvidia",
+      "model": "NVIDIA H100 80GB HBM3",
+      "count": 4,
+      "minimum_memory_mib": 80000,
+      "model_match": "H100 80GB HBM3"
+    }
+  }
+}

@@ -1,8 +1,8 @@
 import unittest
 from pathlib import Path
 
-from benchcore.agent_prompt import HOST_CLI_PROMPT
-from benchcore.cli_adapters.codex import build_codex_command
+from envcore.agent_prompt import HOST_CLI_PROMPT
+from envcore.cli_adapters.codex import build_codex_command
 
 
 class CodexAdapterTests(unittest.TestCase):
@@ -14,9 +14,9 @@ class CodexAdapterTests(unittest.TestCase):
             workspace=Path("/episode/workspace"),
             control_dir=Path("/episode/control"),
             shell_environment={
-                "BENCHCORE_CONTROL_DIR": "/episode/control",
-                "BENCHCORE_FORWARDED_ENVIRONMENT": '["VISIBLE"]',
-                "BENCHCORE_TASK": "/episode/public/task.json",
+                "ENVCORE_CONTROL_DIR": "/episode/control",
+                "ENVCORE_FORWARDED_ENVIRONMENT": '["VISIBLE"]',
+                "ENVCORE_TASK": "/episode/public/task.json",
                 "PATH": "/usr/bin",
                 "PYTHONPATH": "/package",
                 "VISIBLE": "yes",
@@ -38,6 +38,14 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertIn('shell_environment_policy.inherit="none"', command)
         self.assertIn(
             'shell_environment_policy.set.HOME="/episode/workspace"',
+            command,
+        )
+        self.assertIn(
+            'shell_environment_policy.set.ENVCORE_TASK="/episode/public/task.json"',
+            command,
+        )
+        self.assertIn(
+            'shell_environment_policy.set.ENVCORE_TRAIN_DIR="/task/train"',
             command,
         )
         self.assertFalse(any("CODEX_HOME" in value for value in command))

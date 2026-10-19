@@ -2,15 +2,15 @@ import copy
 import unittest
 from dataclasses import replace
 
-from benchcore.gateway_execution import (
+from envcore.gateway_execution import (
     GatewayArtifactIdentity,
     GatewayExecutionReceipt,
     GatewayExecutionRequest,
     gateway_eligibility_violations,
     inference_policy_sha256,
 )
-from benchcore.results import ResultSchemaError, normalize_result_report
-from benchcore.worker_protocol import EnforcementLevel, TrustLevel
+from envcore.results import ResultSchemaError, normalize_result_report
+from envcore.worker_protocol import EnforcementLevel, TrustLevel
 from tests.test_results import _finalized
 
 

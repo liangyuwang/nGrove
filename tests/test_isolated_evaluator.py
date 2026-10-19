@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from benchcore.candidate_protocol import (
+from envcore.candidate_protocol import (
     CANDIDATE_PROTOCOL,
     PREDICTION_MANIFEST_MAX_BYTES,
     CandidateProtocolError,
@@ -18,8 +18,8 @@ from benchcore.candidate_protocol import (
     validate_prediction_artifact,
     write_prediction_artifact,
 )
-from benchcore.worker_protocol import PerformanceScoreContract
-from benchcore.config import TaskConfig
+from envcore.worker_protocol import PerformanceScoreContract
+from envcore.config import TaskConfig
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -167,7 +167,7 @@ def run_offline(candidate_dir, contexts_path, output_dir, device):
                 [
                     sys.executable,
                     "-m",
-                    "benchcore.candidate_offline_runner",
+                    "envcore.candidate_offline_runner",
                     "--candidate",
                     str(candidate),
                     "--contexts",
@@ -184,7 +184,7 @@ def run_offline(candidate_dir, contexts_path, output_dir, device):
                 timeout=30,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            for task in ("dev_tasks/smoke_lm-pretrain", "challenges/lm-pretrain"):
+            for task in ("dev_tasks/smoke_lm-pretrain", "research_tasks/lm-pretrain"):
                 with self.subTest(task=task):
                     spec = importlib.util.spec_from_file_location(
                         "contract_scorer", ROOT / task / "evaluator/evaluator.py"
@@ -199,7 +199,7 @@ def run_offline(candidate_dir, contexts_path, output_dir, device):
                     )
 
     def test_uniform_scores_are_invariant_to_large_finite_logit_offsets(self):
-        for task in ("dev_tasks/smoke_lm-pretrain", "challenges/lm-pretrain"):
+        for task in ("dev_tasks/smoke_lm-pretrain", "research_tasks/lm-pretrain"):
             spec = importlib.util.spec_from_file_location(
                 "shifted_logit_evaluator", ROOT / task / "evaluator/evaluator.py"
             )

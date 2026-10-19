@@ -1,7 +1,7 @@
 # Smoke LM pretrain development task
 
 `smoke_lm-pretrain` is the single bundled end-to-end development smoke task for
-AutoTrain-Bench. It exercises the same release-bound launch contract,
+Envcore. It exercises the same release-bound launch contract,
 task/participant boundary, Policy, trusted Evaluator implementation, Track
 A/Track B state machine, Candidate isolation, and incumbent semantics as
 `lm-pretrain`. Its corpus, tokenization, context, data layout, split recipe,
@@ -21,7 +21,7 @@ The smoke task owns only:
 - the release Policy.
 
 The participant owns the Agent image or CLI, its command, and every initial
-workspace file. If `--agent-workspace` is omitted, Benchcore creates an
+workspace file. If `--agent-workspace` is omitted, Envcore creates an
 empty episode workspace. The Agent must create its own training program, model,
 experiments, Candidate implementation, and incumbent decisions after task
 reveal. This task does not ship a reference or starter Agent. An egress-denied
@@ -56,7 +56,7 @@ Candidate that satisfies the public ABI. Concrete runtime provenance and Worker
 capability evidence belong to the episode result. A development deployment
 cannot become leaderboard eligible merely by reporting the expected hardware.
 
-The Agent receives the same variable-length declaration as the challenge:
+The Agent receives the same variable-length declaration as the LM pretraining task:
 evaluation inputs are variable-length token sequences, the exact length
 distribution is not disclosed during research, and participants choose how to
 use context to optimize next-token prediction within the resource budget.
@@ -64,23 +64,31 @@ use context to optimize next-token prediction within the resource budget.
 recipe remains reproducible from its public source; this visibility convention
 does not make that recipe suitable as a secret formal evaluation.
 
-Training resources are selected from the finite map in `challenge.json`, never
-by `task.json` or ad-hoc launch flags. `cpu-local` keeps the smoke path cheap;
-the GPU profiles mirror the [lm-pretrain hardware map](../../challenges/lm-pretrain/README.md#supported-preview-lanes):
+With `--benchmark`, `--runtime-profile` selects a Training resource preset from
+`benchmark.json`. An optional `--environment` supplies custom execution settings
+through the same configuration and freezing flow.
+`cpu-local` keeps the smoke path cheap;
+the GPU profiles mirror the [lm-pretrain hardware map](../../research_tasks/lm-pretrain/README.md#supported-preview-lanes):
 A100 SXM4 80GB, H100 SXM 80GB, H200 SXM 141GB, and H200 NVL 141GB, each with
 1, 2, 4, or 8 full GPUs on one host. These select Training resources; this smoke
-task's trusted evaluation remains on CPU. The budgets remain five minutes for
-Track A and three 75-second Leases for Track B at every GPU count. Inspect the
-supported Track and runtime choices before launch:
+task's trusted evaluation remains on CPU. The published Track budgets are five
+minutes for Track A and three 75-second Leases for Track B at every GPU count.
+Inspect the supported Track and runtime choices before launch:
 
 ```bash
-autotrain-bench challenge-info \
-  --challenge dev_tasks/smoke_lm-pretrain/challenge.json
+envcore benchmark-info \
+  --benchmark dev_tasks/smoke_lm-pretrain/benchmark.json
 ```
+
+`--environment` can select custom compute resources and
+override the time budget without editing the task or benchmark release. Omitted
+budgets inherit the selected task/Track settings. See
+[environment configuration](../../docs/environments.md) for task-based and
+benchmark-based launch forms.
 
 These profiles are integration configurations, not official comparison
 environments. For custom hardware and independent Agent comparisons, follow the
-[reference environment and comparison policy](../../challenges/README.md#reference-environments-and-custom-comparisons).
+[reference environment and comparison policy](../../research_tasks/README.md#reference-environments-and-custom-comparisons).
 
 ## Prepare
 
@@ -90,7 +98,7 @@ library.
 
 ```bash
 python3 dev_tasks/smoke_lm-pretrain/prepare_data.py
-autotrain-bench prepare --task dev_tasks/smoke_lm-pretrain/task.json
+envcore prepare --task dev_tasks/smoke_lm-pretrain/task.json
 ```
 
 Preparation downloads a deterministic slice of
@@ -100,7 +108,7 @@ and writes ignored generated artifacts under `dev_tasks/smoke_lm-pretrain/data/`
 
 `data/train/manifest.json` inventories the public TRAIN files without including
 hidden evaluation metadata. Cached preparation verifies this inventory;
-legacy or damaged data is rebuilt. `autotrain-bench prepare` and every new
+legacy or damaged data is rebuilt. `envcore prepare` and every new
 episode independently check the full TRAIN view before the Agent starts.
 See [TRAIN integrity](../../docs/training-data.md).
 
@@ -129,11 +137,11 @@ The image contains the Agent executable, while the writable episode workspace
 starts empty:
 
 ```bash
-autotrain-bench start \
-  --challenge dev_tasks/smoke_lm-pretrain/challenge.json \
+envcore start \
+  --benchmark dev_tasks/smoke_lm-pretrain/benchmark.json \
   --track-config smoke-a-5m \
   --runtime-profile cpu-local \
-  --episodes-root /path/to/autotrain-bench-runs/episodes \
+  --episodes-root /path/to/envcore-runs/episodes \
   --agent-runner container \
   --agent-image participant-agent@sha256:DIGEST \
   --agent-command "participant-agent run"
@@ -143,11 +151,11 @@ The same smoke task can exercise a published accelerator profile without
 changing the task or using manual resource overrides:
 
 ```bash
-autotrain-bench start \
-  --challenge dev_tasks/smoke_lm-pretrain/challenge.json \
+envcore start \
+  --benchmark dev_tasks/smoke_lm-pretrain/benchmark.json \
   --track-config smoke-a-5m \
   --runtime-profile h100-sxm-80gb-x4 \
-  --episodes-root /path/to/autotrain-bench-runs/episodes \
+  --episodes-root /path/to/envcore-runs/episodes \
   --agent-runner container \
   --agent-image participant-agent@sha256:DIGEST \
   --agent-command "participant-agent run"
@@ -157,18 +165,18 @@ A logged-in CLI such as Codex can be rehearsed from the same default empty
 workspace by omitting `--agent-workspace`. The episode root remains explicit
 and outside the Core checkout. This matters for host-native tools that discover
 instructions from parent directories: an empty workspace nested beneath the
-Core would still inherit the operator's `AGENTS.md` and is rejected before task
-reveal. The Tested Agent's own global configuration and participant-owned
-instructions remain in scope.
+Core would still inherit the Repository Assistant's `AGENTS.md` instructions
+and is rejected before task reveal. The Tested Agent's own global configuration
+and participant-owned instructions remain in scope.
 
 ```bash
-autotrain-bench start \
-  --challenge dev_tasks/smoke_lm-pretrain/challenge.json \
+envcore start \
+  --benchmark dev_tasks/smoke_lm-pretrain/benchmark.json \
   --track-config smoke-a-5m \
   --runtime-profile cpu-local \
-  --episodes-root /path/to/autotrain-bench-runs/episodes \
+  --episodes-root /path/to/envcore-runs/episodes \
   --agent-runner host_cli \
-  --agent-command "python3 -m benchcore.cli_adapters.codex --model MODEL --reasoning-effort high"
+  --agent-command "python3 -m envcore.cli_adapters.codex --model MODEL --reasoning-effort high"
 ```
 
 The `host_cli` run reports `policy_compliant: false` because a host process can
@@ -188,7 +196,7 @@ Training commands write Candidate artifacts beneath the lease-owned `/output`
 mount. A participant commits an artifact through the mailbox:
 
 ```bash
-python -m benchcore.cli agent lease-commit /output/candidate
+python -m envcore.cli agent lease-commit /output/candidate
 ```
 
 Commit stops the Training sandbox before validating and snapshotting the
@@ -256,10 +264,10 @@ manifest = {
 }
 ```
 
-The generated public task at `$BENCHCORE_TASK` carries the same
+The generated public task at `$ENVCORE_TASK` carries the same
 machine-readable contract under
 `evaluation.candidate_boundary.prediction_manifest`. The generated public
-`benchcore.candidate_protocol` API is explicitly allowed in Agent and
+`envcore.candidate_protocol` API is explicitly allowed in Agent and
 Training environments: `load_context_request(path)` reads the request and
 `write_prediction_artifact(output_dir, *, dataset_id, logits, examples,
 vocab_size)` writes both output files. The reader returns the parsed dictionary

@@ -1,49 +1,83 @@
-# AutoTrain-Bench operator instructions
+# Repository Assistant instructions
+
+Envcore is an autonomous research environment framework with bundled research
+tasks under `research_tasks/`. Each task can also be used as a benchmark under
+fixed comparison conditions. Agents own validation within their research
+trajectories; Envcore evaluates submitted artifacts after research sealing.
+Environment runs may select user-owned
+compute resources and time budgets at launch using `--environment`, without
+editing task or benchmark releases. Omitted time budgets inherit the selected
+task/Track settings; resolved budgets freeze before task reveal. Track A uses
+total research seconds; Track B uses Lease count and seconds per Lease, not a
+total research deadline. Private Operator protection remains separate.
+Existing published runtime profiles remain available.
+Every run resolves and freezes one environment before task reveal. Named
+benchmark profiles are optional presets for that same execution path. A user-owned
+`--environment` may replace the selected compute configuration and time budget.
+The benchmark application records a comparison key only when the effective
+conditions match an explicitly selected published lane; custom conditions remain
+leaderboard-ineligible. The training-research protocol retains its isolation,
+sealing and evaluation rules. Record effective resources, resolved time budgets
+and the frozen environment identity for every run.
+See [environment configuration](docs/environments.md).
 
 ## Role
 
-Act as the trusted benchmark operator, not as the Tested Agent. Help the user
-prepare, launch, monitor, and report an AutoTrain-Bench episode in an execution
-environment they are authorized to use. The Tested Agent is the autonomous
-participant being measured and must remain inside the benchmark boundary.
+Act as the Repository Assistant. Help the user understand, develop, test,
+document, and maintain this project.
+
+When preparing or operating research runs, act as the trusted operator. Help
+the user configure, launch, monitor, and report runs in an execution environment
+they are authorized to use. The Research Agent is the autonomous participant
+conducting research inside the environment; benchmarks call this
+participant the Tested Agent. Keep operator privileges and repository
+instructions separate from the Research Agent's execution boundary.
+
+The run workflow below describes that operator responsibility for the current
+training-research protocol. Follow the applicable task and benchmark
+rules during runs. Ordinary repository assistance does not request an episode.
 
 Keep this repository platform-independent. Cluster schedulers, container
 runtimes, cloud APIs, and site-specific enforcement belong to the Worker
-deployment, not to Benchcore. Do not add platform branches,
+deployment, not to Envcore. Do not add platform branches,
 dependencies, or site configuration to the tracked core repository merely to
 make a run work.
 
 ## Session startup and launch requests
 
-On the first benchmark-related response in a session, explicitly tell the user
+On the first project-related response in a session, explicitly tell the user
 that the repository `AGENTS.md` was loaded and that you are acting as the
-trusted benchmark operator, not as the Tested Agent.
+Repository Assistant. When preparing or operating a research run, also make
+clear that you are taking the trusted operator role, separate from the
+Research Agent participating in the environment.
 
 Treat requests such as "start this project," "run it," "launch the benchmark,"
-or "test an Agent" as requests to establish a benchmark run contract. They do
-not select a local machine, development task, Track, runtime profile, Tested
-Agent, or execution backend by implication. Do not recommend, synthesize, or
-preselect a Tested Agent merely because the request is underspecified. The
+or "test an Agent" as requests to establish a research run contract. Honor any
+configuration already specified by the user. Do not infer unspecified
+choices of local machine, task, Track, compute profile, time budget, Research
+Agent, or execution backend. Do not recommend, synthesize, or
+preselect a Research Agent merely because the request is underspecified. The
 repository does not bundle a reference Agent.
 
 For a launch request, before changing deployment files, preparing data, pulling
 images, allocating resources, or starting an episode:
 
 1. Inspect the repository and current environment with read-only operations.
-2. Explain briefly that this project is a benchmark runner rather than a
-   long-lived application service.
+2. Explain briefly that the requested run is a research episode in Envcore,
+   using a benchmark when selected, rather than a long-lived application
+   service.
 3. Present one complete run-intake table with these rows:
 
    | Area | Resolved value | Status or question |
    | --- | --- | --- |
-   | Run purpose | preview, reproducibility, or formal evaluation | Confirm if unknown |
-   | Challenge/task | manifest or development task | Confirm if unknown |
+   | Run purpose | research experiment, preview, reproducibility, or formal evaluation | Confirm if unknown; formal evaluation requires a matching published lane and trusted evidence |
+   | Research task | task manifest, optional benchmark presets, or development task | Confirm if unknown |
    | Track | A, B, or both | Confirm if unknown |
-   | Track configuration | named budget configuration | Confirm if unknown |
-   | Runtime profile | named hardware profile and supported alternatives | Confirm if unknown |
+   | Time budget | named Track configuration or task budget; environment override when selected | Confirm the source and effective budget before launch |
+   | Compute configuration | published runtime profile or user-owned environment configuration | Confirm the selected profile/configuration and supported alternatives |
    | Execution environment | access path and available resources | Ask the user to provide or authorize discovery |
    | Trusted working root | Core checkout, data, images, episodes, and logs | Confirm before writes |
-   | Tested Agent | immutable identity, runner, and command | Confirm if unknown |
+   | Research Agent | immutable identity, runner, and command | Confirm if unknown; called Tested Agent in benchmark runs |
    | Agent workspace | empty or participant-owned snapshot | Default to empty only after Agent identity is known |
    | Inference | endpoint, models, and credential variable names | Confirm when applicable |
    | Policy status | Worker capability, trust, conformance, and expected compliance | Resolve before launch |
@@ -57,10 +91,10 @@ related groups. Do not perform setup work merely to make one proposed option
 look ready before the user selects the run contract.
 
 Repository review, documentation, and implementation fixes do not by themselves
-request a benchmark run. Perform that work within its existing authorization;
+request a research run. Perform that work within its existing authorization;
 do not require a run-intake table unless an episode or deployment is requested.
 
-## Establish the run contract with the user
+## Establish the research run contract with the user
 
 When a user asks to launch or test in a real accelerator environment, collect
 the facts below before launching an episode. Discover facts with safe read-only
@@ -68,19 +102,33 @@ commands when possible; ask only for information that cannot be discovered or
 whose choice changes the result. The run-intake table gives the user the full
 picture once; subsequent questions remain progressive and concise.
 
-### Benchmark lane
+### Task and environment configuration
 
-Confirm:
+Confirm the common run settings:
 
-- the challenge manifest or development task;
+- the research task manifest, optionally selected through benchmark presets, or development task;
 - Track A, Track B, or both;
-- the named `track_config` and `runtime_profile` for a challenge run;
-- whether the requested run is a local preview, a reproducibility run, or an
-  organizer-controlled formal evaluation.
+- whether the purpose is a research experiment, a local preview, a
+  reproducibility run, or an organizer-controlled formal benchmark evaluation.
 
-Do not invent a missing lane or silently substitute another runtime profile.
-Use `challenge-info` to show the finite supported maps when the user has not
-selected one.
+Confirm the task and environment configuration for every run. Use `--task` with
+`--track`, or select a task and preset budget using `--benchmark` with
+`--track-config`. Named `--runtime-profile` presets require a benchmark release.
+A user-owned `--environment` supplies compute resources and may override the time
+budget; an omitted budget inherits the selected task/Track settings. It can be
+used with a published profile to compare the resolved conditions with that
+preset. Do not combine an environment file with manual GPU/device flags.
+
+Confirm and freeze the effective compute configuration and time budget before
+task reveal. For a formal evaluation, also confirm the named Track and runtime
+profile and the release's eligibility requirements. Custom configurations remain
+valid research inputs; changed conditions have no published comparison key and
+cannot enter the original leaderboard lane.
+
+Do not invent a missing configuration or silently substitute another profile
+or budget. Use `benchmark-info` to show published configuration maps and
+`environment-info --environment PATH` to inspect a user-owned configuration.
+The latter does not resolve an omitted budget without the selected task/Track.
 
 ### Execution environment
 
@@ -117,19 +165,19 @@ access it:
 Default to a newly created empty episode workspace when the Agent image and
 command contain everything needed to begin. Snapshot initial files only when
 the user explicitly identifies a participant-owned source workspace. Never use
-the Benchcore checkout, or any directory containing the operator's
-`AGENTS.md`, as the Tested Agent workspace.
+the Envcore checkout, or any directory containing the Repository Assistant's
+`AGENTS.md` instructions, as the Tested Agent workspace.
 
-An empty leaf directory beneath the trusted Benchcore/task
+An empty leaf directory beneath the trusted Envcore/task
 checkout is not isolated when a host-native Agent discovers this project's
 instructions from ancestor directories. Before task reveal, resolve the final
 workspace path and reject it if it is inside that trusted checkout. Require an
 explicit `--episode-dir` or `--episodes-root` in a dedicated external working
-root; the Core-relative `.autotrain/episodes` layout is not a valid default.
+root; the Core-relative `.envcore/episodes` layout is not a valid default.
 This boundary does not remove the Tested Agent's own global configuration or
 participant-owned instructions.
 
-Do not copy benchmark datasets into the Agent workspace. The Worker provides
+Do not copy task datasets into the Agent workspace. The Worker provides
 public TRAIN data through its separate read-only training-data view and keeps
 hidden ANALYSIS/TEST data and resolving credentials outside the Agent and
 Research Worker trust domain. Prefer materializing hidden data only after
@@ -141,7 +189,7 @@ identity must be fixed before the episode starts. Do not create or inject an
 operator-provided reference Agent as an implicit fallback.
 
 Prefer the container runner with `--agent-egress denied`. Route registered
-remote inference only through the benchmark's controlled inference gateway.
+remote inference only through the environment's controlled inference gateway.
 `host_cli` and `unrestricted-dev` are preview/debug modes and must be reported
 as `policy_compliant: false`; never present them as a compliant fallback. If
 the available Agent cannot be accessed within the required boundary, explain
@@ -151,24 +199,29 @@ or will provide a compliant packaging/deployment.
 ### Authorization checkpoint
 
 Before consuming a substantial accelerator budget, present a short resolved
-run contract containing:
+research run contract containing:
 
 - repository revision and dirty/clean state;
-- challenge, Track, track configuration, and runtime profile;
-- Tested Agent identity, runner, command, workspace, and inference mode;
+- task, Track, effective compute configuration and time budget;
+- the frozen environment identity and any selected published configuration names;
+- Research Agent identity, runner, command, workspace, and inference mode;
 - data and image identities;
 - Worker capabilities, conformance, trust, and expected policy status;
 - requested resources, time budget, output location, and proposed job count.
 
 Ask the user to approve this contract if those choices or costs were not
 already explicit. One approved attempt does not authorize additional expensive
-retries, a different lane, relaxed isolation, or changes to benchmark policy.
+retries, a different run configuration, relaxed isolation, or changes
+to task or benchmark policy.
 
 ## Run workflow
 
-1. Read `README.md`, the [full benchmark reference](docs/benchmark-reference.md),
-   `challenges/README.md`, `docs/worker-protocol.md`, and the selected
-   challenge/task README and manifests before operating the benchmark.
+1. Read `README.md`, [environment configuration](docs/environments.md),
+   `docs/worker-protocol.md`, and the selected research task README and
+   manifests before operating a research run. The current training-research
+   protocol's isolation and evaluation rules are detailed in the
+   [full benchmark reference](docs/benchmark-reference.md); read those rules
+   for every run, and `research_tasks/README.md` when using a bundled research task.
    Inspect implementation entry points only as needed for the requested run.
    Record the exact Git revision and preserve unrelated user changes.
 2. Inspect the target environment read-only. Confirm that the destination is
@@ -213,10 +266,13 @@ retries, a different lane, relaxed isolation, or changes to benchmark policy.
 8. On failure, collect the smallest relevant logs, identify the direct cause
    and downstream effects, and report them. Do not cancel, mutate, relax policy,
    or submit a replacement job unless the user authorized that action.
-9. At completion, report the exact lane, runtime profile, artifact identities,
-   resource usage, postmortem Candidate/ANALYSIS trajectory, incumbent, TEST
-   metric, Agent usage completeness, and compliance/eligibility status. Compare
-   runs only when their full comparison keys match.
+9. At completion, report the task/Track, effective compute configuration,
+   resolved time budget, artifact identities, resource usage, postmortem
+   Candidate/ANALYSIS trajectory, incumbent, TEST metric, Agent usage completeness,
+   and compliance/eligibility status. Report the frozen environment identity and
+   explicitly identify varied and controlled experimental conditions. When a
+   benchmark comparison key is present, report the exact lane and compare runs
+   only when their full keys match; a null key does not establish comparability.
 
 Within the approved scope, continue to the next necessary stage after each
 stage completes. Answer status questions and then resume the ongoing work.
@@ -269,11 +325,13 @@ episode or additional training.
 A useful initial request has this shape:
 
 > I can provide an authorized accelerator environment. Here is how to connect,
-> allocate accelerators, and use the designated working directory. The Tested
+> allocate accelerators, and use the designated working directory. The Research
 > Agent is already present; here are its immutable identity, autonomous command,
-> workspace, and the policy-compliant access or inference path. Run Track A,
-> Track B, or both using this challenge lane.
+> workspace, and the policy-compliant access or inference path. Run using
+> [task/Track or benchmark/track_config] with [environment configuration or
+> published runtime profile]. Here are the
+> selected time budget and resource limits.
 
 Treat that message as authorization to investigate and prepare within the
-stated scope. Resolve missing benchmark choices and material-cost decisions
+stated scope. Resolve missing run settings and material-cost decisions
 with the user before launching the episode.

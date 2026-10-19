@@ -10,9 +10,9 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from benchcore import local_watchdog
-from benchcore.docker_recovery import DockerRecovery, _RecoveryDeadline
-from benchcore.local_recovery import _acquire_journal
+from envcore import local_watchdog
+from envcore.docker_recovery import DockerRecovery, _RecoveryDeadline
+from envcore.local_recovery import _acquire_journal
 
 
 def signal_parent(directory, phase, signum):
@@ -102,7 +102,7 @@ def main():
         raise SystemExit(code)
     fd, directory, mode = sys.argv[1:]
     if mode.startswith("output-child"):
-        from benchcore import cli
+        from envcore import cli
 
         def output(argv):
             cli._print({"status": "closed", "TEST": "saved"})

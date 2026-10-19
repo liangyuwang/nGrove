@@ -1,7 +1,9 @@
 # Integrating an external Worker
 
-This guide is for the trusted benchmark operator preparing a deployment outside
-Core. It complements the [Worker Protocol](worker-protocol.md); it does not
+This guide is for the trusted operator preparing a deployment outside Core.
+The Repository Assistant takes this role when helping with authorized run
+preparation; see [repository instructions](../AGENTS.md).
+It complements the [Worker Protocol](worker-protocol.md); it does not
 select a platform, Tested Agent, task, or resource budget. The bundled
 `prepare`/`start` commands compose the local Docker implementation. They are not
 an external backend loader.
@@ -36,7 +38,7 @@ When updating a deployment from v15, `evaluate_candidate()` must accept the new
 `evaluation_id` and `resource_envelope` keyword arguments. An explicit envelope
 requires an operation-bound `EvaluationResourceReceipt` on the returned result.
 It cannot reuse Training or another evaluation's receipt. The Supervisor reads
-the evaluation envelope from the resolved challenge release; standalone trusted
+the evaluation envelope from the resolved benchmark release; standalone trusted
 launchers may supply `evaluation_resource_envelope` directly. Resolve unsupported
 normative properties before authorizing an expensive run. See the
 [evaluation resource contract and evidence example](evaluation-resources.md).
@@ -51,8 +53,10 @@ The following is a constructor sketch with inputs already resolved by the
 trusted launcher, not a standalone launcher or a reference Tested Agent:
 
 ```python
-from benchcore.supervisor import Supervisor
+from envcore.supervisor import Supervisor
 
+# Supervisor freezes the effective budget, resources and Worker contracts for
+# every run. A resolved FrozenEnvironment may also be supplied as environment=.
 supervisor = Supervisor(
     config=task_config,
     agent=agent_config,
@@ -69,7 +73,7 @@ supervisor = Supervisor(
     research_worker_environment=research_environment,
     evaluation_worker_environment=evaluation_environment,
     comparison_key=comparison_key,
-    challenge_release=challenge_release,
+    benchmark_release=benchmark_release,
     release_verification=release_verification,
     research_worker_conformance=research_conformance,
     evaluation_worker_conformance=evaluation_conformance,
@@ -91,6 +95,14 @@ already be complete.
 
 Use this sequence when implementing the composition layer:
 
+Pass an optional `RecordingConfig` to freeze [research recording](recording.md)
+and artifact retention at construction. The default retains all Candidate bundles
+and Lease outputs. Configured removal runs only after the final result commits;
+capture/retention evidence stays private. A trusted runner may add structured
+tool or code-change observations through `record_observation`. A control
+transport may return `AgentControlExchange` in its step result to report the
+actual published response; without this evidence, delivery remains unknown.
+
 | Stage | Core interaction | Deployment responsibility |
 | --- | --- | --- |
 | Admit | Construct `Supervisor` with frozen inputs | Verify boundaries, images, TRAIN, tools, resource authorization, and recovery readiness before task reveal |
@@ -103,7 +115,7 @@ Use this sequence when implementing the composition layer:
 | Evaluate | `evaluate_postmortem()` only when Core is still `closed` and teardown is confirmed | Resolve hidden data only now; Core stages TEST for the declared final incumbent first, then postmortem ANALYSIS |
 | Clean evaluation | Report teardown errors through `deployment_teardown_failed(...)` | Finish all Evaluation Worker workloads, prediction storage, and private hidden materializations, including retrying retained handles after failures |
 | Publish | `publish_postmortem_result()` only after successful required cleanup and when Core remains `closed` | Preserve Core's staged TEST decision and ANALYSIS disposition; refresh the final progress snapshot before its storage is detached |
-| Retain/dispose | No new benchmark transition | Verify the authorized archive, then dispose of owned working storage; record this independently of workload cleanup and benchmark outcome |
+| Retain/dispose | No new episode transition | Verify the authorized archive, then dispose of owned working storage; record this independently of workload cleanup and episode outcome |
 
 `evaluate_postmortem()` does **not** publish a terminal result. Worker methods
 must already confirm their own per-operation teardown before returning; the
@@ -159,7 +171,7 @@ Version output, executable availability, and authentication status are useful
 prechecks, but do not establish real session compatibility. Where invocation is
 authorized, use the selected frozen Agent in a separate disposable diagnostic
 workspace with a harmless task to exercise initialization and required tools.
-Do not reveal the benchmark task, carry that session or its files into the
+Do not reveal the research task, carry that session or its files into the
 episode, or inject training code. Account for inference and resource costs
 within the approved diagnostic scope. If that check cannot be performed, record
 session compatibility as unverified; do not silently claim it passed or change
@@ -167,7 +179,7 @@ the Agent packaging after task reveal.
 
 ## Monitoring and cancellation
 
-Keep three evidence sources distinct: Core's benchmark snapshot, current
+Keep three evidence sources distinct: Core's episode snapshot, current
 execution-system observations, and the operator's preparation/progress record.
 Use [Operator status](operator-status.md) for the first two. A monitor should
 record check time, last actual progress, current work, and the next action and
@@ -254,7 +266,7 @@ mechanisms belong to the deployment:
 
 A reused PID, a matching filename prefix, or an ended allocation is insufficient
 ownership or teardown proof. Missing receipts remain unconfirmed. Cleanup
-success does not create a benchmark result, re-open research, or authorize a
+success does not create an evaluation result, re-open research, or authorize a
 replacement job. The bundled [Docker recovery](worker-recovery.md) command covers
 its own journaled resources; it does not recover arbitrary external Workers.
 

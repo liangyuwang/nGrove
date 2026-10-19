@@ -10,11 +10,11 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from benchcore.cli import (
+from envcore.cli import (
     _episode_exit_code,
     _initialize_agent_workspace,
     _report_cleanup_failures,
-    _resolve_challenge_run,
+    _resolve_start_run,
     _run_cleanup_steps,
     _stop_and_record_container_agent,
     _stop_and_record_host_agent,
@@ -28,16 +28,16 @@ from benchcore.cli import (
     command_start,
     command_worker_recover,
 )
-from benchcore.config import ConfigError, TaskConfig
-from benchcore.host_agent import summarize_host_agent_trace
-from benchcore.runtime import DockerRuntime, RuntimeFailure
-from benchcore.training_data import TrainingDataError, verify_training_data
-from benchcore.results import normalize_result_report
+from envcore.config import ConfigError, TaskConfig
+from envcore.host_agent import summarize_host_agent_trace
+from envcore.runtime import DockerRuntime, RuntimeFailure
+from envcore.training_data import TrainingDataError, verify_training_data
+from envcore.results import normalize_result_report
 
 
 ROOT = Path(__file__).resolve().parents[1]
 TASK = ROOT / "tests/fixtures/task/task.json"
-LM_PRETRAIN_PREVIEW = ROOT / "challenges/lm-pretrain/challenge.json"
+LM_PRETRAIN_PREVIEW = ROOT / "research_tasks/lm-pretrain/benchmark.json"
 
 
 class WorkspaceSnapshotTests(unittest.TestCase):
@@ -57,7 +57,7 @@ class WorkspaceSnapshotTests(unittest.TestCase):
             ]
         )
         output = io.StringIO()
-        with patch("benchcore.cli.DockerRuntime") as runtime, redirect_stdout(output):
+        with patch("envcore.cli.DockerRuntime") as runtime, redirect_stdout(output):
             runtime.return_value.recover_resources.return_value = report
             self.assertEqual(command_worker_recover(args), 2)
         runtime.return_value.recover_resources.assert_called_once_with(
@@ -80,7 +80,7 @@ class WorkspaceSnapshotTests(unittest.TestCase):
                 ]
             )
             with self.subTest(value=value), patch(
-                "benchcore.cli.DockerRuntime"
+                "envcore.cli.DockerRuntime"
             ) as runtime:
                 with self.assertRaisesRegex(RuntimeFailure, "finite positive"):
                     command_worker_recover(args)
@@ -128,8 +128,8 @@ class WorkspaceSnapshotTests(unittest.TestCase):
                         *flags,
                     ]
                 )
-                with patch("benchcore.cli.TaskConfig.load", return_value=config), patch(
-                    "benchcore.cli.DockerRuntime"
+                with patch("envcore.cli.TaskConfig.load", return_value=config), patch(
+                    "envcore.cli.DockerRuntime"
                 ) as runtime, redirect_stdout(io.StringIO()):
                     runtime.return_value.prepare.side_effect = ConfigError(
                         "reached Worker preparation"
@@ -144,7 +144,7 @@ class WorkspaceSnapshotTests(unittest.TestCase):
 
     def test_storage_admission_is_private_and_precedes_episode_writes(self):
         for folder, expected in (
-            ("challenges/lm-pretrain", 100 * 2**30),
+            ("research_tasks/lm-pretrain", 100 * 2**30),
             ("dev_tasks/smoke_lm-pretrain", 2 * 2**30),
         ):
             for track in ("A", "B"):
@@ -202,9 +202,9 @@ class WorkspaceSnapshotTests(unittest.TestCase):
                             )
 
                         with patch(
-                            "benchcore.cli.TaskConfig.load", return_value=config
+                            "envcore.cli.TaskConfig.load", return_value=config
                         ), patch(
-                            "benchcore.cli.DockerRuntime"
+                            "envcore.cli.DockerRuntime"
                         ) as runtime, redirect_stdout(output):
                             runtime.return_value.configure_operator_storage.side_effect = admit
                             runtime.return_value.prepare.side_effect = ConfigError(
@@ -243,7 +243,7 @@ class WorkspaceSnapshotTests(unittest.TestCase):
                         "1048576",
                     ]
                 )
-                with patch("benchcore.cli.DockerRuntime") as runtime, redirect_stdout(
+                with patch("envcore.cli.DockerRuntime") as runtime, redirect_stdout(
                     io.StringIO()
                 ):
                     runtime.return_value.configure_operator_storage.side_effect = (
@@ -280,7 +280,7 @@ class WorkspaceSnapshotTests(unittest.TestCase):
         self,
     ):
         for folder, lane, flags, expected in (
-            ("challenges/lm-pretrain", "preview-b-6x1h", [], 86400),
+            ("research_tasks/lm-pretrain", "preview-b-6x1h", [], 86400),
             ("dev_tasks/smoke_lm-pretrain", "smoke-b-3x75s", [], 1800),
             (
                 "dev_tasks/smoke_lm-pretrain",
@@ -310,8 +310,8 @@ class WorkspaceSnapshotTests(unittest.TestCase):
                 args = build_parser().parse_args(
                     [
                         "start",
-                        "--challenge",
-                        str(root / "challenge.json"),
+                        "--benchmark",
+                        str(root / "benchmark.json"),
                         "--track-config",
                         lane,
                         "--runtime-profile",
@@ -342,10 +342,10 @@ class WorkspaceSnapshotTests(unittest.TestCase):
                         else:
                             self.assertIn("protection is disabled", notice)
 
-                with patch("benchcore.cli.TaskConfig.load", return_value=config), patch(
-                    "benchcore.cli.DockerRuntime"
+                with patch("envcore.cli.TaskConfig.load", return_value=config), patch(
+                    "envcore.cli.DockerRuntime"
                 ) as runtime, patch(
-                    "benchcore.cli.Supervisor",
+                    "envcore.cli.Supervisor",
                     side_effect=ConfigError("stop after preflight"),
                 ) as supervisor, redirect_stdout(output):
                     runtime.return_value.prepare.side_effect = check_notice
@@ -410,7 +410,7 @@ class WorkspaceSnapshotTests(unittest.TestCase):
                         else "--no-operator-research-limit",
                     ]
                 )
-                with patch("benchcore.cli.DockerRuntime") as runtime:
+                with patch("envcore.cli.DockerRuntime") as runtime:
                     with self.assertRaises(ConfigError):
                         command_start(args)
                     runtime.assert_not_called()
@@ -508,9 +508,9 @@ class WorkspaceSnapshotTests(unittest.TestCase):
                         "registered-model",
                     ]
                 args = build_parser().parse_args(argv)
-                with patch(
-                    "benchcore.cli.DockerRuntime", LocalRuntime
-                ), redirect_stdout(io.StringIO()):
+                with patch("envcore.cli.DockerRuntime", LocalRuntime), redirect_stdout(
+                    io.StringIO()
+                ):
                     self.assertEqual(command_start(args), 1)
                 state = json.loads((episode / "state.json").read_text())
                 report = normalize_result_report(state)
@@ -537,10 +537,10 @@ class WorkspaceSnapshotTests(unittest.TestCase):
             (train / "train.json").write_bytes(b"corrupt")
             args = build_parser().parse_args(["prepare", "--task", str(TASK)])
             with patch(
-                "benchcore.cli.TaskConfig.load",
+                "envcore.cli.TaskConfig.load",
                 return_value=replace(config, train_dir=train),
             ):
-                with patch("benchcore.cli.DockerRuntime") as runtime:
+                with patch("envcore.cli.DockerRuntime") as runtime:
                     with self.assertRaises(TrainingDataError):
                         command_prepare(args)
                     runtime.assert_not_called()
@@ -571,10 +571,10 @@ class WorkspaceSnapshotTests(unittest.TestCase):
                 ]
             )
             with patch(
-                "benchcore.cli.TaskConfig.load",
+                "envcore.cli.TaskConfig.load",
                 return_value=replace(config, train_dir=train),
             ):
-                with patch("benchcore.cli.DockerRuntime") as runtime:
+                with patch("envcore.cli.DockerRuntime") as runtime:
                     with self.assertRaises(TrainingDataError):
                         command_start(args)
                     runtime.assert_not_called()
@@ -602,9 +602,9 @@ class WorkspaceSnapshotTests(unittest.TestCase):
                 ]
             )
             with patch(
-                "benchcore.cli.verify_training_data", wraps=verify_training_data
-            ) as verify, patch("benchcore.cli.DockerRuntime") as runtime, patch(
-                "benchcore.cli.Supervisor",
+                "envcore.cli.verify_training_data", wraps=verify_training_data
+            ) as verify, patch("envcore.cli.DockerRuntime") as runtime, patch(
+                "envcore.cli.Supervisor",
                 side_effect=RuntimeError("stop before task reveal"),
             ) as supervisor:
                 with self.assertRaisesRegex(RuntimeError, "stop before task reveal"):
@@ -703,7 +703,7 @@ class WorkspaceSnapshotTests(unittest.TestCase):
                 _snapshot_agent_workspace(source, source / "episode")
 
     def test_episode_workspace_must_be_outside_trusted_checkout(self):
-        workspace = ROOT / ".autotrain" / "episodes" / "episode" / "workspace"
+        workspace = ROOT / ".envcore" / "episodes" / "episode" / "workspace"
         with self.assertRaisesRegex(ConfigError, "outside the trusted"):
             _validate_workspace_boundary(
                 workspace=workspace,
@@ -786,7 +786,7 @@ class WorkspaceSnapshotTests(unittest.TestCase):
             )
 
     def test_start_rejects_core_workspace_before_worker_or_directory_creation(self):
-        episode = ROOT / ".autotrain" / f"preflight-{uuid.uuid4().hex}"
+        episode = ROOT / ".envcore" / f"preflight-{uuid.uuid4().hex}"
         args = build_parser().parse_args(
             [
                 "start",
@@ -803,7 +803,7 @@ class WorkspaceSnapshotTests(unittest.TestCase):
             ]
         )
 
-        with patch("benchcore.cli.DockerRuntime") as runtime:
+        with patch("envcore.cli.DockerRuntime") as runtime:
             with self.assertRaisesRegex(ConfigError, "outside the trusted"):
                 command_start(args)
         runtime.assert_not_called()
@@ -831,7 +831,7 @@ class WorkspaceSnapshotTests(unittest.TestCase):
             )
             runtime = DockerRuntime()
 
-            with patch("benchcore.cli.DockerRuntime", return_value=runtime):
+            with patch("envcore.cli.DockerRuntime", return_value=runtime):
                 with patch.object(runtime, "prepare"), patch.object(
                     runtime, "enable_recovery"
                 ):
@@ -1186,12 +1186,12 @@ class WorkspaceSnapshotTests(unittest.TestCase):
         self.assertEqual(args.training_gpu_model, "H100")
         self.assertEqual(args.training_devices, ["/dev/accel0"])
 
-    def test_challenge_profiles_replace_ad_hoc_track_and_hardware_flags(self):
+    def test_benchmark_profiles_replace_ad_hoc_track_and_hardware_flags(self):
         args = build_parser().parse_args(
             [
                 "start",
-                "--challenge",
-                "challenge.json",
+                "--benchmark",
+                "benchmark.json",
                 "--track-config",
                 "preview-b-6x1h",
                 "--runtime-profile",
@@ -1210,27 +1210,29 @@ class WorkspaceSnapshotTests(unittest.TestCase):
         self.assertEqual(args.runtime_profile, "h100-sxm-80gb-x4")
         self.assertEqual(args.training_gpus, 0)
 
+        args.benchmark = LM_PRETRAIN_PREVIEW
         task = replace(
-            TaskConfig.load(TASK),
-            task_id="lm-pretrain",
-            task_kind="benchmark_challenge",
-        ).validate()
-        args.challenge = LM_PRETRAIN_PREVIEW
-        resolved = _resolve_challenge_run(args, task)
+            TaskConfig.load(TASK), task_id="lm-pretrain", task_kind="research"
+        )
+        with patch("envcore.cli.TaskConfig.load", return_value=task):
+            resolved, benchmark = _resolve_start_run(args)
+        self.assertIs(resolved, benchmark)
         self.assertIsNotNone(resolved)
         self.assertEqual(resolved.track, "B")
         self.assertEqual(resolved.task.track_b_max_leases, 6)
         self.assertEqual(resolved.resources.nvidia_gpu_count, 4)
 
         args.training_gpus = 4
-        with self.assertRaisesRegex(ConfigError, "may not override"):
-            _resolve_challenge_run(args, task)
+        with patch(
+            "envcore.cli.TaskConfig.load", return_value=task
+        ), self.assertRaisesRegex(ConfigError, "may not override"):
+            _resolve_start_run(args)
 
-    def test_challenge_info_has_a_dedicated_command(self):
+    def test_benchmark_info_has_a_dedicated_command(self):
         args = build_parser().parse_args(
-            ["challenge-info", "--challenge", "challenge.json"]
+            ["benchmark-info", "--benchmark", "benchmark.json"]
         )
-        self.assertEqual(args.challenge, Path("challenge.json"))
+        self.assertEqual(args.benchmark, Path("benchmark.json"))
 
     def test_start_requires_one_explicit_episode_destination(self):
         argv = [

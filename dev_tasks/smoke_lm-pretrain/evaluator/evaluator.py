@@ -1,4 +1,4 @@
-"""Trusted scorer for the offline AutoTrain-Bench Candidate ABI."""
+"""Trusted scorer for the offline Candidate ABI."""
 
 from __future__ import annotations
 

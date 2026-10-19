@@ -1,13 +1,19 @@
 # Worker Protocol boundary
 
-Benchcore owns benchmark decisions.  A Worker deployment owns
+The Python namespace is `envcore.worker_protocol`.
+Run-owned environment configurations use this same admission and evidence
+contract. They do not add a platform backend or weaken Worker requirements.
+See [configurable environments](environments.md) for the distinction between
+environment experiments and fixed benchmark lanes.
+
+Envcore owns research lifecycle and evaluation decisions. A Worker deployment owns
 execution and enforcement.  The boundary between them is expressed in
-benchmark terms and must not expose a scheduler, container runtime, or cloud
+research protocol terms and must not expose a scheduler, container runtime, or cloud
 API.
 
 ```text
-Benchcore Coordinator
-  authoritative benchmark state
+Envcore Coordinator
+  authoritative episode state
               │
               │ Worker Protocol
               ▼
@@ -47,8 +53,8 @@ Platform packages own:
 Platform implementations live outside Core, either as separately distributed
 packages or temporary deployments created during authorized preparation. Keep
 their source and dependency identities with run evidence. Examples of package
-names are `autotrain-worker-docker`, `autotrain-worker-apptainer`, and
-`autotrain-worker-kubernetes`; these names are examples, not core backends.
+names are `envcore-worker-docker`, `envcore-worker-apptainer`, and
+`envcore-worker-kubernetes`; these names are examples, not core backends.
 Core must never grow platform selection branches or import their SDKs.
 See [Worker integration](worker-integration.md) for trusted composition,
 startup verification, supervision, cleanup, and resource-planning guidance.
@@ -95,7 +101,7 @@ paths; Core still owns Candidate acceptance and canonical identity.
 
 ## Capabilities, conformance, and trust
 
-`benchcore.worker_protocol` describes capabilities by semantic name and
+`envcore.worker_protocol` describes capabilities by semantic name and
 an enforcement level:
 
 ```text
@@ -139,7 +145,7 @@ decision. Core checks the Worker binding before using the receipt. This local
 trusted-input seam does not pretend to be a cryptographic remote attestation;
 authentication of a future remote receipt belongs to the deployment transport.
 
-`benchcore.conformance` provides resolution,
+`envcore.conformance` provides resolution,
 [Research Lease](worker-lease-probe.md), and
 [evaluation resource](worker-evaluation-probe.md) diagnostics. The Lease probe
 checks admission receipts, fixture command execution, stopped-state observations,
@@ -351,11 +357,11 @@ defines the ordering and frozen identity; the Worker defines and attests the
 materialization mechanism.
 
 `analysis_sha256` and `test_sha256` use the normative algorithm identifier
-`benchcore-hidden-bundle-v1-sha256`. Its SHA-256 input is the following
+`envcore-hidden-bundle-v1-sha256`. Its SHA-256 input is the following
 byte string, with no separators other than those shown:
 
 ```text
-"benchcore-hidden-bundle-v1\0"
+"envcore-hidden-bundle-v1\0"
 || for name in ("contexts.json", "targets.json"):
      u64be(len(utf8(name))) || utf8(name)
      || u64be(len(file_bytes)) || file_bytes
@@ -363,10 +369,10 @@ byte string, with no separators other than those shown:
 
 The bundle directory must not be a symlink and must contain exactly those two
 regular files. Lengths are unsigned 64-bit big-endian integers. The shared
-`benchcore.artifact_identity.hidden_bundle_sha256()` implementation is
+`envcore.artifact_identity.hidden_bundle_sha256()` implementation is
 normative for Python Workers. The organizer release receipt declares
 `file: sha256` and
-`hidden_evaluation: benchcore-hidden-bundle-v1-sha256`; the current result
+`hidden_evaluation: envcore-hidden-bundle-v1-sha256`; the current result
 schema records the latter under
 `artifact_identity_algorithms.hidden_evaluation`.
 
@@ -623,7 +629,7 @@ Worker v16 additionally receives `evaluation_id` and `resource_envelope` on each
 evaluation. When the latter is non-null, `CandidateEvaluationResult` must carry
 an `EvaluationResourceReceipt` binding that ID, episode, Worker and request hash.
 Core validates effective normative values and enforcement before accepting the
-score, and records/revalidates the evidence in result v14. The Challenge v3
+score, and records/revalidates the evidence in result v14. The Benchmark v3
 `evaluation_resource_contract` is separate from Training requirements. A resource
 rejection is an infrastructure failure; a later ANALYSIS failure preserves an
 accepted TEST decision. See [evaluation resource contracts](evaluation-resources.md)
@@ -738,7 +744,7 @@ Deliberately deferred work includes:
    outside Training Leases independently normative.
 
 Those features should be added to the Worker protocol and external Worker SDK,
-not by adding platform code to Benchcore.
+not by adding platform code to Envcore.
 
 The staged plan and the trigger for each deferred abstraction are recorded in
 [Thin Core development plan](thin-core-development-plan.md).

@@ -26,13 +26,13 @@ Only the root manifest itself is excluded, avoiding a self-referential hash.
 Missing or additional files, unsafe paths, symlinks, hard links, and special
 files are rejected. Empty directories are not part of the file identity.
 
-Builders can call `benchcore.training_data.write_training_manifest()`
+Builders can call `envcore.training_data.write_training_manifest()`
 after writing all public files. Hidden evaluation data and metadata must stay
 outside this directory. Source inventories used to claim a particular upstream
 revision must be independently pinned by the task; generating an inventory of
 arbitrary local bytes does not establish their provenance.
 
-The local `autotrain-bench prepare` and `start` launchers verify TRAIN before
+The local `envcore prepare` and `start` launchers verify TRAIN before
 Worker setup or task reveal. Each `start` performs its own check instead of
 reusing an earlier preparation result. This local policy reads every TRAIN file
 in full; plan for the disk I/O of both checks. A missing or legacy manifest

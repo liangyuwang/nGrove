@@ -16,50 +16,50 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from benchcore.agent_control import AgentControlStepResult
-from benchcore.agent_api_bundle import publish_agent_api_bundle
-from benchcore.challenge import (
+from envcore.agent_control import AgentControlStepResult
+from envcore.agent_api_bundle import publish_agent_api_bundle
+from envcore.benchmark import (
     FORMAL_ARTIFACT_DIGEST_FIELDS,
     FORMAL_ARTIFACT_IDENTITY_ALGORITHMS,
-    ChallengeRelease,
+    BenchmarkRelease,
     ReleaseVerificationReceipt,
 )
-from benchcore.artifact_identity import (
+from envcore.artifact_identity import (
     HIDDEN_BUNDLE_IDENTITY_ALGORITHM,
     hidden_bundle_sha256,
 )
-from benchcore.config import (
+from envcore.config import (
     AgentConfig,
     InferenceConfig,
     TaskConfig,
     TrainingResources,
 )
-from benchcore.client import Client
-from benchcore.local_mailbox import (
+from envcore.client import Client
+from envcore.local_mailbox import (
     MAX_MAILBOX_RESPONSE_BYTES,
     LocalFileMailbox,
     write_untrusted_response,
 )
-from benchcore.local_agent_execution import describe_local_agent_execution
-from benchcore.gateway_execution import (
+from envcore.local_agent_execution import describe_local_agent_execution
+from envcore.gateway_execution import (
     GatewayArtifactIdentity,
     GatewayExecutionReceipt,
 )
-from benchcore.local_run_guard import LocalResearchGuard
-from benchcore.results import (
+from envcore.local_run_guard import LocalResearchGuard
+from envcore.results import (
     RESULT_SCHEMA_VERSION,
     ResultSchemaError,
     normalize_result_report,
 )
-from benchcore.training_data import verify_training_data, write_training_manifest
-from benchcore.supervisor import (
+from envcore.training_data import verify_training_data, write_training_manifest
+from envcore.supervisor import (
     MAX_COMMAND_STREAM_BYTES,
     MAX_INCUMBENT_DECLARATIONS,
     ProtocolError,
     Supervisor,
     _core_identity,
 )
-from benchcore.worker_protocol import (
+from envcore.worker_protocol import (
     BASELINE_REQUIREMENTS,
     CANDIDATE_PREDICTION_STORAGE_QUOTA,
     CONFORMANCE_RECEIPT_VERSION,
@@ -145,7 +145,7 @@ class FakeWorker:
         self.resource_envelopes = []
         self.resource_receipt_override = None
         self.evaluation_workloads = []
-        # Simulates benchmark-owned preparation inside start_lease: queue wait,
+        # Simulates environment-owned preparation inside start_lease: queue wait,
         # image materialization, workload startup.
         self.start_lease_delay = 0.0
         self.clock = None
@@ -455,7 +455,7 @@ class SupervisorTests(unittest.TestCase):
             test_path=self.episode.parent / "absent-test",
         )
         with patch(
-            "benchcore.training_data.verify_training_data",
+            "envcore.training_data.verify_training_data",
             side_effect=AssertionError("Core must not scan TRAIN"),
         ):
             supervisor = self.supervisor(
@@ -477,13 +477,15 @@ class SupervisorTests(unittest.TestCase):
         config=None,
         agent=None,
         comparison_key=None,
-        challenge_release=None,
+        benchmark_release=None,
         release_verification=None,
         agent_execution=None,
         worker_conformance=None,
         training_data_verification=None,
         operator_max_research_seconds=None,
         evaluation_resource_envelope=None,
+        environment=None,
+        recording=None,
         begin=True,
     ):
         resolved_config = config or self.config
@@ -508,7 +510,7 @@ class SupervisorTests(unittest.TestCase):
             evaluation_worker=self.worker,
             agent_control_transport=self.mailbox,
             comparison_key=comparison_key,
-            challenge_release=challenge_release,
+            benchmark_release=benchmark_release,
             release_verification=release_verification,
             research_worker_conformance=worker_conformance,
             evaluation_worker_conformance=worker_conformance,
@@ -516,6 +518,8 @@ class SupervisorTests(unittest.TestCase):
             wall_time=lambda: 1_700_000_000.0,
             operator_max_research_seconds=operator_max_research_seconds,
             evaluation_resource_envelope=evaluation_resource_envelope,
+            environment=environment,
+            recording=recording,
         )
         if begin:
             supervisor.begin()
@@ -582,7 +586,7 @@ class SupervisorTests(unittest.TestCase):
         with self.assertRaisesRegex(ProtocolError, "closed"):
             supervisor.handle({"op": "lease_start"})
         self.assertEqual(supervisor.state["status"], "operator_stopped")
-        self.assertEqual(supervisor.state["timing"]["benchmark_overhead_seconds"], 11)
+        self.assertEqual(supervisor.state["timing"]["environment_overhead_seconds"], 11)
         self.assertEqual(supervisor._elapsed(), 0)
         supervisor.terminate_worker_leases_for_teardown()
         self.assertFalse(self.worker.running)
@@ -689,13 +693,13 @@ class SupervisorTests(unittest.TestCase):
 
     def test_public_release_contains_only_declared_identifiers(self):
         comparison_key = {
-            "challenge_id": "lm-pretrain",
+            "benchmark_id": "lm-pretrain",
             "track": "B",
             "track_config": "preview-b-6x1h",
             "runtime_profile": "h100-sxm-80gb-x4",
         }
         public_release = {
-            "challenge_id": "lm-pretrain",
+            "benchmark_id": "lm-pretrain",
             "release_stage": "preview",
             "leaderboard_eligible": False,
             "track_config_id": comparison_key["track_config"],
@@ -703,17 +707,25 @@ class SupervisorTests(unittest.TestCase):
         }
         release = {
             **public_release,
-            "challenge_manifest_sha256": "b" * 64,
+            "benchmark_manifest_sha256": "b" * 64,
             "task_manifest_sha256": hashlib.sha256(
                 self.config.source.read_bytes()
             ).hexdigest(),
             "private_evaluation": {"context_lengths": [1, 3]},
-            "track_config": {"private_extension": "not-for-the-agent"},
+            "track_config": {
+                "track": "B",
+                "max_leases": self.config.track_b_max_leases,
+                "lease_seconds": self.config.track_b_lease_seconds,
+                "private_extension": "not-for-the-agent",
+            },
             "runtime_profile": {"private_extension": "not-for-the-agent"},
+            "resource_envelope": v0_resource_envelope(
+                self.resources, minimum_enforcement=EnforcementLevel.BEST_EFFORT
+            ).public_manifest(),
         }
         supervisor = self.supervisor(
             comparison_key=comparison_key,
-            challenge_release=release,
+            benchmark_release=release,
         )
         self.assertEqual(supervisor.state["comparison_key"], comparison_key)
         self.assertFalse(supervisor.state["leaderboard_eligible"])
@@ -722,34 +734,34 @@ class SupervisorTests(unittest.TestCase):
             supervisor.public_task_path.read_text(encoding="utf-8")
         )
         self.assertEqual(public_task["comparison_key"], comparison_key)
-        self.assertEqual(public_task["challenge_release"], public_release)
-        self.assertEqual(supervisor.state["challenge_release"], release)
+        self.assertEqual(public_task["benchmark_release"], public_release)
+        self.assertEqual(supervisor.state["benchmark_release"], release)
 
     def test_full_agent_manifest_does_not_identify_hidden_length_choices(self):
         root = self.episode.parent
         task_path = root / "task.json"
-        challenge_path = root / "challenge.json"
+        benchmark_path = root / "benchmark.json"
         task_payload = json.loads(self.config.source.read_text(encoding="utf-8"))
         task_payload["paths"] = {
             name: str((self.config.source.parent / value).resolve())
             for name, value in task_payload["paths"].items()
         }
         task_payload["evaluation"]["entrypoint"] = str(self.config.evaluator_entrypoint)
-        challenge_payload = json.loads(
-            (ROOT / "dev_tasks/smoke_lm-pretrain/challenge.json").read_text(
+        benchmark_payload = json.loads(
+            (ROOT / "dev_tasks/smoke_lm-pretrain/benchmark.json").read_text(
                 encoding="utf-8"
             )
         )
-        challenge_payload["task_id"] = self.config.task_id
-        challenge_payload["challenge_id"] = "hidden-lengths-regression"
-        challenge_path.write_text(json.dumps(challenge_payload), encoding="utf-8")
+        benchmark_payload["task_id"] = self.config.task_id
+        benchmark_payload["benchmark_id"] = "hidden-lengths-regression"
+        benchmark_path.write_text(json.dumps(benchmark_payload), encoding="utf-8")
         public_manifests = {}
         private_digests = set()
         for index, lengths in enumerate(([1], [2], [1, 3], [1, 2, 3])):
             task_payload["evaluation"]["context_lengths"] = lengths
             task_path.write_text(json.dumps(task_payload), encoding="utf-8")
             task = TaskConfig.load(task_path)
-            release = ChallengeRelease.load(challenge_path)
+            release = BenchmarkRelease.load(benchmark_path)
             private_digests.add(release.task_manifest_sha256)
             for track_config in ("smoke-a-5m", "smoke-b-3x75s"):
                 with self.subTest(lengths=lengths, track_config=track_config):
@@ -763,7 +775,7 @@ class SupervisorTests(unittest.TestCase):
                         track=resolved.track,
                         config=resolved.task,
                         comparison_key=resolved.comparison_key.public_manifest(),
-                        challenge_release=resolved.release_manifest,
+                        benchmark_release=resolved.release_manifest,
                     )
                     public = json.loads(
                         supervisor.public_task_path.read_text(encoding="utf-8")
@@ -775,7 +787,7 @@ class SupervisorTests(unittest.TestCase):
                         supervisor.state_path.read_text(encoding="utf-8")
                     )
                     for record in (
-                        audit["challenge_release"],
+                        audit["benchmark_release"],
                         audit["artifact_identities"],
                     ):
                         self.assertEqual(
@@ -812,7 +824,7 @@ class SupervisorTests(unittest.TestCase):
             self.config,
             source=formal_task,
             train_dir=formal_train_dir,
-            task_kind="benchmark_challenge",
+            task_kind="research",
             leaderboard_eligible=True,
             training_image="example/training" + digest,
             candidate_image="example/candidate" + digest,
@@ -830,14 +842,14 @@ class SupervisorTests(unittest.TestCase):
             passed=True,
         )
         comparison_key = {
-            "challenge_id": "test-byte-lm-v1",
+            "benchmark_id": "test-byte-lm-v1",
             "track": "B",
             "track_config": "b-final",
             "runtime_profile": "h100-final",
         }
         release = {
-            "challenge_id": "test-byte-lm-v1",
-            "challenge_manifest_sha256": "b" * 64,
+            "benchmark_id": "test-byte-lm-v1",
+            "benchmark_manifest_sha256": "b" * 64,
             "task_manifest_sha256": hashlib.sha256(
                 config.source.read_bytes()
             ).hexdigest(),
@@ -845,7 +857,12 @@ class SupervisorTests(unittest.TestCase):
             "leaderboard_eligible": True,
             "track_config_id": "b-final",
             "runtime_profile_id": "h100-final",
-            "track_config": {"provisional": False},
+            "track_config": {
+                "provisional": False,
+                "track": "B",
+                "max_leases": 2,
+                "lease_seconds": 10,
+            },
             "runtime_profile": {"provisional": False},
         }
         release["resource_envelope"] = v0_resource_envelope(
@@ -854,7 +871,7 @@ class SupervisorTests(unittest.TestCase):
         ).public_manifest()
         release["evaluation_resource_envelope"] = release["resource_envelope"]
         artifacts = {
-            "challenge_manifest_sha256": release["challenge_manifest_sha256"],
+            "benchmark_manifest_sha256": release["benchmark_manifest_sha256"],
             "task_manifest_sha256": release["task_manifest_sha256"],
             "policy_sha256": hashlib.sha256(
                 (config.source.parent / "POLICY.md").read_bytes()
@@ -878,7 +895,7 @@ class SupervisorTests(unittest.TestCase):
             inference_gateway_artifact=gateway_artifact,
         )
         with patch(
-            "benchcore.supervisor._core_identity",
+            "envcore.supervisor._core_identity",
             return_value={"revision": core_revision, "dirty": False},
         ):
             supervisor = self.supervisor(
@@ -891,7 +908,7 @@ class SupervisorTests(unittest.TestCase):
                     limitations=(),
                 ),
                 comparison_key=comparison_key,
-                challenge_release=release,
+                benchmark_release=release,
                 release_verification=receipt,
                 worker_conformance=worker_conformance,
                 begin=begin,
@@ -1116,7 +1133,7 @@ class SupervisorTests(unittest.TestCase):
         digest = "@sha256:" + "a" * 64
         config = replace(
             self.config,
-            task_kind="benchmark_challenge",
+            task_kind="research",
             leaderboard_eligible=True,
             training_image="example/training" + digest,
             candidate_image="example/candidate" + digest,
@@ -1153,7 +1170,7 @@ class SupervisorTests(unittest.TestCase):
         digest = "@sha256:" + "a" * 64
         config = replace(
             self.config,
-            task_kind="benchmark_challenge",
+            task_kind="research",
             leaderboard_eligible=True,
             training_image="example/training" + digest,
             candidate_image="example/candidate" + digest,
@@ -1296,7 +1313,7 @@ class SupervisorTests(unittest.TestCase):
         digest = "@sha256:" + "a" * 64
         config = replace(
             self.config,
-            task_kind="benchmark_challenge",
+            task_kind="research",
             leaderboard_eligible=True,
             training_image="example/training" + digest,
             candidate_image="example/candidate" + digest,
@@ -1336,7 +1353,7 @@ class SupervisorTests(unittest.TestCase):
         digest = "@sha256:" + "a" * 64
         config = replace(
             self.config,
-            task_kind="benchmark_challenge",
+            task_kind="research",
             leaderboard_eligible=True,
             training_image="example/training" + digest,
             candidate_image="example/candidate" + digest,
@@ -1354,28 +1371,36 @@ class SupervisorTests(unittest.TestCase):
             passed=True,
         )
         with patch(
-            "benchcore.supervisor._core_identity",
+            "envcore.supervisor._core_identity",
             return_value={"revision": "d" * 40, "dirty": True},
         ):
             supervisor = self.supervisor(
                 config=config,
                 agent=agent,
                 comparison_key={
-                    "challenge_id": "test-byte-lm-v1",
+                    "benchmark_id": "test-byte-lm-v1",
                     "track": "B",
                     "track_config": "b-final",
                     "runtime_profile": "h100-final",
                 },
-                challenge_release={
-                    "challenge_id": "test-byte-lm-v1",
-                    "challenge_manifest_sha256": "b" * 64,
+                benchmark_release={
+                    "benchmark_id": "test-byte-lm-v1",
+                    "benchmark_manifest_sha256": "b" * 64,
                     "task_manifest_sha256": "c" * 64,
                     "release_stage": "official",
                     "leaderboard_eligible": True,
                     "track_config_id": "b-final",
                     "runtime_profile_id": "h100-final",
-                    "track_config": {"provisional": False},
+                    "track_config": {
+                        "provisional": False,
+                        "track": "B",
+                        "max_leases": 2,
+                        "lease_seconds": 10,
+                    },
                     "runtime_profile": {"provisional": False},
+                    "resource_envelope": v0_resource_envelope(
+                        self.resources, minimum_enforcement=EnforcementLevel.ENFORCED
+                    ).public_manifest(),
                 },
                 worker_conformance=worker_conformance,
             )
@@ -1401,7 +1426,7 @@ class SupervisorTests(unittest.TestCase):
             subprocess.CompletedProcess([], 0, revision + "\n", ""),
             subprocess.CompletedProcess([], 0, " M changed.py\n", ""),
         ]
-        with patch("benchcore.supervisor.subprocess.run", side_effect=results) as run:
+        with patch("envcore.supervisor.subprocess.run", side_effect=results) as run:
             first = _core_identity()
             second = _core_identity()
 
@@ -1423,7 +1448,7 @@ class SupervisorTests(unittest.TestCase):
             {
                 path.name
                 for path in (
-                    self.worker.research_tasks[0].public_api_dir / "benchcore"
+                    self.worker.research_tasks[0].public_api_dir / "envcore"
                 ).iterdir()
             },
             {
@@ -1436,7 +1461,7 @@ class SupervisorTests(unittest.TestCase):
         environment = os.environ.copy()
         environment["PYTHONPATH"] = str(self.worker.research_tasks[0].public_api_dir)
         smoke = subprocess.run(
-            [sys.executable, "-m", "benchcore.cli", "agent", "--help"],
+            [sys.executable, "-m", "envcore.cli", "agent", "--help"],
             cwd=self.workspace,
             env=environment,
             check=False,
@@ -2410,7 +2435,7 @@ class SupervisorTests(unittest.TestCase):
         private_detail = "/trusted/episode/lease directory is busy"
 
         with patch(
-            "benchcore.supervisor.shutil.rmtree",
+            "envcore.supervisor.shutil.rmtree",
             side_effect=OSError(private_detail),
         ):
             with self.assertRaises(ProtocolError) as caught:
@@ -2555,10 +2580,10 @@ class SupervisorTests(unittest.TestCase):
             "terminate_lease",
             side_effect=WorkerFailure(private_detail),
         ):
-            supervisor.infrastructure_failed("benchmark_monitor_failure")
+            supervisor.infrastructure_failed("episode_monitor_failure")
 
         self.assertEqual(supervisor.state["status"], "infrastructure_failure")
-        self.assertEqual(supervisor.state["failure"], "benchmark_monitor_failure")
+        self.assertEqual(supervisor.state["failure"], "episode_monitor_failure")
         self.assertIsNotNone(supervisor.state["active_lease"])
         self.assertEqual(
             supervisor.state["deployment_teardown_failures"],
@@ -2587,7 +2612,7 @@ class SupervisorTests(unittest.TestCase):
             "_save_state",
             side_effect=fail_first_reconciliation_save,
         ):
-            supervisor.infrastructure_failed("benchmark_monitor_failure")
+            supervisor.infrastructure_failed("episode_monitor_failure")
 
         self.assertIsNone(supervisor.state["active_lease"])
         self.assertEqual(supervisor.state["deployment_teardown_failures"], [])
@@ -2608,7 +2633,7 @@ class SupervisorTests(unittest.TestCase):
             "terminate_lease",
             side_effect=[WorkerFailure("first stop failed"), None],
         ):
-            supervisor.infrastructure_failed("benchmark_monitor_failure")
+            supervisor.infrastructure_failed("episode_monitor_failure")
             self.clock.advance(30)
             self.assertTrue(supervisor.terminate_worker_leases_for_teardown())
 
@@ -3442,7 +3467,7 @@ class SupervisorTests(unittest.TestCase):
         (rejected / "nested").write_text("untrusted", encoding="utf-8")
 
         with patch(
-            "benchcore.local_mailbox.shutil.rmtree",
+            "envcore.local_mailbox.shutil.rmtree",
             side_effect=OSError("simulated cross-uid cleanup failure"),
         ):
             self.assertFalse(supervisor.cleanup_agent_control())
@@ -3771,7 +3796,7 @@ class SupervisorTests(unittest.TestCase):
     def test_mailbox_response_has_a_portable_non_dir_fd_path(self):
         self.supervisor()
         with patch(
-            "benchcore.local_mailbox.directory_fd_operations_available",
+            "envcore.local_mailbox.directory_fd_operations_available",
             return_value=False,
         ):
             write_untrusted_response(
@@ -3899,7 +3924,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(state["inference_usage"], summary)
 
     def test_slow_worker_startup_does_not_shorten_the_track_a_lease_it_grants(self):
-        """Worker preparation is benchmark-owned and must not bill the Agent.
+        """Worker preparation is environment-owned and must not bill the Agent.
 
         The fixture budget is 100s. The Agent spends 10s thinking, then asks for
         a lease while the Worker needs 40s to materialize the workload. The
@@ -3922,7 +3947,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(status["elapsed_seconds"], 10)
         self.assertEqual(status["remaining_wall_clock_seconds"], 90)
         self.assertEqual(
-            status["timing"]["benchmark_overhead_seconds"],
+            status["timing"]["environment_overhead_seconds"],
             40,
         )
 
@@ -3952,7 +3977,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "infrastructure_failure")
 
         status = supervisor.public_status()
-        self.assertEqual(status["timing"]["benchmark_overhead_seconds"], 40)
+        self.assertEqual(status["timing"]["environment_overhead_seconds"], 40)
         self.assertEqual(status["elapsed_seconds"], 10)
         self.assertEqual(status["remaining_wall_clock_seconds"], 90)
         # A Lease that never started is not consumed.
@@ -3961,7 +3986,7 @@ class SupervisorTests(unittest.TestCase):
     def test_a_release_may_declare_that_worker_startup_is_participant_time(self):
         """The accounting boundary is the release's choice, not the runtime's."""
 
-        charged = replace(self.config, benchmark_owned_preparation=())
+        charged = replace(self.config, environment_owned_preparation=())
         self.worker.clock = self.clock
         supervisor = self.supervisor(track="A", config=charged)
         self.clock.advance(10)
@@ -3971,7 +3996,7 @@ class SupervisorTests(unittest.TestCase):
         status = supervisor.public_status()
 
         # Nothing is refunded, so the Agent is charged for the 40s of startup...
-        self.assertEqual(status["timing"]["benchmark_overhead_seconds"], 0)
+        self.assertEqual(status["timing"]["environment_overhead_seconds"], 0)
         self.assertEqual(status["elapsed_seconds"], 50)
         self.assertEqual(status["remaining_wall_clock_seconds"], 50)
         # ...and the granted duration is clamped to what actually remains, so

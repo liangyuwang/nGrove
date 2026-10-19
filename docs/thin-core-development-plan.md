@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Benchcore defines what an episode is allowed to do. It does not
+Envcore defines what an episode is allowed to do. It does not
 define where workloads run, how an Operator reaches a host, or which platform
 mechanism enforces the contract.
 
@@ -105,7 +105,7 @@ site-specific adapters are not prerequisites.
   admission, Candidate commit timing, incumbent selection, irreversible
   research sealing, postmortem ANALYSIS/TEST lifecycle, results, and
   leaderboard eligibility. It provides no organizer feedback during research.
-- A Challenge Release defines every resource property that is normative for
+- A Benchmark Release defines every resource property that is normative for
   comparison or eligibility. Core validates the requested requirements and
   the semantic evidence selected by that release. A Worker deployment chooses
   the platform mechanism, enforces the allocation, and reports effective
@@ -149,9 +149,9 @@ Status: complete.
 
 The v0 support statement is:
 
-- The bundled `autotrain-bench prepare` and `autotrain-bench start` commands
+- The bundled `envcore prepare` and `envcore start` commands
   are a single-host local Docker reference composition.
-- `benchcore.worker_protocol` version 12 is a synchronous in-process
+- `envcore.worker_protocol` version 12 is a synchronous in-process
   Python contract. Its remaining TRAIN/workspace/Candidate/output `Path` values
   are local deployment handles, not a serializable remote wire format. Hidden
   dataset requests and resolutions are path-free.
@@ -165,7 +165,7 @@ The v0 support statement is:
 - Core has no native remote artifact handoff, deployment discovery, scheduler
   integration, or non-Docker formal execution path yet.
 - The current local Docker and `host_cli` paths are development/preview paths;
-  no official leaderboard challenge has been released.
+  no official leaderboard benchmark has been released.
 - The bundled Docker Worker freezes matching GPU UUIDs and checks the Training
   workload's visible set before returning a Lease. Hardware isolation and
   independent evaluation-resource certification remain reference-Worker
@@ -181,7 +181,7 @@ The v0 support statement is:
   Worker-side capture operation or remote `ArtifactRef`.
 
 Phase A originally changed documentation only. The later postmortem-evaluation
-migration deliberately advanced the Agent, Worker, task, challenge, and result
+migration deliberately advanced the Agent, Worker, task, benchmark, and result
 schemas; it still did not claim support for a new deployment.
 
 ## Phase B: expose the existing seams
@@ -235,7 +235,7 @@ Failure ownership must remain explicit:
 
 - malformed Agent-controlled entries are rejected or become Agent policy
   failures;
-- valid requests that violate benchmark state return a protocol error;
+- valid requests that violate episode state return a protocol error;
 - failure of trusted transport or Coordinator persistence becomes an
   infrastructure failure.
 - raw trusted exception details remain in private Coordinator events; Agent
@@ -414,11 +414,11 @@ complete formal receipt.
 
 Status: implemented in the development schemas.
 
-The current versions are Task schema v7, Challenge schema v4 (v2/v3 releases remain
-readable), Agent Protocol v12, Worker Protocol v16, and result schema v15. The entries below identify the
+The current versions are Task schema v7, Benchmark schema v4 (v2/v3 releases remain
+readable), Agent Protocol v12, Worker Protocol v16, and result schema v16. The entries below identify the
 versions that introduced each change.
 
-- Worker v16, Challenge v3, and result v14 add a separate evaluation resource
+- Worker v16, Benchmark v3, and result v14 add a separate evaluation resource
   envelope and per-invocation allocation receipt. Core checks binding, effective
   values and enforcement before accepting cost or performance, and attributes a
   rejected receipt to infrastructure. TEST resource acceptance gates formal
@@ -452,7 +452,7 @@ versions that introduced each change.
   outstanding; this does not change benchmark budgets or formal evidence.
 
 - Agent Protocol v4 makes Candidate commit return artifact acceptance only.
-- Task schema v2 and Challenge schema v2 replaced legacy VAL with hidden ANALYSIS and a
+- Task schema v2 and Benchmark schema v2 replaced legacy VAL with hidden ANALYSIS and a
   release-frozen Candidate limit, selection rule, and result-visibility policy.
 - Task schema v3 and Worker Protocol v10 replace progressive all-prefix scoring
   with balanced, non-overlapping contexts that each contribute one permanently
@@ -537,7 +537,7 @@ participant with a compliant inference path is needed before redesigning C1.
 
 Result schema version 12 still pins `agent_system` to the bundled v0 runner
 vocabulary, so this phase also owns that structure. `_validate_agent_system()`
-in `benchcore/results.py` rejects a `runner` outside `AGENT_RUNNERS` and
+in `envcore/results.py` rejects a `runner` outside `AGENT_RUNNERS` and
 keys its "a host runner declares no egress policy" rule on the literal
 `host_cli`; `AgentConfig.network` derives `host_managed` from the same literal.
 Those checks are correct while Core owns a closed runner set, but a result

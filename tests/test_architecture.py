@@ -3,7 +3,7 @@ import unittest
 from dataclasses import fields
 from pathlib import Path
 
-from benchcore.worker_protocol import (
+from envcore.worker_protocol import (
     HiddenDatasetRequest,
     ResolvedHiddenDataset,
     ResolvedWorkload,
@@ -27,14 +27,23 @@ def imported_modules(path: Path) -> set[str]:
 
 
 class ArchitectureBoundaryTests(unittest.TestCase):
+    def test_environment_resolution_does_not_depend_on_benchmark_application(self):
+        for filename in ("environment.py", "run_config.py"):
+            with self.subTest(filename=filename):
+                self.assertTrue(
+                    {"benchmark", "envcore.benchmark"}.isdisjoint(
+                        imported_modules(ROOT / "envcore" / filename)
+                    )
+                )
+
     def test_core_semantics_do_not_import_local_deployment_mechanisms(self):
         forbidden = {
             "local_mailbox",
             "local_agent_execution",
             "runtime",
-            "benchcore.local_mailbox",
-            "benchcore.local_agent_execution",
-            "benchcore.runtime",
+            "envcore.local_mailbox",
+            "envcore.local_agent_execution",
+            "envcore.runtime",
         }
         for filename in (
             "conformance.py",
@@ -44,13 +53,13 @@ class ArchitectureBoundaryTests(unittest.TestCase):
             "deadline_probe.py",
         ):
             with self.subTest(filename=filename):
-                modules = imported_modules(ROOT / "benchcore" / filename)
+                modules = imported_modules(ROOT / "envcore" / filename)
                 self.assertTrue(forbidden.isdisjoint(modules))
 
     def test_task_evaluators_do_not_select_a_candidate_transport(self):
         for path in (
             ROOT / "dev_tasks/smoke_lm-pretrain/evaluator/evaluator.py",
-            ROOT / "challenges/lm-pretrain/evaluator/evaluator.py",
+            ROOT / "research_tasks/lm-pretrain/evaluator/evaluator.py",
         ):
             with self.subTest(path=path):
                 source = path.read_text(encoding="utf-8")
@@ -73,7 +82,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
                         {"path", "url", "credential", "mount", "cache_path"}
                     )
                 )
-        supervisor_source = (ROOT / "benchcore" / "supervisor.py").read_text(
+        supervisor_source = (ROOT / "envcore" / "supervisor.py").read_text(
             encoding="utf-8"
         )
         self.assertNotIn("config.analysis_path", supervisor_source)
