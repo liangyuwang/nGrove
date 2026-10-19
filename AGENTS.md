@@ -1,25 +1,29 @@
 # Repository Assistant instructions
 
-Envcore is an autonomous research environment framework with bundled research
-tasks under `research_tasks/`. Each task can also be used as a benchmark under
-fixed comparison conditions. Agents own validation within their research
+Envcore's project scope is recursive self-improvement (RSI), including
+meta-optimization of how autonomous systems find better research paths. Its
+current implementation is an autonomous research environment framework with
+bundled research tasks under `research_tasks/`. Agents own validation within their
 trajectories; Envcore evaluates submitted artifacts after research sealing.
 Environment runs may select user-owned
 compute resources and time budgets at launch using `--environment`, without
-editing task or benchmark releases. Omitted time budgets inherit the selected
+editing task releases. Omitted time budgets inherit the selected
 task/Track settings; resolved budgets freeze before task reveal. Track A uses
 total research seconds; Track B uses Lease count and seconds per Lease, not a
 total research deadline. Private Operator protection remains separate.
-Existing published runtime profiles remain available.
-Every run resolves and freezes one environment before task reveal. Named
-benchmark profiles are optional presets for that same execution path. A user-owned
-`--environment` may replace the selected compute configuration and time budget.
-The benchmark application records a comparison key only when the effective
-conditions match an explicitly selected published lane; custom conditions remain
-leaderboard-ineligible. The training-research protocol retains its isolation,
-sealing and evaluation rules. Record effective resources, resolved time budgets
-and the frozen environment identity for every run.
+Every run resolves and freezes one environment before task reveal. Record
+effective resources, resolved time budgets and the frozen environment identity
+for every run, and enforce the task's isolation, sealing and evaluation rules.
 See [environment configuration](docs/environments.md).
+
+Distinguish project scope from implementation status. Autonomous exploration,
+artifact evaluation and trajectory recording are implemented. The recording
+interface connects research experience to future methods for improving research
+capability; those methods and an automated recursive loop remain within project
+scope but are not implemented. An Agent may already improve its own tools and
+workflow within an episode. Recorded trajectories or higher artifact scores alone
+do not demonstrate improved research capability. See
+[research scope and current implementation](docs/research-scope.md).
 
 ## Role
 
@@ -149,9 +153,9 @@ conversation. Prefer existing authenticated sessions and named environment
 variables. Access only the hosts, directories, and services the user placed in
 scope.
 
-### Tested Agent
+### Research Agent
 
-Require the user to identify the Tested Agent and the policy-compliant way to
+Require the user to identify the Research Agent and the policy-compliant way to
 access it:
 
 - immutable Agent image reference and autonomous non-interactive command for a
@@ -166,7 +170,7 @@ Default to a newly created empty episode workspace when the Agent image and
 command contain everything needed to begin. Snapshot initial files only when
 the user explicitly identifies a participant-owned source workspace. Never use
 the Envcore checkout, or any directory containing the Repository Assistant's
-`AGENTS.md` instructions, as the Tested Agent workspace.
+`AGENTS.md` instructions, as the Research Agent workspace.
 
 An empty leaf directory beneath the trusted Envcore/task
 checkout is not isolated when a host-native Agent discovers this project's
@@ -174,7 +178,7 @@ instructions from ancestor directories. Before task reveal, resolve the final
 workspace path and reject it if it is inside that trusted checkout. Require an
 explicit `--episode-dir` or `--episodes-root` in a dedicated external working
 root; the Core-relative `.envcore/episodes` layout is not a valid default.
-This boundary does not remove the Tested Agent's own global configuration or
+This boundary does not remove the Research Agent's own global configuration or
 participant-owned instructions.
 
 Do not copy task datasets into the Agent workspace. The Worker provides
@@ -220,7 +224,7 @@ to task or benchmark policy.
    `docs/worker-protocol.md`, and the selected research task README and
    manifests before operating a research run. The current training-research
    protocol's isolation and evaluation rules are detailed in the
-   [full benchmark reference](docs/benchmark-reference.md); read those rules
+   [training-research reference](docs/benchmark-reference.md); read those rules
    for every run, and `research_tasks/README.md` when using a bundled research task.
    Inspect implementation entry points only as needed for the requested run.
    Record the exact Git revision and preserve unrelated user changes.
@@ -237,7 +241,7 @@ to task or benchmark policy.
    authorization when it prevents further work; do not repeatedly ask for
    permission for implementation already in scope.
 4. Keep the trusted Core checkout, task data, task images, and episode state
-   separate from the Tested Agent workspace. Prepare and verify public TRAIN
+   separate from the Research Agent workspace. Prepare and verify public TRAIN
    data and immutable images in the trusted execution environment. Freeze the
    expected ANALYSIS/TEST identities before task reveal, but let the Evaluation
    Worker materialize their bytes only after research sealing when the
@@ -285,7 +289,7 @@ sets a resource reservation limit, do not silently add preparation or
 evaluation hours to it. Explain any shortfall caused by different start times
 and resolve the budget before submission. Retaining accelerators between
 Leases can be intentional; report reserved time separately from active Lease
-time. Private Operator limits never enter the Tested Agent's task or become a
+time. Private Operator limits never enter the Research Agent's task or become a
 Track scoring budget.
 
 An external launcher must have bounded normal and cancellation cleanup plus
@@ -303,7 +307,7 @@ episode or additional training.
   but never hidden ANALYSIS or TEST data or resolving credentials.
 - The Evaluation Worker may see an immutable Candidate and one selected hidden
   dataset, but not the research workspace.
-- The Tested Agent receives no organizer-owned validation data or score. It may
+- The Research Agent receives no organizer-owned validation data or score. It may
   decide whether and how to validate using release-permitted information. It
   must not inspect Supervisor state, episode internals, evaluator logs, hidden
   data, unrelated host files, or unrestricted external information.

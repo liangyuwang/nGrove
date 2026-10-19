@@ -92,7 +92,7 @@ The Worker enforces:
 
 A Worker may retain a small local enforcement envelope so a Coordinator outage
 cannot extend a deadline.  It must not duplicate incumbent selection, scoring,
-or other benchmark policy.
+or other research policy.
 
 In v0, the Coordinator materializes and hashes the immutable Candidate snapshot
 from a shared path after the Worker has stopped the Lease. Worker-side capture

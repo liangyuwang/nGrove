@@ -1,48 +1,44 @@
-[Project overview](../README.md) · [Quick start](#quick-start) · [Benchmark rules](#motivation)
+[Project scope](research-scope.md) · [Quick start](#quick-start) · [Benchmark comparison](#benchmark-releases-and-comparison-lanes)
 
-This reference covers the shared training-research protocol, evaluation, optional
-benchmark comparisons, and operating instructions. Run its commands from the
-repository root.
+This reference covers the shared training-research protocol, evaluation and
+operating instructions. Run its commands from the repository root. For the
+project's RSI and meta-optimization goals, see [research scope](research-scope.md).
 
 The [Repository Assistant](../AGENTS.md) helps the user develop and maintain the
-project. When helping operate a benchmark episode, it takes the trusted
-operator role described here. The Research Agent participating in the environment
-is called the Tested Agent in this benchmark reference and has a separate
-execution and information boundary.
+project. When helping operate a research episode, it takes the trusted
+operator role described here. The Research Agent has a separate execution and
+information boundary.
 
-# Training-research and benchmark reference
+# Training-research protocol reference
 
 **The shared training-research protocol for Envcore’s research tasks.**
 
 Task packages live in `research_tasks/`. Agents choose their own validation
 methods during research; Envcore's evaluation measures submitted artifacts after
 research sealing. The existing postmortem ANALYSIS also measures Candidates, not
-the quality of a research trajectory. Benchmark use fixes comparison conditions
-and uses these evaluation results for standardized scoring and comparison.
-The benchmark configuration and eligibility rules below are optional additions
-to the same research lifecycle.
+the quality of a research trajectory.
 
-> **Status:** v0 local reference runtime; no official benchmark released yet
+> **Status:** runnable research preview with trajectory recording, an LM
+> pretraining task and a smaller development smoke task. Future meta-optimization
+> methods and recursive orchestration remain unimplemented.
 > **Framework:** Envcore
-> The repository includes one leaderboard-ineligible development smoke task.
 
 ---
 
 ## Overview
 
-The bundled benchmarks evaluate **autonomous systems that design, implement, run, analyze, and improve machine-learning training systems**.
+The current training-research tasks let **autonomous systems design, implement,
+run, analyze, and improve machine-learning training systems**, while recording
+observable research trajectories for future meta-optimization.
 
-The benchmark is inspired by training speedruns, but asks a broader question.
-
-Instead of fixing a small model and asking:
-
-> How quickly can this model reach a target validation loss?
-
-The benchmark protocol asks:
+Within an episode, the task asks:
 
 > **Given a fixed task, fixed data, a fixed evaluation contract, and a constrained opportunity to interact with the training environment, how good a model can an autonomous research system produce?**
 
-The benchmark intentionally leaves most of the training stack open.
+The task intentionally leaves most of the training stack open. The broader
+project asks how research experience can improve the ability to discover such
+solutions; the [recording interface](recording.md) connects the current execution
+framework to future methods addressing that question.
 
 A Research Agent may explore:
 
@@ -69,13 +65,13 @@ A Research Agent may explore:
 * profiling;
 * experiment strategy;
 * research workflow;
-* and other improvements not anticipated by the benchmark authors.
+* and other improvements not anticipated by the task authors.
 
 There is no reference `train.py` that participants are expected to tune.
 
 The Research Agent is responsible for building the training system itself.
 
-The evaluation objective is two-dimensional:
+The current LM artifact evaluation has two axes:
 
 $$
 \boxed{\text{maximize hidden TEST performance score}}
@@ -83,7 +79,7 @@ $$
 \boxed{\text{minimize hidden TEST time per task}}
 $$
 
-under the resource constraints of the selected benchmark track. Results are
+under the selected Track and frozen environment's resource budget. Results are
 compared on a Performance–Cost Pareto frontier rather than collapsed into an
 opaque scalar.
 
@@ -108,7 +104,10 @@ to verify and reclaim its resources. This preserves existing results and does
 not resume the episode. See [Worker recovery](worker-recovery.md) for the
 ownership checks, supported scope and unresolved-outcome handling.
 
-The repository now contains an executable, single-host Docker prototype of the benchmark protocol. It is intended to validate episode lifecycle, Training Lease accounting, hidden evaluation, and the agent-facing control surface before the first official benchmark instance is selected.
+The repository contains an executable, single-host Docker implementation of the
+training-research protocol. It supports autonomous research episodes, Training
+Lease accounting, isolated evaluation and trajectory recording. Formal benchmark
+release work is a separate optional application milestone.
 
 The current development snapshot uses Worker Protocol v16 but does not carry a
 release package version yet. Protocol v7 introduced a breaking Worker API
@@ -155,7 +154,7 @@ identity and runtime profile.
 The Python package itself remains `0.0.0` while unreleased.
 
 Docker is the bundled v0 compatibility implementation, not a general platform
-abstraction. The benchmark Supervisor now depends on the semantic
+abstraction. The research Supervisor now depends on the semantic
 `envcore.worker_protocol` boundary: it asks a Worker to start, execute,
 inspect, and terminate a lease or evaluate a Candidate without referring to
 containers, scheduler jobs, Pods, or platform networks. Worker capabilities,
@@ -187,7 +186,7 @@ with its deployment rather than adding a platform branch to this CLI.
 The Agent-facing file mailbox is separate from the Worker Protocol. It is the
 local reference transport for Agent requests to the Coordinator; its
 filesystem hardening and operating-system support are transport properties,
-not benchmark semantics. The task's `*_image` fields are release-selected
+not research protocol semantics. The task's `*_image` fields are release-selected
 OCI-style workload references consumed by the Docker implementation, not
 Docker container IDs; leaderboard-eligible releases require digest-pinned
 values. A different runtime may consume the OCI artifact or an
@@ -211,9 +210,9 @@ machines or integrate with Slurm, Kubernetes, or a cloud scheduler.
 
 The repository contains one bundled development task,
 `dev_tasks/smoke_lm-pretrain`. It is an end-to-end smoke test for Agent and runtime
-development and never a leaderboard task. It uses the same release-bound start
-contract, Policy, trusted Evaluator implementation, both tracks, and isolated
-Candidate serving boundary as the benchmark preview, while retaining a much
+development and never a leaderboard task. It uses the same task-and-environment
+launch, policy, recording, trusted Evaluator implementation, both tracks, and
+isolated Candidate serving boundary as the research preview, while retaining a much
 smaller task-specific corpus and evaluation configuration. It intentionally
 ships no reference Agent.
 
@@ -222,10 +221,10 @@ contains a runnable-after-preparation preview task, evaluator, data builder, and
 provisional comparison profiles; no frozen, leaderboard-eligible benchmark has
 been released yet.
 
-Hardware allocation is likewise not part of the task. Ad-hoc task episodes may
-explicitly expose resources with manual flags. Profile-bound development and
-benchmark episodes instead select one of the release's finite named runtime
-profiles. In both cases the semantic resource envelope is recorded. Every
+Hardware allocation is likewise not part of the task. Research episodes select
+resources and budgets through a user-owned `--environment` configuration.
+Task-only local runs also accept explicit resource flags. Every run
+freezes its environment and records the semantic resource envelope. Every
 successful Training Lease also records a Worker receipt separating allocator
 observations, workload-visible values, and enforcement evidence. Inventory
 alone remains diagnostic metadata; it is not treated as proof of allocation.
@@ -270,20 +269,19 @@ Smoke-task scores are not benchmark results.
 
 Every episode must select an explicit `--episode-dir` or `--episodes-root` in a
 dedicated trusted working root outside the Envcore/task checkout.
-This keeps episode state and the Tested Agent workspace separate from operator
+This keeps episode state and the Research Agent workspace separate from operator
 files. It also prevents host-native tools such as Codex from inheriting the
 Core's `AGENTS.md` through ancestor-directory instruction discovery. An empty
 workspace beneath the Core is therefore not isolated. This check is scoped to
-the trusted Envcore checkout; it does not remove the Tested Agent's
+the trusted Envcore checkout; it does not remove the Research Agent's
 own global configuration or participant-owned instructions.
 
 A participant Agent Container can be selected without changing the task:
 
 ```bash
 envcore start \
-  --benchmark dev_tasks/smoke_lm-pretrain/benchmark.json \
-  --track-config smoke-b-3x75s \
-  --runtime-profile cpu-local \
+  --task dev_tasks/smoke_lm-pretrain/task.json --track B \
+  --environment examples/environments/cpu-2cores.json \
   --episodes-root /path/to/envcore-runs/episodes \
   --agent-runner container \
   --agent-image participant-agent:version \
@@ -300,15 +298,15 @@ Envcore supports two Agent runners:
   protocol remain unchanged.
 
 The core runner is tool-independent. A CLI can be used directly when it already
-knows how to operate the benchmark protocol:
+knows how to operate the training-research protocol:
 
 ```bash
 envcore start \
-  --benchmark dev_tasks/smoke_lm-pretrain/benchmark.json \
-  --track-config smoke-a-5m \
-  --runtime-profile cpu-local \
+  --task dev_tasks/smoke_lm-pretrain/task.json --track A \
+  --environment examples/environments/cpu-2cores.json \
   --episodes-root /path/to/envcore-runs/episodes \
   --agent-runner host_cli \
+  --no-operator-storage-limit \
   --agent-command "your-agent-cli --non-interactive ..."
 ```
 
@@ -316,7 +314,7 @@ The command starts with its working directory set to the private episode
 workspace and with stdin disconnected. It receives
 `ENVCORE_WORKSPACE`, `ENVCORE_TASK`, and
 `ENVCORE_CONTROL_DIR`; it must use the `envcore agent ...`
-mailbox commands for benchmark control and run without further user input. A
+mailbox commands for research control and run without further user input. A
 custom wrapper may reuse the tool-independent prompt in
 `envcore.agent_prompt.HOST_CLI_PROMPT`.
 
@@ -327,7 +325,7 @@ research deadline. To end an active episode voluntarily, the Agent commits or
 stops its active lease, calls `agent finish`, and exits; exiting while research
 is still active records an unfinished episode (DNF).
 
-Tool-specific adapters are optional conveniences, not part of the benchmark
+Tool-specific adapters are optional conveniences, not part of the research
 protocol. They translate the generic contract into a particular CLI's flags,
 prompt input, authentication environment, sandbox settings, and event stream.
 For example, the bundled Codex adapter allows an existing ChatGPT-authenticated
@@ -336,11 +334,11 @@ confirms an existing login, run the TinyStories Track A with a fixed Codex model
 
 ```bash
 python3 -m envcore.cli start \
-  --benchmark dev_tasks/smoke_lm-pretrain/benchmark.json \
-  --track-config smoke-a-5m \
-  --runtime-profile cpu-local \
+  --task dev_tasks/smoke_lm-pretrain/task.json --track A \
+  --environment examples/environments/cpu-2cores.json \
   --episodes-root /path/to/envcore-runs/episodes \
   --agent-runner host_cli \
+  --no-operator-storage-limit \
   --agent-command "python3 -m envcore.cli_adapters.codex --model YOUR_CODEX_MODEL --reasoning-effort high"
 ```
 
@@ -380,7 +378,7 @@ After an episode closes, a host Agent receives a 30-second drain period to finis
 its current response and emit final usage records. Candidates, TEST results, and
 official elapsed time are frozen before this drain period begins. If the command
 does not exit, the Supervisor terminates it and records `drain_timeout` without
-changing the benchmark result.
+changing the episode outcome.
 
 `host_cli` is always reported as `policy_compliant: false`: the v0 reference
 implementation cannot prove that a host process was unable to inspect unrelated
@@ -391,10 +389,9 @@ confines every model-generated action to the episode workspace and mailbox.
 
 ## Bring your own Agent: controlled inference
 
-The benchmarks evaluate participant-defined autonomous Agent
-systems, including systems whose researcher model is served through an
+Envcore runs participant-defined autonomous research systems, including systems whose researcher model is served through an
 OpenAI-compatible remote or local endpoint. The Agent
-execution loop still runs inside the Agent Container so the benchmark can enforce
+execution loop still runs inside the Agent Container so the Worker can enforce
 its policy boundary; remote model inference is exposed through a narrow
 official Gateway sidecar rather than arbitrary public Internet access.
 
@@ -454,7 +451,7 @@ The Gateway is a separate official container, so enabling inference does not
 replace or wrap the participant command. Node, Go, Rust, Python, and other Agent
 images continue to run their registered entrypoint unchanged.
 
-The Agent can use the benchmark package only as the control plane for training:
+The Agent can use the published helper API as the control plane for training:
 
 ```bash
 python -m envcore.cli agent status
@@ -468,13 +465,13 @@ python -m envcore.cli agent finish
 The public task manifest at `$ENVCORE_TASK` declares the Agent-facing
 control protocol as `protocol_version`. Version 2 renamed the `agent status`
 field `agent_mode` to `agent_egress` and its `"sandboxed"` value to `"denied"`.
-An Agent that parses the version 1 field name must be updated; the benchmark
+An Agent that parses the version 1 field name must be updated; the protocol
 does not emit both names. Version 3 corrected participant-time accounting for
 release-declared Worker preparation. Version 4 removes organizer validation
 feedback: Candidate commit returns artifact acceptance only. Version 5 adds the
 exact `predictions.json` contract and optional generated helper signatures under
 `evaluation.candidate_boundary` so a Candidate can be implemented without
-reading benchmark source code. Version 6 promotes Candidate cost to an
+reading trusted environment source code. Version 6 promotes Candidate cost to an
 independent evaluation axis. Version 7 adds the existing Candidate invocation
 contract at `evaluation.candidate_boundary.entrypoint`: `candidate.py` in the
 artifact root is imported as a Python module, then
@@ -640,7 +637,7 @@ scheduler resource handles remain private to the Worker deployment.
 The bundled `start` command returns zero only for a finalized successful result
 with no active/pending Lease or recorded deployment teardown failure. This
 keeps a late cleanup or persistence problem from looking like process-level
-success while preserving the benchmark outcome and failure evidence in the
+success while preserving the research outcome and failure evidence in the
 report.
 
 The example proves the complete protocol:
@@ -698,8 +695,9 @@ unmapped or different operator account require deployment-side migration.
 
 Here, **user/operator** means the entity that prepares and launches the run; it
 may itself be a human or another Agent and is inside the trusted host boundary.
-**Tested Agent** means the submitted autonomous system being benchmarked. The v0
-threat model protects benchmark policy from the Tested Agent, not from the
+**Research Agent** means the autonomous participant conducting research. Benchmark
+use also calls it the Tested Agent. The v0 threat model protects task and
+environment policy from the participant, not from the
 user/operator or machine administrator. Docker isolation is a development
 reference boundary and is not presented as protection against kernel,
 container-runtime, or GPU-driver exploits. Official adversarial evaluation may
@@ -748,9 +746,9 @@ entries in a Candidate bundle, including empty directories.
 
 # Motivation
 
-Most training benchmarks deliberately restrict the search space.
-
-This is useful when the goal is to isolate a particular algorithmic or systems contribution, but it is less suitable for evaluating autonomous ML research systems.
+Autonomous research needs room to explore the complete training system and the
+research process itself. Tasks define success and enforce resource and
+information boundaries while leaving the approach open.
 
 A capable autonomous researcher should be able to decide not only:
 
@@ -772,21 +770,25 @@ but also:
 
 > What experiment should I run next?
 
-The benchmark protocol therefore treats the **entire training system as the search space**.
+The training-research protocol therefore treats the **entire training system as the search space**.
 
-The benchmark is intended to measure the capability of a system to perform autonomous ML systems research, rather than its ability to optimize a predefined training script.
+The current implementation enables this exploration and retains its evidence.
+The wider project develops methods for improving the ability to find productive
+research paths.
 
 ---
 
-# Core Benchmark Question
+<a id="core-benchmark-question"></a>
+
+# Core Research Question
 
 Let:
 
-* $S_0$ be the Research Agent at the moment the benchmark task is revealed;
+* $S_0$ be the Research Agent at the moment the research task is revealed;
 * $S_t$ be the system after autonomous improvement during the episode;
 * $M_t$ be a target model or training system produced by $S_t$.
 
-The benchmark protocol studies trajectories of the form:
+The training-research protocol studies trajectories of the form:
 
 $$
 S_0
@@ -798,7 +800,7 @@ S_2
 \cdots
 $$
 
-while simultaneously producing increasingly capable training systems:
+while producing training systems whose quality is measured independently:
 
 $$
 S_t
@@ -806,7 +808,7 @@ S_t
 M_t.
 $$
 
-The benchmark therefore does **not** require the Research Agent itself to remain static.
+The research protocol permits the Research Agent to change autonomously.
 
 It only requires its **initial state and external boundary** to be fixed.
 
@@ -816,9 +818,12 @@ The central principle is:
 
 After task reveal, no human developer may patch, steer, upgrade, or otherwise modify the submitted Research Agent.
 
-However, the Research Agent may autonomously modify its own task-local behavior, software, tools, memory, workflow, experimental strategy, and other artifacts within the resources and permissions of the benchmark.
+However, the Research Agent may autonomously modify its own task-local behavior, software, tools, memory, workflow, experimental strategy, and other artifacts within the resources and permissions of the task and frozen environment.
 
-This distinction is fundamental to the benchmark.
+This distinction applies to every research episode. Future methods may use
+recorded trajectories to improve the next initial system under an explicitly
+defined information policy. That recursive update path is within project scope
+and remains future implementation work.
 
 ---
 
@@ -877,15 +882,17 @@ future task schema is separate from the now path-free Worker boundary.
 
 ---
 
-# The Benchmark Task
+<a id="the-benchmark-task"></a>
 
-Each benchmark release defines a task containing:
+# The Training Research Task
+
+Each current training task defines:
 
 ### TRAIN
 
 A large fixed training corpus.
 
-The TRAIN pool should be sufficiently large that consuming all available data is not automatically the optimal strategy under the benchmark compute budget.
+The TRAIN pool should be sufficiently large that consuming all available data is not automatically the optimal strategy under the frozen research budget.
 
 The Research Agent may choose which portion of TRAIN to use.
 
@@ -905,7 +912,7 @@ For example, it may autonomously explore:
 
 Importantly, **data policy and experimental methodology are part of the research
 problem**. The Agent may reserve some permitted TRAIN data, devise another
-permitted validation method, or perform no validation at all. The benchmark protocol
+permitted validation method, or perform no validation at all. The training-research protocol
 neither requires a holdout nor prescribes a replacement for organizer-owned VAL.
 
 This choice deliberately measures validation and incumbent selection as part of
@@ -955,7 +962,8 @@ TEST is:
 
 Neither ANALYSIS nor TEST is computed during autonomous research.
 
-Instead, the benchmark first permanently terminates the research episode and freezes the relevant artifacts.
+The Supervisor first seals research and freezes the relevant artifacts, and the
+Worker and launcher confirm research termination before hidden evaluation.
 
 Only then does the official evaluator run TEST once on the final Agent-declared
 incumbent, durably stage that primary decision, and attempt ANALYSIS on the
@@ -966,7 +974,7 @@ still reported independently as a deployment-integrity failure.
 Therefore:
 
 $$
-\boxed{\text{validation strategy belongs to the Tested Agent}}
+\boxed{\text{validation strategy belongs to the Research Agent}}
 $$
 
 while:
@@ -982,9 +990,10 @@ evaluation fails.
 
 # Fixed Evaluation Semantics
 
-The benchmark fixes the tokenizer and evaluation semantics.
+The current LM task fixes the tokenizer and evaluation semantics. These
+constraints belong to that task; broader artifact interfaces remain future work.
 
-A benchmark release specifies:
+The task release specifies:
 
 * tokenizer;
 * vocabulary;
@@ -1058,7 +1067,7 @@ A submission may use:
 * novel architectures;
 * or future architectures not anticipated by this specification.
 
-The only requirement is that the final artifact implements the benchmark evaluation interface.
+The only requirement is that the final artifact implements the task evaluation interface.
 
 Fixing the tokenizer ensures that loss remains comparable across models.
 
@@ -1066,7 +1075,7 @@ Fixing the tokenizer ensures that loss remains comparable across models.
 
 # Open Training Stack
 
-Unless explicitly restricted by a benchmark release, the Research Agent may modify any participant-controlled component of training.
+Unless explicitly restricted by the task policy, the Research Agent may modify any participant-controlled component of training.
 
 Examples include:
 
@@ -1138,14 +1147,14 @@ Examples include:
 
 There is intentionally no fixed model size.
 
-Choosing the appropriate model scale is itself part of the benchmark.
+Choosing the appropriate model scale is itself part of the research task.
 
 ---
 
 # Training Leases
 
 A **Training Lease** is a fixed-duration interactive window in which the Agent
-may use the benchmark's already-allocated Training Environment.
+may use the run's already-allocated Training Environment.
 
 ```text
 Agent
@@ -1187,7 +1196,7 @@ The lease is consumed when the Training Container starts successfully. Participa
 
 Track A constrains total elapsed research time.
 
-The benchmark defines:
+The frozen environment resolves the task default or selected budget override:
 
 $$
 T_{\text{total}}.
@@ -1261,7 +1270,7 @@ It rewards both research quality and research speed.
 
 Track B constrains the system's access to the expensive training environment rather than its total research wall-clock.
 
-A benchmark release defines:
+The frozen environment resolves the task defaults or selected budget override:
 
 $$
 N_{\mathrm{leases}}
@@ -1276,11 +1285,11 @@ $$
 For example:
 
 ```text
-Maximum Training Leases:   defined by the selected track config
-Maximum Time per Lease:    defined by the selected track config
+Maximum Training Leases:   defined by the resolved research budget
+Maximum Time per Lease:    defined by the resolved research budget
 Runtime Profile:           selected independently at episode launch
 Official feedback:         none
-Agent Research Time:       Unbounded by benchmark score
+Agent Research Time:       Unbounded by the Track B research budget
 ```
 
 The Research Agent may reason, write code, analyze previous results, and autonomously improve for as long as it chooses between Training Leases.
@@ -1296,7 +1305,7 @@ both bundled Track B tasks:
 Each task keeps this trusted setting in a separate `operator-defaults.json`
 beside `task.json`, with the key `track_b_max_research_seconds`. The optional
 `max_episode_storage_bytes` key configures separate storage protection described
-below. These settings are not benchmark budgets and do not enter the task/release
+below. These settings are not Track budgets and do not enter the task/release
 manifest digests or the comparison key. A custom task without that file has no default protection;
 the launcher warns explicitly when protection is disabled.
 
@@ -1350,7 +1359,7 @@ and no greater than the requested limit, with bounded metadata/inode storage.
 An ordinary directory, an ordinary Docker named volume, or a free-space check
 does not implement this protection. Filesystem/volume creation, quota setup,
 ownership, capacity reservation and eventual disposal belong to the deployment;
-the benchmark does not format disks, mount filesystems, or resize existing data.
+Envcore does not format disks, mount filesystems, or resize existing data.
 
 Before copying the Agent workspace or revealing the task, the bundled Worker
 verifies the filesystem boundary, capacity and inode observation. A trusted,
@@ -1562,7 +1571,10 @@ Therefore, a system may autonomously:
 * generate new search procedures;
 * alter its task-local research workflow.
 
-If future versions allow the system to use benchmark training compute to improve components of the researcher itself, that compute must consume the same benchmark resources that would otherwise be available for training.
+Updates to researcher components must follow the task policy and the frozen
+resource budget. Future framework methods that consume trajectories to improve
+the researcher must specify their own resource accounting and information
+boundaries; the current implementation does not supply those methods.
 
 What is forbidden is **external intervention**.
 
@@ -1575,13 +1587,13 @@ After task reveal, a human developer may not:
 * change the agent model;
 * provide new task-specific information.
 
-The benchmark freezes the outside world, not the system's internal state.
+The episode freezes the external boundary while allowing autonomous internal changes.
 
 ---
 
 # Agent System Definition
 
-A benchmark submission includes its initial autonomous research system.
+Every research run registers its initial autonomous research system.
 
 This may contain:
 
@@ -1601,7 +1613,9 @@ The complete initial system configuration must be registered before task reveal.
 
 Multi-agent systems are allowed.
 
-The benchmark evaluates the **whole submitted Research Agent**, not an isolated foundation model.
+The episode records the **complete Research Agent configuration** and evaluates
+its submitted artifacts. Artifact measurements alone do not directly measure
+changes in the research system's ability to find improvements.
 
 ---
 
@@ -1609,7 +1623,7 @@ The benchmark evaluates the **whole submitted Research Agent**, not an isolated 
 
 Agent inference is a first-class measured resource.
 
-The benchmark records, at minimum:
+Envcore records, at minimum:
 
 * input tokens;
 * output tokens;
@@ -1635,17 +1649,17 @@ token usage is a separate research diagnostic; it is not Candidate serving cost.
 
 In Track A, agent reasoning naturally competes with training and engineering for the total wall-clock budget.
 
-In Track B, agent reasoning time is not capped by the primary benchmark constraint, so token usage is especially important as a diagnostic measure of research efficiency.
+In Track B, agent reasoning time is not capped by the Track B budget, so token usage is especially important as a diagnostic measure of research efficiency.
 
 Token count is not assumed to represent identical FLOPs across different underlying agent models.
 
-The initial benchmark therefore treats tokens as a **first-class trace and scaling variable**, rather than using them as the sole cross-system compute normalization.
+The research protocol therefore treats tokens as a **first-class trace and scaling variable**, rather than using them as the sole cross-system compute normalization.
 
 ---
 
 # Research History
 
-The Research Agent is allowed to retain the complete history of its benchmark episode.
+The Research Agent is allowed to retain the complete history of its research episode.
 
 This may include:
 
@@ -1667,13 +1681,13 @@ This is intentional.
 
 A capable autonomous researcher should be able to learn from its own previous work.
 
-The benchmark controls information through evaluator and environment boundaries rather than by forcing the agent to forget legitimate history.
+The research environment controls information through evaluator and environment boundaries rather than by forcing the agent to forget legitimate history.
 
 ---
 
 # Participant-Owned Experimental Methodology
 
-The benchmark protocol deliberately does not provide an organizer validation oracle.
+The training-research protocol deliberately does not provide an organizer validation oracle.
 An Agent may decide that internal holdouts or other permitted experiments are
 useful, but it may also choose a different method or no explicit validation.
 
@@ -1686,7 +1700,7 @@ A capable Research Agent may autonomously discover practices such as:
 * robustness checks;
 * avoiding overreaction to small validation changes.
 
-The benchmark encourages careful empirical reasoning but does not prescribe any
+The task encourages careful empirical reasoning but does not prescribe any
 of these practices.
 
 Discovering when and how to use them is part of the task.
@@ -1695,10 +1709,10 @@ Discovering when and how to use them is part of the task.
 
 # Intermediate Incumbents and Research Curves
 
-The benchmark records the final performance–cost pair together with the submitted
+Envcore records the final performance–cost pair together with the submitted
 Candidate and incumbent history.
 
-Throughout an episode, the Research Agent may declare a **current incumbent**: the model it would submit if the benchmark ended immediately.
+Throughout an episode, the Research Agent may declare a **current incumbent**: the model it would submit if research ended immediately.
 
 Candidate commitment and incumbent declaration are separate operations. The
 Supervisor never infers an incumbent by sorting hidden scores or by choosing the
@@ -1810,15 +1824,17 @@ metric computation are excluded.
 
 Performance–Cost comparison uses Pareto dominance: result A dominates result B
 when A has no lower performance and no higher time per task, with at least one
-strict improvement. The leaderboard frontier contains the non-dominated
-results. The two axes are never collapsed into a scalar. Comparisons require
-the same benchmark release, hidden input identity, and runtime profile.
+strict improvement. An optional leaderboard frontier contains the non-dominated
+results. The two axes are never collapsed into a scalar. Research comparisons must
+control the task/evaluation contract, hidden input identity and effective
+execution conditions. Formal benchmark comparisons additionally require a
+matching published lane.
 
 ---
 
 ## First-class diagnostic metrics
 
-The benchmark also records:
+Envcore also records:
 
 * postmortem ANALYSIS performance score and release-declared raw metrics;
 * final TEST performance score and release-declared raw metrics;
@@ -1909,7 +1925,7 @@ only the participant's measured research time is.
 
 # Isolation
 
-The benchmark should enforce strong isolation between the autonomous researcher and the training environment.
+The Worker must enforce the declared isolation between the autonomous researcher and the training environment.
 
 The Research Agent may:
 
@@ -1938,7 +1954,7 @@ private writable prediction directory with a release-derived hard byte and
 entry budget. The Worker runs these environments sequentially and transfers
 only the prescribed files; neither has a network. Both are inaccessible to
 Agent and Training Containers, and the scorer returns only
-benchmark-permitted aggregate performance and cost evidence. Prediction files
+task-permitted aggregate performance and cost evidence. Prediction files
 are not episode audit artifacts: they are removed after scoring or failure and
 confirmed evaluation teardown.
 
@@ -1946,20 +1962,23 @@ confirmed evaluation teardown.
 
 # External Resources
 
-The core benchmark is intended to be reproducible and closed-task.
+The current LM pretraining task uses a closed resource and information policy.
+These restrictions belong to the present task and protocol; broader capabilities
+for future tasks remain a design direction in
+[LM Open World](../research_tasks/lm-open-world/README.md).
 
-A benchmark release should define exactly which external capabilities the Research Agent may access.
-
-The default direction for the core track is:
+Each task must define exactly which external capabilities the Research Agent may
+access. The current LM policy requires:
 
 * no external datasets;
 * no arbitrary Internet access;
 * no external pretrained target-model checkpoints;
 * no human assistance after task reveal.
 
-Each release separates an online **Preparation Phase** from the benchmark episode. Preparation may download versioned official images, the tokenized TRAIN corpus, tokenizer assets, compilers, frameworks, and an offline package bundle. Dataset and image hashes are verified before task reveal.
+Each release separates an online **Preparation Phase** from the research episode. Preparation may download versioned official images, the tokenized TRAIN corpus, tokenizer assets, compilers, frameworks, and an offline package bundle. Dataset and image hashes are verified before task reveal.
 
-The first official Training Environment will be fixed by the benchmark release rather than extended by each user. In policy-compliant runs, Agent and Training Containers have no arbitrary public-network access. The fixed training environment may still include CUDA, Triton, compilers, headers, source trees, and other tools that allow the Agent to build or replace participant-controlled infrastructure within its resource budget.
+The selected task fixes its workload images, while the run-owned environment
+selects compute resources and time budgets before task reveal. In policy-compliant runs, Agent and Training Containers have no arbitrary public-network access. The fixed training environment may still include CUDA, Triton, compilers, headers, source trees, and other tools that allow the Agent to build or replace participant-controlled infrastructure within its resource budget.
 
 In policy-compliant container runs, remote researcher inference is allowed only
 through a registered, Supervisor-managed trusted Gateway. The upstream origin,
@@ -1997,7 +2016,9 @@ Examples include:
 In Track B, a Lease is consumed as soon as the Worker confirms that its Training
 workload started successfully, even if participant-controlled code later fails.
 
-Benchmark infrastructure failures are excluded and may be rerun.
+Research infrastructure failures retain their failure evidence. In benchmark
+comparisons they are excluded from scoring; a new attempt requires the
+operator's authorized retry scope.
 
 The infrastructure-failure policy must be deterministic and auditable.
 
@@ -2022,9 +2043,10 @@ retained while policy compliance and leaderboard eligibility fail closed.
 
 # Reproducibility and Logging
 
-Every official episode should produce an append-only benchmark trace.
+Every research episode records an append-only event journal and the configured
+trajectory payloads and artifacts; see [research recording](recording.md).
 
-At minimum, the benchmark records:
+The recorded evidence includes, subject to runner coverage:
 
 ```text
 task manifest
@@ -2043,9 +2065,10 @@ post-mortem TEST results
 per-evaluation Candidate time per task and supporting cost measurements
 ```
 
-Where possible, official candidates and episode traces should be reproducible from immutable artifacts.
+Retain immutable artifacts and provenance for reproducibility. Recorded traces
+are observable evidence; they do not provide complete Agent-state replay.
 
-The benchmark should preserve enough information to distinguish:
+The recording interface supports later investigation of:
 
 * algorithmic improvements;
 * infrastructure improvements;
@@ -2057,7 +2080,8 @@ The benchmark should preserve enough information to distinguish:
 
 # Leaderboards
 
-Each benchmark should maintain separate leaderboards for the two tracks.
+The following publication conventions apply to organizer-provided leaderboards.
+Separate Track A and Track B comparisons by their frozen conditions.
 
 ## Track A
 
@@ -2126,7 +2150,8 @@ Custom runs remain subject to Worker enforcement and do not automatically
 qualify for official rankings. See the
 [reference environment and comparison policy](../research_tasks/README.md#reference-environments-and-custom-comparisons).
 
-Every profile-bound episode records the complete comparison key:
+A run whose effective conditions match an explicitly selected benchmark lane
+records the complete comparison key:
 
 ```text
 benchmark_id + track + track_config + runtime_profile
@@ -2248,11 +2273,11 @@ datasets organizer-owned and outside participant-visible artifacts.
 
 # Design Principles
 
-The benchmark protocol follows several principles.
+The training-research protocol follows several principles.
 
 ### 1. Fix the task, not the solution
 
-The benchmark fixes the Training Environment contract and evaluation semantics
+The task and frozen environment define the execution contract and evaluation semantics
 while leaving the participant's training system open.
 
 ### 2. TEST, not rules, should punish overfitting
@@ -2260,7 +2285,7 @@ while leaving the participant's training system open.
 The Agent owns its experimental methodology; hidden TEST reveals whether the
 final result generalizes.
 
-The benchmark should avoid unnecessary restrictions on legitimate research.
+The task should avoid unnecessary restrictions on legitimate research.
 
 ### 3. Treat infrastructure as part of ML research
 
@@ -2280,8 +2305,9 @@ The system should succeed or fail based on its own actions after task reveal.
 
 ### 7. Keep evaluation axes explicit
 
-The final objective is the release-defined hidden TEST Performance–Cost Pareto
-frontier. Performance and time per task remain independently interpretable.
+Artifact evaluation uses the task-defined hidden TEST performance and cost axes.
+These measurements remain independently interpretable. The broader RSI objective
+also requires evidence about improvements in research capability.
 
 ### 8. Record trajectories, not only endpoints
 
@@ -2289,9 +2315,11 @@ The way a system improves can be as scientifically important as where it ends.
 
 ---
 
-# What the Benchmarks Are Intended to Measure
+<a id="what-the-benchmarks-are-intended-to-measure"></a>
 
-The benchmarks are designed to expose capabilities including:
+# What Research Episodes Can Reveal
+
+Research episodes and their recorded trajectories support investigation of:
 
 * autonomous ML research;
 * autonomous systems engineering;
@@ -2316,15 +2344,19 @@ and:
 
 ---
 
-# What the Benchmarks Do Not Claim to Measure
+<a id="what-the-benchmarks-do-not-claim-to-measure"></a>
 
-These benchmarks are not a complete measure of general intelligence or general recursive self-improvement.
+# Limits of Artifact Measurements
 
-A strong result demonstrates autonomous capability within a specific machine-learning research environment.
+The current evaluations measure artifacts produced in a specific research
+environment. Higher scores or a recorded trajectory alone do not establish
+recursive improvement of the research system.
 
-The benchmark should therefore be understood as an **RSI-oriented empirical testbed**, not as a universal measure of recursive self-improvement.
-
-Its value comes from providing a concrete environment in which improvement itself can be measured repeatedly and quantitatively.
+The project scope includes developing and testing methods that improve how
+research paths are found. The current environment, evaluation and recording
+interface provide the experimental foundation; the methods that consume those
+trajectories and automate recursive updates remain future work. Optional
+benchmark scores are one source of outcome evidence within that wider scope.
 
 ---
 
@@ -2335,7 +2367,7 @@ the final performance–cost pair. TEST scaling curves compare completed episode
 at different budgets; within-episode Candidate trajectories use postmortem
 ANALYSIS.
 
-Beyond leaderboard ranking, the benchmarks are intended to support questions such as:
+The environment and recording interface support questions such as:
 
 ### Research-time scaling
 
@@ -2390,7 +2422,10 @@ Do strong systems win by:
 * improving algorithms;
 * or improving their own research process?
 
-These questions are central to the project.
+These questions connect artifact outcomes to research strategy. The broader
+meta-optimization question is how to use that experience to improve the ability
+to find better paths, and whether those improvements persist across tasks,
+budgets or starting points. See [project scope](research-scope.md).
 
 ---
 
@@ -2398,7 +2433,7 @@ These questions are central to the project.
 
 The repository contains a working v0 local reference prototype with:
 
-* an official host-side Supervisor;
+* a trusted host-side Supervisor;
 * Track A wall-clock enforcement;
 * Track B interactive lease count and duration enforcement;
 * a Supervisor-controlled Agent command mailbox;
@@ -2409,7 +2444,9 @@ The repository contains a working v0 local reference prototype with:
 * a generic host CLI runner and a logged-in Codex CLI adapter;
 * irreversible research sealing followed by isolated postmortem ANALYSIS and
   TEST evaluation;
-* append-only benchmark, inference, and host-Agent JSONL traces;
+* append-only research, inference, and host-Agent JSONL traces;
+* structured action/response recording, optional runner observations, artifact
+  retention and trusted trajectory export;
 * one reproducible TinyStories development smoke task with no bundled
   reference Agent and no implicitly injected training code.
 
@@ -2419,29 +2456,26 @@ developers can verify a complete episode cheaply. It is explicitly marked
 `leaderboard_eligible: false`. The selected Agent and its initial workspace
 remain participant-owned.
 
-No frozen benchmark has been released. The `lm-pretrain` preview under
-`research_tasks/` now defines provisional track configurations, a deliberately
-finite set of single-host runtime profiles, the four-field comparison
-key, the initial external-resource policy, a task/evaluator, and a builder that
-retains both raw TRAIN documents and GPT-2 token shards. Source bytes are checked
-against a pinned upstream inventory, and TRAIN files are fully verified before
-task reveal. Full-scale validation of the 10B build and its actual scale remains
-open release work alongside organizer-owned hidden datasets,
-final pinned task images, calibrated budgets, submission services, and
-leaderboard infrastructure. Additional
-inference-provider adapters and isolation beyond the v0 Docker threat model
-also remain open design work.
+The `lm-pretrain` task under `research_tasks/` provides a task/evaluator, an
+external-resource policy, and a builder retaining raw TRAIN documents and GPT-2
+token shards. Source bytes are checked against a pinned inventory, and TRAIN files
+are verified before task reveal. Full-data preview runs are recorded in the
+[project results](../README.md#results); their evidence is specific to those runs.
+
+Future trajectory-consuming improvement methods and recursive orchestration
+remain within project scope. Further inference-provider adapters and isolation
+beyond the v0 Docker threat model are also open implementation work.
 
 The v0 prototype is intentionally single-host and never acquires machines or
 scheduler allocations. Users obtain a Docker-capable environment before
-starting a benchmark run; the Worker then reports what the Training workload
+starting a research run; the Worker then reports what the Training workload
 actually received through the platform-neutral allocation receipt.
 
 ---
 
 # Summary
 
-The benchmark protocol evaluates an autonomous system starting from a fixed initial state:
+The training-research protocol evaluates an autonomous system starting from a fixed initial state:
 
 $$
 S_0.
@@ -2449,7 +2483,7 @@ $$
 
 After task reveal, the system may autonomously research, experiment, write software, modify its training strategy, and improve its own task-local process.
 
-The benchmark provides:
+The current LM research task provides:
 
 $$
 \boxed{\text{Fixed TRAIN}}
@@ -2496,6 +2530,10 @@ In both tracks:
 
 > **The initial system is fixed. Autonomous improvement is allowed. External intervention is not.**
 
-The final question is deliberately simple:
+Within an episode, the task asks:
 
 > **How good a training system can this autonomous researcher discover?**
+
+The project also asks how the resulting experience can improve the ability to
+find such paths. The implemented recording interface connects current episodes
+to future meta-optimization methods.

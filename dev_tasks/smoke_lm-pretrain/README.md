@@ -1,7 +1,7 @@
 # Smoke LM pretrain development task
 
 `smoke_lm-pretrain` is the single bundled end-to-end development smoke task for
-Envcore. It exercises the same release-bound launch contract,
+Envcore. It exercises the same task-and-environment launch contract,
 task/participant boundary, Policy, trusted Evaluator implementation, Track
 A/Track B state machine, Candidate isolation, and incumbent semantics as
 `lm-pretrain`. Its corpus, tokenization, context, data layout, split recipe,
@@ -17,7 +17,7 @@ The smoke task owns only:
 - the hidden ANALYSIS/TEST datasets and trusted Evaluator;
 - the public metric and Candidate ABI;
 - the Training, Candidate, Evaluator, and Gateway images;
-- the finite Track/runtime profile maps, budgets, and artifact limits;
+- the default Track budgets, artifact limits, and optional Track/runtime presets;
 - the release Policy.
 
 The participant owns the Agent image or CLI, its command, and every initial
@@ -64,7 +64,9 @@ use context to optimize next-token prediction within the resource budget.
 recipe remains reproducible from its public source; this visibility convention
 does not make that recipe suitable as a secret formal evaluation.
 
-With `--benchmark`, `--runtime-profile` selects a Training resource preset from
+Use `--task`, `--track` and `--environment` for an integration episode, as shown
+below. With `--benchmark`, `--runtime-profile`
+selects a Training resource preset from
 `benchmark.json`. An optional `--environment` supplies custom execution settings
 through the same configuration and freezing flow.
 `cpu-local` keeps the smoke path cheap;
@@ -73,7 +75,7 @@ A100 SXM4 80GB, H100 SXM 80GB, H200 SXM 141GB, and H200 NVL 141GB, each with
 1, 2, 4, or 8 full GPUs on one host. These select Training resources; this smoke
 task's trusted evaluation remains on CPU. The published Track budgets are five
 minutes for Track A and three 75-second Leases for Track B at every GPU count.
-Inspect the supported Track and runtime choices before launch:
+When using these presets, inspect their supported Track and runtime choices:
 
 ```bash
 envcore benchmark-info \
@@ -114,7 +116,7 @@ See [TRAIN integrity](../../docs/training-data.md).
 
 ## Run an Agent integration
 
-Track B (`smoke-b-3x75s`) defaults to a **30-minute private operator research-time
+Track B (also available as the `smoke-b-3x75s` preset) defaults to a **30-minute private operator research-time
 protection**, configured in `operator-defaults.json`. The launcher announces it
 before run preparation. Add `--operator-max-research-seconds SECONDS` to change
 it or `--no-operator-research-limit` to disable it for one run. Disabling protection
@@ -138,17 +140,16 @@ starts empty:
 
 ```bash
 envcore start \
-  --benchmark dev_tasks/smoke_lm-pretrain/benchmark.json \
-  --track-config smoke-a-5m \
-  --runtime-profile cpu-local \
+  --task dev_tasks/smoke_lm-pretrain/task.json --track A \
+  --environment examples/environments/cpu-2cores.json \
   --episodes-root /path/to/envcore-runs/episodes \
   --agent-runner container \
   --agent-image participant-agent@sha256:DIGEST \
   --agent-command "participant-agent run"
 ```
 
-The same smoke task can exercise a published accelerator profile without
-changing the task or using manual resource overrides:
+For optional preset-based integration, the same smoke task can exercise a
+published accelerator profile without changing the task or using manual resource overrides:
 
 ```bash
 envcore start \
@@ -171,11 +172,11 @@ and participant-owned instructions remain in scope.
 
 ```bash
 envcore start \
-  --benchmark dev_tasks/smoke_lm-pretrain/benchmark.json \
-  --track-config smoke-a-5m \
-  --runtime-profile cpu-local \
+  --task dev_tasks/smoke_lm-pretrain/task.json --track A \
+  --environment examples/environments/cpu-2cores.json \
   --episodes-root /path/to/envcore-runs/episodes \
   --agent-runner host_cli \
+  --no-operator-storage-limit \
   --agent-command "python3 -m envcore.cli_adapters.codex --model MODEL --reasoning-effort high"
 ```
 

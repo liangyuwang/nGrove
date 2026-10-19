@@ -1,6 +1,19 @@
 # Envcore
 
-**Configurable environments for autonomous research.**
+**Autonomous research environments and trajectories for recursive self-improvement.**
+
+The project's scope is **recursive self-improvement (RSI)**: improving a research
+system's ability to find better research paths. This includes **meta-optimization**
+of how the system proposes experiments, uses experience, and improves its methods,
+tools, and workflows. Discovering stronger model-training procedures is the first
+concrete research setting.
+
+The current implementation provides the environment for autonomous exploration,
+artifact evaluation, and trajectory recording. The implemented recording interface
+connects these research experiences to future methods for improving the research
+system. Those methods and the recursive improvement loop remain future work
+within the project's scope. See
+[research scope and current implementation](docs/research-scope.md).
 
 Envcore lets researchers configure the resources available to an Agent, run
 autonomous experiments, and retain their actions, artifacts and execution
@@ -12,9 +25,7 @@ before task reveal.
 **Research tasks define the problems an Agent explores.** The bundled tasks live
 in `research_tasks/`. Their Track A/B budgets, incumbent selection, research
 sealing and evaluation use the current training-research protocol. Every run
-resolves and freezes its environment through one execution path. A task can also
-be used as a benchmark, with optional presets and fixed comparison conditions;
-custom resources and time budgets use the same research lifecycle.
+resolves and freezes its environment through one execution path.
 
 | Layer | Responsibility |
 | --- | --- |
@@ -22,15 +33,15 @@ custom resources and time budgets use the same research lifecycle.
 | Worker | Resource admission, execution, isolation and cleanup |
 | Research tasks | Research problems, task data, artifact interfaces and evaluation contracts |
 | Training-research protocol | Leases, immutable Candidates, research history and sealing |
+| Research recording | Observable actions, feedback evidence, executions and artifacts for future meta-optimization |
 | Evaluation | Independent measurement of submitted artifacts after research is sealed |
-| Optional benchmark use | Published lanes, fixed comparison conditions and formal eligibility |
+| [Benchmark comparisons](#benchmark-comparisons) | Published lanes, fixed comparison conditions and formal eligibility |
 
 Validation within a research trajectory belongs to the Agent: it decides whether
 and how to validate using permitted information. Envcore's evaluation runs after
 research is sealed. The current TEST evaluates the final declared Candidate;
 postmortem ANALYSIS measures committed Candidates. These measurements describe
-artifacts, not the quality of the research trajectory itself. Benchmark use adds
-standardized comparison of evaluation results.
+artifacts, not the quality of the research trajectory itself.
 
 Start with [configurable environments](docs/environments.md), including examples
 for compute and time scaling. The published GPU profiles remain unchanged. The
@@ -53,22 +64,25 @@ to inspect the private evidence.
 
 ![An Agent explores many paths within a sandbox and resource limits, co-designing a complete final solution: a model, agent, or agent system. The whole artifact passes through a narrow interface to an isolated evaluator. The goal is better end-to-end performance.](docs/assets/design-philosophy.png)
 
+*This diagram shows exploration and artifact evaluation within one research
+episode. Trajectory recording connects those experiences to future methods for
+improving the research system itself.*
+
 **A research task should define what success means, not tell an AI how to achieve it.**
 The bundled research tasks follow this principle: leave the largest practical
 solution space open to the Agent within a defined sandbox and resource budget.
 
 > **Preview:** a runnable LM pretraining research task, a development smoke task,
 > and completed experimental runs.
-> No frozen, leaderboard-eligible benchmark has been released yet.
 
 [Overview](#overview) · [Results](#results) · [Getting Started](#getting-started) ·
 [Roadmap](#roadmap) · [Contributing](#contributing) · [Documentation](#documentation)
 
 ## Overview
 
-The goal is a final solution that performs well **end to end**. Depending on the
-research task, this may be a model, an agent, or a complete agent system. The
-evaluator must define what makes the solution good by assessing its overall
+Within each research task, the goal is a final solution that performs well
+**end to end**. Depending on the research task, this may be a model, an agent,
+or a complete agent system. The evaluator must define what makes the solution good by assessing its overall
 performance on the task.
 
 To leave the path to that result open, we should minimize assumptions about
@@ -119,13 +133,14 @@ task-specific restrictions: fixed task data and artifact requirements, plus
 [release policy](research_tasks/lm-pretrain/POLICY.md) limits on extra training
 corpora and pretrained target-model checkpoints.
 
-**Long-term goal: LM Open World (not implemented).** The proposed research task currently
-consists only of a [vision README and open design questions](research_tasks/lm-open-world/README.md).
+**Future research task: LM Open World (not implemented).** The proposed research
+task currently consists only of a
+[vision README and open design questions](research_tasks/lm-open-world/README.md).
 We invite the community to help shape a research task that opens the solution space
 beyond the current training-specific assumptions. The [Roadmap](#roadmap)
 describes the sandbox, resource, and evaluator work toward that goal.
 
-**The Tested Agent's initial configuration is fixed before task reveal.
+**The Research Agent's initial configuration is fixed before task reveal.
 Autonomous improvement is allowed.** After task reveal, the Agent can improve
 its own software, tools, and research workflow within the task and environment boundary.
 External human intervention is excluded.
@@ -151,11 +166,13 @@ Core defines the research protocol. Workers implement execution and isolation in
 the user's environment. The repository includes a local Docker runtime;
 cluster and other platform integrations live in external Workers.
 
-Official benchmark comparisons will use a small set of published reference
-environments. You can adapt runtime profiles for your own hardware and are
-responsible for fair conditions across the Agents you compare. Custom runs do
-not automatically enter official rankings; see the
-[reference environment and comparison policy](research_tasks/README.md#reference-environments-and-custom-comparisons).
+## Benchmark comparisons
+
+Research tasks can also be used for standardized comparisons through named
+Track/runtime presets and fixed comparison conditions. No frozen,
+leaderboard-eligible benchmark has been released yet. See
+[benchmark use](research_tasks/README.md#optional-benchmark-use) for configuration,
+comparison keys and eligibility requirements.
 
 ## Results
 
@@ -190,8 +207,7 @@ in your preferred coding agent and ask it to follow [AGENTS.md](AGENTS.md).
 
 When helping you prepare, launch, monitor, and report research runs, the
 Repository Assistant takes the **trusted operator** role. The **Research Agent**
-is the separate autonomous participant inside the environment, called the
-**Tested Agent** in benchmark runs.
+is the separate autonomous participant inside the environment.
 
 For a research run, ask the Repository Assistant to follow the
 [full reference](docs/benchmark-reference.md) and give it one of the prompts
@@ -199,23 +215,21 @@ below. Repository development and review do not by themselves request a run.
 
 Choose a [research task](research_tasks/README.md), such as
 [LM pretrain](research_tasks/lm-pretrain/README.md). Use its `task.json` with
-`--task`, `--track`, and a user-owned `--environment` configuration, or select its
-optional benchmark presets as in the examples below. Those presets supply a
-published Track configuration and runtime profile matching your hardware.
-`lm-pretrain` is a runnable preview task; its benchmark configuration is not yet
-a frozen, leaderboard-eligible release.
+`--task`, `--track`, and a user-owned `--environment` configuration. The examples
+below generate research trajectories and evaluate the resulting artifacts.
 
-### **1. Evaluate one Tested Agent**
+### **1. Generate a research trajectory**
 
 Provide the Agent identity and command, an authorized environment, and a
 dedicated working root. For example:
 
-> Run one episode of `research_tasks/lm-pretrain/benchmark.json` with [published Track
-> configuration] and [runtime profile matching my hardware]. My Tested Agent is
+> Run one research episode of `research_tasks/lm-pretrain/task.json` with [Track]
+> and [environment configuration]. My Research Agent is
 > [immutable Agent image], with command [autonomous command]. Use [authorized
 > environment] and [working root outside the Core checkout], with an empty Agent
 > workspace. Resolve missing prerequisites and any unapproved costs before
-> launch, then monitor the episode through evaluation and report the result.
+> launch, then monitor the episode through evaluation. Retain the research
+> trajectory and artifacts, and report the result with its capture limitations.
 > Do not retry automatically.
 
 Example values for this template are below. Replace the illustrative Agent
@@ -224,29 +238,29 @@ the repository does not provide the example Agent.
 
 | Template field | Example value |
 | --- | --- |
-| `[published Track configuration]` | `preview-a-8h` — Track A, eight hours of research |
-| `[runtime profile matching my hardware]` | `h100-sxm-80gb-x1` — one NVIDIA H100 SXM 80 GB |
+| `[Track]` | `A` — total research time |
+| `[environment configuration]` | `examples/environments/h100-x4-2h.json` — four H100 GPUs and two hours of research |
 | `[immutable Agent image]` | `ghcr.io/your-org/agent-a@sha256:<real-digest-a>` |
 | `[autonomous command]` | `agent-a run` — replace with your Agent's non-interactive command |
-| `[authorized environment]` | `ssh bench-h100` — an existing authenticated SSH alias |
+| `[authorized environment]` | `ssh research-h100` — an existing authenticated SSH alias |
 | `[working root outside the Core checkout]` | `/srv/envcore-runs` on that host |
 
-### **2. Evaluate multiple Agents or hardware configurations**
+### **2. Study Agents across resource configurations**
 
 Specify the combinations to run, the concurrency limit, the total budget, and
 the retry policy:
 
-> Evaluate [provided Agent identities and commands] using [benchmark and Track
-> configuration] across [provided environments and supported runtime profiles].
+> Run [provided Agent identities and commands] on [research task and Track]
+> across [provided execution environments and environment configurations].
 > Run [explicit Agent/hardware combinations], with at most [N] episodes in
 > parallel and a total budget of [resource/time limits, including preparation,
 > evaluation, and cleanup]. Use [dedicated working roots] and [retry policy].
 > Reuse verified public TRAIN data and compatible cached images. Give every
 > episode its own Agent workspace, outputs, and resource allocation. Report
-> every result with its configuration, and compare Agents within matching
-> benchmark conditions.
+> every result and retained trajectory with its configuration and capture limits.
+> State which experimental conditions were varied and which were held fixed.
 
-For example, evaluate two participant-provided Agents on two hardware profiles,
+For example, run two participant-provided Agents on two hardware configurations,
 for four episodes. Agent A is the image and command above; Agent B could be
 `ghcr.io/your-org/agent-b@sha256:<real-digest-b>` with command `agent-b run`,
 again replaced with your actual Agent identity and command.
@@ -254,8 +268,8 @@ again replaced with your actual Agent identity and command.
 | Template field | Example value |
 | --- | --- |
 | `[provided Agent identities and commands]` | Agent A and Agent B, each with its frozen image digest and autonomous command |
-| `[benchmark and Track configuration]` | `research_tasks/lm-pretrain/benchmark.json`, `preview-a-8h` |
-| `[provided environments and supported runtime profiles]` | `ssh bench-a100`: `a100-sxm4-80gb-x1`; `ssh bench-h100`: `h100-sxm-80gb-x1` |
+| `[research task and Track]` | `research_tasks/lm-pretrain/task.json`, Track A |
+| `[provided execution environments and environment configurations]` | Authorized A100 and H100 hosts, each with a user-owned configuration specifying one 80 GB GPU and an eight-hour Track A budget |
 | `[explicit Agent/hardware combinations]` | A/A100, B/A100, A/H100, B/H100 |
 | `[N]` | `2`, with at most one active episode per host |
 | `[resource/time limits, including preparation, evaluation, and cleanup]` | Four episodes; at most 48 reserved GPU-hours and 36 hours elapsed for the whole batch, including all phases |
@@ -263,7 +277,7 @@ again replaced with your actual Agent identity and command.
 | `[retry policy]` | No automatic retries; retain failure evidence and continue with independent runs when their boundaries remain safe |
 
 In this example, compare A with B on A100 and on H100 separately; keep the
-hardware profile attached to every result.
+frozen environment attached to every result.
 
 Parallel runs require independent resource allocations and isolation. Batch
 scheduling belongs to the operator's deployment launcher; Core supervises
@@ -292,8 +306,8 @@ lifecycle. See [TRAIN integrity](docs/training-data.md).
 `lm-pretrain`, [Smoke LM pretrain](dev_tasks/smoke_lm-pretrain/README.md) offers a
 small CPU-capable development run to check Agent integration and the episode
 lifecycle. Choose this explicitly if you cannot allocate the research task's data,
-hardware, or time budget. A smoke task is a development counterpart, not the
-benchmark itself; its scores are not benchmark results. The operator
+hardware, or time budget. A smoke task checks integration at a smaller scale;
+its scores do not establish performance on the research task. The operator
 should explain the resource gap and let you select smoke rather than silently
 substituting it.
 
@@ -306,17 +320,17 @@ Agent**. The repository does not ship a reference Agent. Match the selected
 environment's hardware requirements; NVIDIA GPU runs with Docker additionally
 require the NVIDIA Container Toolkit.
 
-From a checkout of this repository, install the CLI and inspect the task's
-optional benchmark presets:
+From a checkout of this repository, install the CLI and inspect an example
+environment without preparing data or allocating resources:
 
 ```bash
 python3 -m pip install -e .
-envcore benchmark-info \
-  --benchmark research_tasks/lm-pretrain/benchmark.json
+envcore environment-info \
+  --environment examples/environments/h100-x4-2h.json
 ```
 
 Then follow the task's [data preparation](research_tasks/lm-pretrain/README.md#prepare-data)
-and [run configuration](research_tasks/lm-pretrain/README.md#supported-preview-lanes) steps.
+and [research run configuration](research_tasks/lm-pretrain/README.md#run-a-research-episode) steps.
 They cover the Agent command, resource settings, and a dedicated working root
 outside the Core checkout.
 
@@ -325,8 +339,16 @@ outside the Core checkout.
 
 ## Roadmap
 
-We plan to build on the existing Worker protocol, resource contracts, and
-isolated evaluation in three areas:
+**RSI and meta-optimization guide the roadmap.** Future methods will use
+trajectories to improve how Agents find research paths, then study the resulting
+systems through further experiments. The implemented
+[recording interface](docs/recording.md) is the connection point for that work.
+Specific learning or update methods and automated recursive orchestration remain
+open; their eventual module or repository placement does not limit the project's
+[research scope](docs/research-scope.md).
+
+Current environment development builds on the existing Worker protocol, resource
+contracts, and isolated evaluation in three areas:
 
 - **Sandbox.** Add queryable, cancellable Worker operations and explicit recovery
   semantics for interrupted calls, alongside targeted validation of current
@@ -348,11 +370,6 @@ and deployment checks are documented in the
 [development plan](docs/thin-core-development-plan.md#current-preview-closeout-boundary)
 and [acceptance matrix](docs/worker-acceptance-matrix.md).
 
-> **Related future work:** We also plan to build on this sandbox in separate
-> repositories to explore how Agents can develop and improve their research
-> methods, tools, and workflows. This repository will remain focused on the
-> research environment, research tasks, and evaluation of submitted artifacts.
-
 ## Contributing
 
 Bring an Agent, an execution environment, or a contribution to the research tasks:
@@ -372,13 +389,15 @@ an experiment, integration, or proposal, or
 
 ## Documentation
 
-For the current research protocol, benchmark comparison rules and operating details, see the
-[benchmark reference](docs/benchmark-reference.md).
+For the current research protocol and operating details, see the
+[training-research reference](docs/benchmark-reference.md).
 
 | Read more | Contents |
 | --- | --- |
-| [Benchmark reference](docs/benchmark-reference.md) | Motivation, complete rules, Track accounting, evaluation, isolation, and local operating instructions |
-| [Research tasks](research_tasks/README.md) | Research problems, evaluation contracts, and optional benchmark presets |
+| [Research scope and current implementation](docs/research-scope.md) | RSI and meta-optimization goals, the current stage, and the recording interface for future methods |
+| [Research recording](docs/recording.md) | Implemented trajectory capture, runner observations, artifact retention and read-only export |
+| [Training-research reference](docs/benchmark-reference.md) | Shared protocol, Track accounting, evaluation, isolation and local operation |
+| [Research tasks](research_tasks/README.md) | Research problems, evaluation contracts and run configuration |
 | [Worker Protocol](docs/worker-protocol.md) and [integration](docs/worker-integration.md) | Execution contracts and external deployment responsibilities |
 | [Operator status](docs/operator-status.md) and [recovery](docs/worker-recovery.md) | Monitoring, interruption evidence, and owned-resource cleanup |
 | [Research dynamics and RSI diagnostics](docs/research-dynamics.md) (design proposal) | Proposed read-only postmortem curves, metrics, process evidence, and data-quality reporting; not implemented |

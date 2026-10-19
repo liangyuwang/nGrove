@@ -2,6 +2,11 @@
 
 ## Purpose
 
+This plan covers the execution and Worker boundary of the current implementation.
+The wider [project scope](research-scope.md) is RSI and meta-optimization; the
+[recording interface](recording.md) connects this environment to future research
+improvement methods.
+
 Envcore defines what an episode is allowed to do. It does not
 define where workloads run, how an Operator reaches a host, or which platform
 mechanism enforces the contract.
@@ -105,11 +110,11 @@ site-specific adapters are not prerequisites.
   admission, Candidate commit timing, incumbent selection, irreversible
   research sealing, postmortem ANALYSIS/TEST lifecycle, results, and
   leaderboard eligibility. It provides no organizer feedback during research.
-- A Benchmark Release defines every resource property that is normative for
-  comparison or eligibility. Core validates the requested requirements and
-  the semantic evidence selected by that release. A Worker deployment chooses
-  the platform mechanism, enforces the allocation, and reports effective
-  evidence.
+- The frozen environment defines each run's effective resource requirements.
+  An optional Benchmark Release adds conditions normative for comparison or
+  eligibility. Core validates the requested requirements and their semantic
+  evidence. A Worker deployment chooses the platform mechanism, enforces the
+  allocation, and reports effective evidence.
 - Core decides when a Candidate must become immutable and defines its
   acceptance and canonical identity. A Worker guarantees that the producing
   workload can no longer mutate the selected output; who materializes the

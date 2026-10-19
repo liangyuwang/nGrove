@@ -1,8 +1,10 @@
 # Configurable research environments
 
-Every Envcore run uses the same configuration, freezing and execution lifecycle.
-Named benchmark profiles are optional configuration presets; there is no separate
-run mode. Envcore provides run-owned compute and time configuration. A researcher
+Configurable environments support the project's [RSI and meta-optimization
+scope](research-scope.md) by making research resources explicit experimental
+variables. Every Envcore run uses the same configuration, freezing and
+execution lifecycle. Envcore provides run-owned compute and time configuration.
+A researcher
 can vary accelerator type/count and research duration while controlling the other
 experimental conditions. Better final scores alone do not establish
 self-improvement; retain Agent
@@ -122,12 +124,11 @@ envcore start \
   --agent-command 'participant-agent run'
 ```
 
-Or use a benchmark's task and Track with custom compute resources and two hours:
+For the LM research task, select custom compute resources and two hours:
 
 ```bash
 envcore start \
-  --benchmark research_tasks/lm-pretrain/benchmark.json \
-  --track-config preview-a-8h \
+  --task research_tasks/lm-pretrain/task.json --track A \
   --environment examples/environments/h100-x4-2h.json \
   --episodes-root /srv/envcore-runs/episodes \
   --agent-runner container \
@@ -135,12 +136,6 @@ envcore start \
   --agent-command 'participant-agent run'
 ```
 
-To reuse a published hardware profile, use
-`--benchmark ... --track-config ... --runtime-profile ...`. An optional
-`--environment` replaces its compute configuration and overrides only explicitly
-specified time budgets. The selected profile remains the comparison preset;
-changing effective conditions does not claim that preset's comparison key.
-Without `--runtime-profile`, a benchmark launch requires `--environment`.
 Do not combine an environment file with manual GPU/device flags.
 
 Task-only launches can also use the local `--training-gpus`,
@@ -152,12 +147,11 @@ Configuring an environment does not edit release files, change data or images,
 relax task policy, or expose hidden scores during research. The current task protocol still
 uses Track A/B budgets, explicit incumbents, research sealing, TEST and
 postmortem ANALYSIS. General task protocols and configurable feedback policies
-remain future extensions; this implementation separates hardware configuration
-from benchmark lanes.
+remain future extensions.
 
-## Frozen environment and optional benchmark evidence
+## Frozen environment
 
-Every run, including one using published presets, records a `FrozenEnvironment`.
+Every run records a `FrozenEnvironment`.
 `EnvironmentConfig` is the editable input form. The shared resolver binds its
 resolved budget, launch resources, training resource envelope and independent
 evaluation envelope into an immutable snapshot. Direct trusted Worker
@@ -170,18 +164,9 @@ report carry the same record. It contains execution settings, not private task
 or release fingerprints. The input inspection fingerprint from `environment-info`
 is distinct from this resolved execution identity.
 
-The benchmark application can attach its release identity to the same run.
-An explicitly selected Track/runtime preset receives a comparison key only when
-its complete resolved budget and resource contracts match. An environment file
-with identical effective conditions keeps that key. A different GPU count, time
-budget or evaluation contract produces a custom experiment with a null key;
-the source benchmark identity remains recorded. Formal eligibility still needs
-an official release, trusted execution and all existing evidence requirements.
-Published A100, H100 and H200 catalogs remain unchanged.
-
 Allocation receipts record resources actually supplied. Report validation checks
 the frozen identity, time/resource consistency and any attached comparison
-binding. The environment resolver does not import or select benchmark behavior.
+binding.
 
 The environment fingerprint ignores display names and provisional labels, while
 binding resource constraints, evaluation contracts and the resolved budget. It
@@ -191,18 +176,36 @@ configuration and the remaining execution conditions. Record contention and cach
 differences; matching configuration hashes alone do not prove equal performance
 conditions.
 
+## Benchmark presets and comparisons
+
+Select a named budget with `--benchmark` and
+`--track-config`. To also reuse a published hardware profile, use
+`--benchmark ... --track-config ... --runtime-profile ...`. An optional
+`--environment` replaces its compute configuration and overrides only explicitly
+specified time budgets. The selected profile remains the comparison preset;
+changing effective conditions does not claim that preset's comparison key.
+Without `--runtime-profile`, a benchmark launch requires `--environment`.
+
+The benchmark application can attach its release identity to the same run.
+An explicitly selected Track/runtime preset receives a comparison key only when
+its complete resolved budget and resource contracts match. An environment file
+with identical effective conditions keeps that key. A different GPU count, time
+budget or evaluation contract produces a custom experiment with a null key;
+the source benchmark identity remains recorded. Formal eligibility still needs
+an official release, trusted execution and all existing evidence requirements.
+
+Benchmark resolution uses the same `resolve_environment_run` function as task-only
+execution. The environment types and resolver are independent of benchmark catalogs.
+
 ## Package and scope
 
 Research evidence has a separate launch-owned [recording configuration](recording.md).
 `--recording PATH` works with every environment selection and freezes capture
-limits and post-evaluation artifact retention with a separate identity. It does
-not change compute/time resolution or introduce a benchmark execution path.
+limits and post-evaluation artifact retention with a separate identity from
+compute and time configuration.
 
-Code imports `envcore`; `envcore.environment.RuntimeProfile` and
-`EnvironmentConfig` and `FrozenEnvironment` are independent of benchmark catalogs.
-Benchmark resolution uses the same `resolve_environment_run` function as task-only
-execution. Restricted Agent/Candidate helper bundles expose only
-the public `envcore` modules.
+Code imports `envcore`; environment types live in `envcore.environment`.
+Restricted Agent/Candidate helper bundles expose only the public `envcore` modules.
 
 The distribution and CLI are named `envcore`; `python -m envcore` also works.
 Integrations use `ENVCORE_*` variables, `envcore.agent_metadata` and

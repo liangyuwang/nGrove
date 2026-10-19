@@ -6,13 +6,17 @@ had equivalent CPU, I/O, cache or contention conditions. External Worker preview
 testing identified this gap; Training Lease evidence and host inventory do not
 establish the effective environment of a later evaluation.
 
-Official reference environments must define evaluation conditions as well as
-Training resources. Organizers of independent Agent comparisons are responsible
-for consistent effective conditions and disclosure of differences; adding a
-runtime profile does not create an official ranking category. See the
-[reference environment and comparison policy](../research_tasks/README.md#reference-environments-and-custom-comparisons).
+Research comparisons must define evaluation conditions as well as Training
+resources, keep effective conditions consistent, and disclose differences.
 
-## Release contract
+<a id="release-contract"></a>
+
+## Evaluation resource contracts
+
+A user-owned environment can declare `evaluation_resource_contract` independently
+of its training `resource_contract`. The resolved `FrozenEnvironment` binds both
+contracts and the research budget before task reveal; see
+[environment configuration](environments.md).
 
 Benchmark schema v3 adds an optional `evaluation_resource_contract` to each
 runtime profile. It is independent of the Training `resource_contract` and uses
@@ -37,12 +41,13 @@ values are illustrative, not defaults or official requirements):
 }
 ```
 
-The resolved private release records `evaluation_resource_envelope`; the trusted
-Supervisor derives its request from that field. A standalone launcher can supply
-`evaluation_resource_envelope=ResourceEnvelope(...)`. Conflicting explicit and
-release-derived envelopes are rejected. The contract is bound by its canonical
-SHA-256 and by the frozen benchmark manifest identity; changing it requires a new
-release identity for comparison. Public profile names alone are insufficient.
+The frozen environment records the effective evaluation envelope. Trusted
+launchers pass it to the Supervisor through the environment or explicitly as
+`evaluation_resource_envelope=ResourceEnvelope(...)`. When a benchmark release
+also fixes an evaluation envelope, conflicting execution and release contracts
+are rejected. The contract is bound by its canonical SHA-256 and environment
+identity; benchmark comparisons additionally bind the selected release identity.
+Public profile names alone are insufficient.
 
 Existing Benchmark v2 profiles remain readable without evaluation contracts. V2
 rejects this new field, and older Cores reject v3, avoiding silent omission of a
@@ -68,7 +73,7 @@ reaches the Supervisor unchanged, and every evaluation repeats the checks and
 validates its actual receipt. A successful preflight cannot authorize a changed
 backend, a substitute GPU, or an unsupported later invocation.
 
-`prepare --task` has no selected benchmark runtime profile, so its readiness
+`prepare --task` has no resolved run environment, so its readiness
 output does not certify an evaluation contract. External launchers should perform
 equivalent Worker-side checks before spending a research budget. This local
 preflight does not add a remote operation or change Worker Protocol v16.

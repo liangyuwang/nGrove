@@ -1,20 +1,15 @@
 # LM pretrain preview
 
-`lm-pretrain` is a language-model pretraining research task, with optional
-benchmark presets for standardized comparisons. Its identity is independent of
-its initial corpus: this version builds an approximately
+`lm-pretrain` is a language-model pretraining research task. Its identity is
+independent of its initial corpus: this version builds an approximately
 10-billion-token TRAIN pool from a pinned FineWeb-Edu revision and fixes GPT-2
 token IDs only at the evaluation boundary.
 
 The package now contains `task.json`, a trusted evaluator, and a reproducible
-data builder. `benchmark.json` supplies the optional Track/runtime preset catalog
-and comparison metadata. The task can also run directly through `--task` with
-`--track` and a user-owned `--environment`; see
-[environment configuration](../../docs/environments.md).
-It remains `leaderboard_eligible: false`: the current budgets,
-task images, local preview ANALYSIS/TEST size, and runtime profiles are provisional,
-and a verified release will replace the reproducible local holdouts with
-organizer-owned hidden datasets.
+data builder. Run the task through `--task` with `--track` and a user-owned
+`--environment`; see [environment configuration](../../docs/environments.md).
+The current budgets, task images and local preview ANALYSIS/TEST settings are
+provisional.
 
 The Agent chooses its own validation methods during research. Envcore's
 evaluation measures submitted Candidates after research is sealed; its scores
@@ -264,9 +259,37 @@ python3 -m unittest discover -s research_tasks/lm-pretrain -p 'test_prepare_data
 These checks exercise the pool-sizing failure and shortage diagnostics; a full
 pinned-source build is still required to verify real corpus capacity and scale.
 
+## Run a research episode
+
+After data preparation, use `task.json` with a Track and an environment
+configuration. This example selects four H100 GPUs and a two-hour Track A
+budget. Supply your own Agent and an authorized execution environment, and
+review the storage and operator protections below before launch:
+
+```bash
+envcore start \
+  --task research_tasks/lm-pretrain/task.json --track A \
+  --environment examples/environments/h100-x4-2h.json \
+  --episodes-root /path/to/envcore-runs/episodes \
+  --agent-runner container \
+  --agent-image participant-agent@sha256:DIGEST \
+  --agent-command "participant-agent run"
+```
+
+The run freezes resources and budget before task reveal. It records the
+research trajectory and evaluates submitted artifacts through the shared
+research lifecycle. Configure capture and retention with `--recording` and
+inspect the private evidence with `envcore trajectory --episode PATH`; see
+[research recording](../../docs/recording.md).
+
 ## Supported preview lanes
 
-The preview publishes two provisional budgets:
+For benchmark comparisons, `benchmark.json` supplies named Track/runtime presets
+and comparison metadata. It remains `leaderboard_eligible: false`: the current
+settings are provisional, and a verified release will replace the reproducible
+local holdouts with organizer-owned hidden datasets.
+
+The preview publishes two provisional budget presets:
 
 - Track A: `preview-a-8h`;
 - Track B: `preview-b-6x1h`.
@@ -315,8 +338,9 @@ multi-GPU behavior still require the selected deployment's
 smoke episode. Host/interconnect calibration remains preview release work.
 
 CPU, B300, TPU, and other platforms may run the same task when runtime support
-exists, but each belongs to a separate runtime profile. Direct comparisons
-require the same frozen release and data identities, consistent effective
+exists, with effective conditions recorded in the frozen environment. Research
+comparisons must identify varied and controlled conditions. For benchmark
+comparisons, require the same frozen release and data identities, consistent
 resource conditions, and this complete comparison key:
 
 ```text
@@ -330,8 +354,8 @@ envcore benchmark-info \
   --benchmark research_tasks/lm-pretrain/benchmark.json
 ```
 
-After data preparation, start a profile-bound episode. `task.json` is inferred
-from the benchmark release:
+The alternative preset-based command below infers `task.json` from the benchmark
+manifest. The following operator protections also apply to task-based runs:
 
 Track B defaults to a **24-hour private operator research-time protection**,
 configured in `operator-defaults.json`. The launcher announces it before run

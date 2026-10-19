@@ -4,6 +4,10 @@
 > only this README. There is no runnable task, frozen evaluation contract, or
 > leaderboard-eligible release.
 
+This proposed task would provide a broader experimental setting for the project's
+[RSI and meta-optimization scope](../../docs/research-scope.md). Research
+trajectories and artifact measurements would support that work.
+
 ## Vision
 
 **Constrain resources, not ideas. Define the evaluator, not the solution.**

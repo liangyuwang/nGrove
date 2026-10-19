@@ -4,7 +4,7 @@ This guide is for the trusted operator preparing a deployment outside Core.
 The Repository Assistant takes this role when helping with authorized run
 preparation; see [repository instructions](../AGENTS.md).
 It complements the [Worker Protocol](worker-protocol.md); it does not
-select a platform, Tested Agent, task, or resource budget. The bundled
+select a platform, Research Agent, task, or resource budget. The bundled
 `prepare`/`start` commands compose the local Docker implementation. They are not
 an external backend loader.
 
@@ -12,7 +12,7 @@ A Worker can be temporary source created during authorized run preparation.
 Reuse a compatible implementation where possible; otherwise implement the
 required boundary in the approved trusted working root. No additional source
 repository is required. Keep platform code and dependencies outside Core, and
-keep both outside the Tested Agent workspace. Before launch, preserve the
+keep both outside the Research Agent workspace. Before launch, preserve the
 actual Worker source, dependency identities, launcher configuration, and hashes
 alongside the Core revision and dirty-state evidence. A path or a revision
 label alone does not freeze generated code. Later fixes belong to a new
@@ -38,9 +38,9 @@ When updating a deployment from v15, `evaluate_candidate()` must accept the new
 `evaluation_id` and `resource_envelope` keyword arguments. An explicit envelope
 requires an operation-bound `EvaluationResourceReceipt` on the returned result.
 It cannot reuse Training or another evaluation's receipt. The Supervisor reads
-the evaluation envelope from the resolved benchmark release; standalone trusted
-launchers may supply `evaluation_resource_envelope` directly. Resolve unsupported
-normative properties before authorizing an expensive run. See the
+the effective evaluation envelope from the frozen run environment or explicit
+launcher input, and validates any additional selected benchmark contract.
+Resolve unsupported normative properties before authorizing an expensive run. See the
 [evaluation resource contract and evidence example](evaluation-resources.md).
 
 The bundled `start` now calls the local Worker's read-only evaluation-resource
@@ -50,7 +50,7 @@ until the Agent has spent its research budget. Preflight produces no allocation
 receipt and never replaces per-evaluation enforcement and evidence validation.
 
 The following is a constructor sketch with inputs already resolved by the
-trusted launcher, not a standalone launcher or a reference Tested Agent:
+trusted launcher, not a standalone launcher or a reference Research Agent:
 
 ```python
 from envcore.supervisor import Supervisor
@@ -63,6 +63,8 @@ supervisor = Supervisor(
     resources=training_resources,
     training_data_verification=train_verification,
     resource_envelope=resource_envelope,
+    evaluation_resource_envelope=evaluation_resource_envelope,
+    environment=frozen_environment,
     track=track,
     episode_dir=episode_dir,
     agent_api_dir=public_agent_api,
@@ -72,9 +74,6 @@ supervisor = Supervisor(
     agent_control_transport=agent_control,
     research_worker_environment=research_environment,
     evaluation_worker_environment=evaluation_environment,
-    comparison_key=comparison_key,
-    benchmark_release=benchmark_release,
-    release_verification=release_verification,
     research_worker_conformance=research_conformance,
     evaluation_worker_conformance=evaluation_conformance,
     worker_resolution_timeout_seconds=resolution_timeout,
@@ -82,9 +81,11 @@ supervisor = Supervisor(
 )
 ```
 
-Resolve task, named Track configuration, runtime profile, and resource envelope
-from the selected manifest before constructing these inputs. Supply verified
-TRAIN evidence bound to the actual manifest; keep TRAIN read-only. Publish only
+Use `resolve_environment_run` to resolve the task, Track, user-owned environment
+and resource envelopes before constructing these inputs. Benchmark
+presets use the same resolver. Supply `comparison_key`, `benchmark_release` and
+`release_verification` only when applicable to the selected benchmark use.
+Supply verified TRAIN evidence bound to the actual manifest; keep TRAIN read-only. Publish only
 the generated Agent API into the participant view, not the Core package. Use
 the release's comparison metadata and trusted receipts where applicable;
 missing organizer verification or conformance remains missing evidence.
@@ -383,7 +384,7 @@ Record resource clocks explicitly before submission:
 | --- | --- |
 | Allocation | When resources are granted; includes any preparation or idle time performed inside that allocation |
 | Track budget | Core's selected Track accounting and Worker Lease limits; not a percentage of research completion |
-| Private research protection | When research starts; an Operator wall-time bound separate from the Track score and hidden from the Tested Agent |
+| Private research protection | When research starts; an Operator wall-time bound separate from the Track score and hidden from the Research Agent |
 | Evaluation and cleanup | Their own bounded operations; require capacity/time within the reservation or a separately authorized allocation |
 
 Equal allocation and research limits can expire at different times because

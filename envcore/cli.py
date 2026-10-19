@@ -1240,7 +1240,7 @@ def command_agent(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="envcore",
-        description="Configurable autonomous research environments, tasks and evaluation",
+        description="Autonomous research environments and trajectories for RSI",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -1266,7 +1266,7 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument(
         "--benchmark",
         type=Path,
-        help="benchmark release manifest defining supported comparison lanes",
+        help="optional benchmark manifest for named presets and comparison lanes",
     )
     start.add_argument(
         "--track-config",

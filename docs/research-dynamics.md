@@ -1,15 +1,23 @@
 # Research Dynamics and RSI Diagnostics
 
-> **Status: v1 design proposal; not implemented.** This document specifies an
+> **Status: v1 analysis-layer proposal; not implemented.** This document specifies an
 > independent, read-only postmortem analysis layer. The `bench_analysis/` package,
 > analysis command, derived schemas, and acceptance tests are proposed additions.
-> This documentation change does not implement them, change benchmark rules, or
+> This documentation change does not implement them, change the research protocol, or
 > authorize an episode launch.
 >
 > Repository interfaces were checked against revision
 > `1868b7e7c9de2d38174f58614b65c0ce18f605a1` on 2026-09-16. The sections below
 > distinguish existing interfaces, proposed behavior, and statistical conventions
 > that remain to be specified.
+
+The [project scope](research-scope.md) includes meta-optimization of research
+methods and recursive self-improvement. This document covers one proposed
+analysis component of that scope. The [recording interface](recording.md),
+including runner observations and trajectory export, is already implemented;
+the proposed diagnostics and methods that use trajectories to improve the
+researcher remain future work. Read-only diagnosis and research-system updates
+are separate consumers of the recorded evidence.
 
 ## 1. Development objective
 
@@ -222,13 +230,17 @@ to execute code.
 
 ### 4.1 Existing data sources
 
-The following interfaces were checked at the revision noted above. New modules
-and commands described here are proposals, not existing functionality.
+The original interface inventory was checked at the revision noted above. The
+recording entries below reflect the subsequently implemented recording interface;
+see [its current contract](recording.md). The proposed analysis package and
+analysis command remain unimplemented.
 
 | Interface | Purpose |
 | --- | --- |
 | [`envcore/results.py::normalize_result_report`](../envcore/results.py) | Validate results against their declared schema and active artifact identity algorithms. The current core schema is v16. |
 | [`envcore/cli.py::command_report`](../envcore/cli.py) | Reference for read-only reporting; preserve its output contract. |
+| [`envcore/recording.py::read_recording`](../envcore/recording.py), exposed by `envcore trajectory` | Existing evidence export with payload checks, artifact disposition, explicit issues and a separate postmortem section; not the proposed analysis command. |
+| [`envcore/supervisor.py::record_observation`](../envcore/supervisor.py) | Existing optional trusted runner hook for source-labeled observations and explicit event links; coverage and claims remain adapter-reported. |
 | `state.json` | Read `candidate_commits`, `incumbent_declarations`, `analysis_trajectory`, identities, resources, status, and coverage fields. |
 | `events.jsonl` | Authoritative event ordering and resource lifecycle. |
 | [`envcore/supervisor.py::_analysis_trajectory`](../envcore/supervisor.py) | Existing links among commits, ANALYSIS metrics, costs, and declaration events. |
@@ -871,7 +883,7 @@ Repository facts refer to these files at the revision recorded above:
 - [`envcore/operator_status.py`](../envcore/operator_status.py): the distinction
   between Core state and independent execution observations.
 
-For benchmark semantics, see the [full reference](benchmark-reference.md),
+For shared research semantics, see the [full reference](benchmark-reference.md),
 particularly [ANALYSIS](benchmark-reference.md#analysis),
 [Intermediate Incumbents and Research Curves](benchmark-reference.md#intermediate-incumbents-and-research-curves),
 and [Evaluation Axes](benchmark-reference.md#evaluation-axes).

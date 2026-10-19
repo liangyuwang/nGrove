@@ -6,6 +6,22 @@ SHA-256 under `recording/payloads/`. Candidate bundles remain in `candidates/`.
 This records observable interactions, not a complete Agent state or a replayable
 session. It does not implement branching, parallel scheduling, or checkout.
 
+## Role in the RSI project
+
+The project's [scope](research-scope.md) includes improving how research systems
+find better research paths. Recording is the implemented interface connecting
+autonomous research experience to future meta-optimization methods. It makes
+observable actions, response and execution evidence, artifact history, and
+optional runner observations available to later consumers.
+
+Those consumers may study or improve research strategies, tools, memory or model
+parameters. Their update methods and recursive orchestration remain future work
+within project scope. The current interface captures and exports evidence; it
+does not select an update method or establish that self-improvement occurred.
+Consumers must retain capture gaps, evidence provenance and the separation
+between research-visible feedback and private postmortem measurements described
+below.
+
 ## Launch configuration
 
 Pass `--recording recording.json` to `envcore start`, with either a task or a
