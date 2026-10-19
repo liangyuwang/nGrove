@@ -306,6 +306,8 @@ class Supervisor:
         self._recording_action: ContextVar[Optional[str]] = ContextVar(
             "research_action", default=None
         )
+        # Retry bookkeeping references only successfully written removal intents.
+        self._pending_artifact_removals: Dict[str, int] = {}
         self.config = config.validate()
         # The trusted launcher verifies the data view and the Worker keeps it
         # immutable. Core binds that evidence to its small manifest identity;
@@ -3612,8 +3614,6 @@ class Supervisor:
                     pass
                 return
             for artifact_id, kind, path in targets:
-                if not path.exists() and not path.is_symlink():
-                    continue
                 artifact = {
                     "artifact_id": artifact_id,
                     "kind": kind,
@@ -3622,17 +3622,41 @@ class Supervisor:
                 try:
                     if path.is_symlink() or path.parent.is_symlink():
                         raise OSError("artifact retention path is a symlink")
+                    try:
+                        path.lstat()
+                    except FileNotFoundError:
+                        intent = self._pending_artifact_removals.get(artifact_id)
+                        if intent is not None:
+                            # Only confirm current absence. A failed completion
+                            # write left the original removal outcome uncertain.
+                            self._event(
+                                "ARTIFACT_ABSENCE_CONFIRMED",
+                                artifact={
+                                    **artifact,
+                                    "storage_status": "absence_confirmed",
+                                },
+                                links=[
+                                    {
+                                        "relation": "reconciles",
+                                        "event_id": self._event_id(intent),
+                                    }
+                                ],
+                            )
+                            del self._pending_artifact_removals[artifact_id]
+                        continue
                     # Persist intent first. A lost completion record remains
                     # uncertain instead of falsely claiming successful deletion.
-                    self._event(
+                    intent = self._event(
                         "ARTIFACT_RETENTION_STARTED",
                         artifact={**artifact, "storage_status": "removal_pending"},
                     )
+                    self._pending_artifact_removals[artifact_id] = intent
                     self._remove_staging_tree(path)
                     self._event(
                         "ARTIFACT_REMOVED",
                         artifact={**artifact, "storage_status": "removed_by_policy"},
                     )
+                    del self._pending_artifact_removals[artifact_id]
                 except OSError as exc:
                     # Optional storage maintenance cannot erase a committed result.
                     try:

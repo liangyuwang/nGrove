@@ -437,18 +437,22 @@ def read_recording(episode: Path) -> Dict[str, Any]:
             f"{state['episode_id']}:event:{c['event_seq']}" for c in commits
         ]
         artifact["source_leases"] = sorted({c["source_lease"] for c in commits})
-        if not present and artifact.get("storage_status") != "removed_by_policy":
+        storage_status = artifact.get("storage_status")
+        confirmed_absence = storage_status in ("removed_by_policy", "absence_confirmed")
+        if not present and not confirmed_absence:
             issues.append(
                 {
                     "artifact_id": artifact["artifact_id"],
                     "code": "artifact_missing_without_confirmed_removal",
                 }
             )
-        if present and artifact.get("storage_status") == "removed_by_policy":
+        if present and confirmed_absence:
             issues.append(
                 {
                     "artifact_id": artifact["artifact_id"],
-                    "code": "artifact_present_after_recorded_removal",
+                    "code": "artifact_present_after_confirmed_absence"
+                    if storage_status == "absence_confirmed"
+                    else "artifact_present_after_recorded_removal",
                 }
             )
     # The authoritative result remains the source of postmortem measurements.

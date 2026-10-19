@@ -549,3 +549,152 @@ class RecordingRetentionTests(unittest.TestCase):
             )
         finally:
             fixture.tearDown()
+
+    def test_retry_reconciles_missing_artifacts_after_completion_record_failure(self):
+        for lose_failure_record in (False, True):
+            with self.subTest(lose_failure_record=lose_failure_record):
+                fixture = test_supervisor.SupervisorTests()
+                fixture.setUp()
+                try:
+                    supervisor = fixture.supervisor(
+                        recording=RecordingConfig(
+                            candidates="metadata",
+                            lease_outputs="discard_after_finalize",
+                        )
+                    )
+                    supervisor.start_lease()
+                    candidate = supervisor.commit_lease("/output/candidate")
+                    supervisor.declare_incumbent(candidate["candidate_id"])
+                    supervisor.finish()
+                    write_event = supervisor._event
+                    failed_types = {"ARTIFACT_REMOVED"}
+                    if lose_failure_record:
+                        failed_types.add("ARTIFACT_RETENTION_FAILED")
+
+                    def fail_event(event_type, **data):
+                        if event_type in failed_types:
+                            raise OSError("journal write failed")
+                        return write_event(event_type, **data)
+
+                    with patch.object(supervisor, "_event", side_effect=fail_event):
+                        fixture.finalize_after_agent_stop(supervisor)
+                    self.assertEqual(supervisor.state["outcome"], "success")
+                    state_before = supervisor.state_path.read_bytes()
+                    view = read_recording(supervisor.episode_dir)
+                    self.assertEqual(len(view["artifacts"]), 2)
+                    for artifact in view["artifacts"]:
+                        self.assertEqual(
+                            artifact["storage_status"],
+                            "removal_pending"
+                            if lose_failure_record
+                            else "retention_failed",
+                        )
+                        self.assertFalse(
+                            (supervisor.episode_dir / artifact["path"]).exists()
+                        )
+
+                    # Failure to inspect a path must not establish absence.
+                    targets = {
+                        supervisor.episode_dir / a["path"] for a in view["artifacts"]
+                    }
+                    lstat = Path.lstat
+
+                    def deny_inspection(path, *args, **kwargs):
+                        if path in targets:
+                            raise PermissionError("cannot inspect artifact")
+                        return lstat(path, *args, **kwargs)
+
+                    with patch.object(Path, "lstat", new=deny_inspection):
+                        supervisor.finalize_recording()
+                    view = read_recording(supervisor.episode_dir)
+                    self.assertEqual(
+                        {a["storage_status"] for a in view["artifacts"]},
+                        {"retention_failed"},
+                    )
+
+                    # A failed recovery record must itself remain retryable.
+                    failed_types = {"ARTIFACT_ABSENCE_CONFIRMED"}
+                    with patch.object(supervisor, "_event", side_effect=fail_event):
+                        supervisor.finalize_recording()
+                    journal_before = supervisor.events_path.read_bytes()
+                    supervisor.finalize_recording()
+                    view = read_recording(supervisor.episode_dir)
+                    self.assertEqual(view["issues"], [])
+                    self.assertEqual(
+                        {a["storage_status"] for a in view["artifacts"]},
+                        {"absence_confirmed"},
+                    )
+                    confirmations = [
+                        e
+                        for e in view["events"]
+                        if e["type"] == "ARTIFACT_ABSENCE_CONFIRMED"
+                    ]
+                    self.assertEqual(len(confirmations), 2)
+                    intents = {
+                        e["artifact"]["artifact_id"]: e["event_id"]
+                        for e in view["events"]
+                        if e["type"] == "ARTIFACT_RETENTION_STARTED"
+                    }
+                    for event in confirmations:
+                        self.assertEqual(
+                            event["links"],
+                            [
+                                {
+                                    "relation": "reconciles",
+                                    "event_id": intents[
+                                        event["artifact"]["artifact_id"]
+                                    ],
+                                }
+                            ],
+                        )
+                    self.assertFalse(
+                        any(e["type"] == "ARTIFACT_REMOVED" for e in view["events"])
+                    )
+                    journal_after = supervisor.events_path.read_bytes()
+                    self.assertTrue(journal_after.startswith(journal_before))
+                    supervisor.finalize_recording()
+                    self.assertEqual(supervisor.events_path.read_bytes(), journal_after)
+                    self.assertEqual(supervisor.state_path.read_bytes(), state_before)
+                    # A later conflicting observation must still be reported.
+                    bundle = supervisor.candidates_dir / candidate[
+                        "candidate_id"
+                    ].removeprefix("sha256:")
+                    bundle.mkdir()
+                    self.assertIn(
+                        "artifact_present_after_confirmed_absence",
+                        {
+                            issue["code"]
+                            for issue in read_recording(supervisor.episode_dir)[
+                                "issues"
+                            ]
+                        },
+                    )
+                finally:
+                    fixture.tearDown()
+
+    def test_retry_does_not_reconcile_missing_artifact_without_removal_intent(self):
+        fixture = test_supervisor.SupervisorTests()
+        fixture.setUp()
+        try:
+            supervisor = fixture.supervisor(
+                recording=RecordingConfig(candidates="metadata")
+            )
+            supervisor.start_lease()
+            candidate = supervisor.commit_lease("/output/candidate")
+            supervisor.declare_incumbent(candidate["candidate_id"])
+            supervisor.finish()
+            with patch.object(supervisor, "finalize_recording"):
+                fixture.finalize_after_agent_stop(supervisor)
+            bundle = next(supervisor.candidates_dir.iterdir())
+            supervisor._remove_staging_tree(bundle)
+            journal_before = supervisor.events_path.read_bytes()
+            supervisor.finalize_recording()
+            self.assertEqual(supervisor.events_path.read_bytes(), journal_before)
+            view = read_recording(supervisor.episode_dir)
+            self.assertEqual(view["artifacts"][0]["storage_status"], "retained")
+            self.assertIn(
+                "artifact_missing_without_confirmed_removal",
+                {issue["code"] for issue in view["issues"]},
+            )
+        finally:
+            fixture.tearDown()

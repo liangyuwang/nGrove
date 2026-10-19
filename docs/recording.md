@@ -67,6 +67,14 @@ evaluation or result validity. Removal intent, completion and failures are
 recorded independently. A failed removal retains an explicit failure status;
 trusted launchers can retry `supervisor.finalize_recording()` after finalization.
 An unresolved removal intent is not proof that content was removed.
+If deletion succeeds but its completion record fails, a retry on the same
+Supervisor can confirm that the target is absent. It appends
+`ARTIFACT_ABSENCE_CONFIRMED`, linked to the persisted removal intent, and marks
+the artifact `absence_confirmed`. This resolves the current retention failure
+without claiming how or when the original deletion completed; earlier events
+remain unchanged. Missing targets without a prior persisted removal intent are
+not reconciled this way. A failed confirmation write remains retryable, and
+repeated successful retries do not add duplicate events.
 Recorded deployment teardown failures defer automatic removal even when a TEST
 result could be finalized. Such episodes retain their artifacts for Operator
 recovery; historical failure records are not silently cleared to enable deletion.
