@@ -195,32 +195,63 @@ comparison keys and eligibility requirements.
 
 ## Results
 
-The `lm-pretrain` preview has completed full-data runs in both tracks, using
-a public TRAIN pool of approximately **9.95 billion tokens**. Both runs completed
-autonomous training, Candidate submission, research sealing, TEST, and postmortem
-ANALYSIS.
+The `lm-pretrain` preview ran 11 Research Agent models on the same task, TRAIN
+data and evaluator, with one H200 SXM 141 GB per run. Each model ran once in
+Track A (8 hours) and once in Track B (6 Leases × up to 1 hour), and all 22 runs
+completed autonomous training, Candidate submission, research sealing, TEST, and
+postmortem ANALYSIS. The runs took place from September 13 to 17, 2026, using
+OpenCode 1.18.27 on clean Core revision
+[`7a044a1`](https://github.com/liangyuwang/nGrove/commit/7a044a156c37bc1febd823344d6e6c97ff083019).
+`gpt-5.6-luna`, `gpt-5.6-sol` and `gpt-5.6-terra` used medium reasoning effort;
+the other models used their provider defaults.
 
-These September 2026 runs used Codex CLI with `gpt-5.6-sol` at high reasoning
-effort, on Core revision [`84f6a72`](https://github.com/liangyuwang/nGrove/commit/84f6a725c59f2c596acf8798e0df6aa4f62948eb).
+<p align="center">
+  <a href="https://xiehuanyi.github.io/autotrain-bench-viz/?lang=en">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/assets/results-h200-preview-dark.svg">
+      <img src="docs/assets/results-h200-preview-light.svg" alt="Final TEST score versus TEST time per task for 11 Research Agent models on one H200, in Track A (8 hours) and Track B (6 Leases)" width="100%">
+    </picture>
+  </a>
+</p>
 
-| Track | Research budget | Training hardware | TEST score&nbsp;↑ | Time / task&nbsp;↓ |
-| :--- | :--- | :--- | ---: | ---: |
-| **A** | 8 hours | 4 × H100 80 GB | 70.09 | 7.81 ms |
-| **B** | 6 Leases × up to 1 hour | 1 × A100 80 GB, derived preview profile | 65.63 | 3.79 ms |
+<p align="center"><em>Final TEST score versus serving time per task; upper left is better.
+Click the figure to open the <a href="https://xiehuanyi.github.io/autotrain-bench-viz/?lang=en">interactive dashboard</a>.</em></p>
+
+| Research Agent model | Track A score&nbsp;↑ | Track A time / task&nbsp;↓ | Track B score&nbsp;↑ | Track B time / task&nbsp;↓ |
+| :--- | ---: | ---: | ---: | ---: |
+| `claude-fable-5-1` | 73.35 | 6.00 ms | 72.13 | 6.26 ms |
+| `claude-opus-5` | 73.06 | 5.19 ms | 72.12 | 5.75 ms |
+| `claude-sonnet-5` | 67.72 | 5.54 ms | 71.04 | 5.24 ms |
+| `deepseek-v4-flash` | 71.56 | 5.58 ms | 71.75 | 5.49 ms |
+| `deepseek-v4-pro` | 71.29 | 6.00 ms | 68.23 | 5.95 ms |
+| `glm-5.3` | 70.00 | 6.68 ms | 70.91 | 5.23 ms |
+| `gpt-5.6-luna` | 65.76 | 11.39 ms | 41.25 | 29.05 ms |
+| `gpt-5.6-sol` | 70.86 | 5.52 ms | 70.17 | 5.98 ms |
+| `gpt-5.6-terra` | 66.37 | 21.78 ms | 65.01 | 4.78 ms |
+| `gpt-6-astra` | 72.41 | 4.96 ms | 71.16 | 4.68 ms |
+| `kimi-k3` | 70.80 | 6.35 ms | 71.95 | 6.24 ms |
+
+Two further Track B runs with up to 12 Leases scored 73.50
+(`claude-fable-5-1`, 5.30 ms per task) and 72.47 (`gpt-6-astra`,
+5.76 ms per task).
 
 Scores use the preview's 0–100 performance metric; time per task measures
 Candidate serving, not training.
 
 > [!IMPORTANT]
-> These are **non-compliant, leaderboard-ineligible `host_cli` previews** with
-> different hardware profiles and Agent CLI versions. They are not a controlled
-> A/B comparison or a formal ranking.
+> These are **non-compliant, leaderboard-ineligible `host_cli` previews**. Each
+> configuration ran once, so seed variance is not estimated, and the table is
+> ordered by model name rather than ranked. Earlier failed attempts for
+> `glm-5.3` in Track B and `deepseek-v4-flash` in Track A are excluded in favor
+> of their later attempts.
 
 Historical success also does not certify the current Worker revision; see the
 [recorded evidence scope](docs/worker-acceptance-matrix.md#historical-evidence-catalog).
 
-More results will be added after further testing. A dedicated website is planned
-to present results in greater detail.
+The [interactive dashboard](https://xiehuanyi.github.io/autotrain-bench-viz/?lang=en) shows every run's Candidate ANALYSIS
+trajectory, serving time and Agent token usage, with selectable axes. Its
+[source and aggregate data](https://github.com/xiehuanyi/autotrain-bench-viz)
+are public. More results will be added after further testing.
 
 ## Getting Started
 
