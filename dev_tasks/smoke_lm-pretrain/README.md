@@ -1,7 +1,7 @@
 # Smoke LM pretrain development task
 
 `smoke_lm-pretrain` is the single bundled end-to-end development smoke task for
-AutoTrain-Bench. It exercises the same release-bound launch contract,
+Envcore. It exercises the same release-bound launch contract,
 task/participant boundary, Policy, trusted Evaluator implementation, Track
 A/Track B state machine, Candidate isolation, and incumbent semantics as
 `lm-pretrain`. Its corpus, tokenization, context, data layout, split recipe,
@@ -56,7 +56,7 @@ Candidate that satisfies the public ABI. Concrete runtime provenance and Worker
 capability evidence belong to the episode result. A development deployment
 cannot become leaderboard eligible merely by reporting the expected hardware.
 
-The Agent receives the same variable-length declaration as the challenge:
+The Agent receives the same variable-length declaration as the benchmark:
 evaluation inputs are variable-length token sequences, the exact length
 distribution is not disclosed during research, and participants choose how to
 use context to optimize next-token prediction within the resource budget.
@@ -64,23 +64,30 @@ use context to optimize next-token prediction within the resource budget.
 recipe remains reproducible from its public source; this visibility convention
 does not make that recipe suitable as a secret formal evaluation.
 
-Training resources are selected from the finite map in `challenge.json`, never
-by `task.json` or ad-hoc launch flags. `cpu-local` keeps the smoke path cheap;
-the GPU profiles mirror the [lm-pretrain hardware map](../../challenges/lm-pretrain/README.md#supported-preview-lanes):
+In benchmark mode with `--benchmark`, Training resources are selected from the
+finite map in `benchmark.json`, not from `task.json` or manual GPU flags.
+`cpu-local` keeps the smoke path cheap;
+the GPU profiles mirror the [lm-pretrain hardware map](../../benchmarks/lm-pretrain/README.md#supported-preview-lanes):
 A100 SXM4 80GB, H100 SXM 80GB, H200 SXM 141GB, and H200 NVL 141GB, each with
 1, 2, 4, or 8 full GPUs on one host. These select Training resources; this smoke
-task's trusted evaluation remains on CPU. The budgets remain five minutes for
-Track A and three 75-second Leases for Track B at every GPU count. Inspect the
-supported Track and runtime choices before launch:
+task's trusted evaluation remains on CPU. The published Track budgets are five
+minutes for Track A and three 75-second Leases for Track B at every GPU count.
+Inspect the supported Track and runtime choices before launch:
 
 ```bash
-envcore challenge-info \
-  --challenge dev_tasks/smoke_lm-pretrain/challenge.json
+envcore benchmark-info \
+  --benchmark dev_tasks/smoke_lm-pretrain/benchmark.json
 ```
+
+In environment mode, `--environment` can select custom compute resources and
+override the time budget without editing the task or benchmark release. Omitted
+budgets inherit the selected task/Track settings. See
+[environment configuration](../../docs/environments.md) for task-based and
+benchmark-based launch forms.
 
 These profiles are integration configurations, not official comparison
 environments. For custom hardware and independent Agent comparisons, follow the
-[reference environment and comparison policy](../../challenges/README.md#reference-environments-and-custom-comparisons).
+[reference environment and comparison policy](../../benchmarks/README.md#reference-environments-and-custom-comparisons).
 
 ## Prepare
 
@@ -130,7 +137,7 @@ starts empty:
 
 ```bash
 envcore start \
-  --challenge dev_tasks/smoke_lm-pretrain/challenge.json \
+  --benchmark dev_tasks/smoke_lm-pretrain/benchmark.json \
   --track-config smoke-a-5m \
   --runtime-profile cpu-local \
   --episodes-root /path/to/envcore-runs/episodes \
@@ -144,7 +151,7 @@ changing the task or using manual resource overrides:
 
 ```bash
 envcore start \
-  --challenge dev_tasks/smoke_lm-pretrain/challenge.json \
+  --benchmark dev_tasks/smoke_lm-pretrain/benchmark.json \
   --track-config smoke-a-5m \
   --runtime-profile h100-sxm-80gb-x4 \
   --episodes-root /path/to/envcore-runs/episodes \
@@ -163,7 +170,7 @@ and participant-owned instructions remain in scope.
 
 ```bash
 envcore start \
-  --challenge dev_tasks/smoke_lm-pretrain/challenge.json \
+  --benchmark dev_tasks/smoke_lm-pretrain/benchmark.json \
   --track-config smoke-a-5m \
   --runtime-profile cpu-local \
   --episodes-root /path/to/envcore-runs/episodes \

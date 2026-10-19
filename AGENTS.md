@@ -1,9 +1,9 @@
 # Repository Assistant instructions
 
-Envcore is an autonomous research environment framework; AutoTrain-Bench is
-its bundled benchmark application. Environment runs may select user-owned
+Envcore is an autonomous research environment framework with bundled
+benchmarks. Environment runs may select user-owned
 compute resources and time budgets at launch using `--environment`, without
-editing task or challenge releases. Omitted time budgets inherit the selected
+editing task or benchmark releases. Omitted time budgets inherit the selected
 task/Track settings; resolved budgets freeze before task reveal. Track A uses
 total research seconds; Track B uses Lease count and seconds per Lease, not a
 total research deadline. Private Operator protection remains separate.
@@ -24,12 +24,12 @@ document, and maintain this project.
 When preparing or operating research runs, act as the trusted operator. Help
 the user configure, launch, monitor, and report runs in an execution environment
 they are authorized to use. The Research Agent is the autonomous participant
-conducting research inside the environment; AutoTrain-Bench calls this
+conducting research inside the environment; benchmarks call this
 participant the Tested Agent. Keep operator privileges and repository
 instructions separate from the Research Agent's execution boundary.
 
 The run workflow below describes that operator responsibility for the current
-training-research protocol. Follow the applicable task and AutoTrain-Bench
+training-research protocol. Follow the applicable task and benchmark
 rules during runs. Ordinary repository assistance does not request an episode.
 
 Keep this repository platform-independent. Cluster schedulers, container
@@ -59,7 +59,7 @@ images, allocating resources, or starting an episode:
 
 1. Inspect the repository and current environment with read-only operations.
 2. Explain briefly that the requested run is a research episode in Envcore,
-   using AutoTrain-Bench when selected, rather than a long-lived application
+   using a benchmark when selected, rather than a long-lived application
    service.
 3. Present one complete run-intake table with these rows:
 
@@ -67,13 +67,13 @@ images, allocating resources, or starting an episode:
    | --- | --- | --- |
    | Run mode | environment or benchmark | Confirm if unknown |
    | Run purpose | research experiment, preview, reproducibility, or formal evaluation | Confirm if unknown; formal benchmark evaluation requires benchmark mode |
-   | Challenge/task | manifest or development task | Confirm if unknown |
+   | Benchmark/task | manifest or development task | Confirm if unknown |
    | Track | A, B, or both | Confirm if unknown |
    | Time budget | named Track configuration or task budget; environment override when selected | Confirm the source and effective budget before launch |
    | Compute configuration | published runtime profile or user-owned environment configuration | Confirm the selected profile/configuration and supported alternatives |
    | Execution environment | access path and available resources | Ask the user to provide or authorize discovery |
    | Trusted working root | Core checkout, data, images, episodes, and logs | Confirm before writes |
-   | Research Agent | immutable identity, runner, and command | Confirm if unknown; called Tested Agent in AutoTrain-Bench |
+   | Research Agent | immutable identity, runner, and command | Confirm if unknown; called Tested Agent in benchmark runs |
    | Agent workspace | empty or participant-owned snapshot | Default to empty only after Agent identity is known |
    | Inference | endpoint, models, and credential variable names | Confirm when applicable |
    | Policy status | Worker capability, trust, conformance, and expected compliance | Resolve before launch |
@@ -103,19 +103,19 @@ picture once; subsequent questions remain progressive and concise.
 Confirm the common run settings:
 
 - environment or benchmark mode;
-- the challenge manifest or development task;
+- the benchmark manifest or development task;
 - Track A, Track B, or both;
 - whether the purpose is a research experiment, a local preview, a
   reproducibility run, or an organizer-controlled formal benchmark evaluation.
 
-For a benchmark challenge run, confirm the named `track_config` and
+For a benchmark run, confirm the named `track_config` and
 `runtime_profile` from the release's finite maps. Benchmark mode rejects
 `--environment` overrides and preserves the release's eligibility rules.
 
 For an environment run, confirm the user-owned `--environment` configuration,
-or explicitly use `--mode environment` with a challenge's published
+or explicitly use `--mode environment` with a benchmark's published
 `--runtime-profile`. Do not combine these two compute-configuration paths.
-A challenge-based environment run still requires `--track-config` to select
+A benchmark-based environment run still requires `--track-config` to select
 its Track and inherited budget; a task-based run requires `--track` instead.
 An explicit environment budget overrides the numeric budget for that Track;
 an omitted budget inherits the selected task/Track settings. Confirm and freeze
@@ -123,7 +123,7 @@ the effective compute configuration and time budget before task reveal. These
 runs have `leaderboard_eligible: false` and `comparison_key: null`.
 
 Do not invent a missing configuration or silently substitute another profile
-or budget. Use `challenge-info` to show published configuration maps and
+or budget. Use `benchmark-info` to show published configuration maps and
 `environment-info --environment PATH` to inspect a user-owned configuration.
 The latter does not resolve an omitted budget without the selected task/Track.
 
@@ -170,7 +170,7 @@ checkout is not isolated when a host-native Agent discovers this project's
 instructions from ancestor directories. Before task reveal, resolve the final
 workspace path and reject it if it is inside that trusted checkout. Require an
 explicit `--episode-dir` or `--episodes-root` in a dedicated external working
-root; the Core-relative `.autotrain/episodes` layout is not a valid default.
+root; the Core-relative `.envcore/episodes` layout is not a valid default.
 This boundary does not remove the Tested Agent's own global configuration or
 participant-owned instructions.
 
@@ -199,8 +199,8 @@ Before consuming a substantial accelerator budget, present a short resolved
 research run contract containing:
 
 - repository revision and dirty/clean state;
-- run mode, challenge/task, Track, effective compute configuration and time budget;
-- the published configuration names for a benchmark challenge run, or the
+- run mode, benchmark/task, Track, effective compute configuration and time budget;
+- the published configuration names for a benchmark run, or the
   resolved environment configuration identity for an environment run;
 - Research Agent identity, runner, command, workspace, and inference mode;
 - data and image identities;
@@ -215,11 +215,11 @@ to task or benchmark policy.
 ## Run workflow
 
 1. Read `README.md`, [environment configuration](docs/environments.md),
-   `docs/worker-protocol.md`, and the selected challenge/task README and
+   `docs/worker-protocol.md`, and the selected benchmark/task README and
    manifests before operating a research run. The current training-research
    protocol's isolation and evaluation rules are detailed in the
    [full benchmark reference](docs/benchmark-reference.md); read those rules
-   for either mode, and `challenges/README.md` when using a challenge.
+   for either mode, and `benchmarks/README.md` when using a benchmark.
    Inspect implementation entry points only as needed for the requested run.
    Record the exact Git revision and preserve unrelated user changes.
 2. Inspect the target environment read-only. Confirm that the destination is
@@ -327,7 +327,7 @@ A useful initial request has this shape:
 > allocate accelerators, and use the designated working directory. The Research
 > Agent is already present; here are its immutable identity, autonomous command,
 > workspace, and the policy-compliant access or inference path. Run in
-> [environment or benchmark] mode using [task/Track or challenge/track_config]
+> [environment or benchmark] mode using [task/Track or benchmark/track_config]
 > and [environment configuration or published runtime profile]. Here are the
 > selected time budget and resource limits.
 

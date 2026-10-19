@@ -1,4 +1,4 @@
-# AutoTrain-Bench: Research Dynamics and RSI Diagnostics
+# Research Dynamics and RSI Diagnostics
 
 > **Status: v1 design proposal; not implemented.** This document specifies an
 > independent, read-only postmortem analysis layer. The `bench_analysis/` package,
@@ -43,7 +43,7 @@ The curve describes more than the final result: how loss falls, how much compute
 the next improvement requires, how the improvement rate changes, and where
 progress plateaus or reverses.
 
-AutoTrain-Bench can use the same intuition: **treat the Tested Agent's autonomous
+Envcore can use the same intuition: **treat the Tested Agent's autonomous
 research as a higher-level learning process and examine how experience changes
 the quality of its delivered results.**
 
@@ -234,7 +234,7 @@ and commands described here are proposals, not existing functionality.
 | [`envcore/supervisor.py::_analysis_trajectory`](../envcore/supervisor.py) | Existing links among commits, ANALYSIS metrics, costs, and declaration events. |
 | `inference/inference.jsonl` | Call times, models, usage, and completeness when available; do not assume full prompts or responses are present. |
 | `agent.log`, Lease logs, and other Operator-retained traces | Optional tool-call, experimental-feedback, code-change, and behavioral evidence. Host runners may also use `agent.stdout.log` and `agent.stderr.log`. |
-| [`challenges/lm-pretrain/evaluator/evaluator.py`](../challenges/lm-pretrain/evaluator/evaluator.py) | The current loss is `analysis_raw_metrics.mean_nll`, with lower values better. The analyzer does not execute this scorer. |
+| [`benchmarks/lm-pretrain/evaluator/evaluator.py`](../benchmarks/lm-pretrain/evaluator/evaluator.py) | The current loss is `analysis_raw_metrics.mean_nll`, with lower values better. The analyzer does not execute this scorer. |
 
 Commits contain:
 

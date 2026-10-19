@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .agent_api_bundle import publish_agent_api_bundle
-from .challenge import ChallengeRelease, ResolvedChallengeRun
+from .benchmark import BenchmarkRelease, ResolvedBenchmarkRun
 from .environment import EnvironmentConfig
 from .run_config import resolve_environment_run
 from .client import Client, ClientError
@@ -316,32 +316,32 @@ def command_prepare(args: argparse.Namespace) -> int:
     return 0
 
 
-def _resolve_challenge_run(
+def _resolve_benchmark_run(
     args: argparse.Namespace,
     config: TaskConfig,
-    release: Optional[ChallengeRelease] = None,
-) -> Optional[ResolvedChallengeRun]:
+    release: Optional[BenchmarkRelease] = None,
+) -> Optional[ResolvedBenchmarkRun]:
     """Resolve the named leaderboard lane, or validate an ad-hoc task run."""
 
-    if args.challenge is None:
+    if args.benchmark is None:
         if args.track_config or args.runtime_profile:
             raise ConfigError(
-                "--track-config and --runtime-profile require --challenge"
+                "--track-config and --runtime-profile require --benchmark"
             )
         if not args.track:
-            raise ConfigError("--track is required when --challenge is not used")
+            raise ConfigError("--track is required when --benchmark is not used")
         return None
     if args.track:
         raise ConfigError(
-            "--track is selected by --track-config when --challenge is used"
+            "--track is selected by --track-config when --benchmark is used"
         )
     if not args.track_config or not args.runtime_profile:
-        raise ConfigError("--challenge requires --track-config and --runtime-profile")
+        raise ConfigError("--benchmark requires --track-config and --runtime-profile")
     if args.training_gpus or args.training_gpu_model or args.training_devices:
         raise ConfigError(
-            "manual training resources may not override a challenge runtime profile"
+            "manual training resources may not override a benchmark runtime profile"
         )
-    release = release or ChallengeRelease.load(args.challenge)
+    release = release or BenchmarkRelease.load(args.benchmark)
     return release.resolve(
         config,
         track_config_id=args.track_config,
@@ -360,15 +360,15 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
             "--agent-mode was renamed to --agent-egress and its values changed: "
             "'sandboxed' is now 'denied'; 'unrestricted-dev' is unchanged"
         )
-    release = ChallengeRelease.load(args.challenge) if args.challenge else None
+    release = BenchmarkRelease.load(args.benchmark) if args.benchmark else None
     if release is None:
         if args.task is None:
-            raise ConfigError("--task is required when --challenge is not used")
+            raise ConfigError("--task is required when --benchmark is not used")
         task_path = args.task
     else:
         task_path = release.task_path
         if args.task is not None and args.task.expanduser().resolve() != task_path:
-            raise ConfigError("--task may not override the task owned by --challenge")
+            raise ConfigError("--task may not override the task owned by --benchmark")
     config = TaskConfig.load(task_path)
     mode = args.mode or ("environment" if args.environment else "benchmark")
     run_environment = None
@@ -402,15 +402,15 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
             release=release,
             track_config_id=args.track_config,
         )
-        resolved_challenge = None
+        resolved_benchmark = None
     else:
         if args.environment:
             raise ConfigError(
                 "benchmark mode cannot override hardware with --environment"
             )
-        resolved_challenge = _resolve_challenge_run(args, config, release)
+        resolved_benchmark = _resolve_benchmark_run(args, config, release)
     comparison_key = None
-    challenge_release = None
+    benchmark_release = None
     evaluation_resource_envelope = None
     if resolved_environment is not None:
         run_environment = resolved_environment.environment
@@ -419,7 +419,7 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
         resources = resolved_environment.resources
         resource_envelope = resolved_environment.resource_envelope
         evaluation_resource_envelope = resolved_environment.evaluation_resource_envelope
-    elif resolved_challenge is None:
+    elif resolved_benchmark is None:
         track = args.track
         resources = TrainingResources(
             nvidia_gpu_count=args.training_gpus,
@@ -431,13 +431,13 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
             minimum_enforcement=EnforcementLevel.BEST_EFFORT,
         )
     else:
-        config = resolved_challenge.task
-        track = resolved_challenge.track
-        resources = resolved_challenge.resources
-        resource_envelope = resolved_challenge.resource_envelope
-        evaluation_resource_envelope = resolved_challenge.evaluation_resource_envelope
-        comparison_key = resolved_challenge.comparison_key.public_manifest()
-        challenge_release = resolved_challenge.release_manifest
+        config = resolved_benchmark.task
+        track = resolved_benchmark.track
+        resources = resolved_benchmark.resources
+        resource_envelope = resolved_benchmark.resource_envelope
+        evaluation_resource_envelope = resolved_benchmark.evaluation_resource_envelope
+        comparison_key = resolved_benchmark.comparison_key.public_manifest()
+        benchmark_release = resolved_benchmark.release_manifest
     operator_limit = resolve_operator_research_limit(
         config.source,
         track,
@@ -666,7 +666,7 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
             evaluation_worker_environment=worker_environment,
             operator_max_research_seconds=operator_limit,
             comparison_key=comparison_key,
-            challenge_release=challenge_release,
+            benchmark_release=benchmark_release,
             environment=run_environment,
         )
     except Exception:
@@ -1235,8 +1235,8 @@ def command_status(args: argparse.Namespace) -> int:
     return 0
 
 
-def command_challenge_info(args: argparse.Namespace) -> int:
-    release = ChallengeRelease.load(args.challenge)
+def command_benchmark_info(args: argparse.Namespace) -> int:
+    release = BenchmarkRelease.load(args.benchmark)
     _print(release.public_manifest())
     return 0
 
@@ -1303,21 +1303,21 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument(
         "--task",
         type=Path,
-        help="task manifest; inferred from --challenge in profile-bound runs",
+        help="task manifest; inferred from --benchmark in profile-bound runs",
     )
     start.add_argument("--track", choices=["A", "B", "a", "b"])
     start.add_argument(
-        "--challenge",
+        "--benchmark",
         type=Path,
-        help="challenge release manifest defining supported comparison lanes",
+        help="benchmark release manifest defining supported comparison lanes",
     )
     start.add_argument(
         "--track-config",
-        help="named track budget from the selected challenge release",
+        help="named track budget from the selected benchmark release",
     )
     start.add_argument(
         "--runtime-profile",
-        help="named episode-time hardware profile from the selected challenge release",
+        help="named episode-time hardware profile from the selected benchmark release",
     )
     episode_destination = start.add_mutually_exclusive_group(required=True)
     episode_destination.add_argument(
@@ -1511,11 +1511,11 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--episode", required=True, type=Path)
     report.set_defaults(function=command_report)
 
-    challenge_info = subparsers.add_parser(
-        "challenge-info", help="show supported track and runtime profile maps"
+    benchmark_info = subparsers.add_parser(
+        "benchmark-info", help="show supported track and runtime profile maps"
     )
-    challenge_info.add_argument("--challenge", required=True, type=Path)
-    challenge_info.set_defaults(function=command_challenge_info)
+    benchmark_info.add_argument("--benchmark", required=True, type=Path)
+    benchmark_info.set_defaults(function=command_benchmark_info)
     environment_info = subparsers.add_parser(
         "environment-info", help="validate and fingerprint an environment configuration"
     )

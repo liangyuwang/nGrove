@@ -19,10 +19,10 @@ The participant supplies a research Agent. During an episode, that Agent builds
 or selects the system to submit for independent evaluation. The research Agent
 and its final submission may share components, but need not be identical.
 
-The challenge should leave the largest practical solution space open, defining
+The benchmark should leave the largest practical solution space open, defining
 only what makes that freedom meaningful and evaluable:
 
-| Component | What the challenge should define |
+| Component | What the benchmark should define |
 | --- | --- |
 | **Evaluator** | The task objective and how success and execution cost are measured |
 | **Sandbox and policy** | The world the Agent may act in, including data, tools, services, and network access |
@@ -111,7 +111,7 @@ effectiveness also need evidence of the Agent's starting point, the resources it
 could access, and how it used its budget. Choosing an effective existing system
 is a valid research decision; comparisons should make those conditions visible.
 
-## Help shape the challenge
+## Help shape the benchmark
 
 The first priority is to identify a language task that makes this broader
 freedom useful and measurable. We invite proposals around four connected

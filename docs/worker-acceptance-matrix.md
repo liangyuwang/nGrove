@@ -7,7 +7,7 @@ remaining deployment tests. It does not issue conformance receipts or change
 capability, trust, policy or leaderboard eligibility.
 
 Closeout review baseline: `c13586b60b68c234837e5a8c552caed904cf3816`;
-Worker Protocol v16, Task v7, Challenge v3, Result v15. The last recorded full
+Worker Protocol v16, Task v7, Benchmark v3, Result v15. The last recorded full
 local run at this baseline passed 672 tests. The initial matrix review was at
 `70b8585df503375e15c0c6132abb8e06ab1365bd` with Result v14 and 564 tests.
 The later diagnostics supply local evidence, not new real-deployment acceptance.

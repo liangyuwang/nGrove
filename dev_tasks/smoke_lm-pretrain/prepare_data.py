@@ -74,7 +74,7 @@ def _download_page(offset: int) -> List[str]:
     )
     request = urllib.request.Request(
         f"{DATASET_SERVER}?{query}",
-        headers={"User-Agent": "AutoTrain-Bench-mini-lm/0"},
+        headers={"User-Agent": "Envcore-smoke-lm-pretrain/0"},
     )
     last_error: Optional[BaseException] = None
     for attempt in range(1, 4):

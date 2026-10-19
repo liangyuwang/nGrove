@@ -38,7 +38,7 @@ When updating a deployment from v15, `evaluate_candidate()` must accept the new
 `evaluation_id` and `resource_envelope` keyword arguments. An explicit envelope
 requires an operation-bound `EvaluationResourceReceipt` on the returned result.
 It cannot reuse Training or another evaluation's receipt. The Supervisor reads
-the evaluation envelope from the resolved challenge release; standalone trusted
+the evaluation envelope from the resolved benchmark release; standalone trusted
 launchers may supply `evaluation_resource_envelope` directly. Resolve unsupported
 normative properties before authorizing an expensive run. See the
 [evaluation resource contract and evidence example](evaluation-resources.md).
@@ -71,7 +71,7 @@ supervisor = Supervisor(
     research_worker_environment=research_environment,
     evaluation_worker_environment=evaluation_environment,
     comparison_key=comparison_key,
-    challenge_release=challenge_release,
+    benchmark_release=benchmark_release,
     release_verification=release_verification,
     research_worker_conformance=research_conformance,
     evaluation_worker_conformance=evaluation_conformance,

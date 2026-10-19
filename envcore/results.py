@@ -371,10 +371,10 @@ def _validate_resource_allocations(result: Dict[str, Any]) -> None:
             raise ResultSchemaError(
                 "a leaderboard-eligible resource envelope must require enforcement"
             )
-        challenge_release = result.get("challenge_release")
+        benchmark_release = result.get("benchmark_release")
         if (
-            not isinstance(challenge_release, dict)
-            or challenge_release.get("resource_envelope") != envelope.public_manifest()
+            not isinstance(benchmark_release, dict)
+            or benchmark_release.get("resource_envelope") != envelope.public_manifest()
         ):
             raise ResultSchemaError(
                 "leaderboard resource evidence must match the frozen release"
@@ -505,7 +505,7 @@ def _validate_evaluation_resources(result: Dict[str, Any]) -> None:
             raise ResultSchemaError(
                 "leaderboard cost requires accepted TEST resource evidence"
             )
-        release = result.get("challenge_release")
+        release = result.get("benchmark_release")
         try:
             frozen = ResourceEnvelope.from_manifest(
                 release.get("evaluation_resource_envelope")
@@ -654,7 +654,7 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
         if (
             result.get("leaderboard_eligible") is not False
             or result.get("comparison_key") is not None
-            or result.get("challenge_release") is not None
+            or result.get("benchmark_release") is not None
             or result.get("formal_release_verification") is not None
         ):
             raise ResultSchemaError(

@@ -18,10 +18,10 @@ from unittest.mock import patch
 
 from envcore.agent_control import AgentControlStepResult
 from envcore.agent_api_bundle import publish_agent_api_bundle
-from envcore.challenge import (
+from envcore.benchmark import (
     FORMAL_ARTIFACT_DIGEST_FIELDS,
     FORMAL_ARTIFACT_IDENTITY_ALGORITHMS,
-    ChallengeRelease,
+    BenchmarkRelease,
     ReleaseVerificationReceipt,
 )
 from envcore.artifact_identity import (
@@ -477,7 +477,7 @@ class SupervisorTests(unittest.TestCase):
         config=None,
         agent=None,
         comparison_key=None,
-        challenge_release=None,
+        benchmark_release=None,
         release_verification=None,
         agent_execution=None,
         worker_conformance=None,
@@ -509,7 +509,7 @@ class SupervisorTests(unittest.TestCase):
             evaluation_worker=self.worker,
             agent_control_transport=self.mailbox,
             comparison_key=comparison_key,
-            challenge_release=challenge_release,
+            benchmark_release=benchmark_release,
             release_verification=release_verification,
             research_worker_conformance=worker_conformance,
             evaluation_worker_conformance=worker_conformance,
@@ -691,13 +691,13 @@ class SupervisorTests(unittest.TestCase):
 
     def test_public_release_contains_only_declared_identifiers(self):
         comparison_key = {
-            "challenge_id": "lm-pretrain",
+            "benchmark_id": "lm-pretrain",
             "track": "B",
             "track_config": "preview-b-6x1h",
             "runtime_profile": "h100-sxm-80gb-x4",
         }
         public_release = {
-            "challenge_id": "lm-pretrain",
+            "benchmark_id": "lm-pretrain",
             "release_stage": "preview",
             "leaderboard_eligible": False,
             "track_config_id": comparison_key["track_config"],
@@ -705,7 +705,7 @@ class SupervisorTests(unittest.TestCase):
         }
         release = {
             **public_release,
-            "challenge_manifest_sha256": "b" * 64,
+            "benchmark_manifest_sha256": "b" * 64,
             "task_manifest_sha256": hashlib.sha256(
                 self.config.source.read_bytes()
             ).hexdigest(),
@@ -715,7 +715,7 @@ class SupervisorTests(unittest.TestCase):
         }
         supervisor = self.supervisor(
             comparison_key=comparison_key,
-            challenge_release=release,
+            benchmark_release=release,
         )
         self.assertEqual(supervisor.state["comparison_key"], comparison_key)
         self.assertFalse(supervisor.state["leaderboard_eligible"])
@@ -724,34 +724,34 @@ class SupervisorTests(unittest.TestCase):
             supervisor.public_task_path.read_text(encoding="utf-8")
         )
         self.assertEqual(public_task["comparison_key"], comparison_key)
-        self.assertEqual(public_task["challenge_release"], public_release)
-        self.assertEqual(supervisor.state["challenge_release"], release)
+        self.assertEqual(public_task["benchmark_release"], public_release)
+        self.assertEqual(supervisor.state["benchmark_release"], release)
 
     def test_full_agent_manifest_does_not_identify_hidden_length_choices(self):
         root = self.episode.parent
         task_path = root / "task.json"
-        challenge_path = root / "challenge.json"
+        benchmark_path = root / "benchmark.json"
         task_payload = json.loads(self.config.source.read_text(encoding="utf-8"))
         task_payload["paths"] = {
             name: str((self.config.source.parent / value).resolve())
             for name, value in task_payload["paths"].items()
         }
         task_payload["evaluation"]["entrypoint"] = str(self.config.evaluator_entrypoint)
-        challenge_payload = json.loads(
-            (ROOT / "dev_tasks/smoke_lm-pretrain/challenge.json").read_text(
+        benchmark_payload = json.loads(
+            (ROOT / "dev_tasks/smoke_lm-pretrain/benchmark.json").read_text(
                 encoding="utf-8"
             )
         )
-        challenge_payload["task_id"] = self.config.task_id
-        challenge_payload["challenge_id"] = "hidden-lengths-regression"
-        challenge_path.write_text(json.dumps(challenge_payload), encoding="utf-8")
+        benchmark_payload["task_id"] = self.config.task_id
+        benchmark_payload["benchmark_id"] = "hidden-lengths-regression"
+        benchmark_path.write_text(json.dumps(benchmark_payload), encoding="utf-8")
         public_manifests = {}
         private_digests = set()
         for index, lengths in enumerate(([1], [2], [1, 3], [1, 2, 3])):
             task_payload["evaluation"]["context_lengths"] = lengths
             task_path.write_text(json.dumps(task_payload), encoding="utf-8")
             task = TaskConfig.load(task_path)
-            release = ChallengeRelease.load(challenge_path)
+            release = BenchmarkRelease.load(benchmark_path)
             private_digests.add(release.task_manifest_sha256)
             for track_config in ("smoke-a-5m", "smoke-b-3x75s"):
                 with self.subTest(lengths=lengths, track_config=track_config):
@@ -765,7 +765,7 @@ class SupervisorTests(unittest.TestCase):
                         track=resolved.track,
                         config=resolved.task,
                         comparison_key=resolved.comparison_key.public_manifest(),
-                        challenge_release=resolved.release_manifest,
+                        benchmark_release=resolved.release_manifest,
                     )
                     public = json.loads(
                         supervisor.public_task_path.read_text(encoding="utf-8")
@@ -777,7 +777,7 @@ class SupervisorTests(unittest.TestCase):
                         supervisor.state_path.read_text(encoding="utf-8")
                     )
                     for record in (
-                        audit["challenge_release"],
+                        audit["benchmark_release"],
                         audit["artifact_identities"],
                     ):
                         self.assertEqual(
@@ -814,7 +814,7 @@ class SupervisorTests(unittest.TestCase):
             self.config,
             source=formal_task,
             train_dir=formal_train_dir,
-            task_kind="benchmark_challenge",
+            task_kind="benchmark",
             leaderboard_eligible=True,
             training_image="example/training" + digest,
             candidate_image="example/candidate" + digest,
@@ -832,14 +832,14 @@ class SupervisorTests(unittest.TestCase):
             passed=True,
         )
         comparison_key = {
-            "challenge_id": "test-byte-lm-v1",
+            "benchmark_id": "test-byte-lm-v1",
             "track": "B",
             "track_config": "b-final",
             "runtime_profile": "h100-final",
         }
         release = {
-            "challenge_id": "test-byte-lm-v1",
-            "challenge_manifest_sha256": "b" * 64,
+            "benchmark_id": "test-byte-lm-v1",
+            "benchmark_manifest_sha256": "b" * 64,
             "task_manifest_sha256": hashlib.sha256(
                 config.source.read_bytes()
             ).hexdigest(),
@@ -856,7 +856,7 @@ class SupervisorTests(unittest.TestCase):
         ).public_manifest()
         release["evaluation_resource_envelope"] = release["resource_envelope"]
         artifacts = {
-            "challenge_manifest_sha256": release["challenge_manifest_sha256"],
+            "benchmark_manifest_sha256": release["benchmark_manifest_sha256"],
             "task_manifest_sha256": release["task_manifest_sha256"],
             "policy_sha256": hashlib.sha256(
                 (config.source.parent / "POLICY.md").read_bytes()
@@ -893,7 +893,7 @@ class SupervisorTests(unittest.TestCase):
                     limitations=(),
                 ),
                 comparison_key=comparison_key,
-                challenge_release=release,
+                benchmark_release=release,
                 release_verification=receipt,
                 worker_conformance=worker_conformance,
                 begin=begin,
@@ -1118,7 +1118,7 @@ class SupervisorTests(unittest.TestCase):
         digest = "@sha256:" + "a" * 64
         config = replace(
             self.config,
-            task_kind="benchmark_challenge",
+            task_kind="benchmark",
             leaderboard_eligible=True,
             training_image="example/training" + digest,
             candidate_image="example/candidate" + digest,
@@ -1155,7 +1155,7 @@ class SupervisorTests(unittest.TestCase):
         digest = "@sha256:" + "a" * 64
         config = replace(
             self.config,
-            task_kind="benchmark_challenge",
+            task_kind="benchmark",
             leaderboard_eligible=True,
             training_image="example/training" + digest,
             candidate_image="example/candidate" + digest,
@@ -1298,7 +1298,7 @@ class SupervisorTests(unittest.TestCase):
         digest = "@sha256:" + "a" * 64
         config = replace(
             self.config,
-            task_kind="benchmark_challenge",
+            task_kind="benchmark",
             leaderboard_eligible=True,
             training_image="example/training" + digest,
             candidate_image="example/candidate" + digest,
@@ -1338,7 +1338,7 @@ class SupervisorTests(unittest.TestCase):
         digest = "@sha256:" + "a" * 64
         config = replace(
             self.config,
-            task_kind="benchmark_challenge",
+            task_kind="benchmark",
             leaderboard_eligible=True,
             training_image="example/training" + digest,
             candidate_image="example/candidate" + digest,
@@ -1363,14 +1363,14 @@ class SupervisorTests(unittest.TestCase):
                 config=config,
                 agent=agent,
                 comparison_key={
-                    "challenge_id": "test-byte-lm-v1",
+                    "benchmark_id": "test-byte-lm-v1",
                     "track": "B",
                     "track_config": "b-final",
                     "runtime_profile": "h100-final",
                 },
-                challenge_release={
-                    "challenge_id": "test-byte-lm-v1",
-                    "challenge_manifest_sha256": "b" * 64,
+                benchmark_release={
+                    "benchmark_id": "test-byte-lm-v1",
+                    "benchmark_manifest_sha256": "b" * 64,
                     "task_manifest_sha256": "c" * 64,
                     "release_stage": "official",
                     "leaderboard_eligible": True,

@@ -50,7 +50,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
     def test_task_evaluators_do_not_select_a_candidate_transport(self):
         for path in (
             ROOT / "dev_tasks/smoke_lm-pretrain/evaluator/evaluator.py",
-            ROOT / "challenges/lm-pretrain/evaluator/evaluator.py",
+            ROOT / "benchmarks/lm-pretrain/evaluator/evaluator.py",
         ):
             with self.subTest(path=path):
                 source = path.read_text(encoding="utf-8")

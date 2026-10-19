@@ -3,24 +3,24 @@
 This reference preserves the detailed benchmark design and operating instructions. Run its commands from the repository root.
 
 The [Repository Assistant](../AGENTS.md) helps the user develop and maintain the
-project. When helping operate an AutoTrain-Bench episode, it takes the trusted
+project. When helping operate a benchmark episode, it takes the trusted
 operator role described here. The Research Agent participating in the environment
 is called the Tested Agent in this benchmark reference and has a separate
 execution and information boundary.
 
-# AutoTrain-Bench
+# Benchmark reference
 
-**An open-ended benchmark for autonomous training research and recursive self-improvement.**
+**The shared training-research protocol for Envcore’s bundled benchmarks.**
 
-> **Status:** v0 local reference runtime; no official challenge released yet
-> **Project name:** AutoTrain-Bench
+> **Status:** v0 local reference runtime; no official benchmark released yet
+> **Framework:** Envcore
 > The repository includes one leaderboard-ineligible development smoke task.
 
 ---
 
 ## Overview
 
-AutoTrain-Bench is a benchmark for evaluating **autonomous systems that design, implement, run, analyze, and improve machine-learning training systems**.
+The bundled benchmarks evaluate **autonomous systems that design, implement, run, analyze, and improve machine-learning training systems**.
 
 The benchmark is inspired by training speedruns, but asks a broader question.
 
@@ -28,13 +28,13 @@ Instead of fixing a small model and asking:
 
 > How quickly can this model reach a target validation loss?
 
-AutoTrain-Bench asks:
+The benchmark protocol asks:
 
 > **Given a fixed task, fixed data, a fixed evaluation contract, and a constrained opportunity to interact with the training environment, how good a model can an autonomous research system produce?**
 
 The benchmark intentionally leaves most of the training stack open.
 
-An AutoTrain system may explore:
+A Research Agent may explore:
 
 * model size;
 * model architecture;
@@ -63,7 +63,7 @@ An AutoTrain system may explore:
 
 There is no reference `train.py` that participants are expected to tune.
 
-The AutoTrain system is responsible for building the training system itself.
+The Research Agent is responsible for building the training system itself.
 
 The evaluation objective is two-dimensional:
 
@@ -195,7 +195,7 @@ Agent tool admission, monitoring, cancellation/recovery responsibilities, and
 staged verification. The [Thin Core development plan](thin-core-development-plan.md)
 describes the incremental migration and its acceptance criteria.
 
-The reference runtime requires a machine that can run Docker. AutoTrain-Bench
+The reference runtime requires a machine that can run Docker. Envcore
 consumes the environment the user has already obtained; it does **not** allocate
 machines or integrate with Slurm, Kubernetes, or a cloud scheduler.
 
@@ -203,18 +203,18 @@ The repository contains one bundled development task,
 `dev_tasks/smoke_lm-pretrain`. It is an end-to-end smoke test for Agent and runtime
 development and never a leaderboard task. It uses the same release-bound start
 contract, Policy, trusted Evaluator implementation, both tracks, and isolated
-Candidate serving boundary as the challenge preview, while retaining a much
+Candidate serving boundary as the benchmark preview, while retaining a much
 smaller task-specific corpus and evaluation configuration. It intentionally
 ships no reference Agent.
 
-Future official task packages live under `challenges/`. `lm-pretrain/` now
+Future official task packages live under `benchmarks/`. `lm-pretrain/` now
 contains a runnable-after-preparation preview task, evaluator, data builder, and
-provisional comparison profiles; no frozen, leaderboard-eligible challenge has
+provisional comparison profiles; no frozen, leaderboard-eligible benchmark has
 been released yet.
 
 Hardware allocation is likewise not part of the task. Ad-hoc task episodes may
 explicitly expose resources with manual flags. Profile-bound development and
-challenge episodes instead select one of the release's finite named runtime
+benchmark episodes instead select one of the release's finite named runtime
 profiles. In both cases the semantic resource envelope is recorded. Every
 successful Training Lease also records a Worker receipt separating allocator
 observations, workload-visible values, and enforcement evidence. Inventory
@@ -264,14 +264,14 @@ This keeps episode state and the Tested Agent workspace separate from operator
 files. It also prevents host-native tools such as Codex from inheriting the
 Core's `AGENTS.md` through ancestor-directory instruction discovery. An empty
 workspace beneath the Core is therefore not isolated. This check is scoped to
-the trusted AutoTrain-Benchmark checkout; it does not remove the Tested Agent's
+the trusted Envcore checkout; it does not remove the Tested Agent's
 own global configuration or participant-owned instructions.
 
 A participant Agent Container can be selected without changing the task:
 
 ```bash
 envcore start \
-  --challenge dev_tasks/smoke_lm-pretrain/challenge.json \
+  --benchmark dev_tasks/smoke_lm-pretrain/benchmark.json \
   --track-config smoke-b-3x75s \
   --runtime-profile cpu-local \
   --episodes-root /path/to/envcore-runs/episodes \
@@ -294,7 +294,7 @@ knows how to operate the benchmark protocol:
 
 ```bash
 envcore start \
-  --challenge dev_tasks/smoke_lm-pretrain/challenge.json \
+  --benchmark dev_tasks/smoke_lm-pretrain/benchmark.json \
   --track-config smoke-a-5m \
   --runtime-profile cpu-local \
   --episodes-root /path/to/envcore-runs/episodes \
@@ -326,7 +326,7 @@ confirms an existing login, run the TinyStories Track A with a fixed Codex model
 
 ```bash
 python3 -m envcore.cli start \
-  --challenge dev_tasks/smoke_lm-pretrain/challenge.json \
+  --benchmark dev_tasks/smoke_lm-pretrain/benchmark.json \
   --track-config smoke-a-5m \
   --runtime-profile cpu-local \
   --episodes-root /path/to/envcore-runs/episodes \
@@ -381,7 +381,7 @@ confines every model-generated action to the episode workspace and mailbox.
 
 ## Bring your own Agent: controlled inference
 
-AutoTrain-Bench is intended to benchmark participant-defined autonomous Agent
+The benchmarks evaluate participant-defined autonomous Agent
 systems, including systems whose researcher model is served through an
 OpenAI-compatible remote or local endpoint. The Agent
 execution loop still runs inside the Agent Container so the benchmark can enforce
@@ -494,12 +494,12 @@ stay in trusted evaluation configuration. The `contexts.json.context_lengths`
 values describe only the actual request received by the frozen Candidate after
 research sealing; this field is not a research-stage sampling plan. The
 Candidate ABI and hidden dataset format are unchanged.
-Version 10 restricts the Agent-visible `challenge_release` to `challenge_id`,
+Version 10 restricts the Agent-visible `benchmark_release` to `benchmark_id`,
 `release_stage`, `leaderboard_eligible`, `track_config_id`, and
-`runtime_profile_id`. Full task/challenge manifest hashes and other trusted
+`runtime_profile_id`. Full task/benchmark manifest hashes and other trusted
 release metadata are not copied into the Agent manifest. The public budget and
 Training resource contract remain in `budget` and `training_environment`.
-`challenge-info` likewise omits full task/challenge file hashes. Release IDs are
+`benchmark-info` likewise omits full task/benchmark file hashes. Release IDs are
 public labels; complete file identities remain in trusted verification and
 episode audit records. An unsalted hash of an enumerable private configuration
 can reveal it through offline guessing even when the configuration itself is
@@ -520,7 +520,7 @@ the prepared Agent workspace.
 
 For debugging only, `--agent-egress unrestricted-dev` gives the Agent Container
 ordinary Docker bridge egress and marks the run
-`policy_compliant: false`. It is not a closed AutoTrain-Bench result and exists
+`policy_compliant: false`. It is not a closed benchmark result and exists
 only to make local integration easier.
 
 The Supervisor prints the episode directory. The trusted Operator can inspect
@@ -559,13 +559,13 @@ are rejected rather than guessed. This repository is still pre-preview. The firs
 published preview establishes the result-compatibility baseline; later schema
 changes must then define an explicit compatibility policy.
 
-Worker v16 and Challenge schema v3 add an independent
+Worker v16 and Benchmark schema v3 add an independent
 `evaluation_resource_contract` to a runtime profile. Core passes the selected
 envelope and a fresh evaluation ID to each TEST/ANALYSIS invocation, checks the
 Worker's allocation receipt before accepting metrics, and records the contract,
 receipt, and assessment in the v14 report. Missing contracts remain explicit
 (`evaluation_resource_envelope: null`) in previews; they do not establish cost
-comparability. Existing Challenge v2 profiles remain readable without this field.
+comparability. Existing Benchmark v2 profiles remain readable without this field.
 Formal releases require an enforced evaluation contract and accepted TEST
 resource evidence. See [evaluation resource contracts](evaluation-resources.md)
 for the Worker interface, local limits, and remaining comparison conditions.
@@ -762,7 +762,7 @@ but also:
 
 > What experiment should I run next?
 
-AutoTrain-Bench therefore treats the **entire training system as the search space**.
+The benchmark protocol therefore treats the **entire training system as the search space**.
 
 The benchmark is intended to measure the capability of a system to perform autonomous ML systems research, rather than its ability to optimize a predefined training script.
 
@@ -772,11 +772,11 @@ The benchmark is intended to measure the capability of a system to perform auton
 
 Let:
 
-* $S_0$ be the AutoTrain system at the moment the benchmark task is revealed;
+* $S_0$ be the Research Agent at the moment the benchmark task is revealed;
 * $S_t$ be the system after autonomous improvement during the episode;
 * $M_t$ be a target model or training system produced by $S_t$.
 
-AutoTrain-Bench studies trajectories of the form:
+The benchmark protocol studies trajectories of the form:
 
 $$
 S_0
@@ -796,7 +796,7 @@ S_t
 M_t.
 $$
 
-The benchmark therefore does **not** require the AutoTrain system itself to remain static.
+The benchmark therefore does **not** require the Research Agent itself to remain static.
 
 It only requires its **initial state and external boundary** to be fixed.
 
@@ -804,9 +804,9 @@ The central principle is:
 
 > **External improvement is frozen. Autonomous improvement is allowed.**
 
-After task reveal, no human developer may patch, steer, upgrade, or otherwise modify the submitted AutoTrain system.
+After task reveal, no human developer may patch, steer, upgrade, or otherwise modify the submitted Research Agent.
 
-However, the AutoTrain system may autonomously modify its own task-local behavior, software, tools, memory, workflow, experimental strategy, and other artifacts within the resources and permissions of the benchmark.
+However, the Research Agent may autonomously modify its own task-local behavior, software, tools, memory, workflow, experimental strategy, and other artifacts within the resources and permissions of the benchmark.
 
 This distinction is fundamental to the benchmark.
 
@@ -877,7 +877,7 @@ A large fixed training corpus.
 
 The TRAIN pool should be sufficiently large that consuming all available data is not automatically the optimal strategy under the benchmark compute budget.
 
-The AutoTrain system may choose which portion of TRAIN to use.
+The Research Agent may choose which portion of TRAIN to use.
 
 For example, it may autonomously explore:
 
@@ -895,7 +895,7 @@ For example, it may autonomously explore:
 
 Importantly, **data policy and experimental methodology are part of the research
 problem**. The Agent may reserve some permitted TRAIN data, devise another
-permitted validation method, or perform no validation at all. AutoTrain-Bench
+permitted validation method, or perform no validation at all. The benchmark protocol
 neither requires a holdout nor prescribes a replacement for organizer-owned VAL.
 
 This choice deliberately measures validation and incumbent selection as part of
@@ -938,7 +938,7 @@ Candidate invocation per prediction task.
 
 TEST is:
 
-* hidden from the AutoTrain system;
+* hidden from the Research Agent;
 * unavailable through the training environment;
 * unavailable through the agent environment;
 * unavailable during the active research episode.
@@ -1056,7 +1056,7 @@ Fixing the tokenizer ensures that loss remains comparable across models.
 
 # Open Training Stack
 
-Unless explicitly restricted by a benchmark release, the AutoTrain system may modify any participant-controlled component of training.
+Unless explicitly restricted by a benchmark release, the Research Agent may modify any participant-controlled component of training.
 
 Examples include:
 
@@ -1183,7 +1183,7 @@ $$
 T_{\text{total}}.
 $$
 
-The clock begins when the task is revealed to the submitted AutoTrain system.
+The clock begins when the task is revealed to the submitted Research Agent.
 
 The same clock covers the complete autonomous trajectory:
 
@@ -1273,7 +1273,7 @@ Official feedback:         none
 Agent Research Time:       Unbounded by benchmark score
 ```
 
-The AutoTrain system may reason, write code, analyze previous results, and autonomously improve for as long as it chooses between Training Leases.
+The Research Agent may reason, write code, analyze previous results, and autonomously improve for as long as it chooses between Training Leases.
 
 The bundled launcher enables private research-time protection by default for
 both bundled Track B tasks:
@@ -1534,7 +1534,7 @@ Candidate trajectories are measured afterward on ANALYSIS.
 
 The submitted system is frozen only at the **start boundary**.
 
-Before task reveal, the participant registers the initial AutoTrain system $S_0$.
+Before task reveal, the participant registers the initial Research Agent $S_0$.
 
 After task reveal:
 
@@ -1571,7 +1571,7 @@ The benchmark freezes the outside world, not the system's internal state.
 
 # Agent System Definition
 
-An AutoTrain submission includes its initial autonomous research system.
+A benchmark submission includes its initial autonomous research system.
 
 This may contain:
 
@@ -1591,7 +1591,7 @@ The complete initial system configuration must be registered before task reveal.
 
 Multi-agent systems are allowed.
 
-The benchmark evaluates the **whole submitted AutoTrain system**, not an isolated foundation model.
+The benchmark evaluates the **whole submitted Research Agent**, not an isolated foundation model.
 
 ---
 
@@ -1607,7 +1607,7 @@ The benchmark records, at minimum:
 * token usage over time;
 * token usage between Training Leases.
 
-For multi-agent systems, usage is aggregated across the complete AutoTrain system.
+For multi-agent systems, usage is aggregated across the complete Research Agent.
 
 This makes it possible to study:
 
@@ -1635,7 +1635,7 @@ The initial benchmark therefore treats tokens as a **first-class trace and scali
 
 # Research History
 
-The AutoTrain system is allowed to retain the complete history of its benchmark episode.
+The Research Agent is allowed to retain the complete history of its benchmark episode.
 
 This may include:
 
@@ -1663,11 +1663,11 @@ The benchmark controls information through evaluator and environment boundaries 
 
 # Participant-Owned Experimental Methodology
 
-AutoTrain-Bench deliberately does not provide an organizer validation oracle.
+The benchmark protocol deliberately does not provide an organizer validation oracle.
 An Agent may decide that internal holdouts or other permitted experiments are
 useful, but it may also choose a different method or no explicit validation.
 
-A capable AutoTrain system may autonomously discover practices such as:
+A capable Research Agent may autonomously discover practices such as:
 
 * internal holdouts;
 * uncertainty estimation;
@@ -1688,7 +1688,7 @@ Discovering when and how to use them is part of the task.
 The benchmark records the final performance–cost pair together with the submitted
 Candidate and incumbent history.
 
-Throughout an episode, the AutoTrain system may declare a **current incumbent**: the model it would submit if the benchmark ended immediately.
+Throughout an episode, the Research Agent may declare a **current incumbent**: the model it would submit if the benchmark ended immediately.
 
 Candidate commitment and incumbent declaration are separate operations. The
 Supervisor never infers an incumbent by sorting hidden scores or by choosing the
@@ -1879,7 +1879,7 @@ charged to the participant. The field is optional and currently defaults to
 refunding Worker Lease startup; unknown phase names are rejected rather than
 ignored. Because the declaration lives in `task.json`, it is covered by the
 manifest digest recorded with every result, so the accounting boundary belongs
-to the frozen challenge rather than to whichever runtime revision executed it.
+to the frozen benchmark rather than to whichever runtime revision executed it.
 
 The refund is never hidden. Every result reports the cumulative amount as
 `timing.benchmark_overhead_seconds`, and the Track A deadline moves out by the
@@ -1901,7 +1901,7 @@ only the participant's measured research time is.
 
 The benchmark should enforce strong isolation between the autonomous researcher and the training environment.
 
-The AutoTrain environment may:
+The Research Agent may:
 
 * inspect permitted TRAIN data;
 * reason;
@@ -1938,7 +1938,7 @@ confirmed evaluation teardown.
 
 The core benchmark is intended to be reproducible and closed-task.
 
-A benchmark release should define exactly which external capabilities the AutoTrain system may access.
+A benchmark release should define exactly which external capabilities the Research Agent may access.
 
 The default direction for the core track is:
 
@@ -2018,7 +2018,7 @@ At minimum, the benchmark records:
 
 ```text
 task manifest
-initial AutoTrain system identity
+initial Research Agent identity
 agent token usage
 agent/tool invocation metadata
 lease start/end timestamps
@@ -2047,7 +2047,7 @@ The benchmark should preserve enough information to distinguish:
 
 # Leaderboards
 
-AutoTrain-Bench should maintain separate leaderboards for the two tracks.
+Each benchmark should maintain separate leaderboards for the two tracks.
 
 ## Track A
 
@@ -2097,14 +2097,14 @@ be mixed into a single leaderboard comparison.
 
 ---
 
-# Challenge Releases and Comparison Lanes
+# Benchmark Releases and Comparison Lanes
 
 A task fixes the corpus and evaluation semantics, but does not require one
-hardware platform. A challenge release publishes a deliberately finite map of
+hardware platform. A benchmark release publishes a deliberately finite map of
 named track configurations and named runtime profiles. The preview publishes
 provisional Track A/Track B budgets and a finite single-host hardware map; see
-the [challenge's supported preview lanes](../challenges/lm-pretrain/README.md#supported-preview-lanes)
-or use `challenge-info` for its current profile IDs and requirements.
+the [benchmark's supported preview lanes](../benchmarks/lm-pretrain/README.md#supported-preview-lanes)
+or use `benchmark-info` for its current profile IDs and requirements.
 
 Official benchmark comparisons will use a small set of published, frozen
 reference environments. Runnable profiles may cover more hardware without
@@ -2114,28 +2114,28 @@ responsible for consistent resources, task/data identities, budgets and
 evaluation rules across the Agents they compare, and for disclosing differences.
 Custom runs remain subject to Worker enforcement and do not automatically
 qualify for official rankings. See the
-[reference environment and comparison policy](../challenges/README.md#reference-environments-and-custom-comparisons).
+[reference environment and comparison policy](../benchmarks/README.md#reference-environments-and-custom-comparisons).
 
 Every profile-bound episode records the complete comparison key:
 
 ```text
-challenge_id + track + track_config + runtime_profile
+benchmark_id + track + track_config + runtime_profile
 ```
 
 Matching these fields is necessary for direct comparison, but also requires
 the same frozen release and data identities and consistent effective resource
-conditions. CPU, B300, TPU, and future platforms may execute the same challenge
+conditions. CPU, B300, TPU, and future platforms may execute the same benchmark
 with compatible Workers and distinct runtime profiles. The runtime profile is
 an episode-time allocation and eligibility input, not a field in `task.json`.
 
 Inspect a release's supported maps with:
 
 ```bash
-envcore challenge-info \
-  --challenge challenges/lm-pretrain/challenge.json
+envcore benchmark-info \
+  --benchmark benchmarks/lm-pretrain/benchmark.json
 ```
 
-In challenge mode, `--track-config` selects both the track and its budget, while
+In benchmark mode, `--track-config` selects both the track and its budget, while
 `--runtime-profile` supplies the concrete resources. Manual `--track` and GPU
 overrides are rejected so the recorded key cannot disagree with the run.
 
@@ -2149,8 +2149,8 @@ excluded from both Agent-visible forms and remain evaluator-only.
 # Development Release Configuration
 
 The executable v0 task manifest fixes task semantics. The adjacent
-`challenge.json` exposes the same finite Track/runtime selection and launch
-contract as a challenge preview:
+`benchmark.json` exposes the same finite Track/runtime selection and launch
+contract as a benchmark preview:
 
 ```json
 {
@@ -2220,7 +2220,7 @@ manifest with exact image digests. Agent image, command, runner, and optional
 initial workspace are participant-owned launch inputs and are intentionally
 absent from the task. Hardware/device allocation is absent from `task.json` and
 selected through a named runtime profile in
-`dev_tasks/smoke_lm-pretrain/challenge.json`.
+`dev_tasks/smoke_lm-pretrain/benchmark.json`.
 This example is trusted task configuration. Its `context_length` is the input
 bound and `context_lengths` selects the local evaluation lengths, all of which
 must fit that bound. The Agent receives a filtered manifest with
@@ -2234,7 +2234,7 @@ datasets organizer-owned and outside participant-visible artifacts.
 
 # Design Principles
 
-AutoTrain-Bench follows several principles.
+The benchmark protocol follows several principles.
 
 ### 1. Fix the task, not the solution
 
@@ -2275,9 +2275,9 @@ The way a system improves can be as scientifically important as where it ends.
 
 ---
 
-# What AutoTrain-Bench Is Intended to Measure
+# What the Benchmarks Are Intended to Measure
 
-AutoTrain-Bench is designed to expose capabilities including:
+The benchmarks are designed to expose capabilities including:
 
 * autonomous ML research;
 * autonomous systems engineering;
@@ -2302,9 +2302,9 @@ and:
 
 ---
 
-# What AutoTrain-Bench Does Not Claim to Measure
+# What the Benchmarks Do Not Claim to Measure
 
-AutoTrain-Bench is not a complete measure of general intelligence or general recursive self-improvement.
+These benchmarks are not a complete measure of general intelligence or general recursive self-improvement.
 
 A strong result demonstrates autonomous capability within a specific machine-learning research environment.
 
@@ -2321,7 +2321,7 @@ the final performance–cost pair. TEST scaling curves compare completed episode
 at different budgets; within-episode Candidate trajectories use postmortem
 ANALYSIS.
 
-Beyond leaderboard ranking, AutoTrain-Bench is intended to support questions such as:
+Beyond leaderboard ranking, the benchmarks are intended to support questions such as:
 
 ### Research-time scaling
 
@@ -2405,8 +2405,8 @@ developers can verify a complete episode cheaply. It is explicitly marked
 `leaderboard_eligible: false`. The selected Agent and its initial workspace
 remain participant-owned.
 
-No frozen benchmark challenge has been released. The `lm-pretrain` preview under
-`challenges/` now defines provisional track configurations, a deliberately
+No frozen benchmark has been released. The `lm-pretrain` preview under
+`benchmarks/` now defines provisional track configurations, a deliberately
 finite set of single-host runtime profiles, the four-field comparison
 key, the initial external-resource policy, a task/evaluator, and a builder that
 retains both raw TRAIN documents and GPT-2 token shards. Source bytes are checked
@@ -2420,14 +2420,14 @@ also remain open design work.
 
 The v0 prototype is intentionally single-host and never acquires machines or
 scheduler allocations. Users obtain a Docker-capable environment before
-starting AutoTrain-Bench; the Worker then reports what the Training workload
+starting a benchmark run; the Worker then reports what the Training workload
 actually received through the platform-neutral allocation receipt.
 
 ---
 
 # Summary
 
-AutoTrain-Bench evaluates an autonomous system starting from a fixed initial state:
+The benchmark protocol evaluates an autonomous system starting from a fixed initial state:
 
 $$
 S_0.

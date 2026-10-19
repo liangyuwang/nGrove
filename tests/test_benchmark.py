@@ -4,10 +4,10 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from envcore.challenge import (
+from envcore.benchmark import (
     FORMAL_ARTIFACT_DIGEST_FIELDS,
     FORMAL_ARTIFACT_IDENTITY_ALGORITHMS,
-    ChallengeRelease,
+    BenchmarkRelease,
     ReleaseVerificationReceipt,
 )
 from envcore.config import ConfigError, TaskConfig
@@ -22,15 +22,15 @@ from envcore.worker_protocol import (
 
 ROOT = Path(__file__).resolve().parents[1]
 TASK = ROOT / "tests/fixtures/task/task.json"
-LM_PRETRAIN_PREVIEW = ROOT / "challenges/lm-pretrain/challenge.json"
-SMOKE_PREVIEW = ROOT / "dev_tasks/smoke_lm-pretrain/challenge.json"
+LM_PRETRAIN_PREVIEW = ROOT / "benchmarks/lm-pretrain/benchmark.json"
+SMOKE_PREVIEW = ROOT / "dev_tasks/smoke_lm-pretrain/benchmark.json"
 
 
-class ChallengeReleaseTests(unittest.TestCase):
+class BenchmarkReleaseTests(unittest.TestCase):
     def _write_release(self, directory: str) -> Path:
         payload = {
             "schema_version": 2,
-            "challenge_id": "test-byte-lm-v1",
+            "benchmark_id": "test-byte-lm-v1",
             "task_id": "test-byte-lm-v1",
             "task": "task.json",
             "release_stage": "preview",
@@ -63,20 +63,20 @@ class ChallengeReleaseTests(unittest.TestCase):
             },
         }
         (Path(directory) / "task.json").write_text("{}", encoding="utf-8")
-        path = Path(directory) / "challenge.json"
+        path = Path(directory) / "benchmark.json"
         path.write_text(json.dumps(payload), encoding="utf-8")
         return path
 
     def test_preview_manifest_has_a_finite_public_profile_map(self):
-        release = ChallengeRelease.load(LM_PRETRAIN_PREVIEW)
+        release = BenchmarkRelease.load(LM_PRETRAIN_PREVIEW)
         public = release.public_manifest()
-        self.assertEqual(public["challenge_id"], "lm-pretrain")
+        self.assertEqual(public["benchmark_id"], "lm-pretrain")
         self.assertEqual(public["task"], "task.json")
         self.assertEqual(public["release_stage"], "preview")
         self.assertFalse(public["leaderboard_eligible"])
         self.assertEqual(
             public["comparison_key_fields"],
-            ["challenge_id", "track", "track_config", "runtime_profile"],
+            ["benchmark_id", "track", "track_config", "runtime_profile"],
         )
         self.assertEqual(len(public["track_configs"]), 2)
         families = (
@@ -91,18 +91,18 @@ class ChallengeReleaseTests(unittest.TestCase):
         )
 
     def test_preview_hardware_maps_resolve_both_tracks_without_scaling_budgets(self):
-        challenge = ChallengeRelease.load(LM_PRETRAIN_PREVIEW)
-        smoke = ChallengeRelease.load(SMOKE_PREVIEW)
+        benchmark = BenchmarkRelease.load(LM_PRETRAIN_PREVIEW)
+        smoke = BenchmarkRelease.load(SMOKE_PREVIEW)
         self.assertEqual(
             {
                 key: value
                 for key, value in smoke.public_manifest()["runtime_profiles"].items()
                 if key != "cpu-local"
             },
-            challenge.public_manifest()["runtime_profiles"],
+            benchmark.public_manifest()["runtime_profiles"],
         )
         for release, budgets in (
-            (challenge, (28800, 6, 3600)),
+            (benchmark, (28800, 6, 3600)),
             (smoke, (300, 3, 75)),
         ):
             # Exercise the shipped task settings without preparing its corpus.
@@ -122,13 +122,13 @@ class ChallengeReleaseTests(unittest.TestCase):
                 task_path.write_text(json.dumps(payload))
                 task = TaskConfig.load(task_path)
             self.assertEqual(
-                task.evaluator_device, "cuda" if release is challenge else "cpu"
+                task.evaluator_device, "cuda" if release is benchmark else "cpu"
             )
             keys = set()
             for profile_id, profile in release.runtime_profiles.items():
                 for track_id in release.track_configs:
                     with self.subTest(
-                        release=release.challenge_id, profile=profile_id, track=track_id
+                        release=release.benchmark_id, profile=profile_id, track=track_id
                     ):
                         resolved = release.resolve(
                             task,
@@ -179,10 +179,10 @@ class ChallengeReleaseTests(unittest.TestCase):
                 payload["schema_version"] = version
                 path.write_text(json.dumps(payload))
                 with self.assertRaisesRegex(ConfigError, "schema_version 4"):
-                    ChallengeRelease.load(path)
+                    BenchmarkRelease.load(path)
             payload["schema_version"] = 4
             path.write_text(json.dumps(payload))
-            release = ChallengeRelease.load(path)
+            release = BenchmarkRelease.load(path)
             profile = release.runtime_profiles["h100-80gb-x4"]
             self.assertEqual(
                 profile.public_manifest()["accelerator"]["model_match_mode"], "exact"
@@ -210,33 +210,31 @@ class ChallengeReleaseTests(unittest.TestCase):
                 accelerator["model_match_mode"] = invalid
                 path.write_text(json.dumps(payload))
                 with self.subTest(invalid=invalid), self.assertRaises(ConfigError):
-                    ChallengeRelease.load(path)
+                    BenchmarkRelease.load(path)
 
     def test_public_catalog_does_not_fingerprint_private_manifest_content(self):
         with tempfile.TemporaryDirectory() as directory:
             path = self._write_release(directory)
-            original = ChallengeRelease.load(path)
+            original = BenchmarkRelease.load(path)
             payload = json.loads(path.read_text(encoding="utf-8"))
             payload["organizer_only"] = {"context_lengths": [1, 3]}
             path.write_text(json.dumps(payload), encoding="utf-8")
             (Path(directory) / "task.json").write_text(
                 '{"evaluation": {"context_lengths": [1, 3]}}', encoding="utf-8"
             )
-            changed = ChallengeRelease.load(path)
+            changed = BenchmarkRelease.load(path)
             self.assertNotEqual(original.manifest_sha256, changed.manifest_sha256)
             self.assertNotEqual(
                 original.task_manifest_sha256, changed.task_manifest_sha256
             )
             self.assertEqual(original.public_manifest(), changed.public_manifest())
             self.assertNotIn("task_manifest_sha256", changed.public_manifest())
-            self.assertNotIn("challenge_manifest_sha256", changed.public_manifest())
+            self.assertNotIn("benchmark_manifest_sha256", changed.public_manifest())
 
     def test_release_resolves_budget_resources_and_comparison_key(self):
         with tempfile.TemporaryDirectory() as directory:
-            release = ChallengeRelease.load(self._write_release(directory))
-            task = replace(
-                TaskConfig.load(TASK), task_kind="benchmark_challenge"
-            ).validate()
+            release = BenchmarkRelease.load(self._write_release(directory))
+            task = replace(TaskConfig.load(TASK), task_kind="benchmark").validate()
             resolved = release.resolve(
                 task,
                 track_config_id="b-3x10m",
@@ -250,7 +248,7 @@ class ChallengeReleaseTests(unittest.TestCase):
             )
             self.assertEqual(
                 resolved,
-                ChallengeRelease.load(release.source).resolve(
+                BenchmarkRelease.load(release.source).resolve(
                     task,
                     track_config_id="b-3x10m",
                     runtime_profile_id="h100-80gb-x4",
@@ -286,7 +284,7 @@ class ChallengeReleaseTests(unittest.TestCase):
             self.assertEqual(
                 resolved.comparison_key.public_manifest(),
                 {
-                    "challenge_id": "test-byte-lm-v1",
+                    "benchmark_id": "test-byte-lm-v1",
                     "track": "B",
                     "track_config": "b-3x10m",
                     "runtime_profile": "h100-80gb-x4",
@@ -295,7 +293,7 @@ class ChallengeReleaseTests(unittest.TestCase):
 
     def test_nonleaderboard_release_accepts_development_task(self):
         with tempfile.TemporaryDirectory() as directory:
-            release = ChallengeRelease.load(self._write_release(directory))
+            release = BenchmarkRelease.load(self._write_release(directory))
             task = TaskConfig.load(TASK)
             resolved = release.resolve(
                 task,
@@ -334,7 +332,7 @@ class ChallengeReleaseTests(unittest.TestCase):
                     "observational": [],
                 }
             path.write_text(json.dumps(payload), encoding="utf-8")
-            release = ChallengeRelease.load(path)
+            release = BenchmarkRelease.load(path)
             with self.assertRaisesRegex(ConfigError, "development smoke"):
                 release.resolve(
                     TaskConfig.load(TASK),
@@ -352,7 +350,7 @@ class ChallengeReleaseTests(unittest.TestCase):
                 "accelerator": None,
             }
             path.write_text(json.dumps(payload), encoding="utf-8")
-            release = ChallengeRelease.load(path)
+            release = BenchmarkRelease.load(path)
             profile = release.public_manifest()["runtime_profiles"]["cpu-local"]
             self.assertIsNone(profile["accelerator"])
             resolved = release.resolve(
@@ -412,11 +410,9 @@ class ChallengeReleaseTests(unittest.TestCase):
             }
             path.write_text(json.dumps(payload), encoding="utf-8")
 
-            release = ChallengeRelease.load(path)
+            release = BenchmarkRelease.load(path)
             resolved = release.resolve(
-                replace(
-                    TaskConfig.load(TASK), task_kind="benchmark_challenge"
-                ).validate(),
+                replace(TaskConfig.load(TASK), task_kind="benchmark").validate(),
                 track_config_id="a-1h",
                 runtime_profile_id="h100-80gb-x4",
             )
@@ -440,7 +436,7 @@ class ChallengeReleaseTests(unittest.TestCase):
             path.write_text(json.dumps(payload), encoding="utf-8")
 
             with self.assertRaisesRegex(ConfigError, "must include 'host.count'"):
-                ChallengeRelease.load(path)
+                BenchmarkRelease.load(path)
 
     def test_resource_contract_cannot_conflict_with_profile_requirements(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -485,7 +481,7 @@ class ChallengeReleaseTests(unittest.TestCase):
             path.write_text(json.dumps(payload), encoding="utf-8")
 
             with self.assertRaisesRegex(ConfigError, "conflicts.*'host.count'"):
-                ChallengeRelease.load(path)
+                BenchmarkRelease.load(path)
 
     def test_release_rejects_unsupported_runtime_shapes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -495,7 +491,7 @@ class ChallengeReleaseTests(unittest.TestCase):
             profile["host_count"] = 2
             path.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaisesRegex(ConfigError, "host_count must be 1"):
-                ChallengeRelease.load(path)
+                BenchmarkRelease.load(path)
 
     def test_leaderboard_release_must_be_official_and_frozen(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -504,12 +500,12 @@ class ChallengeReleaseTests(unittest.TestCase):
             payload["leaderboard_eligible"] = True
             path.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaisesRegex(ConfigError, "release_stage='official'"):
-                ChallengeRelease.load(path)
+                BenchmarkRelease.load(path)
 
             payload["release_stage"] = "official"
             path.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaisesRegex(ConfigError, "provisional"):
-                ChallengeRelease.load(path)
+                BenchmarkRelease.load(path)
 
     def test_leaderboard_release_requires_enforced_normative_resources(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -560,7 +556,7 @@ class ChallengeReleaseTests(unittest.TestCase):
             path.write_text(json.dumps(payload), encoding="utf-8")
 
             with self.assertRaisesRegex(ConfigError, "enforced normative"):
-                ChallengeRelease.load(path)
+                BenchmarkRelease.load(path)
 
     def test_formal_release_receipt_requires_every_trusted_artifact(self):
         digests = {field: "a" * 64 for field in FORMAL_ARTIFACT_DIGEST_FIELDS}

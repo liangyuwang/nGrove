@@ -1,6 +1,6 @@
 {
   "schema_version": 4,
-  "challenge_id": "lm-pretrain",
+  "benchmark_id": "lm-pretrain",
   "task_id": "lm-pretrain",
   "task": "task.json",
   "release_stage": "preview",

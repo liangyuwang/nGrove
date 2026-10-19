@@ -15,7 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from envcore.agent_api_bundle import publish_agent_api_bundle
-from envcore.challenge import ChallengeRelease
+from envcore.benchmark import BenchmarkRelease
 from envcore.cli import build_parser, command_start
 from envcore.config import ConfigError, TaskConfig, TrainingResources
 from envcore.environment import EnvironmentConfig, validate_environment_record
@@ -37,7 +37,7 @@ from tests.test_runtime import CapturingDockerRuntime
 
 ROOT = Path(__file__).resolve().parents[1]
 TASK = ROOT / "tests/fixtures/task/task.json"
-CHALLENGE = ROOT / "challenges/lm-pretrain/challenge.json"
+BENCHMARK = ROOT / "benchmarks/lm-pretrain/benchmark.json"
 
 
 def cpu_config():
@@ -50,8 +50,8 @@ def cpu_config():
 
 class EnvironmentTests(unittest.TestCase):
     def test_gpu_scaling_is_run_owned_and_does_not_modify_the_release(self):
-        before = CHALLENGE.read_bytes()
-        release = ChallengeRelease.load(CHALLENGE)
+        before = BENCHMARK.read_bytes()
+        release = BenchmarkRelease.load(BENCHMARK)
         task = replace(
             TaskConfig.load(TASK), source=release.task_path, task_id=release.task_id
         )
@@ -80,7 +80,7 @@ class EnvironmentTests(unittest.TestCase):
         self.assertEqual(
             release.runtime_profiles["h100-sxm-80gb-x1"].accelerator_count, 1
         )
-        self.assertEqual(CHALLENGE.read_bytes(), before)
+        self.assertEqual(BENCHMARK.read_bytes(), before)
         with self.assertRaisesRegex(ConfigError, "unknown runtime profile"):
             release.resolve(
                 task,
@@ -154,7 +154,7 @@ class EnvironmentTests(unittest.TestCase):
             verify.assert_not_called()
 
     def test_cli_delivers_environment_resources_before_task_reveal(self):
-        release = ChallengeRelease.load(CHALLENGE)
+        release = BenchmarkRelease.load(BENCHMARK)
         raw = {
             "schema_version": 1,
             "name": "custom",
@@ -234,7 +234,7 @@ class EnvironmentTests(unittest.TestCase):
     def test_environment_uses_task_budget_without_mutating_eligibility(self):
         task = replace(
             TaskConfig.load(TASK),
-            task_kind="benchmark_challenge",
+            task_kind="benchmark",
             leaderboard_eligible=True,
         )
         run = resolve_environment_run(
@@ -255,8 +255,8 @@ class EnvironmentTests(unittest.TestCase):
             )
 
     def test_time_scaling_is_fingerprinted_and_preserves_task_and_release_files(self):
-        task_bytes, release_bytes = TASK.read_bytes(), CHALLENGE.read_bytes()
-        release = ChallengeRelease.load(CHALLENGE)
+        task_bytes, release_bytes = TASK.read_bytes(), BENCHMARK.read_bytes()
+        release = BenchmarkRelease.load(BENCHMARK)
         task = replace(
             TaskConfig.load(TASK), source=release.task_path, task_id=release.task_id
         )
@@ -279,11 +279,11 @@ class EnvironmentTests(unittest.TestCase):
             fingerprints.add(run.environment.configuration_sha256)
         self.assertEqual(len(fingerprints), 3)
         self.assertEqual(TASK.read_bytes(), task_bytes)
-        self.assertEqual(CHALLENGE.read_bytes(), release_bytes)
+        self.assertEqual(BENCHMARK.read_bytes(), release_bytes)
         self.assertEqual(release.track_configs["preview-a-8h"].total_seconds, 28800)
 
-    def test_omitted_budget_is_frozen_from_the_selected_challenge_budget(self):
-        release = ChallengeRelease.load(CHALLENGE)
+    def test_omitted_budget_is_frozen_from_the_selected_benchmark_budget(self):
+        release = BenchmarkRelease.load(BENCHMARK)
         task = replace(
             TaskConfig.load(TASK), source=release.task_path, task_id=release.task_id
         )

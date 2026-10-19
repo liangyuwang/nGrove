@@ -30,7 +30,7 @@ from .artifact_identity import (
     FILE_IDENTITY_ALGORITHM,
     HIDDEN_BUNDLE_IDENTITY_ALGORITHM,
 )
-from .challenge import (
+from .benchmark import (
     FORMAL_ARTIFACT_DIGEST_FIELDS,
     ReleaseVerificationReceipt,
     agent_release_manifest,
@@ -276,7 +276,7 @@ class Supervisor:
         research_worker_environment: Optional[Dict[str, Any]] = None,
         evaluation_worker_environment: Optional[Dict[str, Any]] = None,
         comparison_key: Optional[Dict[str, str]] = None,
-        challenge_release: Optional[Dict[str, Any]] = None,
+        benchmark_release: Optional[Dict[str, Any]] = None,
         release_verification: Optional[ReleaseVerificationReceipt] = None,
         research_worker_conformance: Optional[ConformanceReceipt] = None,
         evaluation_worker_conformance: Optional[ConformanceReceipt] = None,
@@ -350,8 +350,8 @@ class Supervisor:
         ):
             raise TypeError("evaluation_resource_envelope must be a ResourceEnvelope")
         release_evaluation_envelope = (
-            challenge_release.get("evaluation_resource_envelope")
-            if isinstance(challenge_release, dict)
+            benchmark_release.get("evaluation_resource_envelope")
+            if isinstance(benchmark_release, dict)
             else None
         )
         frozen_evaluation_envelope = None
@@ -379,7 +379,7 @@ class Supervisor:
             if (
                 config.leaderboard_eligible
                 or comparison_key is not None
-                or challenge_release is not None
+                or benchmark_release is not None
                 or release_verification is not None
             ):
                 raise ValueError(
@@ -514,9 +514,9 @@ class Supervisor:
         )
         core_identity = _core_identity()
         artifact_identities = {
-            "challenge_manifest_sha256": (
-                challenge_release.get("challenge_manifest_sha256")
-                if isinstance(challenge_release, dict)
+            "benchmark_manifest_sha256": (
+                benchmark_release.get("benchmark_manifest_sha256")
+                if isinstance(benchmark_release, dict)
                 else None
             ),
             "task_manifest_sha256": _sha256_file(config.source),
@@ -563,7 +563,7 @@ class Supervisor:
         if not evaluation_assessment.leaderboard_eligible:
             eligibility_violations.append("evaluation_worker_not_certified")
         required_comparison_fields = {
-            "challenge_id",
+            "benchmark_id",
             "track",
             "track_config",
             "runtime_profile",
@@ -580,23 +580,23 @@ class Supervisor:
             eligibility_violations.append("comparison_key_missing")
         elif comparison_key.get("track") != self.track:
             eligibility_violations.append("comparison_key_track_mismatch")
-        release_ready = isinstance(challenge_release, dict)
+        release_ready = isinstance(benchmark_release, dict)
         if not release_ready:
-            eligibility_violations.append("challenge_release_missing")
+            eligibility_violations.append("benchmark_release_missing")
         else:
-            if challenge_release.get("release_stage") != "official":
-                eligibility_violations.append("challenge_release_not_official")
-            if challenge_release.get("leaderboard_eligible") is not True:
-                eligibility_violations.append("challenge_release_not_eligible")
-            if isinstance(comparison_key, dict) and challenge_release.get(
-                "challenge_id"
-            ) != comparison_key.get("challenge_id"):
-                eligibility_violations.append("challenge_release_identity_mismatch")
+            if benchmark_release.get("release_stage") != "official":
+                eligibility_violations.append("benchmark_release_not_official")
+            if benchmark_release.get("leaderboard_eligible") is not True:
+                eligibility_violations.append("benchmark_release_not_eligible")
+            if isinstance(comparison_key, dict) and benchmark_release.get(
+                "benchmark_id"
+            ) != comparison_key.get("benchmark_id"):
+                eligibility_violations.append("benchmark_release_identity_mismatch")
             for digest_field in (
-                "challenge_manifest_sha256",
+                "benchmark_manifest_sha256",
                 "task_manifest_sha256",
             ):
-                digest = challenge_release.get(digest_field)
+                digest = benchmark_release.get(digest_field)
                 if (
                     not isinstance(digest, str)
                     or len(digest) != 64
@@ -604,18 +604,18 @@ class Supervisor:
                 ):
                     eligibility_violations.append(f"{digest_field}_missing")
             if (
-                challenge_release.get("task_manifest_sha256")
+                benchmark_release.get("task_manifest_sha256")
                 != artifact_identities["task_manifest_sha256"]
             ):
                 eligibility_violations.append("task_manifest_identity_mismatch")
             for field in ("track_config", "runtime_profile"):
-                selected = challenge_release.get(field)
+                selected = benchmark_release.get(field)
                 if (
                     not isinstance(selected, dict)
                     or selected.get("provisional") is not False
                 ):
                     eligibility_violations.append(f"{field}_not_frozen")
-            release_resource_envelope = challenge_release.get("resource_envelope")
+            release_resource_envelope = benchmark_release.get("resource_envelope")
             if release_resource_envelope is None:
                 eligibility_violations.append("resource_envelope_not_frozen")
             elif release_resource_envelope != self.resource_envelope.public_manifest():
@@ -625,7 +625,7 @@ class Supervisor:
                     ("track_config_id", "track_config"),
                     ("runtime_profile_id", "runtime_profile"),
                 ):
-                    if challenge_release.get(release_field) != comparison_key.get(
+                    if benchmark_release.get(release_field) != comparison_key.get(
                         comparison_field
                     ):
                         eligibility_violations.append(f"{release_field}_mismatch")
@@ -655,7 +655,7 @@ class Supervisor:
             receipt = self.release_verification
             if not isinstance(
                 comparison_key, dict
-            ) or receipt.release_id != comparison_key.get("challenge_id"):
+            ) or receipt.release_id != comparison_key.get("benchmark_id"):
                 eligibility_violations.append(
                     "formal_release_verification_identity_mismatch"
                 )
@@ -762,8 +762,8 @@ class Supervisor:
             "leaderboard_eligibility_violations": eligibility_violations,
             "track": self.track,
             "comparison_key": dict(comparison_key) if comparison_key else None,
-            "challenge_release": (
-                dict(challenge_release) if challenge_release else None
+            "benchmark_release": (
+                dict(benchmark_release) if benchmark_release else None
             ),
             "formal_release_verification": (
                 self.release_verification.private_manifest()
@@ -773,8 +773,8 @@ class Supervisor:
             "training_data_verification": training_data_verification,
             "artifact_identities": {
                 "core_git": core_identity,
-                "challenge_manifest_sha256": artifact_identities[
-                    "challenge_manifest_sha256"
+                "benchmark_manifest_sha256": artifact_identities[
+                    "benchmark_manifest_sha256"
                 ],
                 "task_manifest_sha256": artifact_identities["task_manifest_sha256"],
                 "policy_sha256": artifact_identities["policy_sha256"],
@@ -963,9 +963,9 @@ class Supervisor:
             )
         )
         public_manifest["comparison_key"] = self.state["comparison_key"]
-        if challenge_release is not None:
-            public_manifest["challenge_release"] = agent_release_manifest(
-                challenge_release
+        if benchmark_release is not None:
+            public_manifest["benchmark_release"] = agent_release_manifest(
+                benchmark_release
             )
         self.public_task_path.write_text(
             json.dumps(public_manifest, indent=2, sort_keys=True) + "\n",

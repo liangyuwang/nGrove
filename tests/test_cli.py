@@ -14,7 +14,7 @@ from envcore.cli import (
     _episode_exit_code,
     _initialize_agent_workspace,
     _report_cleanup_failures,
-    _resolve_challenge_run,
+    _resolve_benchmark_run,
     _run_cleanup_steps,
     _stop_and_record_container_agent,
     _stop_and_record_host_agent,
@@ -37,7 +37,7 @@ from envcore.results import normalize_result_report
 
 ROOT = Path(__file__).resolve().parents[1]
 TASK = ROOT / "tests/fixtures/task/task.json"
-LM_PRETRAIN_PREVIEW = ROOT / "challenges/lm-pretrain/challenge.json"
+LM_PRETRAIN_PREVIEW = ROOT / "benchmarks/lm-pretrain/benchmark.json"
 
 
 class WorkspaceSnapshotTests(unittest.TestCase):
@@ -144,7 +144,7 @@ class WorkspaceSnapshotTests(unittest.TestCase):
 
     def test_storage_admission_is_private_and_precedes_episode_writes(self):
         for folder, expected in (
-            ("challenges/lm-pretrain", 100 * 2**30),
+            ("benchmarks/lm-pretrain", 100 * 2**30),
             ("dev_tasks/smoke_lm-pretrain", 2 * 2**30),
         ):
             for track in ("A", "B"):
@@ -280,7 +280,7 @@ class WorkspaceSnapshotTests(unittest.TestCase):
         self,
     ):
         for folder, lane, flags, expected in (
-            ("challenges/lm-pretrain", "preview-b-6x1h", [], 86400),
+            ("benchmarks/lm-pretrain", "preview-b-6x1h", [], 86400),
             ("dev_tasks/smoke_lm-pretrain", "smoke-b-3x75s", [], 1800),
             (
                 "dev_tasks/smoke_lm-pretrain",
@@ -310,8 +310,8 @@ class WorkspaceSnapshotTests(unittest.TestCase):
                 args = build_parser().parse_args(
                     [
                         "start",
-                        "--challenge",
-                        str(root / "challenge.json"),
+                        "--benchmark",
+                        str(root / "benchmark.json"),
                         "--track-config",
                         lane,
                         "--runtime-profile",
@@ -703,7 +703,7 @@ class WorkspaceSnapshotTests(unittest.TestCase):
                 _snapshot_agent_workspace(source, source / "episode")
 
     def test_episode_workspace_must_be_outside_trusted_checkout(self):
-        workspace = ROOT / ".autotrain" / "episodes" / "episode" / "workspace"
+        workspace = ROOT / ".envcore" / "episodes" / "episode" / "workspace"
         with self.assertRaisesRegex(ConfigError, "outside the trusted"):
             _validate_workspace_boundary(
                 workspace=workspace,
@@ -786,7 +786,7 @@ class WorkspaceSnapshotTests(unittest.TestCase):
             )
 
     def test_start_rejects_core_workspace_before_worker_or_directory_creation(self):
-        episode = ROOT / ".autotrain" / f"preflight-{uuid.uuid4().hex}"
+        episode = ROOT / ".envcore" / f"preflight-{uuid.uuid4().hex}"
         args = build_parser().parse_args(
             [
                 "start",
@@ -1186,12 +1186,12 @@ class WorkspaceSnapshotTests(unittest.TestCase):
         self.assertEqual(args.training_gpu_model, "H100")
         self.assertEqual(args.training_devices, ["/dev/accel0"])
 
-    def test_challenge_profiles_replace_ad_hoc_track_and_hardware_flags(self):
+    def test_benchmark_profiles_replace_ad_hoc_track_and_hardware_flags(self):
         args = build_parser().parse_args(
             [
                 "start",
-                "--challenge",
-                "challenge.json",
+                "--benchmark",
+                "benchmark.json",
                 "--track-config",
                 "preview-b-6x1h",
                 "--runtime-profile",
@@ -1213,10 +1213,10 @@ class WorkspaceSnapshotTests(unittest.TestCase):
         task = replace(
             TaskConfig.load(TASK),
             task_id="lm-pretrain",
-            task_kind="benchmark_challenge",
+            task_kind="benchmark",
         ).validate()
-        args.challenge = LM_PRETRAIN_PREVIEW
-        resolved = _resolve_challenge_run(args, task)
+        args.benchmark = LM_PRETRAIN_PREVIEW
+        resolved = _resolve_benchmark_run(args, task)
         self.assertIsNotNone(resolved)
         self.assertEqual(resolved.track, "B")
         self.assertEqual(resolved.task.track_b_max_leases, 6)
@@ -1224,13 +1224,13 @@ class WorkspaceSnapshotTests(unittest.TestCase):
 
         args.training_gpus = 4
         with self.assertRaisesRegex(ConfigError, "may not override"):
-            _resolve_challenge_run(args, task)
+            _resolve_benchmark_run(args, task)
 
-    def test_challenge_info_has_a_dedicated_command(self):
+    def test_benchmark_info_has_a_dedicated_command(self):
         args = build_parser().parse_args(
-            ["challenge-info", "--challenge", "challenge.json"]
+            ["benchmark-info", "--benchmark", "benchmark.json"]
         )
-        self.assertEqual(args.challenge, Path("challenge.json"))
+        self.assertEqual(args.benchmark, Path("benchmark.json"))
 
     def test_start_requires_one_explicit_episode_destination(self):
         argv = [

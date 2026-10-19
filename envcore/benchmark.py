@@ -1,6 +1,6 @@
-"""Challenge release profiles and leaderboard comparison identities.
+"""Benchmark release profiles and leaderboard comparison identities.
 
-A challenge fixes data and evaluation semantics without fixing one hardware
+A benchmark fixes data and evaluation semantics without fixing one hardware
 platform.  A release instead publishes a deliberately small set of track and
 runtime profiles.  Only episodes with the same comparison key are directly
 comparable.
@@ -32,7 +32,7 @@ from .worker_protocol import (
 RELEASE_STAGES = {"preview", "official"}
 _IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 FORMAL_ARTIFACT_DIGEST_FIELDS = (
-    "challenge_manifest_sha256",
+    "benchmark_manifest_sha256",
     "task_manifest_sha256",
     "policy_sha256",
     "evaluator_sha256",
@@ -54,7 +54,7 @@ def agent_release_manifest(release: Mapping[str, Any]) -> Dict[str, Any]:
     return {
         name: release[name]
         for name in (
-            "challenge_id",
+            "benchmark_id",
             "release_stage",
             "leaderboard_eligible",
             "track_config_id",
@@ -107,7 +107,7 @@ def _boolean(value: Any, field: str) -> bool:
 
 @dataclass(frozen=True)
 class TrackConfig:
-    """One named, immutable budget configuration within a challenge release."""
+    """One named, immutable budget configuration within a benchmark release."""
 
     config_id: str
     label: str
@@ -180,14 +180,14 @@ class TrackConfig:
 
 @dataclass(frozen=True)
 class ComparisonKey:
-    challenge_id: str
+    benchmark_id: str
     track: str
     track_config: str
     runtime_profile: str
 
     def public_manifest(self) -> Dict[str, str]:
         return {
-            "challenge_id": self.challenge_id,
+            "benchmark_id": self.benchmark_id,
             "track": self.track,
             "track_config": self.track_config,
             "runtime_profile": self.runtime_profile,
@@ -198,7 +198,7 @@ class ComparisonKey:
 class ReleaseVerificationReceipt:
     """Trusted organizer-side verification supplied by a formal deployment.
 
-    Challenge manifests can describe and hash themselves, but that does not
+    Benchmark manifests can describe and hash themselves, but that does not
     prove that the files came from the organizer.  A local preview therefore
     cannot manufacture this receipt; a formal Coordinator receives it from its
     trusted release-verification boundary.
@@ -300,7 +300,7 @@ class ReleaseVerificationReceipt:
 
 
 @dataclass(frozen=True)
-class ResolvedChallengeRun:
+class ResolvedBenchmarkRun:
     task: TaskConfig
     track: str
     resources: TrainingResources
@@ -311,14 +311,14 @@ class ResolvedChallengeRun:
 
 
 @dataclass(frozen=True)
-class ChallengeRelease:
-    """A finite set of supported comparison lanes for one challenge release."""
+class BenchmarkRelease:
+    """A finite set of supported comparison lanes for one benchmark release."""
 
     source: Path
     manifest_sha256: str
     task_manifest_sha256: str
     schema_version: int
-    challenge_id: str
+    benchmark_id: str
     task_id: str
     task_file: str
     release_stage: str
@@ -327,18 +327,18 @@ class ChallengeRelease:
     runtime_profiles: Dict[str, RuntimeProfile]
 
     @classmethod
-    def load(cls, path: Path) -> "ChallengeRelease":
+    def load(cls, path: Path) -> "BenchmarkRelease":
         source = path.expanduser().resolve()
         try:
             raw = json.loads(source.read_text(encoding="utf-8"))
         except FileNotFoundError as exc:
-            raise ConfigError(f"challenge release not found: {source}") from exc
+            raise ConfigError(f"benchmark release not found: {source}") from exc
         except json.JSONDecodeError as exc:
             raise ConfigError(f"invalid JSON in {source}: {exc}") from exc
         root = _mapping(raw, "root")
         schema_version = _positive_int(root.get("schema_version"), "schema_version")
         if schema_version not in {2, 3, 4}:
-            raise ConfigError("challenge schema_version must be 2, 3, or 4")
+            raise ConfigError("benchmark schema_version must be 2, 3, or 4")
         release_stage = _string(root.get("release_stage"), "release_stage")
         if release_stage not in RELEASE_STAGES:
             allowed = ", ".join(sorted(RELEASE_STAGES))
@@ -360,32 +360,32 @@ class ChallengeRelease:
             for profile in runtime_profiles.values()
         ):
             raise ConfigError(
-                "exact GPU model matching requires challenge schema_version 4"
+                "exact GPU model matching requires benchmark schema_version 4"
             )
         if schema_version < 3 and any(
             profile.evaluation_resource_contract is not None
             for profile in runtime_profiles.values()
         ):
             raise ConfigError(
-                "evaluation_resource_contract requires challenge schema_version 3"
+                "evaluation_resource_contract requires benchmark schema_version 3"
             )
         task_file = _string(root.get("task"), "task")
         configured_task = Path(task_file)
         if configured_task.is_absolute() or ".." in configured_task.parts:
-            raise ConfigError("task must be a relative path inside the challenge")
+            raise ConfigError("task must be a relative path inside the benchmark")
         task_path = (source.parent / configured_task).resolve()
         try:
             task_path.relative_to(source.parent)
         except ValueError as exc:
-            raise ConfigError("task escapes the challenge directory") from exc
+            raise ConfigError("task escapes the benchmark directory") from exc
         if not task_path.is_file():
-            raise ConfigError(f"challenge task not found: {task_path}")
+            raise ConfigError(f"benchmark task not found: {task_path}")
         release = cls(
             source=source,
             manifest_sha256=_sha256_file(source),
             task_manifest_sha256=_sha256_file(task_path),
             schema_version=schema_version,
-            challenge_id=_identifier(root.get("challenge_id"), "challenge_id"),
+            benchmark_id=_identifier(root.get("benchmark_id"), "benchmark_id"),
             task_id=_identifier(root.get("task_id"), "task_id"),
             task_file=task_file,
             release_stage=release_stage,
@@ -398,7 +398,7 @@ class ChallengeRelease:
         release.validate()
         return release
 
-    def validate(self) -> "ChallengeRelease":
+    def validate(self) -> "BenchmarkRelease":
         minimum_resource_enforcement = (
             EnforcementLevel.ENFORCED
             if self.leaderboard_eligible
@@ -462,10 +462,10 @@ class ChallengeRelease:
         *,
         track_config_id: str,
         runtime_profile_id: str,
-    ) -> ResolvedChallengeRun:
+    ) -> ResolvedBenchmarkRun:
         if task.task_id != self.task_id:
             raise ConfigError(
-                f"challenge expects task_id {self.task_id!r}, received {task.task_id!r}"
+                f"benchmark expects task_id {self.task_id!r}, received {task.task_id!r}"
             )
         if task.task_kind == "development_smoke" and self.leaderboard_eligible:
             raise ConfigError(
@@ -477,7 +477,7 @@ class ChallengeRelease:
             )
         if self.leaderboard_eligible:
             if _sha256_file(self.source) != self.manifest_sha256:
-                raise ConfigError("challenge manifest changed after it was loaded")
+                raise ConfigError("benchmark manifest changed after it was loaded")
             if (
                 task.source != self.task_path
                 or _sha256_file(task.source) != self.task_manifest_sha256
@@ -503,12 +503,12 @@ class ChallengeRelease:
             )
         )
         comparison_key = ComparisonKey(
-            challenge_id=self.challenge_id,
+            benchmark_id=self.benchmark_id,
             track=track_config.track,
             track_config=track_config.config_id,
             runtime_profile=runtime_profile.profile_id,
         )
-        return ResolvedChallengeRun(
+        return ResolvedBenchmarkRun(
             task=resolved_task,
             track=track_config.track,
             resources=resources,
@@ -516,8 +516,8 @@ class ChallengeRelease:
             evaluation_resource_envelope=runtime_profile.evaluation_resource_contract,
             comparison_key=comparison_key,
             release_manifest={
-                "challenge_id": self.challenge_id,
-                "challenge_manifest_sha256": self.manifest_sha256,
+                "benchmark_id": self.benchmark_id,
+                "benchmark_manifest_sha256": self.manifest_sha256,
                 "task_manifest_sha256": self.task_manifest_sha256,
                 "release_stage": self.release_stage,
                 "leaderboard_eligible": self.leaderboard_eligible,
@@ -537,13 +537,13 @@ class ChallengeRelease:
     def public_manifest(self) -> Dict[str, Any]:
         return {
             "schema_version": self.schema_version,
-            "challenge_id": self.challenge_id,
+            "benchmark_id": self.benchmark_id,
             "task_id": self.task_id,
             "task": self.task_file,
             "release_stage": self.release_stage,
             "leaderboard_eligible": self.leaderboard_eligible,
             "comparison_key_fields": [
-                "challenge_id",
+                "benchmark_id",
                 "track",
                 "track_config",
                 "runtime_profile",

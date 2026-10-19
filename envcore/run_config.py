@@ -1,13 +1,13 @@
 """Compose an environment with the existing autonomous-training task protocol.
 
 Compute resources and time budgets are run-owned here. Published lanes remain
-governed by ChallengeRelease.resolve and cannot be overridden by this composition.
+governed by BenchmarkRelease.resolve and cannot be overridden by this composition.
 """
 
 from dataclasses import dataclass, replace
 from typing import Optional
 
-from .challenge import ChallengeRelease
+from .benchmark import BenchmarkRelease
 from .config import ConfigError, TaskConfig, TrainingResources
 from .environment import EnvironmentConfig
 from .worker_protocol import ResourceEnvelope
@@ -28,16 +28,16 @@ def resolve_environment_run(
     *,
     environment: EnvironmentConfig,
     track: Optional[str] = None,
-    release: Optional[ChallengeRelease] = None,
+    release: Optional[BenchmarkRelease] = None,
     track_config_id: Optional[str] = None,
 ) -> EnvironmentRun:
     """Reuse a task/budget without claiming membership in a benchmark lane."""
 
     if release is not None:
         if track is not None or not track_config_id:
-            raise ConfigError("--challenge requires --track-config instead of --track")
+            raise ConfigError("--benchmark requires --track-config instead of --track")
         if task.task_id != release.task_id or task.source != release.task_path:
-            raise ConfigError("environment task must match the selected challenge")
+            raise ConfigError("environment task must match the selected benchmark")
         try:
             budget = release.track_configs[track_config_id]
         except KeyError as exc:

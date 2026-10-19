@@ -1435,7 +1435,7 @@ def assess_resource_properties(
 
 @dataclass(frozen=True)
 class WorkloadRequest:
-    """One canonical workload selected by the Challenge Release."""
+    """One canonical workload selected by the Benchmark Release."""
 
     role: str
     requested_identity: str

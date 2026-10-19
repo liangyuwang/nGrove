@@ -84,10 +84,10 @@ separate private protection limit and does not become an Agent-visible budget.
 The task's existing ANALYSIS capacity must cover `max_leases`; increasing the
 Lease count does not silently change evaluation policy.
 
-If `budget` is omitted, resolve it from the selected challenge's `--track-config`
+If `budget` is omitted, resolve it from the selected benchmark's `--track-config`
 or the task's `--track`. An explicit budget overrides those numeric values for
 the environment run, but its Track must match the selected Track. Source task
-and challenge files remain unchanged. Unknown fields, nonpositive/fractional
+and benchmark files remain unchanged. Unknown fields, nonpositive/fractional
 values and mixed Track A/B fields are errors before Worker setup.
 
 The resolved environment always records the effective budget. It is fixed before
@@ -113,27 +113,27 @@ Use a task and its existing Track budget (the CPU example omits `budget`):
 envcore start \
   --task dev_tasks/smoke_lm-pretrain/task.json --track A \
   --environment examples/environments/cpu-2cores.json \
-  --episodes-root /srv/autotrain-runs/episodes \
+  --episodes-root /srv/envcore-runs/episodes \
   --agent-runner container \
   --agent-image 'participant-agent@sha256:<actual-digest>' \
   --agent-command 'participant-agent run'
 ```
 
-Or use a challenge's task and Track with custom compute resources and two hours:
+Or use a benchmark's task and Track with custom compute resources and two hours:
 
 ```bash
 envcore start \
-  --challenge challenges/lm-pretrain/challenge.json \
+  --benchmark benchmarks/lm-pretrain/benchmark.json \
   --track-config preview-a-8h \
   --environment examples/environments/h100-x4-2h.json \
-  --episodes-root /srv/autotrain-runs/episodes \
+  --episodes-root /srv/envcore-runs/episodes \
   --agent-runner container \
   --agent-image 'participant-agent@sha256:<actual-digest>' \
   --agent-command 'participant-agent run'
 ```
 
 `--environment` selects environment mode. To reuse a published hardware profile,
-use `--mode environment --challenge ... --track-config ... --runtime-profile ...`.
+use `--mode environment --benchmark ... --track-config ... --runtime-profile ...`.
 Do not combine `--environment` with `--runtime-profile` or manual GPU/device flags.
 
 Environment mode does not edit release files, change data or images, relax task
@@ -145,7 +145,7 @@ from benchmark lanes.
 
 ## Benchmark runs and evidence
 
-Existing challenge launches without `--environment` retain benchmark semantics.
+Existing benchmark launches without `--environment` retain benchmark semantics.
 `--mode benchmark` makes this explicit and rejects `--environment`. The release
 still owns its finite profiles and formal eligibility rules. Published A100,
 H100 and H200 catalogs remain unchanged.
@@ -171,7 +171,7 @@ conditions.
 ## Package and scope
 
 Code imports `envcore`; `envcore.environment.RuntimeProfile` and
-`EnvironmentConfig` are independent of challenge catalogs. Benchmark resolution
+`EnvironmentConfig` are independent of benchmark catalogs. Benchmark resolution
 reuses that profile type. Restricted Agent/Candidate helper bundles expose only
 the public `envcore` modules.
 

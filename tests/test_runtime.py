@@ -2185,7 +2185,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             inference = InferenceConfig(
                 protocol="openai_compatible",
                 base_url="https://api.openai.com",
-                api_key_env="AUTOTRAIN_BENCH_TEST_MISSING_KEY",
+                api_key_env="ENVCORE_TEST_MISSING_KEY",
                 allowed_models=("researcher-a",),
                 allowed_paths=("/v1/responses",),
                 timeout_seconds=300,
@@ -2202,7 +2202,7 @@ class RuntimeBoundaryTests(unittest.TestCase):
             )
             runtime = CapturingDockerRuntime()
             with patch.dict(os.environ, {}, clear=False):
-                os.environ.pop("AUTOTRAIN_BENCH_TEST_MISSING_KEY", None)
+                os.environ.pop("ENVCORE_TEST_MISSING_KEY", None)
                 with self.assertRaises(RuntimeFailure):
                     runtime.start_inference_gateway(
                         name="gateway",

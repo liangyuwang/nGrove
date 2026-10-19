@@ -1,9 +1,9 @@
 # Development tasks
 
 Development tasks exercise the Envcore runtime and Agent integration
-surface. They are not leaderboard challenges and their results must not be
+surface. They are not leaderboard benchmarks and their results must not be
 placed on a leaderboard. They use the same profile-bound release launch,
-Policy, and trusted Evaluator contract as challenge packages; task-scale data
+Policy, and trusted Evaluator contract as benchmark packages; task-scale data
 and evaluation choices may be smaller.
 
 The repository intentionally contains one such task:

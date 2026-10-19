@@ -1,9 +1,9 @@
-.autotrain/
+.envcore/
 __pycache__/
 *.py[cod]
 *.egg-info/
 .coverage
 .pytest_cache/
 dev_tasks/smoke_lm-pretrain/data/
-challenges/lm-pretrain/data/generated/
-challenges/lm-pretrain/data/raw/
+benchmarks/lm-pretrain/data/generated/
+benchmarks/lm-pretrain/data/raw/

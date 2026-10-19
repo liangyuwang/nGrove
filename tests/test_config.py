@@ -349,11 +349,11 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ConfigError, "may not be leaderboard"):
                 TaskConfig.load(task)
 
-            payload["task_kind"] = "benchmark_challenge"
+            payload["task_kind"] = "benchmark"
             payload["leaderboard_eligible"] = False
             task.write_text(json.dumps(payload), encoding="utf-8")
             config = TaskConfig.load(task)
-            self.assertEqual(config.task_kind, "benchmark_challenge")
+            self.assertEqual(config.task_kind, "benchmark")
             self.assertFalse(config.leaderboard_eligible)
 
     def test_task_requires_the_generic_performance_score_contract(self):
@@ -404,7 +404,7 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             task = self._write_task(directory)
             payload = json.loads(task.read_text(encoding="utf-8"))
-            payload["task_kind"] = "benchmark_challenge"
+            payload["task_kind"] = "benchmark"
             payload["leaderboard_eligible"] = True
             task.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaisesRegex(ConfigError, "digest-pinned"):

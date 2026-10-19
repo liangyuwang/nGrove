@@ -18,7 +18,7 @@ from envcore.worker_protocol import (
     ResourceEnvelope,
     ResourceRequirement,
 )
-from tests import test_challenge, test_evaluation_resources
+from tests import test_benchmark, test_evaluation_resources
 from tests.test_runtime import GPU_ONE, GPU_TWO, TASK, gpu_inventory
 
 
@@ -147,7 +147,7 @@ class EvaluationPreflightTests(unittest.TestCase):
         )
 
     def launch_args(self, root, request):
-        release = test_challenge.ChallengeReleaseTests()._write_release(str(root))
+        release = test_benchmark.BenchmarkReleaseTests()._write_release(str(root))
         payload = json.loads(release.read_text())
         payload["schema_version"] = 3
         payload["runtime_profiles"] = {
@@ -162,7 +162,7 @@ class EvaluationPreflightTests(unittest.TestCase):
         return build_parser().parse_args(
             [
                 "start",
-                "--challenge",
+                "--benchmark",
                 str(release),
                 "--track-config",
                 "b-3x10m",
@@ -250,7 +250,7 @@ class EvaluationPreflightTests(unittest.TestCase):
                 self.request,
             )
             self.assertEqual(
-                supervisor.call_args.kwargs["challenge_release"][
+                supervisor.call_args.kwargs["benchmark_release"][
                     "evaluation_resource_envelope"
                 ],
                 self.request.public_manifest(),

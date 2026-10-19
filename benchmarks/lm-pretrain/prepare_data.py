@@ -53,6 +53,7 @@ DATA_DIR = ROOT / "data"
 SOURCE_MANIFEST_PATH = DATA_DIR / "source-files.json"
 DEFAULT_RAW_DIR = DATA_DIR / "raw" / DATASET_REVISION
 DEFAULT_OUTPUT_DIR = DATA_DIR / "generated"
+# Stable data provenance identity, independent of display names or module paths.
 BUILDER_ID = "autotrain-bench/lm-pretrain"
 
 
@@ -154,6 +155,7 @@ def _directory_metadata_digest(path: Path) -> str:
     """Fingerprint every entry without rereading a multi-billion-token corpus."""
 
     digest = hashlib.sha256()
+    # Keep the fingerprint namespace stable when renaming the framework.
     digest.update(b"autotrain-bench-directory-metadata-v1\0")
     try:
         entries = sorted(path.rglob("*"), key=lambda item: os.fsencode(str(item)))
@@ -698,7 +700,7 @@ def _load_dependencies() -> Tuple[Any, Any, Any, Any]:
     except ImportError as exc:
         raise PreparationError(
             "data dependencies are missing; run: "
-            "python -m pip install -r challenges/lm-pretrain/data/requirements.txt"
+            "python -m pip install -r benchmarks/lm-pretrain/data/requirements.txt"
         ) from exc
     return snapshot_download, pyarrow, parquet, tiktoken
 

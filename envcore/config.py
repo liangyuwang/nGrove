@@ -171,7 +171,7 @@ ANALYSIS_RESULT_VISIBILITIES = {
     "delayed_public",
     "public_after_finalization",
 }
-TASK_KINDS = {"benchmark_challenge", "development_smoke"}
+TASK_KINDS = {"benchmark", "development_smoke"}
 RESERVED_AGENT_ENVIRONMENT = {
     "ENVCORE_CONTROL_DIR",
     "ENVCORE_FORWARDED_ENVIRONMENT",

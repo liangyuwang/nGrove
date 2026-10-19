@@ -10,7 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from envcore.challenge import ChallengeRelease
+from envcore.benchmark import BenchmarkRelease
 from envcore.config import TaskConfig, TrainingResources
 from envcore.runtime import DockerRuntime, RuntimeFailure
 from envcore.worker_protocol import (
@@ -126,9 +126,9 @@ class DockerGpuTests(unittest.TestCase):
         self.assertEqual(self.query.call_args.kwargs["timeout"], 20)
 
     def test_release_gpu_matrix_binds_training_and_cuda_evaluation_resources(self):
-        release = ChallengeRelease.load(
+        release = BenchmarkRelease.load(
             Path(__file__).resolve().parents[1]
-            / "challenges/lm-pretrain/challenge.json"
+            / "benchmarks/lm-pretrain/benchmark.json"
         )
         for profile_id, profile in release.runtime_profiles.items():
             with self.subTest(profile=profile_id):

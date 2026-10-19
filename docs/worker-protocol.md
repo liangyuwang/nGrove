@@ -53,8 +53,8 @@ Platform packages own:
 Platform implementations live outside Core, either as separately distributed
 packages or temporary deployments created during authorized preparation. Keep
 their source and dependency identities with run evidence. Examples of package
-names are `autotrain-worker-docker`, `autotrain-worker-apptainer`, and
-`autotrain-worker-kubernetes`; these names are examples, not core backends.
+names are `envcore-worker-docker`, `envcore-worker-apptainer`, and
+`envcore-worker-kubernetes`; these names are examples, not core backends.
 Core must never grow platform selection branches or import their SDKs.
 See [Worker integration](worker-integration.md) for trusted composition,
 startup verification, supervision, cleanup, and resource-planning guidance.
@@ -629,7 +629,7 @@ Worker v16 additionally receives `evaluation_id` and `resource_envelope` on each
 evaluation. When the latter is non-null, `CandidateEvaluationResult` must carry
 an `EvaluationResourceReceipt` binding that ID, episode, Worker and request hash.
 Core validates effective normative values and enforcement before accepting the
-score, and records/revalidates the evidence in result v14. The Challenge v3
+score, and records/revalidates the evidence in result v14. The Benchmark v3
 `evaluation_resource_contract` is separate from Training requirements. A resource
 rejection is an infrastructure failure; a later ANALYSIS failure preserves an
 accepted TEST decision. See [evaluation resource contracts](evaluation-resources.md)

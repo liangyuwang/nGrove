@@ -1,6 +1,6 @@
 # LM pretrain preview
 
-`lm-pretrain` is the first formal language-model pretraining challenge preview. Its identity
+`lm-pretrain` is the first formal language-model pretraining benchmark preview. Its identity
 is independent of its initial corpus: this version builds an approximately
 10-billion-token TRAIN pool from a pinned FineWeb-Edu revision and fixes GPT-2
 token IDs only at the evaluation boundary.
@@ -141,21 +141,21 @@ Install Core and the isolated preparation dependencies:
 
 ```bash
 python3 -m pip install -e .
-python3 -m pip install -r challenges/lm-pretrain/data/requirements.txt
+python3 -m pip install -r benchmarks/lm-pretrain/data/requirements.txt
 ```
 
 The default source download is roughly 28.5 GB and the tokenized output is
 about 20 GB, in addition to the public raw TRAIN Parquet:
 
 ```bash
-python3 challenges/lm-pretrain/prepare_data.py --accept-large-download
-envcore prepare --task challenges/lm-pretrain/task.json
+python3 benchmarks/lm-pretrain/prepare_data.py --accept-large-download
+envcore prepare --task benchmarks/lm-pretrain/task.json
 ```
 
 An existing pinned FineWeb-Edu `sample/10BT` download can be reused:
 
 ```bash
-python3 challenges/lm-pretrain/prepare_data.py \
+python3 benchmarks/lm-pretrain/prepare_data.py \
   --source-dir /path/to/fineweb-edu-sample-10BT
 ```
 
@@ -245,11 +245,11 @@ build or preserves it under a named backup path instead of deleting it first.
 An existing build using the former progressive-prefix dataset must be rebuilt
 with `--force`; its scores are not comparable with this single-target metric.
 
-Challenge-local regression checks use the real hash split and default context
+Benchmark-local regression checks use the real hash split and default context
 quotas on synthetic documents, without downloading or rebuilding the corpus:
 
 ```bash
-python3 -m unittest discover -s challenges/lm-pretrain -p 'test_prepare_data.py' -v
+python3 -m unittest discover -s benchmarks/lm-pretrain -p 'test_prepare_data.py' -v
 ```
 
 These checks exercise the pool-sizing failure and shortage diagnostics; a full
@@ -311,18 +311,18 @@ require the same frozen release and data identities, consistent effective
 resource conditions, and this complete comparison key:
 
 ```text
-challenge_id + track + track_config + runtime_profile
+benchmark_id + track + track_config + runtime_profile
 ```
 
 Inspect the finite maps:
 
 ```bash
-envcore challenge-info \
-  --challenge challenges/lm-pretrain/challenge.json
+envcore benchmark-info \
+  --benchmark benchmarks/lm-pretrain/benchmark.json
 ```
 
 After data preparation, start a profile-bound episode. `task.json` is inferred
-from the challenge release:
+from the benchmark release:
 
 Track B defaults to a **24-hour private operator research-time protection**,
 configured in `operator-defaults.json`. The launcher announces it before run
@@ -343,7 +343,7 @@ must enforce this in their execution environment. See
 
 ```bash
 envcore start \
-  --challenge challenges/lm-pretrain/challenge.json \
+  --benchmark benchmarks/lm-pretrain/benchmark.json \
   --track-config preview-b-6x1h \
   --runtime-profile h100-sxm-80gb-x4 \
   --episodes-root /path/to/envcore-runs/episodes \
@@ -352,6 +352,6 @@ envcore start \
   --agent-command "participant-agent run"
 ```
 
-Challenge mode rejects `--track`, `--training-gpus`, and
+Profile-bound benchmark runs reject `--track`, `--training-gpus`, and
 `--training-gpu-model`; those values come from the selected profiles so the
 recorded comparison key cannot disagree with the actual episode.

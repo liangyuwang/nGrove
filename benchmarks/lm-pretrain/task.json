@@ -1,7 +1,7 @@
 {
   "schema_version": 7,
   "task_id": "lm-pretrain",
-  "task_kind": "benchmark_challenge",
+  "task_kind": "benchmark",
   "leaderboard_eligible": false,
   "paths": {
     "train": "data/generated/public",

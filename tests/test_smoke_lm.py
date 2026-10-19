@@ -6,14 +6,14 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from envcore.challenge import ChallengeRelease
+from envcore.benchmark import BenchmarkRelease
 from envcore.config import TaskConfig
 from envcore.training_data import verify_training_data
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SMOKE_ROOT = ROOT / "dev_tasks/smoke_lm-pretrain"
-PRETRAIN_ROOT = ROOT / "challenges/lm-pretrain"
+PRETRAIN_ROOT = ROOT / "benchmarks/lm-pretrain"
 PREPARE_PATH = SMOKE_ROOT / "prepare_data.py"
 TASK_FIXTURE = ROOT / "tests/fixtures/task/task.json"
 SPEC = importlib.util.spec_from_file_location("smoke_lm_prepare_data", PREPARE_PATH)
@@ -63,8 +63,8 @@ class SmokeLmPreparationTests(unittest.TestCase):
                 (train.parent / "manifest.json").unlink()
                 self.assertFalse(PREPARE._existing_data_is_valid())
 
-    def test_release_uses_the_profile_bound_challenge_start_contract(self):
-        release = ChallengeRelease.load(SMOKE_ROOT / "challenge.json")
+    def test_release_uses_the_profile_bound_benchmark_start_contract(self):
+        release = BenchmarkRelease.load(SMOKE_ROOT / "benchmark.json")
         task = replace(
             TaskConfig.load(TASK_FIXTURE),
             task_id="tinystories-byte-lm-smoke-v1",
@@ -81,7 +81,7 @@ class SmokeLmPreparationTests(unittest.TestCase):
         self.assertEqual(resolved.resources.nvidia_gpu_count, 0)
         self.assertFalse(release.leaderboard_eligible)
 
-    def test_policy_and_evaluator_match_the_challenge(self):
+    def test_policy_and_evaluator_match_the_benchmark(self):
         self.assertEqual(
             (SMOKE_ROOT / "POLICY.md").read_bytes(),
             (PRETRAIN_ROOT / "POLICY.md").read_bytes(),
