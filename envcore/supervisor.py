@@ -14,6 +14,7 @@ import subprocess
 import threading
 import time
 import uuid
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, Optional, Tuple, Union
@@ -25,6 +26,7 @@ from .agent_control import (
 )
 from .agent_execution import AgentExecutionEvidence
 from .environment import EnvironmentConfig, FrozenEnvironment, ResearchBudget
+from .recording import RecordingConfig, RecordingStore
 from .artifact_identity import (
     CANDIDATE_TREE_IDENTITY_ALGORITHM,
     FILE_IDENTITY_ALGORITHM,
@@ -288,12 +290,21 @@ class Supervisor:
         ),
         operator_max_research_seconds: Optional[float] = None,
         environment: Optional[Union[FrozenEnvironment, EnvironmentConfig]] = None,
+        recording: Optional[RecordingConfig] = None,
     ) -> None:
         normalized = track.upper()
         if normalized not in {"A", "B"}:
             raise ValueError("track must be A or B")
         self.operator_max_research_seconds = operator_research_limit(
             operator_max_research_seconds, normalized
+        )
+        self.recording_config = (
+            recording if recording is not None else RecordingConfig()
+        )
+        if not isinstance(self.recording_config, RecordingConfig):
+            raise TypeError("recording must be a RecordingConfig")
+        self._recording_action: ContextVar[Optional[str]] = ContextVar(
+            "research_action", default=None
         )
         self.config = config.validate()
         # The trusted launcher verifies the data view and the Worker keeps it
@@ -791,6 +802,8 @@ class Supervisor:
             "failure": None,
         }
         self.sequence = 0
+        self.recording_store = RecordingStore(self.episode_dir, self.recording_config)
+        self.state["recording"] = self.recording_config.record()
         public_manifest = config.public_manifest(self.track)
         public_manifest["environment"] = environment.record()
         public_manifest["agent_environment"] = agent.public_manifest(
@@ -992,9 +1005,24 @@ class Supervisor:
         return result
 
     def _event(self, event_type: str, **data: Any) -> int:
+        with self.lock:
+            return self._write_event(event_type, **data)
+
+    def _event_id(self, sequence: int) -> str:
+        return f"{self.state['episode_id']}:event:{sequence}"
+
+    def _write_event(self, event_type: str, **data: Any) -> int:
         self.sequence += 1
         event = {
             "seq": self.sequence,
+            "event_id": self._event_id(self.sequence),
+            "episode_id": self.state["episode_id"],
+            "source": "core",
+            "phase": "after_seal"
+            if self.state.get("research_sealed_at")
+            else "research",
+            "visibility": "operator_only",
+            "action_id": self._recording_action.get(),
             "type": event_type,
             "timestamp": datetime.fromtimestamp(
                 self.wall_time(), tz=timezone.utc
@@ -1281,6 +1309,67 @@ class Supervisor:
             return status
 
     def handle(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        return self._recorded_handle(request, action_id=self._recording_action.get())
+
+    def _recorded_handle(
+        self, request: Dict[str, Any], *, action_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        action_id = action_id or f"{self.state['episode_id']}:action:{uuid.uuid4().hex}"
+        token = self._recording_action.set(action_id)
+        operation = request.get("op")
+        try:
+            started = self._event(
+                "ACTION_STARTED",
+                visibility="agent_exchange",
+                operation=operation
+                if isinstance(operation, str) and len(operation) <= 64
+                else None,
+                payload=self.recording_store.payload(request),
+            )
+        except BaseException:
+            self._recording_action.reset(token)
+            raise
+        try:
+            result = self._handle_unrecorded(request)
+        except Exception as exc:
+            response = {
+                "ok": False,
+                "error": {
+                    "code": exc.code
+                    if isinstance(exc, ProtocolError)
+                    else "infrastructure_failure",
+                    "message": str(exc)
+                    if isinstance(exc, ProtocolError)
+                    else "trusted request handler failed",
+                },
+            }
+            self._event(
+                "ACTION_RETURNED",
+                outcome="error",
+                delivery="unknown",
+                visibility="agent_exchange",
+                links=[
+                    {"relation": "responds_to", "event_id": self._event_id(started)}
+                ],
+                payload=self.recording_store.payload(response),
+            )
+            raise
+        else:
+            self._event(
+                "ACTION_RETURNED",
+                outcome="success",
+                delivery="unknown",
+                visibility="agent_exchange",
+                links=[
+                    {"relation": "responds_to", "event_id": self._event_id(started)}
+                ],
+                payload=self.recording_store.payload({"ok": True, "result": result}),
+            )
+            return result
+        finally:
+            self._recording_action.reset(token)
+
+    def _handle_unrecorded(self, request: Dict[str, Any]) -> Dict[str, Any]:
         self.enforce_operator_limit()
         if self.state["status"] == "operator_stopped":
             raise ProtocolError("episode_closed", "the episode is closed")
@@ -1293,6 +1382,50 @@ class Supervisor:
         if self.state["status"] == "operator_stopped":
             raise ProtocolError("episode_closed", "the episode is closed")
         return result
+
+    def record_observation(
+        self,
+        *,
+        source: str,
+        source_event_id: str,
+        kind: str,
+        data: Any,
+        links: Tuple[Dict[str, str], ...] = (),
+    ) -> str:
+        """Trusted runner hook for tool, feedback or code-change observations.
+
+        This is not an Agent operation. Source claims remain adapter-reported;
+        recording an observation never establishes that an Agent consumed it.
+        Multiple explicit links allow concurrent sources without a global
+        current-experiment pointer. Forward references are allowed.
+        """
+        for name, value in (
+            ("source", source),
+            ("source_event_id", source_event_id),
+            ("kind", kind),
+        ):
+            if not _safe_protocol_text(value) or len(value) > 256:
+                raise ValueError(f"invalid observation {name}")
+        if len(links) > 64 or any(
+            not isinstance(link, dict)
+            or set(link) != {"relation", "event_id"}
+            or any(
+                not _safe_protocol_text(value) or len(value) > 256
+                for value in link.values()
+            )
+            for link in links
+        ):
+            raise ValueError("invalid observation links")
+        sequence = self._event(
+            "RESEARCH_OBSERVATION",
+            observation_source=source,
+            source_event_id=source_event_id,
+            observation_kind=kind,
+            evidence="adapter_reported",
+            links=copy.deepcopy(list(links)),
+            payload=self.recording_store.payload(data),
+        )
+        return self._event_id(sequence)
 
     def _handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
         operation = request.get("op")
@@ -1802,6 +1935,15 @@ class Supervisor:
                     "the lease command log size limit has been reached",
                 )
 
+            execution_id = f"{self.state['episode_id']}:execution:{uuid.uuid4().hex}"
+            started_event = self._event(
+                "LEASE_COMMAND_STARTED",
+                lease_id=active["lease_id"],
+                execution_id=execution_id,
+                payload=self.recording_store.payload(
+                    {"argv": argv, "timeout_seconds": remaining}
+                ),
+            )
             try:
                 result: CommandResult = self.research_worker.exec_lease(
                     episode_id=self.state["episode_id"],
@@ -1810,6 +1952,17 @@ class Supervisor:
                     timeout_seconds=remaining,
                 )
             except WorkerTeardownFailure as exc:
+                self._event(
+                    "LEASE_COMMAND_FAILED",
+                    execution_id=execution_id,
+                    links=[
+                        {
+                            "relation": "completes",
+                            "event_id": self._event_id(started_event),
+                        }
+                    ],
+                    code="worker_teardown_failure",
+                )
                 self._event(
                     "LEASE_INFRA_FAILURE",
                     lease_id=active["lease_id"],
@@ -1824,6 +1977,17 @@ class Supervisor:
                     "research worker teardown failed",
                 ) from exc
             except Exception as exc:
+                self._event(
+                    "LEASE_COMMAND_FAILED",
+                    execution_id=execution_id,
+                    links=[
+                        {
+                            "relation": "completes",
+                            "event_id": self._event_id(started_event),
+                        }
+                    ],
+                    code="worker_execution_failure",
+                )
                 self.infrastructure_failed(
                     "research_worker_execution_failure",
                     private_detail=str(exc),
@@ -1833,6 +1997,17 @@ class Supervisor:
                     "research worker execution failed",
                 ) from None
             if not isinstance(result, CommandResult):
+                self._event(
+                    "LEASE_COMMAND_FAILED",
+                    execution_id=execution_id,
+                    links=[
+                        {
+                            "relation": "completes",
+                            "event_id": self._event_id(started_event),
+                        }
+                    ],
+                    code="worker_protocol_failure",
+                )
                 self.infrastructure_failed(
                     "research_worker_protocol_failure",
                     private_detail=("exec_lease returned " f"{type(result).__name__}"),
@@ -1848,6 +2023,7 @@ class Supervisor:
             active["exec_count"] += 1
             record = {
                 "exec": active["exec_count"],
+                "execution_id": execution_id,
                 "argv": argv,
                 "exit_code": result.exit_code,
                 "stdout": stdout,
@@ -1862,6 +2038,11 @@ class Supervisor:
                 exec=active["exec_count"],
                 exit_code=result.exit_code,
                 timed_out=result.timed_out,
+                execution_id=execution_id,
+                links=[
+                    {"relation": "completes", "event_id": self._event_id(started_event)}
+                ],
+                payload=self.recording_store.payload(record),
             )
             lease_active = True
             try:
@@ -2326,6 +2507,14 @@ class Supervisor:
                 candidate_id=candidate_id,
                 commit_index=commit_index,
                 timestamp=committed_at,
+                artifact={
+                    "artifact_id": candidate_id,
+                    "kind": "candidate_bundle",
+                    "path": snapshot["path"].relative_to(self.episode_dir).as_posix(),
+                    "storage_status": "retained",
+                    "source_lease": lease_id,
+                    "contents": "candidate_code_configuration_and_model_files",
+                },
             )
             commit = {
                 "commit_index": commit_index,
@@ -3366,7 +3555,94 @@ class Supervisor:
         except BaseException:
             self.state = previous_state
             raise
+        self.finalize_recording()
         return True
+
+    def finalize_recording(self) -> None:
+        """Apply configured retention only after the result commits.
+
+        This is retryable, independent of result validity, and never called on
+        an interrupted or live episode. Capture/retention events retain identity
+        even when an artifact's bytes are deliberately removed.
+        """
+        with self.lock:
+            if self.state["status"] != "finalized":
+                raise RuntimeError("recording retention requires a finalized result")
+            targets = []
+            policy = self.recording_config
+            if policy.candidates != "all":
+                for candidate_id in self.state["candidates"]:
+                    if (
+                        policy.candidates == "final"
+                        and candidate_id == self.state["final_candidate_id"]
+                    ):
+                        continue
+                    digest = candidate_id.removeprefix("sha256:")
+                    if len(digest) != 64 or any(
+                        c not in "0123456789abcdef" for c in digest
+                    ):
+                        raise RuntimeError("invalid retained Candidate identity")
+                    targets.append(
+                        (candidate_id, "candidate_bundle", self.candidates_dir / digest)
+                    )
+            if policy.lease_outputs == "discard_after_finalize":
+                for serial in range(1, self.state["lease_serial"] + 1):
+                    lease_id = f"lease-{serial:04d}"
+                    targets.append(
+                        (
+                            f"{self.state['episode_id']}:{lease_id}:output",
+                            "lease_output",
+                            self.runs_dir / lease_id / "output",
+                        )
+                    )
+            if targets and (
+                self.state["deployment_teardown_failures"]
+                or self.state["pending_lease_teardowns"]
+                or self.state["agent_control"]["cleanup_complete"] is not True
+                or self.state["agent_system"]["termination_reason"] is None
+            ):
+                # Final TEST can remain valid despite a later optional ANALYSIS
+                # teardown failure. It does not prove storage is safe to dispose.
+                try:
+                    self._event(
+                        "ARTIFACT_RETENTION_DEFERRED",
+                        reason="teardown_evidence_incomplete",
+                    )
+                except OSError:
+                    pass
+                return
+            for artifact_id, kind, path in targets:
+                if not path.exists() and not path.is_symlink():
+                    continue
+                artifact = {
+                    "artifact_id": artifact_id,
+                    "kind": kind,
+                    "path": path.relative_to(self.episode_dir).as_posix(),
+                }
+                try:
+                    if path.is_symlink() or path.parent.is_symlink():
+                        raise OSError("artifact retention path is a symlink")
+                    # Persist intent first. A lost completion record remains
+                    # uncertain instead of falsely claiming successful deletion.
+                    self._event(
+                        "ARTIFACT_RETENTION_STARTED",
+                        artifact={**artifact, "storage_status": "removal_pending"},
+                    )
+                    self._remove_staging_tree(path)
+                    self._event(
+                        "ARTIFACT_REMOVED",
+                        artifact={**artifact, "storage_status": "removed_by_policy"},
+                    )
+                except OSError as exc:
+                    # Optional storage maintenance cannot erase a committed result.
+                    try:
+                        self._event(
+                            "ARTIFACT_RETENTION_FAILED",
+                            artifact={**artifact, "storage_status": "retention_failed"},
+                            error_type=type(exc).__name__,
+                        )
+                    except OSError:
+                        pass
 
     def enforce_deadlines(self) -> bool:
         with self.lock:
@@ -3661,8 +3937,17 @@ class Supervisor:
     def process_one_request(self) -> bool:
         if self.agent_control_transport is None:
             return False
+        action_id = f"{self.state['episode_id']}:action:{uuid.uuid4().hex}"
+
+        def dispatch(request):
+            token = self._recording_action.set(action_id)
+            try:
+                return self.handle(request)
+            finally:
+                self._recording_action.reset(token)
+
         try:
-            result = self.agent_control_transport.process_one(self.handle)
+            result = self.agent_control_transport.process_one(dispatch)
         except Exception as exc:
             self.infrastructure_failed(
                 "agent_control_transport_failure", private_detail=str(exc)
@@ -3670,6 +3955,18 @@ class Supervisor:
             return True
         for event in result.events:
             self._event(event.name, **event.fields)
+        if result.exchange is not None:
+            exchange = result.exchange
+            self._event(
+                "CONTROL_RESPONSE",
+                action_id=action_id,
+                visibility="agent_exchange",
+                transport=self.agent_control_transport.transport_name,
+                request_id=exchange.request_id,
+                delivery=exchange.delivery,
+                consumption="unknown",
+                payload=self.recording_store.payload(exchange.response),
+            )
         if result.policy_failure:
             self._agent_control_policy_failed()
         elif result.infrastructure_failure_code is not None:

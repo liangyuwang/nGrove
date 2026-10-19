@@ -12,6 +12,7 @@ from .artifact_identity import (
 )
 from .config import AGENT_EGRESS_POLICIES, AGENT_RUNNERS
 from .environment import FrozenEnvironment
+from .recording import RecordingConfig
 from .benchmark import validate_benchmark_binding
 from .gateway_execution import (
     GatewayArtifactIdentity,
@@ -95,6 +96,11 @@ def normalize_result_report(payload: Any) -> Dict[str, Any]:
             "environment configuration requires result schema version 16"
         )
     result = dict(payload)
+    if "recording" in result:
+        try:
+            RecordingConfig.from_record(result["recording"])
+        except (TypeError, ValueError) as exc:
+            raise ResultSchemaError(str(exc)) from exc
     result.setdefault("deployment_teardown_failures", [])
     result.pop("pending_result", None)
     _validate_current_result(result)

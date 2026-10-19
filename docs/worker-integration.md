@@ -95,6 +95,14 @@ already be complete.
 
 Use this sequence when implementing the composition layer:
 
+Pass an optional `RecordingConfig` to freeze [research recording](recording.md)
+and artifact retention at construction. The default retains all Candidate bundles
+and Lease outputs. Configured removal runs only after the final result commits;
+capture/retention evidence stays private. A trusted runner may add structured
+tool or code-change observations through `record_observation`. A control
+transport may return `AgentControlExchange` in its step result to report the
+actual published response; without this evidence, delivery remains unknown.
+
 | Stage | Core interaction | Deployment responsibility |
 | --- | --- | --- |
 | Admit | Construct `Supervisor` with frozen inputs | Verify boundaries, images, TRAIN, tools, resource authorization, and recovery readiness before task reveal |

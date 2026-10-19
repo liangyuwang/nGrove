@@ -193,6 +193,11 @@ conditions.
 
 ## Package and scope
 
+Research evidence has a separate launch-owned [recording configuration](recording.md).
+`--recording PATH` works with every environment selection and freezes capture
+limits and post-evaluation artifact retention with a separate identity. It does
+not change compute/time resolution or introduce a benchmark execution path.
+
 Code imports `envcore`; `envcore.environment.RuntimeProfile` and
 `EnvironmentConfig` and `FrozenEnvironment` are independent of benchmark catalogs.
 Benchmark resolution uses the same `resolve_environment_run` function as task-only

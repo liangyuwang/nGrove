@@ -32,6 +32,11 @@ The distribution, Python package and CLI are all named `envcore`.
 Use `envcore` or `python -m envcore`. Integrations use `ENVCORE_*` environment
 variables.
 
+[Research recording](docs/recording.md) links actions, returned feedback,
+executions and Candidate artifacts. Use `--recording` to configure payload capture
+and post-evaluation artifact retention, and `envcore trajectory --episode PATH`
+to inspect the private evidence.
+
 ## Benchmarks
 
 **Constrain resources, not ideas. Define the evaluator, not the solution.**

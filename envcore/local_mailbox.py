@@ -20,6 +20,7 @@ from .agent_control import (
     MAX_AGENT_CONTROL_RESPONSE_BYTES,
     AgentControlCleanupResult,
     AgentControlEvent,
+    AgentControlExchange,
     AgentControlStepResult,
     ProtocolError,
 )
@@ -131,6 +132,19 @@ def read_untrusted_request(path: Path, maximum_bytes: int) -> Dict[str, Any]:
     return payload
 
 
+def bounded_response(response: Dict[str, Any], maximum_bytes: int) -> Dict[str, Any]:
+    """The actual response published when a handler result exceeds the limit."""
+    if len(compact_json_bytes(response)) <= maximum_bytes:
+        return response
+    return {
+        "ok": False,
+        "error": {
+            "code": "response_too_large",
+            "message": "supervisor response exceeds the mailbox limit",
+        },
+    }
+
+
 def write_untrusted_response(
     directory: Path,
     request_id: str,
@@ -151,17 +165,7 @@ def write_untrusted_response(
         raise MailboxMessageError(
             "mailbox_conflict", "mailbox response destination is a directory"
         )
-    encoded = compact_json_bytes(response)
-    if len(encoded) > maximum_bytes:
-        encoded = compact_json_bytes(
-            {
-                "ok": False,
-                "error": {
-                    "code": "response_too_large",
-                    "message": "supervisor response exceeds the mailbox limit",
-                },
-            }
-        )
+    encoded = compact_json_bytes(bounded_response(response, maximum_bytes))
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     if not directory_fd_operations_available():
         # An isolated workload sees inbox and outbox as separate mount roots, so
@@ -428,9 +432,12 @@ class LocalFileMailbox:
                     },
                 )
             )
+        delivery = "not_published"
+        response = bounded_response(response, self.maximum_response_bytes)
         if isolated:
             try:
                 self.write_response(request_id, response)
+                delivery = "published"
             except MailboxMessageError as exc:
                 # The Agent controls its outbox.  If it prevents publication
                 # after a side-effecting request has run, continuing would make
@@ -449,6 +456,7 @@ class LocalFileMailbox:
             infrastructure_failure_code=infrastructure_failure_code,
             infrastructure_failure=infrastructure_failure,
             events=tuple(events),
+            exchange=AgentControlExchange(request_id, response, delivery),
         )
 
     def cleanup(self) -> AgentControlCleanupResult:

@@ -20,6 +20,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from .agent_api_bundle import publish_agent_api_bundle
 from .benchmark import BenchmarkRelease, ResolvedBenchmarkRun
 from .environment import EnvironmentConfig
+from .recording import RecordingConfig, read_recording
 from .run_config import EnvironmentRun, resolve_environment_run
 from .client import Client, ClientError
 from .config import (
@@ -384,6 +385,9 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
     resource_envelope = run.resource_envelope
     evaluation_resource_envelope = run.evaluation_resource_envelope
     run_environment = run.environment
+    recording = (
+        RecordingConfig.load(args.recording) if args.recording else RecordingConfig()
+    )
     comparison_key = (
         benchmark.comparison_key.public_manifest()
         if benchmark is not None and benchmark.comparison_key is not None
@@ -619,6 +623,7 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
             comparison_key=comparison_key,
             benchmark_release=benchmark_release,
             environment=run_environment,
+            recording=recording,
         )
     except Exception:
         # The public helper bundle is read-only. No Agent has started yet;
@@ -1186,6 +1191,12 @@ def command_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_trajectory(args: argparse.Namespace) -> int:
+    """Export private research evidence with explicit capture limitations."""
+    _print(read_recording(args.episode))
+    return 0
+
+
 def command_benchmark_info(args: argparse.Namespace) -> int:
     release = BenchmarkRelease.load(args.benchmark)
     _print(release.public_manifest())
@@ -1396,6 +1407,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     start.set_defaults(function=command_start)
     start.add_argument(
+        "--recording",
+        type=Path,
+        help="launch-owned research recording and artifact retention JSON",
+    )
+    start.add_argument(
         "--worker-state-dir",
         type=Path,
         help="private local Worker recovery directory outside episode storage; "
@@ -1456,6 +1472,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     report.add_argument("--episode", required=True, type=Path)
     report.set_defaults(function=command_report)
+
+    trajectory = subparsers.add_parser(
+        "trajectory",
+        help="export trusted research events, payloads and artifact references",
+    )
+    trajectory.add_argument("--episode", required=True, type=Path)
+    trajectory.set_defaults(function=command_trajectory)
 
     benchmark_info = subparsers.add_parser(
         "benchmark-info", help="show supported track and runtime profile maps"

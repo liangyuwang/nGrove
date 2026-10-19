@@ -24,14 +24,36 @@ class AgentControlEvent:
 
 
 @dataclass(frozen=True)
+class AgentControlExchange:
+    """Transport-observed response publication; never proof of Agent consumption."""
+
+    request_id: str
+    response: Mapping[str, Any]
+    delivery: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.request_id, str) or not self.request_id:
+            raise ValueError("control exchange requires a request ID")
+        if not isinstance(self.response, dict):
+            raise ValueError("control exchange response must be an object")
+        if self.delivery not in {"published", "not_published"}:
+            raise ValueError("invalid control exchange delivery")
+
+
+@dataclass(frozen=True)
 class AgentControlStepResult:
     handled: bool
     policy_failure: bool = False
     infrastructure_failure_code: Optional[str] = None
     infrastructure_failure: Optional[str] = None
     events: Tuple[AgentControlEvent, ...] = ()
+    exchange: Optional[AgentControlExchange] = None
 
     def __post_init__(self) -> None:
+        if self.exchange is not None and not isinstance(
+            self.exchange, AgentControlExchange
+        ):
+            raise TypeError("exchange must be an AgentControlExchange")
         code = self.infrastructure_failure_code
         if code is not None and (
             not isinstance(code, str)

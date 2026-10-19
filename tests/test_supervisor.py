@@ -485,6 +485,7 @@ class SupervisorTests(unittest.TestCase):
         operator_max_research_seconds=None,
         evaluation_resource_envelope=None,
         environment=None,
+        recording=None,
         begin=True,
     ):
         resolved_config = config or self.config
@@ -518,6 +519,7 @@ class SupervisorTests(unittest.TestCase):
             operator_max_research_seconds=operator_max_research_seconds,
             evaluation_resource_envelope=evaluation_resource_envelope,
             environment=environment,
+            recording=recording,
         )
         if begin:
             supervisor.begin()
