@@ -1,83 +1,102 @@
-# nGrove
+<h1 align="center">nGrove</h1>
 
-**Autonomous research environments and trajectories for recursive self-improvement (RSI).**
+<p align="center">
+  <strong>Autonomous research environments and trajectories<br>for recursive self-improvement.</strong>
+</p>
 
-nGrove's scope is **recursive self-improvement (RSI)**: improving a research
-system's ability to find better research paths. This includes **meta-optimization**
-of how the system proposes experiments, uses experience, and improves its methods,
-tools, and workflows. Discovering stronger model-training procedures is the first
-concrete research setting.
+<p align="center">
+  <a href="#research-tasks"><img src="https://img.shields.io/badge/status-research_preview-52796F?style=flat-square" alt="Status: research preview"></a>
+  <a href="#manual-setup"><img src="https://img.shields.io/badge/python-3.9%2B-40566D?style=flat-square" alt="Python 3.9 or newer"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache_2.0-667085?style=flat-square" alt="License: Apache 2.0"></a>
+</p>
 
-The current implementation provides the environment for autonomous exploration,
-artifact evaluation, and trajectory recording. The recording interface
-connects these research experiences to future methods for improving the research
-system. Those methods and the recursive improvement loop remain future work
-within the project's scope. See
-[research scope and current implementation](docs/research-scope.md).
+<p align="center">
+  <a href="#overview">Overview</a> ·
+  <a href="#research-tasks">Research tasks</a> ·
+  <a href="#results">Results</a> ·
+  <a href="#getting-started">Getting started</a> ·
+  <a href="#roadmap">Roadmap</a> ·
+  <a href="#contributing">Contributing</a> ·
+  <a href="#documentation">Documentation</a>
+</p>
 
-nGrove lets researchers configure the resources available to an Agent, run
-autonomous experiments, and retain their actions, artifacts and execution
-evidence. Compute resources and time budgets are experimental variables: the
-same task can run with different GPU types/counts, CPU/memory limits and research
-durations without editing its release. Each run freezes its resolved settings
-before task reveal.
+---
 
-**Research tasks define the problems an Agent explores.** The bundled tasks live
-in `research_tasks/`. Their Track A/B budgets, incumbent selection, research
-sealing and evaluation use the current training-research protocol. Every run
-resolves and freezes its environment through one execution path.
+nGrove explores **recursive self-improvement (RSI)**: how autonomous research
+systems can get better at finding better research paths. It provides configurable
+environments to run experiments, evaluate artifacts, and retain research trajectories.
+Discovering stronger model-training procedures is the first concrete research setting.
 
-| Layer | Responsibility |
-| --- | --- |
-| Environment configuration | Run-owned compute profiles, resource contracts and time budgets |
-| Worker | Resource admission, execution, isolation and cleanup |
-| Research tasks | Research problems, task data, artifact interfaces and evaluation contracts |
-| Training-research protocol | Leases, immutable Candidates, research history and sealing |
-| Research recording | Observable actions, feedback evidence, executions and artifacts for future meta-optimization |
-| Evaluation | Independent measurement of submitted artifacts after research is sealed |
-| [Benchmark comparisons](#benchmark-comparisons) | Published lanes, fixed comparison conditions and formal eligibility |
-
-Validation within a research trajectory belongs to the Agent: it decides whether
-and how to validate using permitted information. Evaluation runs after
-research is sealed. The current TEST evaluates the final declared Candidate;
-postmortem ANALYSIS measures committed Candidates. These measurements describe
-artifacts, not the quality of the research trajectory itself.
-
-Start with [configurable environments](docs/environments.md), including examples
-for compute and time scaling. The published GPU profiles remain unchanged. The
-initial implementation supports the existing single-host CPU/NVIDIA Worker; other
-execution platforms remain external Worker deployments. General task protocols
-and configurable feedback policies are future extensions.
-
-Run the CLI with `ngrove` or `python -m ngrove`. Integrations use
-`ENVCORE_*` environment variables.
-
-[Research recording](docs/recording.md) links actions, returned feedback,
-executions and Candidate artifacts. Use `--recording` to configure payload capture
-and post-evaluation artifact retention, and `ngrove trajectory --episode PATH`
-to inspect the private evidence.
-
-## Research tasks
-
-**Constrain resources, not ideas. Define the evaluator, not the solution.**
+> **Constrain resources, not ideas. Define the evaluator, not the solution.**
 
 ![An Agent explores many paths within a sandbox and resource limits, co-designing a complete final solution: a model, agent, or agent system. The whole artifact passes through a narrow interface to an isolated evaluator. The goal is better end-to-end performance.](docs/assets/design-philosophy.png)
 
-*This diagram shows exploration and artifact evaluation within one research
-episode. Trajectory recording connects those experiences to future methods for
-improving the research system itself.*
-
-**A research task should define what success means, not tell an AI how to achieve it.**
-The bundled research tasks follow this principle: leave the largest practical
-solution space open to the Agent within a defined sandbox and resource budget.
-
-> **Preview:** a runnable LM pretraining research task, a development smoke task,
-> and completed experimental runs.
-
-[Overview](#overview) · [Results](#results) · [Getting Started](#getting-started) ·
-[Roadmap](#roadmap) · [Contributing](#contributing) · [Documentation](#documentation)
+<p align="center"><sub>One research episode: autonomous exploration within a defined boundary, followed by isolated artifact evaluation.</sub></p>
 
 ## Overview
+
+Configure an Agent's resources, run autonomous research, and retain its actions,
+artifacts, and execution evidence. Compute resources and time budgets are
+experimental variables: the same task can use different GPU types/counts,
+CPU/memory limits, and research durations without editing its release. Every run
+freezes its resolved environment before task reveal.
+
+| Configure | Explore & evaluate | Record & study |
+| --- | --- | --- |
+| Choose a research task, compute resources, and time budget. | Let the Agent conduct research; evaluate submitted artifacts after sealing and confirmed teardown. | Retain observable actions, executions, and Candidate artifacts for future meta-optimization. |
+| [Environment configuration →](docs/environments.md) | [Research protocol →](docs/benchmark-reference.md) | [Research recording →](docs/recording.md) |
+
+> [!NOTE]
+> **Implemented:** autonomous exploration, artifact evaluation, and trajectory recording.
+>
+> **Future work:** methods that use those experiences to improve the researcher,
+> and an automated recursive improvement loop. Higher artifact scores alone do
+> not demonstrate improved research capability. See [research scope](docs/research-scope.md).
+
+The broader goal includes **meta-optimization** of how a system proposes
+experiments, uses experience, and improves its methods, tools, and workflows.
+An Agent can already improve its own software and research process within an
+episode; the recording interface connects that experience to future methods.
+
+<details>
+<summary><strong>Architecture at a glance</strong> — Core, Workers, tasks, and evidence</summary>
+
+| Layer | Responsibility |
+| --- | --- |
+| Environment configuration | Run-owned compute profiles, resource contracts, and time budgets |
+| Worker | Resource admission, execution, isolation, and cleanup |
+| Research tasks | Research problems, task data, artifact interfaces, and evaluation contracts |
+| Training-research protocol | Leases, immutable Candidates, research history, and sealing |
+| Research recording | Observable actions, feedback evidence, executions, and artifacts for future meta-optimization |
+| Evaluation | Independent measurement of submitted artifacts after research is sealed |
+| [Benchmark comparisons](#benchmark-comparisons) | Published lanes, fixed comparison conditions, and formal eligibility |
+
+Core defines the research protocol. Workers implement execution and isolation in
+the user's environment. The repository includes a local Docker runtime for the
+existing single-host CPU/NVIDIA Worker; cluster and other platform integrations
+live in external Workers. General task protocols and configurable feedback
+policies are future extensions.
+
+</details>
+
+## Research tasks
+
+**A research task should define what success means, not tell an AI how to achieve it.**
+The bundled tasks leave the largest practical solution space open to the Agent
+within a defined sandbox and resource budget.
+
+| Task | Status | Purpose |
+| --- | --- | --- |
+| [LM pretrain](research_tasks/lm-pretrain/README.md) | **Runnable preview** | Autonomous LM pretraining research; completed full-data runs in both tracks |
+| [LM Open World](research_tasks/lm-open-world/README.md) | **Design proposal** | A vision README and open questions; no implementation |
+
+The current LM pretraining preview retains task-specific restrictions: fixed
+task data and artifact requirements, plus [release policy](research_tasks/lm-pretrain/POLICY.md)
+limits on extra training corpora and pretrained target-model checkpoints.
+We invite the community to help shape LM Open World beyond these training-specific
+assumptions; the [roadmap](#roadmap) describes the work toward that goal.
+
+### Design philosophy
 
 Within each research task, the goal is a final solution that performs well
 **end to end**. Depending on the research task, this may be a model, an agent,
@@ -105,6 +124,9 @@ toward approaches we expect.
 The Agent chooses its own starting point, opening the search space to
 fundamentally different systems and research approaches.
 
+<details>
+<summary><strong>Why leave the solution space open?</strong></summary>
+
 Transformers and MoE, new optimizers, data curation, custom kernels, and
 agent-built research tools are familiar examples of what an Agent might explore.
 These choices interact, so the Agent must be free to **co-design across these
@@ -125,24 +147,14 @@ evaluator's data or results during research. The sandbox must enforce the resour
 budget. Inside those boundaries, the Agent should be left alone. Strategies
 unlike anything the designers imagined are an intended outcome of the research task.
 
-**Current preview: LM pretraining.** The first implementation is
-[LM pretrain](research_tasks/lm-pretrain/README.md), with a smaller
-[development smoke task](dev_tasks/smoke_lm-pretrain/README.md). It still has
-task-specific restrictions: fixed task data and artifact requirements, plus
-[release policy](research_tasks/lm-pretrain/POLICY.md) limits on extra training
-corpora and pretrained target-model checkpoints.
-
-**Future research task: LM Open World (not implemented).** The proposed research
-task currently consists only of a
-[vision README and open design questions](research_tasks/lm-open-world/README.md).
-We invite the community to help shape a research task that opens the solution space
-beyond the current training-specific assumptions. The [Roadmap](#roadmap)
-describes the sandbox, resource, and evaluator work toward that goal.
+</details>
 
 **The Research Agent's initial configuration is fixed before task reveal.
 Autonomous improvement is allowed.** After task reveal, the Agent can improve
 its own software, tools, and research workflow within the task and environment boundary.
 External human intervention is excluded.
+
+### Research lifecycle
 
 For the current training tasks, a **Training Lease** gives the Agent bounded
 access to the training environment. Two tracks ask complementary questions:
@@ -152,20 +164,28 @@ access to the training environment. Two tracks ask complementary questions:
 | **A: time-bounded research** | Total elapsed research time, including reasoning, coding, and training | How much can the Agent achieve within a fixed amount of time? |
 | **B: lease-bounded research** | Number and maximum duration of Training Leases | How effectively can the Agent use a limited number of training opportunities? |
 
-The Agent receives TRAIN and no organizer-owned validation scores during
-research. It commits immutable Candidates and explicitly declares its final
-incumbent before research is sealed. Once Agent and Research workloads and
-control capabilities are confirmed terminated, hidden TEST evaluates only that
-incumbent; postmortem ANALYSIS evaluates the committed history.
+Track B has no total research deadline in its scoring budget. Private Operator
+protection limits remain separate. An environment may override the time budget;
+an omitted budget inherits the selected task/Track settings. The effective
+budget freezes before task reveal. See [time budgets](docs/environments.md#time-budgets-and-freezing).
+
+| Stage | What happens |
+| --- | --- |
+| **1 · Configure** | Fix the Agent's initial configuration and freeze the resolved environment before task reveal. |
+| **2 · Research** | The Agent receives TRAIN, decides whether and how to validate using permitted information, and commits immutable Candidates. No organizer-owned validation data or scores are available. |
+| **3 · Seal** | The Agent explicitly declares its final incumbent before research is irreversibly sealed. Confirm termination of all Agent/Research workloads and control capabilities. |
+| **4 · Evaluate** | Hidden TEST evaluates only the final declared incumbent; postmortem ANALYSIS measures the committed history and never selects the incumbent. |
+
+These measurements describe artifacts, not the quality of the research trajectory
+itself. [Research recording](docs/recording.md) links actions, returned feedback,
+executions, and Candidate artifacts. Use `--recording` to configure payload capture
+and post-evaluation artifact retention, and `ngrove trajectory --episode PATH`
+to inspect the private evidence.
 
 Results keep two axes separate: **higher TEST performance** and **lower serving
 time per task**. Comparisons use the same release and comparison conditions.
 
-Core defines the research protocol. Workers implement execution and isolation in
-the user's environment. The repository includes a local Docker runtime;
-cluster and other platform integrations live in external Workers.
-
-## Benchmark comparisons
+### Benchmark comparisons
 
 Research tasks can also be used for standardized comparisons through named
 Track/runtime presets and fixed comparison conditions. No frozen,
@@ -175,9 +195,6 @@ comparison keys and eligibility requirements.
 
 ## Results
 
-More results will be added after further testing. A dedicated website is planned
-to present results in greater detail.
-
 The `lm-pretrain` preview has completed full-data runs in both tracks, using
 a public TRAIN pool of approximately **9.95 billion tokens**. Both runs completed
 autonomous training, Candidate submission, research sealing, TEST, and postmortem
@@ -186,19 +203,33 @@ ANALYSIS.
 These September 2026 runs used Codex CLI with `gpt-5.6-sol` at high reasoning
 effort, on Core revision [`84f6a72`](https://github.com/liangyuwang/nGrove/commit/84f6a725c59f2c596acf8798e0df6aa4f62948eb).
 
-| Track | Research budget | Training hardware | TEST score ↑ | TEST time per task ↓ |
-| --- | --- | --- | --- | --- |
-| A | 8 hours | 4 × H100 80 GB | 70.09 | 7.81 ms |
-| B | 6 Leases × up to 1 hour | 1 × A100 80 GB, derived preview profile | 65.63 | 3.79 ms |
+| Track | Research budget | Training hardware | TEST score&nbsp;↑ | Time / task&nbsp;↓ |
+| :--- | :--- | :--- | ---: | ---: |
+| **A** | 8 hours | 4 × H100 80 GB | 70.09 | 7.81 ms |
+| **B** | 6 Leases × up to 1 hour | 1 × A100 80 GB, derived preview profile | 65.63 | 3.79 ms |
 
 Scores use the preview's 0–100 performance metric; time per task measures
-Candidate serving, not training. These are non-compliant, leaderboard-ineligible
-`host_cli` previews with different hardware profiles and Agent CLI versions,
-so they are not a controlled A/B comparison or a formal ranking. Historical
-success also does not certify the current Worker revision; see the
+Candidate serving, not training.
+
+> [!IMPORTANT]
+> These are **non-compliant, leaderboard-ineligible `host_cli` previews** with
+> different hardware profiles and Agent CLI versions. They are not a controlled
+> A/B comparison or a formal ranking.
+
+Historical success also does not certify the current Worker revision; see the
 [recorded evidence scope](docs/worker-acceptance-matrix.md#historical-evidence-catalog).
 
+More results will be added after further testing. A dedicated website is planned
+to present results in greater detail.
+
 ## Getting Started
+
+| I want to… | Start here |
+| --- | --- |
+| Install the CLI and inspect a configuration | [Manual setup](#manual-setup) |
+| Run an episode with my own Agent | [Generate a research trajectory](#1-generate-a-research-trajectory) |
+| Compare Agents across compute configurations | [Study resource configurations](#2-study-agents-across-resource-configurations) |
+| Check integration with a small CPU-capable task | [Smoke LM pretrain](dev_tasks/smoke_lm-pretrain/README.md) |
 
 A coding agent can serve as your **Repository Assistant**, helping you
 understand, develop, test, document, and maintain the project. Open this checkout
@@ -217,7 +248,7 @@ Choose a [research task](research_tasks/README.md), such as
 `--task`, `--track`, and a user-owned `--environment` configuration. The examples
 below generate research trajectories and evaluate the resulting artifacts.
 
-### **1. Generate a research trajectory**
+### 1. Generate a research trajectory
 
 Provide the Agent identity and command, an authorized environment, and a
 dedicated working root. For example:
@@ -230,6 +261,9 @@ dedicated working root. For example:
 > launch, then monitor the episode through evaluation. Retain the research
 > trajectory and artifacts, and report the result with its capture limitations.
 > Do not retry automatically.
+
+<details>
+<summary><strong>Example configuration</strong> — one Agent, four H100 GPUs, two hours</summary>
 
 Example values for this template are below. Replace the illustrative Agent
 image, command, SSH alias, and path with your own. Use the image's actual digest;
@@ -244,10 +278,15 @@ the repository does not provide the example Agent.
 | `[authorized environment]` | `ssh research-h100` — an existing authenticated SSH alias |
 | `[working root outside the Core checkout]` | `/srv/ngrove-runs` on that host |
 
-### **2. Study Agents across resource configurations**
+</details>
+
+### 2. Study Agents across resource configurations
 
 Specify the combinations to run, the concurrency limit, the total budget, and
 the retry policy:
+
+<details>
+<summary><strong>Prompt and example configuration</strong> — two Agents × two hardware configurations</summary>
 
 > Run [provided Agent identities and commands] on [research task and Track]
 > across [provided execution environments and environment configurations].
@@ -278,6 +317,8 @@ again replaced with your actual Agent identity and command.
 In this example, compare A with B on A100 and on H100 separately; keep the
 frozen environment attached to every result.
 
+</details>
+
 Parallel runs require independent resource allocations and isolation. Batch
 scheduling belongs to the operator's deployment launcher; Core supervises
 individual episodes.
@@ -289,6 +330,9 @@ and cleanup fit the agreed resource and time limits before launch.
 
 Once the run plan is agreed, the operator can carry out the authorized episodes
 without asking again for each one.
+
+<details>
+<summary><strong>Preparation notes</strong> — data reuse and smaller integration checks</summary>
 
 **Prepare TRAIN once and reuse it.** Keep the verified public dataset in trusted
 storage and expose it read-only to each episode. Remote environments can share
@@ -310,6 +354,8 @@ its scores do not establish performance on the research task. The operator
 should explain the resource gap and let you select smoke rather than silently
 substituting it.
 
+</details>
+
 ### Manual setup
 
 You can also operate the CLI directly.
@@ -322,14 +368,21 @@ require the NVIDIA Container Toolkit.
 From a checkout of this repository, install the CLI and inspect an example
 environment without preparing data or allocating resources:
 
-If this Python environment has the earlier development distribution installed,
-first run `python3 -m pip uninstall envcore` to remove its old command.
+<details>
+<summary>Upgrading from the earlier <code>envcore</code> distribution?</summary>
+
+Before installing, run `python3 -m pip uninstall envcore` to remove its old command.
+
+</details>
 
 ```bash
 python3 -m pip install -e .
 ngrove environment-info \
   --environment examples/environments/h100-x4-2h.json
 ```
+
+Run the CLI with `ngrove` or `python -m ngrove`. Integrations use
+`ENVCORE_*` environment variables.
 
 Then follow the task's [data preparation](research_tasks/lm-pretrain/README.md#prepare-data)
 and [research run configuration](research_tasks/lm-pretrain/README.md#run-a-research-episode) steps.
@@ -341,16 +394,52 @@ outside the Core checkout.
 
 ## Roadmap
 
-**RSI and meta-optimization guide the roadmap.** Future methods will use
-trajectories to improve how Agents find research paths, then study the resulting
-systems through further experiments. The implemented
-[recording interface](docs/recording.md) is the connection point for that work.
-Specific learning or update methods and automated recursive orchestration remain
-open; their eventual module or repository placement does not limit the project's
-[research scope](docs/research-scope.md).
+**Build research systems that become better at finding better research paths.**
+Starting with model training, we aim to discover procedures that outperform
+established human-designed approaches under comparable conditions, and develop
+the ability to keep finding such procedures. This is the project's
+[research objective](docs/research-scope.md); the current preview results do not
+establish that it has been achieved.
 
-Current environment development builds on the existing Worker protocol, resource
-contracts, and isolated evaluation in three areas:
+The environment, artifact evaluation, and [recording interface](docs/recording.md)
+provide the implemented foundation for four research directions:
+
+1. **Expand autonomous exploration.** Develop research tasks that admit
+   substantially different solutions under a clear objective and resource budget.
+   The proposed [LM Open World](research_tasks/lm-open-world/README.md) would extend
+   the current pretraining setting with broader access to permitted data, models,
+   tools, and services, and task-owned artifact interfaces. It remains a vision
+   README with no implementation.
+
+2. **Improve how the system conducts research.** Develop meta-optimization
+   methods that use permitted research experience to improve hypothesis selection,
+   experiment design, use of failures, tools, and workflows. The update mechanism
+   remains open: changes may involve model parameters, memory, tools, harnesses,
+   or research strategies. These methods are not yet implemented.
+
+3. **Test whether research capability improves.** Compare research systems under
+   controlled conditions and study transfer across tasks, budgets, and starting
+   points. Use trajectories to investigate which changes help a system find better
+   paths and use resources more effectively. Higher Candidate scores alone do not
+   establish this. The [research-dynamics diagnostics](docs/research-dynamics.md)
+   are a proposed analysis component, not yet implemented.
+
+4. **Connect successive rounds of improvement.** Link autonomous exploration,
+   recorded experience, research-system updates, and further experiments into a
+   recursive loop. Preserve system versions, experimental conditions, and capture
+   limitations so repeated gains can be tested. Automated recursive orchestration
+   remains future work.
+
+Future learning methods must preserve the boundary between permitted research
+experience and private postmortem evidence. Trajectory capture does not authorize
+exposing hidden ANALYSIS/TEST data or scores to the Research Agent.
+
+<details>
+<summary><strong>Supporting environment work</strong> — sandbox, resources, and evaluator</summary>
+
+These research directions require reliable execution, resource accounting, and
+independent evaluation. Environment development builds on the existing Worker
+protocol and resource contracts:
 
 - **Sandbox.** Add queryable, cancellable Worker operations and explicit recovery
   semantics for interrupted calls, alongside targeted validation of current
@@ -365,12 +454,11 @@ contracts, and isolated evaluation in three areas:
   while retaining the current LM implementation. Establish organizer-controlled
   hidden evaluation and frozen evaluation contracts for formal releases.
 
-Together, these extensions are intended to support
-[LM Open World](research_tasks/lm-open-world/README.md), which currently has a vision
-README only and **no implementation**. Current implementation status
-and deployment checks are documented in the
+Current implementation status and deployment checks are documented in the
 [development plan](docs/thin-core-development-plan.md#current-preview-closeout-boundary)
 and [acceptance matrix](docs/worker-acceptance-matrix.md).
+
+</details>
 
 ## Contributing
 
@@ -397,6 +485,7 @@ For the current research protocol and operating details, see the
 | Read more | Contents |
 | --- | --- |
 | [Research scope and current implementation](docs/research-scope.md) | RSI and meta-optimization goals, the current stage, and the recording interface for future methods |
+| [Environment configuration](docs/environments.md) | Compute resources, time budgets, frozen identities, and scaling examples |
 | [Research recording](docs/recording.md) | Implemented trajectory capture, runner observations, artifact retention and read-only export |
 | [Training-research reference](docs/benchmark-reference.md) | Shared protocol, Track accounting, evaluation, isolation and local operation |
 | [Research tasks](research_tasks/README.md) | Research problems, evaluation contracts and run configuration |
@@ -404,3 +493,11 @@ For the current research protocol and operating details, see the
 | [Operator status](docs/operator-status.md) and [recovery](docs/worker-recovery.md) | Monitoring, interruption evidence, and owned-resource cleanup |
 | [Research dynamics and RSI diagnostics](docs/research-dynamics.md) (design proposal) | Proposed read-only postmortem curves, metrics, process evidence, and data-quality reporting; not implemented |
 | [Development plan](docs/thin-core-development-plan.md#current-preview-closeout-boundary) and [acceptance matrix](docs/worker-acceptance-matrix.md) | Preview implementation status, remaining deployment checks, and deferred formal release work |
+
+---
+
+<p align="center">
+  <a href="LICENSE">Apache-2.0</a> ·
+  <a href="https://github.com/liangyuwang/nGrove/issues">Discuss an idea</a> ·
+  <a href="#ngrove">Back to top ↑</a>
+</p>
