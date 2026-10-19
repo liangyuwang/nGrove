@@ -1,4 +1,4 @@
-"""Platform-neutral execution contract used by the Envcore coordinator.
+"""Platform-neutral execution contract used by the research coordinator.
 
 The core protocol describes effects that a trusted Worker must provide.  It
 does not describe how Docker, a scheduler, a container runtime, or a remote job
@@ -1899,5 +1899,5 @@ class Worker(ResearchWorker, EvaluationWorker, Protocol):
     """Phase-one in-process Worker contract.
 
     A future transport can implement the same semantics asynchronously without
-    adding scheduler or container concepts to the Envcore Supervisor.
+    adding scheduler or container concepts to the Supervisor.
     """

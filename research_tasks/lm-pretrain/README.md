@@ -11,8 +11,8 @@ data builder. Run the task through `--task` with `--track` and a user-owned
 The current budgets, task images and local preview ANALYSIS/TEST settings are
 provisional.
 
-The Agent chooses its own validation methods during research. Envcore's
-evaluation measures submitted Candidates after research is sealed; its scores
+The Agent chooses its own validation methods during research. Evaluation
+measures submitted Candidates after research is sealed; its scores
 describe those artifacts and do not grade the research trajectory itself.
 
 ## Public TRAIN layout
@@ -153,7 +153,7 @@ about 20 GB, in addition to the public raw TRAIN Parquet:
 
 ```bash
 python3 research_tasks/lm-pretrain/prepare_data.py --accept-large-download
-envcore prepare --task research_tasks/lm-pretrain/task.json
+ngrove prepare --task research_tasks/lm-pretrain/task.json
 ```
 
 An existing pinned FineWeb-Edu `sample/10BT` download can be reused:
@@ -267,10 +267,10 @@ budget. Supply your own Agent and an authorized execution environment, and
 review the storage and operator protections below before launch:
 
 ```bash
-envcore start \
+ngrove start \
   --task research_tasks/lm-pretrain/task.json --track A \
   --environment examples/environments/h100-x4-2h.json \
-  --episodes-root /path/to/envcore-runs/episodes \
+  --episodes-root /path/to/ngrove-runs/episodes \
   --agent-runner container \
   --agent-image participant-agent@sha256:DIGEST \
   --agent-command "participant-agent run"
@@ -279,7 +279,7 @@ envcore start \
 The run freezes resources and budget before task reveal. It records the
 research trajectory and evaluates submitted artifacts through the shared
 research lifecycle. Configure capture and retention with `--recording` and
-inspect the private evidence with `envcore trajectory --episode PATH`; see
+inspect the private evidence with `ngrove trajectory --episode PATH`; see
 [research recording](../../docs/recording.md).
 
 ## Supported preview lanes
@@ -350,7 +350,7 @@ benchmark_id + track + track_config + runtime_profile
 Inspect the finite maps:
 
 ```bash
-envcore benchmark-info \
+ngrove benchmark-info \
   --benchmark research_tasks/lm-pretrain/benchmark.json
 ```
 
@@ -375,11 +375,11 @@ must enforce this in their execution environment. See
 [storage protection requirements](../../docs/benchmark-reference.md#private-operator-storage-protection).
 
 ```bash
-envcore start \
+ngrove start \
   --benchmark research_tasks/lm-pretrain/benchmark.json \
   --track-config preview-b-6x1h \
   --runtime-profile h100-sxm-80gb-x4 \
-  --episodes-root /path/to/envcore-runs/episodes \
+  --episodes-root /path/to/ngrove-runs/episodes \
   --agent-runner container \
   --agent-image participant-agent@sha256:DIGEST \
   --agent-command "participant-agent run"

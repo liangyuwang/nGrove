@@ -1,21 +1,21 @@
-# Envcore
+# nGrove
 
-**Autonomous research environments and trajectories for recursive self-improvement.**
+**Autonomous research environments and trajectories for recursive self-improvement (RSI).**
 
-The project's scope is **recursive self-improvement (RSI)**: improving a research
+nGrove's scope is **recursive self-improvement (RSI)**: improving a research
 system's ability to find better research paths. This includes **meta-optimization**
 of how the system proposes experiments, uses experience, and improves its methods,
 tools, and workflows. Discovering stronger model-training procedures is the first
 concrete research setting.
 
 The current implementation provides the environment for autonomous exploration,
-artifact evaluation, and trajectory recording. The implemented recording interface
+artifact evaluation, and trajectory recording. The recording interface
 connects these research experiences to future methods for improving the research
 system. Those methods and the recursive improvement loop remain future work
 within the project's scope. See
 [research scope and current implementation](docs/research-scope.md).
 
-Envcore lets researchers configure the resources available to an Agent, run
+nGrove lets researchers configure the resources available to an Agent, run
 autonomous experiments, and retain their actions, artifacts and execution
 evidence. Compute resources and time budgets are experimental variables: the
 same task can run with different GPU types/counts, CPU/memory limits and research
@@ -38,7 +38,7 @@ resolves and freezes its environment through one execution path.
 | [Benchmark comparisons](#benchmark-comparisons) | Published lanes, fixed comparison conditions and formal eligibility |
 
 Validation within a research trajectory belongs to the Agent: it decides whether
-and how to validate using permitted information. Envcore's evaluation runs after
+and how to validate using permitted information. Evaluation runs after
 research is sealed. The current TEST evaluates the final declared Candidate;
 postmortem ANALYSIS measures committed Candidates. These measurements describe
 artifacts, not the quality of the research trajectory itself.
@@ -49,13 +49,12 @@ initial implementation supports the existing single-host CPU/NVIDIA Worker; othe
 execution platforms remain external Worker deployments. General task protocols
 and configurable feedback policies are future extensions.
 
-The distribution, Python package and CLI are all named `envcore`.
-Use `envcore` or `python -m envcore`. Integrations use `ENVCORE_*` environment
-variables.
+Run the CLI with `ngrove` or `python -m ngrove`. Integrations use
+`ENVCORE_*` environment variables.
 
 [Research recording](docs/recording.md) links actions, returned feedback,
 executions and Candidate artifacts. Use `--recording` to configure payload capture
-and post-evaluation artifact retention, and `envcore trajectory --episode PATH`
+and post-evaluation artifact retention, and `ngrove trajectory --episode PATH`
 to inspect the private evidence.
 
 ## Research tasks
@@ -185,7 +184,7 @@ autonomous training, Candidate submission, research sealing, TEST, and postmorte
 ANALYSIS.
 
 These September 2026 runs used Codex CLI with `gpt-5.6-sol` at high reasoning
-effort, on Core revision [`84f6a72`](https://github.com/liangyuwang/AutoTrain-Bench/commit/84f6a725c59f2c596acf8798e0df6aa4f62948eb).
+effort, on Core revision [`84f6a72`](https://github.com/liangyuwang/nGrove/commit/84f6a725c59f2c596acf8798e0df6aa4f62948eb).
 
 | Track | Research budget | Training hardware | TEST score ↑ | TEST time per task ↓ |
 | --- | --- | --- | --- | --- |
@@ -243,7 +242,7 @@ the repository does not provide the example Agent.
 | `[immutable Agent image]` | `ghcr.io/your-org/agent-a@sha256:<real-digest-a>` |
 | `[autonomous command]` | `agent-a run` — replace with your Agent's non-interactive command |
 | `[authorized environment]` | `ssh research-h100` — an existing authenticated SSH alias |
-| `[working root outside the Core checkout]` | `/srv/envcore-runs` on that host |
+| `[working root outside the Core checkout]` | `/srv/ngrove-runs` on that host |
 
 ### **2. Study Agents across resource configurations**
 
@@ -273,7 +272,7 @@ again replaced with your actual Agent identity and command.
 | `[explicit Agent/hardware combinations]` | A/A100, B/A100, A/H100, B/H100 |
 | `[N]` | `2`, with at most one active episode per host |
 | `[resource/time limits, including preparation, evaluation, and cleanup]` | Four episodes; at most 48 reserved GPU-hours and 36 hours elapsed for the whole batch, including all phases |
-| `[dedicated working roots]` | `/srv/envcore-runs` on each host, with a separate directory for every episode |
+| `[dedicated working roots]` | `/srv/ngrove-runs` on each host, with a separate directory for every episode |
 | `[retry policy]` | No automatic retries; retain failure evidence and continue with independent runs when their boundaries remain safe |
 
 In this example, compare A with B on A100 and on H100 separately; keep the
@@ -323,9 +322,12 @@ require the NVIDIA Container Toolkit.
 From a checkout of this repository, install the CLI and inspect an example
 environment without preparing data or allocating resources:
 
+If this Python environment has the earlier development distribution installed,
+first run `python3 -m pip uninstall envcore` to remove its old command.
+
 ```bash
 python3 -m pip install -e .
-envcore environment-info \
+ngrove environment-info \
   --environment examples/environments/h100-x4-2h.json
 ```
 
@@ -365,7 +367,7 @@ contracts, and isolated evaluation in three areas:
 
 Together, these extensions are intended to support
 [LM Open World](research_tasks/lm-open-world/README.md), which currently has a vision
-README only and **no implementation**. Current Envcore implementation status
+README only and **no implementation**. Current implementation status
 and deployment checks are documented in the
 [development plan](docs/thin-core-development-plan.md#current-preview-closeout-boundary)
 and [acceptance matrix](docs/worker-acceptance-matrix.md).
@@ -383,9 +385,9 @@ Bring an Agent, an execution environment, or a contribution to the research task
 - **Improve the project.** Report reproducible problems, clarify documentation,
   or contribute focused fixes with relevant checks from the [test suite](tests/).
 
-[Open an issue](https://github.com/liangyuwang/AutoTrain-Bench/issues) to discuss
+[Open an issue](https://github.com/liangyuwang/nGrove/issues) to discuss
 an experiment, integration, or proposal, or
-[submit a pull request](https://github.com/liangyuwang/AutoTrain-Bench/pulls).
+[submit a pull request](https://github.com/liangyuwang/nGrove/pulls).
 
 ## Documentation
 

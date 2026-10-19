@@ -45,5 +45,17 @@ def publish_agent_api_bundle(
     for path in package.iterdir():
         path.chmod(0o444)
     package.chmod(0o555)
+    launcher = destination / "ngrove"
+    launcher.mkdir()
+    (launcher / "__init__.py").write_text(
+        '"""Public command-line entry point for nGrove."""\n', encoding="utf-8"
+    )
+    (launcher / "__main__.py").write_text(
+        'from envcore.cli import main\n\n\nif __name__ == "__main__":\n    main()\n',
+        encoding="utf-8",
+    )
+    for path in launcher.iterdir():
+        path.chmod(0o444)
+    launcher.chmod(0o555)
     destination.chmod(0o555)
     return destination

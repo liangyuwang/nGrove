@@ -24,7 +24,7 @@ below.
 
 ## Launch configuration
 
-Pass `--recording recording.json` to `envcore start`, with either a task or a
+Pass `--recording recording.json` to `ngrove start`, with either a task or a
 benchmark selection. Omission uses these defaults:
 
 ```json
@@ -156,7 +156,7 @@ There is no mandatory experiment-registration protocol for the Agent.
 ## Read-only export
 
 ```sh
-envcore trajectory --episode /trusted/runs/episode
+ngrove trajectory --episode /trusted/runs/episode
 ```
 
 The command validates the Core result and recording configuration, reads events,

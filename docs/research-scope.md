@@ -1,6 +1,6 @@
 # Research scope and current implementation
 
-Envcore is a project for **recursive self-improvement (RSI)** of autonomous
+nGrove is a project for **recursive self-improvement (RSI)** of autonomous
 research systems. Its scope includes **meta-optimization**: improving how a system
 finds better research paths, learns from experiments, and develops its research
 methods, tools, and workflows.
@@ -69,7 +69,7 @@ between the current environment and future meta-optimization methods:
   available evidence and make omissions explicit.
 - `Supervisor.record_observation()` accepts optional trusted runner observations
   of tools, feedback or code changes, with source identities and explicit links.
-- `envcore trajectory --episode PATH` exports recorded evidence, resource and
+- `ngrove trajectory --episode PATH` exports recorded evidence, resource and
   usage information, and a separate postmortem section for trusted consumers.
 
 Coverage depends on the configured capture and runner. A trajectory is not a

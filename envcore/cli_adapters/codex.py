@@ -85,7 +85,7 @@ def build_codex_command(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="run a logged-in Codex CLI as a Envcore host Agent"
+        description="run a logged-in Codex CLI as a host-native Research Agent"
     )
     parser.add_argument("--model", required=True)
     parser.add_argument("--reasoning-effort", default="high")
@@ -105,7 +105,7 @@ def main(
     task_value = env.get("ENVCORE_TASK")
     if not workspace_value or not control_value or not task_value:
         raise SystemExit(
-            "Codex CLI adapter must be launched by the Envcore " "host_cli runner"
+            "Codex CLI adapter must be launched by the ngrove host_cli runner"
         )
 
     codex_binary = shutil.which(args.codex_binary, path=env.get("PATH"))

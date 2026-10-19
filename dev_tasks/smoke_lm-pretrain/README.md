@@ -1,7 +1,7 @@
 # Smoke LM pretrain development task
 
 `smoke_lm-pretrain` is the single bundled end-to-end development smoke task for
-Envcore. It exercises the same task-and-environment launch contract,
+nGrove. It exercises the same task-and-environment launch contract,
 task/participant boundary, Policy, trusted Evaluator implementation, Track
 A/Track B state machine, Candidate isolation, and incumbent semantics as
 `lm-pretrain`. Its corpus, tokenization, context, data layout, split recipe,
@@ -21,7 +21,7 @@ The smoke task owns only:
 - the release Policy.
 
 The participant owns the Agent image or CLI, its command, and every initial
-workspace file. If `--agent-workspace` is omitted, Envcore creates an
+workspace file. If `--agent-workspace` is omitted, the launcher creates an
 empty episode workspace. The Agent must create its own training program, model,
 experiments, Candidate implementation, and incumbent decisions after task
 reveal. This task does not ship a reference or starter Agent. An egress-denied
@@ -78,7 +78,7 @@ minutes for Track A and three 75-second Leases for Track B at every GPU count.
 When using these presets, inspect their supported Track and runtime choices:
 
 ```bash
-envcore benchmark-info \
+ngrove benchmark-info \
   --benchmark dev_tasks/smoke_lm-pretrain/benchmark.json
 ```
 
@@ -100,7 +100,7 @@ library.
 
 ```bash
 python3 dev_tasks/smoke_lm-pretrain/prepare_data.py
-envcore prepare --task dev_tasks/smoke_lm-pretrain/task.json
+ngrove prepare --task dev_tasks/smoke_lm-pretrain/task.json
 ```
 
 Preparation downloads a deterministic slice of
@@ -110,7 +110,7 @@ and writes ignored generated artifacts under `dev_tasks/smoke_lm-pretrain/data/`
 
 `data/train/manifest.json` inventories the public TRAIN files without including
 hidden evaluation metadata. Cached preparation verifies this inventory;
-legacy or damaged data is rebuilt. `envcore prepare` and every new
+legacy or damaged data is rebuilt. `ngrove prepare` and every new
 episode independently check the full TRAIN view before the Agent starts.
 See [TRAIN integrity](../../docs/training-data.md).
 
@@ -139,10 +139,10 @@ The image contains the Agent executable, while the writable episode workspace
 starts empty:
 
 ```bash
-envcore start \
+ngrove start \
   --task dev_tasks/smoke_lm-pretrain/task.json --track A \
   --environment examples/environments/cpu-2cores.json \
-  --episodes-root /path/to/envcore-runs/episodes \
+  --episodes-root /path/to/ngrove-runs/episodes \
   --agent-runner container \
   --agent-image participant-agent@sha256:DIGEST \
   --agent-command "participant-agent run"
@@ -152,11 +152,11 @@ For optional preset-based integration, the same smoke task can exercise a
 published accelerator profile without changing the task or using manual resource overrides:
 
 ```bash
-envcore start \
+ngrove start \
   --benchmark dev_tasks/smoke_lm-pretrain/benchmark.json \
   --track-config smoke-a-5m \
   --runtime-profile h100-sxm-80gb-x4 \
-  --episodes-root /path/to/envcore-runs/episodes \
+  --episodes-root /path/to/ngrove-runs/episodes \
   --agent-runner container \
   --agent-image participant-agent@sha256:DIGEST \
   --agent-command "participant-agent run"
@@ -171,10 +171,10 @@ and is rejected before task reveal. The Tested Agent's own global configuration
 and participant-owned instructions remain in scope.
 
 ```bash
-envcore start \
+ngrove start \
   --task dev_tasks/smoke_lm-pretrain/task.json --track A \
   --environment examples/environments/cpu-2cores.json \
-  --episodes-root /path/to/envcore-runs/episodes \
+  --episodes-root /path/to/ngrove-runs/episodes \
   --agent-runner host_cli \
   --no-operator-storage-limit \
   --agent-command "python3 -m envcore.cli_adapters.codex --model MODEL --reasoning-effort high"
@@ -197,7 +197,7 @@ Training commands write Candidate artifacts beneath the lease-owned `/output`
 mount. A participant commits an artifact through the mailbox:
 
 ```bash
-python -m envcore.cli agent lease-commit /output/candidate
+python -m ngrove agent lease-commit /output/candidate
 ```
 
 Commit stops the Training sandbox before validating and snapshotting the

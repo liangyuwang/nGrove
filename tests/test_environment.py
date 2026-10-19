@@ -786,21 +786,25 @@ class EnvironmentTests(unittest.TestCase):
         finally:
             fixture.tearDown()
 
-    def test_distribution_exposes_one_package_and_command(self):
+    def test_distribution_exposes_only_the_ngrove_command(self):
         config = configparser.ConfigParser()
         config.read(ROOT / "setup.cfg")
-        self.assertEqual(config["metadata"]["name"], "envcore")
-        self.assertEqual(config["options.packages.find"]["include"], "envcore*")
+        self.assertEqual(config["metadata"]["name"], "ngrove")
+        self.assertEqual(
+            config["options.packages.find"]["include"].split(), ["envcore*", "ngrove*"]
+        )
         self.assertEqual(
             config["options.entry_points"]["console_scripts"].strip(),
-            "envcore = envcore.cli:main",
+            "ngrove = envcore.cli:main",
         )
 
-    def test_public_bundle_supports_envcore_without_trusted_modules(self):
+    def test_public_bundle_supports_ngrove_without_trusted_modules(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             bundle = publish_agent_api_bundle(root / "api")
-            self.assertEqual({path.name for path in bundle.iterdir()}, {"envcore"})
+            self.assertEqual(
+                {path.name for path in bundle.iterdir()}, {"envcore", "ngrove"}
+            )
             code = """import importlib.util
 from envcore.candidate_protocol import prediction_storage_limit
 assert prediction_storage_limit(examples=1, vocab_size=257)['max_bytes'] > 0
@@ -808,7 +812,7 @@ assert importlib.util.find_spec('envcore.supervisor') is None
 """
             for command in (
                 ["-c", code],
-                ["-m", "envcore.cli", "agent", "--help"],
+                ["-m", "ngrove", "agent", "--help"],
             ):
                 # Editable installs add import hooks via site-packages that can
                 # resolve trusted Core modules outside the public bundle.

@@ -7,7 +7,7 @@ The wider [project scope](research-scope.md) is RSI and meta-optimization; the
 [recording interface](recording.md) connects this environment to future research
 improvement methods.
 
-Envcore defines what an episode is allowed to do. It does not
+Core defines what an episode is allowed to do. It does not
 define where workloads run, how an Operator reaches a host, or which platform
 mechanism enforces the contract.
 
@@ -154,7 +154,7 @@ Status: complete.
 
 The v0 support statement is:
 
-- The bundled `envcore prepare` and `envcore start` commands
+- The bundled `ngrove prepare` and `ngrove start` commands
   are a single-host local Docker reference composition.
 - `envcore.worker_protocol` version 12 is a synchronous in-process
   Python contract. Its remaining TRAIN/workspace/Candidate/output `Path` values

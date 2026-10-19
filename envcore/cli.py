@@ -578,7 +578,7 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
             lifetime.callback(reference_runtime.close_recovery)
             print(
                 f"Worker cleanup journal: {state_dir}\n"
-                "After Worker process loss, run worker-recover --state-dir PATH "
+                "After Worker process loss, run ngrove worker-recover --state-dir PATH "
                 "in this same Worker environment. Recovery does not resume the episode.",
                 flush=True,
             )
@@ -629,7 +629,7 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
         # The public helper bundle is read-only. No Agent has started yet;
         # restore its directory permissions so a failed preflight can remove it.
         bundle = episode_dir / "public" / "agent_api"
-        for directory in (bundle / "envcore", bundle):
+        for directory in (bundle / "envcore", bundle / "ngrove", bundle):
             if directory.is_dir():
                 directory.chmod(0o755)
         shutil.rmtree(episode_dir, ignore_errors=True)
@@ -1239,7 +1239,7 @@ def command_agent(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="envcore",
+        prog="ngrove",
         description="Autonomous research environments and trajectories for RSI",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)

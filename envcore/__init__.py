@@ -1,3 +1,3 @@
-"""Envcore coordinator and protocol core."""
+"""Research coordinator and execution protocol core."""
 
 __version__ = "0.0.0"

@@ -26,7 +26,7 @@ the limit; already admitted records retain room for completion and cleanup.
 After the Worker process has stopped, run in the **same Worker environment**:
 
 ```sh
-envcore worker-recover --state-dir /worker/private/run-state
+ngrove worker-recover --state-dir /worker/private/run-state
 ```
 
 Each recovery pass has a shared 120-second allowance. Override it with

@@ -1,6 +1,6 @@
 # Research tasks
 
-This directory contains research problems for Agents to explore in Envcore.
+This directory contains nGrove's research tasks.
 `lm-pretrain/` is the first runnable preview task; `lm-open-world/` is a design
 proposal. These tasks provide experimental settings for the project's
 [RSI and meta-optimization scope](../docs/research-scope.md). The pretraining
@@ -13,7 +13,7 @@ override budgets before research begins. Participant Agents, starter workspaces,
 and development fixtures do not belong here.
 
 During research, the Agent decides whether and how to validate using permitted
-information. Envcore's `evaluation` takes place after research sealing and
+information. Evaluation takes place after research sealing and
 confirmed teardown. TEST measures the final declared Candidate; the existing
 postmortem ANALYSIS measures committed Candidates. These are artifact measurements,
 not an evaluation of how good the research trajectory is.
@@ -28,7 +28,7 @@ freezes the effective compute resources and time budget. The
 integration check.
 
 Every run records available research evidence. Use `--recording` to configure
-capture and artifact retention, and `envcore trajectory --episode PATH` to
+capture and artifact retention, and `ngrove trajectory --episode PATH` to
 inspect the private export. See [research recording](../docs/recording.md) for
 capture limitations and the interface for future meta-optimization methods.
 
@@ -82,7 +82,7 @@ benchmark_id + track + track_config + runtime_profile
 
 ## Reference environments and custom comparisons
 
-For research on hardware scaling, Envcore also supports run-owned
+For research on hardware scaling, use run-owned
 [environment configurations](../docs/environments.md). Select `--environment`
 at launch to reuse a task and budget with custom hardware without editing this
 benchmark release. Every run freezes an environment. If its effective conditions
@@ -174,7 +174,7 @@ count and accelerator vendor, model, count, and minimum memory.
 Optional benchmark profile maps can be inspected without preparing task data:
 
 ```bash
-envcore benchmark-info \
+ngrove benchmark-info \
   --benchmark research_tasks/lm-pretrain/benchmark.json
 ```
 

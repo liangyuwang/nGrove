@@ -37,7 +37,7 @@ complete account of internal update mechanisms before implementation can begin.
 
 Metric interpretation and baseline calibration can develop through analysis of
 real runs. They need not block engineering. This layer measures existing research
-records and leaves Envcore's supervision and evaluation responsibilities intact.
+records and leaves the existing supervision and evaluation responsibilities intact.
 
 ## 2. Intuition: from training loss to a researcher's learning curve
 
@@ -51,7 +51,7 @@ The curve describes more than the final result: how loss falls, how much compute
 the next improvement requires, how the improvement rate changes, and where
 progress plateaus or reverses.
 
-Envcore can use the same intuition: **treat the Tested Agent's autonomous
+The same intuition applies here: **treat the Tested Agent's autonomous
 research as a higher-level learning process and examine how experience changes
 the quality of its delivered results.**
 
@@ -239,7 +239,7 @@ analysis command remain unimplemented.
 | --- | --- |
 | [`envcore/results.py::normalize_result_report`](../envcore/results.py) | Validate results against their declared schema and active artifact identity algorithms. The current core schema is v16. |
 | [`envcore/cli.py::command_report`](../envcore/cli.py) | Reference for read-only reporting; preserve its output contract. |
-| [`envcore/recording.py::read_recording`](../envcore/recording.py), exposed by `envcore trajectory` | Existing evidence export with payload checks, artifact disposition, explicit issues and a separate postmortem section; not the proposed analysis command. |
+| [`envcore/recording.py::read_recording`](../envcore/recording.py), exposed by `ngrove trajectory` | Existing evidence export with payload checks, artifact disposition, explicit issues and a separate postmortem section; not the proposed analysis command. |
 | [`envcore/supervisor.py::record_observation`](../envcore/supervisor.py) | Existing optional trusted runner hook for source-labeled observations and explicit event links; coverage and claims remain adapter-reported. |
 | `state.json` | Read `candidate_commits`, `incumbent_declarations`, `analysis_trajectory`, identities, resources, status, and coverage fields. |
 | `events.jsonl` | Authoritative event ordering and resource lifecycle. |

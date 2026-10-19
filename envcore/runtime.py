@@ -1,6 +1,6 @@
 """Container runtime used by the host-side reference supervisor.
 
-Envcore deliberately does not allocate machines or integrate with a
+The local runtime does not allocate machines or integrate with a
 cluster scheduler. The runtime only consumes devices already visible on the
 single host where the supervisor is started.
 """
@@ -515,7 +515,7 @@ class DockerRuntime:
         if not self.docker:
             raise RuntimeFailure(
                 "Docker was not found. Install Docker before running the reference "
-                "prototype; Envcore does not allocate remote resources."
+                "prototype; the local runtime does not allocate remote resources."
             )
 
     @staticmethod

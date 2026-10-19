@@ -2,10 +2,9 @@
 
 Configurable environments support the project's [RSI and meta-optimization
 scope](research-scope.md) by making research resources explicit experimental
-variables. Every Envcore run uses the same configuration, freezing and
-execution lifecycle. Envcore provides run-owned compute and time configuration.
-A researcher
-can vary accelerator type/count and research duration while controlling the other
+variables. Every run uses the same configuration, freezing and execution lifecycle,
+with run-owned compute and time settings. A researcher can vary accelerator
+type/count and research duration while controlling the other
 experimental conditions. Better final scores alone do not establish
 self-improvement; retain Agent
 traces, artifact histories and resource evidence to study changes in strategy.
@@ -16,7 +15,7 @@ Install the checkout with `python3 -m pip install -e .`. Inspect a configuration
 without preparing data, contacting Docker or allocating resources:
 
 ```bash
-envcore environment-info --environment examples/environments/h100-x4.json
+ngrove environment-info --environment examples/environments/h100-x4.json
 ```
 
 An environment file requires `schema_version`, `name` and `runtime_profile`.
@@ -115,10 +114,10 @@ and Worker admission requirements still apply. No profile is chosen implicitly.
 Use a task and its existing Track budget (the CPU example omits `budget`):
 
 ```bash
-envcore start \
+ngrove start \
   --task dev_tasks/smoke_lm-pretrain/task.json --track A \
   --environment examples/environments/cpu-2cores.json \
-  --episodes-root /srv/envcore-runs/episodes \
+  --episodes-root /srv/ngrove-runs/episodes \
   --agent-runner container \
   --agent-image 'participant-agent@sha256:<actual-digest>' \
   --agent-command 'participant-agent run'
@@ -127,10 +126,10 @@ envcore start \
 For the LM research task, select custom compute resources and two hours:
 
 ```bash
-envcore start \
+ngrove start \
   --task research_tasks/lm-pretrain/task.json --track A \
   --environment examples/environments/h100-x4-2h.json \
-  --episodes-root /srv/envcore-runs/episodes \
+  --episodes-root /srv/ngrove-runs/episodes \
   --agent-runner container \
   --agent-image 'participant-agent@sha256:<actual-digest>' \
   --agent-command 'participant-agent run'
@@ -206,8 +205,9 @@ compute and time configuration.
 
 Code imports `envcore`; environment types live in `envcore.environment`.
 Restricted Agent/Candidate helper bundles expose only the public `envcore` modules.
+Agent bundles also provide `python -m ngrove agent ...` for the restricted CLI.
 
-The distribution and CLI are named `envcore`; `python -m envcore` also works.
+The distribution and CLI are named `ngrove`; `python -m ngrove` also works.
 Integrations use `ENVCORE_*` variables, `envcore.agent_metadata` and
 `envcore.agent_usage` trace events, `envcore-tree-v2-sha256` Candidate identities
 and `envcore-hidden-bundle-v1-sha256` hidden bundle identities. Worker ownership

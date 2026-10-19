@@ -1,4 +1,4 @@
-"""Trusted host-side episode supervisor for Envcore v0."""
+"""Trusted host-side episode supervisor for the local reference prototype."""
 
 from __future__ import annotations
 

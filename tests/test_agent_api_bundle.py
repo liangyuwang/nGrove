@@ -88,6 +88,41 @@ class AgentApiBundleTests(unittest.TestCase):
             self.assertTrue(
                 all(path.stat().st_mode & 0o777 == 0o444 for path in package.iterdir())
             )
+            launcher = published / "ngrove"
+            self.assertEqual(
+                {path.name for path in launcher.iterdir()},
+                {"__init__.py", "__main__.py"},
+            )
+            self.assertEqual(launcher.stat().st_mode & 0o777, 0o555)
+            self.assertTrue(
+                all(path.stat().st_mode & 0o777 == 0o444 for path in launcher.iterdir())
+            )
+
+    def test_ngrove_launcher_exposes_only_agent_operations(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            published = publish_agent_api_bundle(root / "agent-api")
+            environment = {**os.environ, "PYTHONPATH": str(published)}
+            for arguments, expected_code, expected_text in (
+                (["agent", "--help"], 0, "lease-start"),
+                (["start", "--help"], 2, "invalid choice"),
+                (["report", "--help"], 2, "invalid choice"),
+            ):
+                with self.subTest(arguments=arguments):
+                    completed = subprocess.run(
+                        [sys.executable, "-B", "-S", "-m", "ngrove", *arguments],
+                        cwd=root,
+                        env=environment,
+                        capture_output=True,
+                        text=True,
+                        timeout=20,
+                    )
+                    self.assertEqual(
+                        completed.returncode, expected_code, completed.stderr
+                    )
+                    output = completed.stdout + completed.stderr
+                    self.assertIn(expected_text, output)
+                    self.assertIn("python -m ngrove", output)
 
     def test_refuses_to_replace_an_existing_bundle(self):
         with tempfile.TemporaryDirectory() as temporary:

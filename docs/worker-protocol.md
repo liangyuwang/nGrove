@@ -6,13 +6,13 @@ contract. They do not add a platform backend or weaken Worker requirements.
 See [configurable environments](environments.md) for the distinction between
 environment experiments and fixed benchmark lanes.
 
-Envcore owns research lifecycle and evaluation decisions. A Worker deployment owns
+Core owns research lifecycle and evaluation decisions. A Worker deployment owns
 execution and enforcement.  The boundary between them is expressed in
 research protocol terms and must not expose a scheduler, container runtime, or cloud
 API.
 
 ```text
-Envcore Coordinator
+Coordinator
   authoritative episode state
               │
               │ Worker Protocol
@@ -53,8 +53,8 @@ Platform packages own:
 Platform implementations live outside Core, either as separately distributed
 packages or temporary deployments created during authorized preparation. Keep
 their source and dependency identities with run evidence. Examples of package
-names are `envcore-worker-docker`, `envcore-worker-apptainer`, and
-`envcore-worker-kubernetes`; these names are examples, not core backends.
+names are `ngrove-worker-docker`, `ngrove-worker-apptainer`, and
+`ngrove-worker-kubernetes`; these names are examples, not core backends.
 Core must never grow platform selection branches or import their SDKs.
 See [Worker integration](worker-integration.md) for trusted composition,
 startup verification, supervision, cleanup, and resource-planning guidance.
@@ -744,7 +744,7 @@ Deliberately deferred work includes:
    outside Training Leases independently normative.
 
 Those features should be added to the Worker protocol and external Worker SDK,
-not by adding platform code to Envcore.
+not by adding platform code to Core.
 
 The staged plan and the trigger for each deferred abstraction are recorded in
 [Thin Core development plan](thin-core-development-plan.md).

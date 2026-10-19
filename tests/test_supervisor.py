@@ -1461,7 +1461,7 @@ class SupervisorTests(unittest.TestCase):
         environment = os.environ.copy()
         environment["PYTHONPATH"] = str(self.worker.research_tasks[0].public_api_dir)
         smoke = subprocess.run(
-            [sys.executable, "-m", "envcore.cli", "agent", "--help"],
+            [sys.executable, "-S", "-m", "ngrove", "agent", "--help"],
             cwd=self.workspace,
             env=environment,
             check=False,

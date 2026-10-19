@@ -11,17 +11,16 @@ information boundary.
 
 # Training-research protocol reference
 
-**The shared training-research protocol for Envcore’s research tasks.**
+**The shared training-research protocol for nGrove's research tasks.**
 
 Task packages live in `research_tasks/`. Agents choose their own validation
-methods during research; Envcore's evaluation measures submitted artifacts after
+methods during research; evaluation measures submitted artifacts after
 research sealing. The existing postmortem ANALYSIS also measures Candidates, not
 the quality of a research trajectory.
 
 > **Status:** runnable research preview with trajectory recording, an LM
 > pretraining task and a smaller development smoke task. Future meta-optimization
 > methods and recursive orchestration remain unimplemented.
-> **Framework:** Envcore
 
 ---
 
@@ -99,7 +98,7 @@ storage. The launcher prints its location; use `--worker-state-dir PATH` to
 select it. The container CLI additionally runs an independent parent watchdog
 that terminates an unresponsive Worker and invokes journaled cleanup. To retry
 unconfirmed cleanup, invoke
-`envcore worker-recover --state-dir PATH` in the same Worker environment
+`ngrove worker-recover --state-dir PATH` in the same Worker environment
 to verify and reclaim its resources. This preserves existing results and does
 not resume the episode. See [Worker recovery](worker-recovery.md) for the
 ownership checks, supported scope and unresolved-outcome handling.
@@ -170,7 +169,7 @@ as a policy limitation rather than being hidden behind application-level mailbox
 limits. Prediction output uses its own bounded allocation and strict final
 validation, independently of this private operator setting.
 
-The bundled `envcore prepare` and `envcore start` commands are
+The bundled `ngrove prepare` and `ngrove start` commands are
 the composition root for that local Docker implementation; they are not a
 generic backend loader. Worker Protocol v16 is currently a synchronous,
 in-process Python contract. Resolution calls receive explicit deadlines, and
@@ -204,7 +203,7 @@ Agent tool admission, monitoring, cancellation/recovery responsibilities, and
 staged verification. The [Thin Core development plan](thin-core-development-plan.md)
 describes the incremental migration and its acceptance criteria.
 
-The reference runtime requires a machine that can run Docker. Envcore
+The reference runtime requires a machine that can run Docker. It
 consumes the environment the user has already obtained; it does **not** allocate
 machines or integrate with Slurm, Kubernetes, or a cloud scheduler.
 
@@ -250,7 +249,7 @@ Prepare the TinyStories smoke-task data and pinned images:
 
 ```bash
 python3 dev_tasks/smoke_lm-pretrain/prepare_data.py
-envcore prepare --task dev_tasks/smoke_lm-pretrain/task.json
+ngrove prepare --task dev_tasks/smoke_lm-pretrain/task.json
 ```
 
 Preparation writes a complete public TRAIN file inventory. The local `prepare`
@@ -268,21 +267,21 @@ development workflow, Candidate ABI, Policy, and reproducibility details.
 Smoke-task scores are not benchmark results.
 
 Every episode must select an explicit `--episode-dir` or `--episodes-root` in a
-dedicated trusted working root outside the Envcore/task checkout.
+dedicated trusted working root outside the repository/task checkout.
 This keeps episode state and the Research Agent workspace separate from operator
 files. It also prevents host-native tools such as Codex from inheriting the
 Core's `AGENTS.md` through ancestor-directory instruction discovery. An empty
 workspace beneath the Core is therefore not isolated. This check is scoped to
-the trusted Envcore checkout; it does not remove the Research Agent's
+the trusted repository checkout; it does not remove the Research Agent's
 own global configuration or participant-owned instructions.
 
 A participant Agent Container can be selected without changing the task:
 
 ```bash
-envcore start \
+ngrove start \
   --task dev_tasks/smoke_lm-pretrain/task.json --track B \
   --environment examples/environments/cpu-2cores.json \
-  --episodes-root /path/to/envcore-runs/episodes \
+  --episodes-root /path/to/ngrove-runs/episodes \
   --agent-runner container \
   --agent-image participant-agent:version \
   --agent-command "participant-agent run"
@@ -290,7 +289,7 @@ envcore start \
 
 ## Bring your own Agent: host-native CLI tools
 
-Envcore supports two Agent runners:
+The launcher supports two Agent runners:
 
 * `container` runs a participant command in an Agent Container;
 * `host_cli` runs any autonomous, non-interactive CLI command on the host while
@@ -301,10 +300,10 @@ The core runner is tool-independent. A CLI can be used directly when it already
 knows how to operate the training-research protocol:
 
 ```bash
-envcore start \
+ngrove start \
   --task dev_tasks/smoke_lm-pretrain/task.json --track A \
   --environment examples/environments/cpu-2cores.json \
-  --episodes-root /path/to/envcore-runs/episodes \
+  --episodes-root /path/to/ngrove-runs/episodes \
   --agent-runner host_cli \
   --no-operator-storage-limit \
   --agent-command "your-agent-cli --non-interactive ..."
@@ -313,7 +312,7 @@ envcore start \
 The command starts with its working directory set to the private episode
 workspace and with stdin disconnected. It receives
 `ENVCORE_WORKSPACE`, `ENVCORE_TASK`, and
-`ENVCORE_CONTROL_DIR`; it must use the `envcore agent ...`
+`ENVCORE_CONTROL_DIR`; it must use the `ngrove agent ...`
 mailbox commands for research control and run without further user input. A
 custom wrapper may reuse the tool-independent prompt in
 `envcore.agent_prompt.HOST_CLI_PROMPT`.
@@ -333,10 +332,10 @@ Codex CLI installation to be used without an API key. After `codex login status`
 confirms an existing login, run the TinyStories Track A with a fixed Codex model:
 
 ```bash
-python3 -m envcore.cli start \
+python3 -m ngrove start \
   --task dev_tasks/smoke_lm-pretrain/task.json --track A \
   --environment examples/environments/cpu-2cores.json \
-  --episodes-root /path/to/envcore-runs/episodes \
+  --episodes-root /path/to/ngrove-runs/episodes \
   --agent-runner host_cli \
   --no-operator-storage-limit \
   --agent-command "python3 -m envcore.cli_adapters.codex --model YOUR_CODEX_MODEL --reasoning-effort high"
@@ -389,15 +388,15 @@ confines every model-generated action to the episode workspace and mailbox.
 
 ## Bring your own Agent: controlled inference
 
-Envcore runs participant-defined autonomous research systems, including systems whose researcher model is served through an
-OpenAI-compatible remote or local endpoint. The Agent
-execution loop still runs inside the Agent Container so the Worker can enforce
+nGrove runs participant-defined autonomous research systems, including systems
+whose researcher model is served through an OpenAI-compatible remote or local
+endpoint. The Agent execution loop still runs inside the Agent Container so the Worker can enforce
 its policy boundary; remote model inference is exposed through a narrow
 official Gateway sidecar rather than arbitrary public Internet access.
 
 In the default `denied` egress policy an Agent without remote inference uses
 `--network none`. When a registered inference channel is configured,
-Envcore creates an episode-private Docker `--internal` network shared
+the local runtime creates an episode-private Docker `--internal` network shared
 only by the Agent and a trusted OpenAI-compatible Gateway at:
 
 ```text
@@ -414,10 +413,10 @@ receives the provider credential or chooses arbitrary destinations.
 A minimal launch looks like:
 
 ```bash
-envcore start \
+ngrove start \
   --task path/to/task.json \
   --track B \
-  --episodes-root /path/to/envcore-runs/episodes \
+  --episodes-root /path/to/ngrove-runs/episodes \
   --agent-runner container \
   --agent-image participant-agent@sha256:DIGEST \
   --agent-command "participant-agent run" \
@@ -454,12 +453,12 @@ images continue to run their registered entrypoint unchanged.
 The Agent can use the published helper API as the control plane for training:
 
 ```bash
-python -m envcore.cli agent status
-python -m envcore.cli agent lease-start
-python -m envcore.cli agent lease-exec -- python /workspace/train.py
-python -m envcore.cli agent lease-commit /output/candidate
-python -m envcore.cli agent declare-incumbent sha256:<candidate-hash>
-python -m envcore.cli agent finish
+python -m ngrove agent status
+python -m ngrove agent lease-start
+python -m ngrove agent lease-exec -- python /workspace/train.py
+python -m ngrove agent lease-commit /output/candidate
+python -m ngrove agent declare-incumbent sha256:<candidate-hash>
+python -m ngrove agent finish
 ```
 
 The public task manifest at `$ENVCORE_TASK` declares the Agent-facing
@@ -535,8 +534,8 @@ the latest Core snapshot and, when supplied by the deployment, current execution
 evidence with:
 
 ```bash
-envcore status \
-  --episode /path/to/envcore-runs/episodes/<episode-id>
+ngrove status \
+  --episode /path/to/ngrove-runs/episodes/<episode-id>
 ```
 
 Without fresh, episode-bound deployment evidence, this view reports current
@@ -549,8 +548,8 @@ not query an allocator or change the Agent-visible status API.
 The full Core report remains available with:
 
 ```bash
-envcore report \
-  --episode /path/to/envcore-runs/episodes/<episode-id>
+ngrove report \
+  --episode /path/to/ngrove-runs/episodes/<episode-id>
 ```
 
 Episode states declare `result_schema_version: 16`. V16 records the run-owned
@@ -833,7 +832,7 @@ The local v0 reference separates trusted scoring from untrusted Candidate code.
 
 ```text
 User-owned host
-└── trusted Envcore Supervisor
+└── trusted Supervisor
     ├── untrusted Agent Container
     ├── disposable Training Container
     └── offline evaluation sequence
@@ -1359,7 +1358,7 @@ and no greater than the requested limit, with bounded metadata/inode storage.
 An ordinary directory, an ordinary Docker named volume, or a free-space check
 does not implement this protection. Filesystem/volume creation, quota setup,
 ownership, capacity reservation and eventual disposal belong to the deployment;
-Envcore does not format disks, mount filesystems, or resize existing data.
+the local runtime does not format disks, mount filesystems, or resize existing data.
 
 Before copying the Agent workspace or revealing the task, the bundled Worker
 verifies the filesystem boundary, capacity and inode observation. A trusted,
@@ -1623,7 +1622,7 @@ changes in the research system's ability to find improvements.
 
 Agent inference is a first-class measured resource.
 
-Envcore records, at minimum:
+Recorded inference usage includes, at minimum:
 
 * input tokens;
 * output tokens;
@@ -1709,7 +1708,7 @@ Discovering when and how to use them is part of the task.
 
 # Intermediate Incumbents and Research Curves
 
-Envcore records the final performance–cost pair together with the submitted
+Results include the final performance–cost pair together with the submitted
 Candidate and incumbent history.
 
 Throughout an episode, the Research Agent may declare a **current incumbent**: the model it would submit if research ended immediately.
@@ -1834,7 +1833,7 @@ matching published lane.
 
 ## First-class diagnostic metrics
 
-Envcore also records:
+Additional recorded diagnostics include:
 
 * postmortem ANALYSIS performance score and release-declared raw metrics;
 * final TEST performance score and release-declared raw metrics;
@@ -2166,7 +2165,7 @@ an episode-time allocation and eligibility input, not a field in `task.json`.
 Inspect a release's supported maps with:
 
 ```bash
-envcore benchmark-info \
+ngrove benchmark-info \
   --benchmark research_tasks/lm-pretrain/benchmark.json
 ```
 

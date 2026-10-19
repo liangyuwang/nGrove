@@ -1,10 +1,10 @@
 # Repository Assistant instructions
 
-Envcore's project scope is recursive self-improvement (RSI), including
+nGrove's project scope is recursive self-improvement (RSI), including
 meta-optimization of how autonomous systems find better research paths. Its
 current implementation is an autonomous research environment framework with
 bundled research tasks under `research_tasks/`. Agents own validation within their
-trajectories; Envcore evaluates submitted artifacts after research sealing.
+trajectories; the environment evaluates submitted artifacts after research sealing.
 Environment runs may select user-owned
 compute resources and time budgets at launch using `--environment`, without
 editing task releases. Omitted time budgets inherit the selected
@@ -43,7 +43,7 @@ rules during runs. Ordinary repository assistance does not request an episode.
 
 Keep this repository platform-independent. Cluster schedulers, container
 runtimes, cloud APIs, and site-specific enforcement belong to the Worker
-deployment, not to Envcore. Do not add platform branches,
+deployment, not to Core. Do not add platform branches,
 dependencies, or site configuration to the tracked core repository merely to
 make a run work.
 
@@ -67,7 +67,7 @@ For a launch request, before changing deployment files, preparing data, pulling
 images, allocating resources, or starting an episode:
 
 1. Inspect the repository and current environment with read-only operations.
-2. Explain briefly that the requested run is a research episode in Envcore,
+2. Explain briefly that the requested run is a research episode in nGrove,
    using a benchmark when selected, rather than a long-lived application
    service.
 3. Present one complete run-intake table with these rows:
@@ -169,10 +169,10 @@ access it:
 Default to a newly created empty episode workspace when the Agent image and
 command contain everything needed to begin. Snapshot initial files only when
 the user explicitly identifies a participant-owned source workspace. Never use
-the Envcore checkout, or any directory containing the Repository Assistant's
+the repository checkout, or any directory containing the Repository Assistant's
 `AGENTS.md` instructions, as the Research Agent workspace.
 
-An empty leaf directory beneath the trusted Envcore/task
+An empty leaf directory beneath the trusted repository/task
 checkout is not isolated when a host-native Agent discovers this project's
 instructions from ancestor directories. Before task reveal, resolve the final
 workspace path and reject it if it is inside that trusted checkout. Require an
