@@ -206,7 +206,7 @@ OpenCode 1.18.27 on clean Core revision
 the other models used their provider defaults.
 
 <p align="center">
-  <a href="https://xiehuanyi.github.io/autotrain-bench-viz/?lang=en">
+  <a href="https://xiehuanyi.github.io/ngrove-viz/?lang=en">
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="docs/assets/results-h200-preview-dark.svg">
       <img src="docs/assets/results-h200-preview-light.svg" alt="Final TEST score versus TEST time per task for 11 Research Agent models on one H200, in Track A (8 hours) and Track B (6 Leases)" width="100%">
@@ -215,7 +215,7 @@ the other models used their provider defaults.
 </p>
 
 <p align="center"><em>Final TEST score versus serving time per task; upper left is better.
-Click the figure to open the <a href="https://xiehuanyi.github.io/autotrain-bench-viz/?lang=en">interactive dashboard</a>.</em></p>
+Click the figure to open the <a href="https://xiehuanyi.github.io/ngrove-viz/?lang=en">interactive dashboard</a>.</em></p>
 
 | Research Agent model | Track A score&nbsp;↑ | Track A time / task&nbsp;↓ | Track B score&nbsp;↑ | Track B time / task&nbsp;↓ |
 | :--- | ---: | ---: | ---: | ---: |
@@ -248,9 +248,9 @@ Candidate serving, not training.
 Historical success also does not certify the current Worker revision; see the
 [recorded evidence scope](docs/worker-acceptance-matrix.md#historical-evidence-catalog).
 
-The [interactive dashboard](https://xiehuanyi.github.io/autotrain-bench-viz/?lang=en) shows every run's Candidate ANALYSIS
+The [interactive dashboard](https://xiehuanyi.github.io/ngrove-viz/?lang=en) shows every run's Candidate ANALYSIS
 trajectory, serving time and Agent token usage, with selectable axes. Its
-[source and aggregate data](https://github.com/xiehuanyi/autotrain-bench-viz)
+[source and aggregate data](https://github.com/xiehuanyi/ngrove-viz)
 are public. More results will be added after further testing.
 
 ## Getting Started
