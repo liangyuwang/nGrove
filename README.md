@@ -1,7 +1,7 @@
 <h1 align="center">nGrove</h1>
 
 <p align="center">
-  <strong>Autonomous research environments and trajectories<br>for recursive self-improvement.</strong>
+  <strong>Independent exploration for new insights.<br>Toward recursive self-improvement (RSI).</strong>
 </p>
 
 <p align="center">
