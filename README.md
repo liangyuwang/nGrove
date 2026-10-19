@@ -11,6 +11,7 @@
 </p>
 
 <p align="center">
+  <a href="#why-ngrove">Why nGrove?</a> ·
   <a href="#overview">Overview</a> ·
   <a href="#research-tasks">Research tasks</a> ·
   <a href="#results">Results</a> ·
@@ -22,10 +23,26 @@
 
 ---
 
-nGrove explores **recursive self-improvement (RSI)**: how autonomous research
-systems can get better at finding better research paths. It provides configurable
-environments to run experiments, evaluate artifacts, and retain research trajectories.
-Discovering stronger model-training procedures is the first concrete research setting.
+## Why nGrove?
+
+**We believe independent thinking is essential to discovering insights that can
+push research beyond established approaches.** nGrove gives autonomous Agents
+room to develop their own hypotheses, systems, and research strategies. We value
+fundamentally different approaches, including directions the task authors would
+not have anticipated.
+
+To make room for this exploration, research tasks provide **no prescribed initial
+solution or reference implementation**. They define the objective, sandbox,
+resource budget, and minimal artifact interface, while leaving the Agent to
+choose its own starting point and path. This design aims to reduce anchoring to
+human-provided solutions and encourage independent exploration.
+
+Model training is our first research setting. Our goal is to discover methods
+that outperform established human-designed procedures under comparable
+conditions—and, crucially, **improve the ability to discover such methods**.
+Improving how a research system finds better paths is meta-optimization. Using
+that improved capability to drive further improvements is the recursive
+self-improvement (RSI) direction we aim to explore.
 
 > **Constrain resources, not ideas. Define the evaluator, not the solution.**
 
@@ -53,11 +70,6 @@ freezes its resolved environment before task reveal.
 > and an automated recursive improvement loop. Higher artifact scores alone do
 > not demonstrate improved research capability. See [research scope](docs/research-scope.md).
 
-The broader goal includes **meta-optimization** of how a system proposes
-experiments, uses experience, and improves its methods, tools, and workflows.
-An Agent can already improve its own software and research process within an
-episode; the recording interface connects that experience to future methods.
-
 <details>
 <summary><strong>Architecture at a glance</strong> — Core, Workers, tasks, and evidence</summary>
 
@@ -81,9 +93,8 @@ policies are future extensions.
 
 ## Research tasks
 
-**A research task should define what success means, not tell an AI how to achieve it.**
-The bundled tasks leave the largest practical solution space open to the Agent
-within a defined sandbox and resource budget.
+Research tasks define the problems an Agent explores and the contracts for
+evaluating its artifacts.
 
 | Task | Status | Purpose |
 | --- | --- | --- |
@@ -117,15 +128,10 @@ Everything else should remain open: whether to train a model at all, which
 models and algorithms to use, what data to use or acquire, whether to reuse
 existing systems, and how to build infrastructure, organize research, or improve
 the Agent itself. These choices belong to the Agent within the sandbox and
-resource constraints. Our job is not to manually shrink the solution space
-toward approaches we expect.
-
-**The research task provides no initial solution or reference implementation.**
-The Agent chooses its own starting point, opening the search space to
-fundamentally different systems and research approaches.
+resource constraints.
 
 <details>
-<summary><strong>Why leave the solution space open?</strong></summary>
+<summary><strong>Co-design across the research stack</strong></summary>
 
 Transformers and MoE, new optimizers, data curation, custom kernels, and
 agent-built research tools are familiar examples of what an Agent might explore.
@@ -137,15 +143,10 @@ gradient descent: parameter updates are guided by the model's overall loss,
 not independent goals for individual parameters. (This analogy concerns the
 shared objective; hidden evaluation feedback remains unavailable during research.)
 
-The space extends to **any** participant-controlled part of the solution or
-research process, including approaches the task authors have not
-anticipated. New directions and combinations are welcome.
-
 **Broad freedom requires a strong boundary.** A narrow artifact interface and
 strong evaluator isolation let the Agent explore without access to the hidden
 evaluator's data or results during research. The sandbox must enforce the resource
-budget. Inside those boundaries, the Agent should be left alone. Strategies
-unlike anything the designers imagined are an intended outcome of the research task.
+budget. Inside those boundaries, the Agent should be left alone.
 
 </details>
 
@@ -425,15 +426,9 @@ outside the Core checkout.
 
 ## Roadmap
 
-**Build research systems that become better at finding better research paths.**
-Starting with model training, we aim to discover procedures that outperform
-established human-designed approaches under comparable conditions, and develop
-the ability to keep finding such procedures. This is the project's
-[research objective](docs/research-scope.md); the current preview results do not
-establish that it has been achieved.
-
-The environment, artifact evaluation, and [recording interface](docs/recording.md)
-provide the implemented foundation for four research directions:
+The [research objective](docs/research-scope.md) guides four directions, building
+on the implemented environment, artifact evaluation, and
+[recording interface](docs/recording.md):
 
 1. **Expand autonomous exploration.** Develop research tasks that admit
    substantially different solutions under a clear objective and resource budget.
