@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.11"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e . ruff==0.4.1
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: python -m unittest discover -v
+      - run: python -m unittest discover -s research_tasks/lm-pretrain -p 'test_*.py' -v
+
+  windows-portability:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e .
+      - run: >-
+          python -m unittest -v
+          tests.test_benchmark
+          tests.test_config
+          tests.test_results
+          tests.test_worker_protocol
+          tests.test_operator_status
+          tests.test_host_agent
+      - run: >-
+          python -m unittest -v
+          tests.test_supervisor.SupervisorTests.test_mailbox_response_has_a_portable_non_dir_fd_path
+          tests.test_supervisor.SupervisorTests.test_mailbox_directory_causes_policy_failure_and_is_cleaned_after_stop
+          tests.test_supervisor.SupervisorTests.test_json_escaping_cannot_replace_a_completed_command_response
+          tests.test_supervisor.SupervisorTests.test_surrogate_output_cannot_make_a_completed_command_ambiguous
+          tests.test_runtime.RuntimeBoundaryTests.test_host_agent_log_truncation_may_split_utf8_without_breaking_cleanup

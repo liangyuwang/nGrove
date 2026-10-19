@@ -1,0 +1,2293 @@
+import io
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from dataclasses import replace
+from pathlib import Path
+from unittest.mock import patch
+
+from envcore.artifact_identity import hidden_bundle_sha256
+from envcore.config import (
+    AgentConfig,
+    InferenceConfig,
+    TaskConfig,
+    TrainingResources,
+)
+from envcore.host_agent import (
+    HostAgentProcess,
+    HostAgentStartupFailure,
+    _BoundedLogSink,
+    start_host_agent_process,
+    summarize_host_agent_trace,
+)
+from envcore.runtime import (
+    DockerRuntime,
+    RuntimeFailure,
+    MAX_RUNTIME_STREAM_BYTES,
+    _EvaluationResources,
+    _capture_diagnostic_command,
+)
+from envcore.worker_protocol import (
+    CANDIDATE_PREDICTION_ARTIFACT_LIFECYCLE,
+    CANDIDATE_PREDICTION_STORAGE_QUOTA,
+    DEADLINE_TERMINATION,
+    CandidateEvaluationResult,
+    EnforcementLevel,
+    EvaluationTaskSpec,
+    HiddenDatasetRequest,
+    HiddenDatasetResolutionFailure,
+    ResearchTaskSpec,
+    WorkloadRequest,
+    WorkloadResolutionFailure,
+    TrustLevel,
+    WorkerTeardownFailure,
+    v0_resource_envelope,
+)
+
+
+ROOT = Path(__file__).resolve().parents[1]
+TASK = ROOT / "tests/fixtures/task/task.json"
+RESOLUTION_TIMEOUT = 30.0
+GPU_ONE = "GPU-00000000-0000-0000-0000-000000000001"
+GPU_TWO = "GPU-00000000-0000-0000-0000-000000000002"
+
+
+def gpu_inventory(*rows):
+    return subprocess.CompletedProcess(["nvidia-smi"], 0, "\n".join(rows) + "\n", "")
+
+
+def write_hidden_bundle(path: Path, *, marker: str = "original") -> Path:
+    path.mkdir(parents=True)
+    (path / "contexts.json").write_text(
+        json.dumps({"marker": marker, "visible": True}), encoding="utf-8"
+    )
+    (path / "targets.json").write_text(
+        json.dumps({"marker": marker, "hidden": True}), encoding="utf-8"
+    )
+    return path
+
+
+def publish_agent_api(public_task: Path) -> None:
+    package = public_task.parent / "agent_api/envcore"
+    package.mkdir(parents=True)
+    (package / "client.py").write_text("class Client: pass\n", encoding="utf-8")
+    (package / "candidate_protocol.py").write_text(
+        "def load_context_request(path): pass\n", encoding="utf-8"
+    )
+
+
+def resolve_evaluation_workloads(runtime, task, episode_id):
+    return {
+        "candidate_workload": runtime.resolve_workload(
+            episode_id=episode_id,
+            workload=WorkloadRequest("candidate", task.candidate_image),
+            timeout_seconds=RESOLUTION_TIMEOUT,
+        ),
+        "evaluator_workload": runtime.resolve_workload(
+            episode_id=episode_id,
+            workload=WorkloadRequest("evaluator", task.evaluator_image),
+            timeout_seconds=RESOLUTION_TIMEOUT,
+        ),
+    }
+
+
+class CapturingDockerRuntime(DockerRuntime):
+    def _candidate_failure_diagnostics(self, name):
+        return {"logs_unavailable": True, "state_unavailable": True}
+
+    def __init__(self, *, monotonic=None, hidden_datasets=None):
+        super().__init__(
+            docker_binary="docker",
+            monotonic=monotonic,
+            hidden_datasets=hidden_datasets,
+        )
+        self.calls = []
+        self.call_kwargs = []
+        # Command-boundary tests use an already verified non-root Worker identity.
+        # The discovery/access probe itself is exercised separately below.
+        self._execution_identity = (12345, 23456)
+
+    def _run(self, args, **kwargs):
+        self.calls.append(list(args))
+        self.call_kwargs.append(dict(kwargs))
+        if args[:2] == ["image", "inspect"] and "{{json .Id}}" in " ".join(args):
+            return subprocess.CompletedProcess(
+                args, 0, json.dumps(["sha256:" + "a" * 64, None]), ""
+            )
+        if args[:2] == ["volume", "inspect"]:
+            create = next(
+                call
+                for call in reversed(self.calls)
+                if call[:2] == ["volume", "create"]
+            )
+            options = dict(
+                create[i + 1].split("=", 1)
+                for i, item in enumerate(create)
+                if item == "--opt"
+            )
+            return subprocess.CompletedProcess(args, 0, json.dumps(options), "")
+        if args[:1] == ["exec"] and args[1].startswith("atb-prediction-holder-"):
+            create = next(
+                call
+                for call in reversed(self.calls)
+                if call[:2] == ["volume", "create"]
+            )
+            options = next(item[2:] for item in create if item.startswith("o=size="))
+            values = dict(
+                item.split("=", 1) for item in options.split(",") if "=" in item
+            )
+            return subprocess.CompletedProcess(
+                args,
+                0,
+                json.dumps(
+                    {
+                        "bytes": int(values["size"]),
+                        "inodes": int(values["nr_inodes"]),
+                        "empty": True,
+                    }
+                ),
+                "",
+            )
+        if "--mode" in args and args[args.index("--mode") + 1] == "validate":
+            mount = next(item for item in args if item.endswith("dst=/output"))
+            output = Path(mount.split("src=", 1)[1].split(",dst=", 1)[0])
+            (output / Path(args[args.index("--output") + 1]).name).write_text(
+                json.dumps({"examples": 3}), encoding="utf-8"
+            )
+        if args[:2] == ["image", "inspect"] and "{{.Id}}" in args:
+            return subprocess.CompletedProcess(args, 0, "sha256:" + "a" * 64 + "\n", "")
+        if args and args[0] == "wait":
+            return subprocess.CompletedProcess(args, 0, "0\n", "")
+        return subprocess.CompletedProcess(args, 0, "container-id\n", "")
+
+
+class RuntimeBoundaryTests(unittest.TestCase):
+    def test_protected_launches_reject_image_volumes_for_every_role(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            public = root / "public/task.json"
+            publish_agent_api(public)
+            config = TaskConfig.load(TASK)
+            agent = AgentConfig(
+                workspace=workspace,
+                runner="container",
+                command=["agent"],
+                image="participant@sha256:" + "b" * 64,
+                egress="denied",
+                initial_workspace="empty",
+            ).validate()
+            inference = InferenceConfig.load(
+                {"base_url": "https://example.invalid", "allowed_models": ["fixture"]},
+                "inference",
+            )
+            for role in (
+                "agent",
+                "training",
+                "candidate",
+                "scorer",
+                "gateway",
+                "identity_probe",
+                "prepare",
+            ):
+                with self.subTest(role=role):
+                    runtime = CapturingDockerRuntime()
+                    runtime._operator_storage = object()
+                    references = {
+                        "agent": agent.image,
+                        "prepare": agent.image,
+                        "training": config.training_image,
+                        "candidate": config.candidate_image,
+                        "scorer": config.evaluator_image,
+                        "identity_probe": config.evaluator_image,
+                        "gateway": config.inference_gateway_image,
+                    }
+                    original_run = runtime._run
+                    inspected = []
+
+                    def run(args, **kwargs):
+                        if args[:2] == ["image", "inspect"] and any(
+                            "Volumes" in arg for arg in args
+                        ):
+                            inspected.append(args[2])
+                            return subprocess.CompletedProcess(
+                                args,
+                                0,
+                                json.dumps(
+                                    [
+                                        "sha256:" + "a" * 64,
+                                        {"/extra": {}}
+                                        if args[2] == references[role]
+                                        else None,
+                                    ]
+                                ),
+                                "",
+                            )
+                        return original_run(args, **kwargs)
+
+                    def launch():
+                        if role == "agent":
+                            runtime.start_agent(
+                                name="blocked",
+                                config=config,
+                                agent=agent,
+                                control_dir=root / "control",
+                                public_task_path=public,
+                            )
+                        elif role == "training":
+                            runtime.start_training(
+                                name="blocked",
+                                task=ResearchTaskSpec.from_task(
+                                    config, public.parent / "agent_api"
+                                ),
+                                workspace=workspace,
+                                resources=TrainingResources(),
+                                lease_dir=root / "lease",
+                            )
+                        elif role in {"candidate", "scorer"}:
+                            runtime._run_isolated_evaluator(
+                                episode_id="fixture",
+                                task=EvaluationTaskSpec.from_task(config),
+                                resources=TrainingResources(),
+                                candidate_dir=workspace,
+                                split="test",
+                                data_path=config.test_path,
+                                output_dir=root / "evaluation",
+                                candidate_image=config.candidate_image,
+                                evaluator_image=config.evaluator_image,
+                            )
+                        elif role == "gateway":
+                            runtime.start_inference_gateway(
+                                name="blocked",
+                                agent_network="unused",
+                                egress_network="unused",
+                                config=config,
+                                agent=replace(agent, inference=inference),
+                                audit_dir=root / "audit",
+                            )
+                        elif role == "identity_probe":
+                            runtime._execution_identity = None
+                            runtime._ensure_execution_identity(config.evaluator_image)
+                        else:
+                            runtime.prepare(config, agent=agent, pull_missing=False)
+
+                    with patch.object(runtime, "_run", run), patch.object(
+                        runtime, "_check_operator_storage"
+                    ):
+                        with self.assertRaisesRegex(
+                            RuntimeFailure, "image-declared VOLUME"
+                        ):
+                            launch()
+                    self.assertIn(references[role], inspected)
+                    self.assertFalse(
+                        any(call[0] in {"run", "create"} for call in runtime.calls)
+                    )
+
+    def test_identity_probe_verifies_private_io_before_accepting_daemon_uid(self):
+        runtime = DockerRuntime(docker_binary="docker")
+        calls = []
+        mounts = []
+
+        def run(args, **kwargs):
+            calls.append((args, kwargs))
+            sources = {}
+            for index, value in enumerate(args):
+                if value == "--mount":
+                    fields = dict(
+                        part.split("=", 1)
+                        for part in args[index + 1].split(",")
+                        if "=" in part
+                    )
+                    sources[fields["dst"]] = Path(fields["src"])
+            mounts.extend(sources.values())
+            self.assertEqual(sources["/owner"].stat().st_mode & 0o777, 0o400)
+            self.assertEqual(args[args.index("--cap-drop") + 1], "ALL")
+            self.assertLessEqual(kwargs["timeout"], 20)
+            if "/write" in sources:
+                self.assertEqual(args[args.index("--user") + 1], "11001:12001")
+                self.assertEqual(sources["/write"].stat().st_mode & 0o777, 0o700)
+                result = sources["/write"] / "result"
+                result.write_bytes(b"private-output")
+                result.chmod(0o600)
+                stdout = ""
+            else:
+                self.assertEqual(args[args.index("--user") + 1], "0:0")
+                stdout = "[11001,12001]"
+            return subprocess.CompletedProcess(args, 0, stdout, "")
+
+        with patch.object(runtime, "_run", side_effect=run), patch.object(
+            runtime, "stop_container"
+        ) as stop:
+            runtime._ensure_execution_identity("trusted-evaluator@sha256:fixture")
+            runtime._ensure_execution_identity("trusted-evaluator@sha256:fixture")
+        self.assertEqual(runtime._container_user(), "11001:12001")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(stop.call_count, 2)
+        self.assertTrue(all(not source.exists() for source in mounts))
+
+    def test_identity_probe_rejects_invalid_ids_or_denied_access_without_fallback(self):
+        for identity in (
+            "garbage",
+            "null",
+            "[true,0]",
+            "[-1,0]",
+            "[0,4294967295]",
+            "[1000,1000]",
+        ):
+            with self.subTest(identity=identity):
+                runtime = DockerRuntime(docker_binary="docker")
+                roots = []
+
+                def run(args, **kwargs):
+                    mount = args[args.index("--mount") + 1]
+                    source = Path(mount.split("src=", 1)[1].split(",", 1)[0])
+                    roots.append(source.parent)
+                    if args[args.index("--user") + 1] != "0:0":
+                        raise RuntimeFailure("permission denied")
+                    return subprocess.CompletedProcess(args, 0, identity, "")
+
+                with patch.object(runtime, "_run", side_effect=run), patch.object(
+                    runtime, "stop_container"
+                ):
+                    with self.assertRaisesRegex(RuntimeFailure, "UID/GID"):
+                        runtime._ensure_execution_identity("trusted-image")
+                self.assertIsNone(runtime._execution_identity)
+                self.assertTrue(all(not root.exists() for root in roots))
+
+    def test_prediction_cleanup_removes_volume_after_all_consumers(self):
+        runtime = CapturingDockerRuntime()
+        resources = _EvaluationResources("candidate", "scorer", "holder", "predictions")
+        runtime._pending_evaluations[("episode", "evaluation")] = resources
+        runtime._teardown_evaluation(("episode", "evaluation"))
+        mutations = [
+            call
+            for call in runtime.calls
+            if call[:1] == ["rm"] or call[:2] == ["volume", "rm"]
+        ]
+        self.assertEqual(
+            mutations,
+            [
+                ["rm", "--force", "candidate"],
+                ["rm", "--force", "scorer"],
+                ["rm", "--force", "holder"],
+                ["volume", "rm", "predictions"],
+            ],
+        )
+
+    def test_failure_diagnostics_stop_execution_before_reading_logs(self):
+        for running in (False, True):
+            order = []
+            runtime = DockerRuntime(docker_binary="docker")
+
+            def run(args, **kwargs):
+                order.append(args[0])
+                return subprocess.CompletedProcess(
+                    args,
+                    0,
+                    json.dumps(
+                        {
+                            "ExitCode": 137,
+                            "OOMKilled": True,
+                            "Running": running,
+                            "Error": "private runtime error",
+                        }
+                    ),
+                    "",
+                )
+
+            def capture(command, **kwargs):
+                order.append("logs")
+                return {"stdout": "", "stderr": "private trace"}
+
+            with patch.object(runtime, "_require_docker"), patch.object(
+                runtime, "_run", side_effect=run
+            ), patch(
+                "envcore.runtime._capture_diagnostic_command",
+                side_effect=capture,
+            ):
+                result = runtime._candidate_failure_diagnostics("candidate")
+            self.assertEqual(
+                order, ["kill", "inspect"] if running else ["kill", "inspect", "logs"]
+            )
+            self.assertEqual(result["state"]["oom_killed"], True)
+            self.assertNotIn("private runtime error", json.dumps(result))
+            if running:
+                self.assertTrue(result["logs_skipped_while_running"])
+
+    def test_diagnostic_streams_are_bounded_and_excess_output_is_drained(self):
+        result = _capture_diagnostic_command(
+            [
+                sys.executable,
+                "-c",
+                "import os; os.write(1, b'x' * 3000000); os.write(2, b'y' * 3000000)",
+            ],
+            timeout_seconds=10,
+        )
+        self.assertEqual(result["exit_code"], 0)
+        self.assertTrue(result["drain_complete"])
+        for stream in ("stdout", "stderr"):
+            self.assertLessEqual(len(result[stream].encode()), MAX_RUNTIME_STREAM_BYTES)
+            self.assertTrue(result[f"{stream}_truncated"])
+
+    def test_diagnostic_timeout_terminates_the_log_client(self):
+        result = _capture_diagnostic_command(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            timeout_seconds=0.1,
+        )
+        self.assertTrue(result["timed_out"])
+        self.assertIsNotNone(result["exit_code"])
+        self.assertTrue(result["drain_complete"])
+
+    def test_candidate_exit_failure_saves_private_logs_before_removal(self):
+        order = []
+
+        class FailedCandidate(CapturingDockerRuntime):
+            def _run(self, args, **kwargs):
+                if args and args[0] == "wait":
+                    return subprocess.CompletedProcess(args, 0, "1\n", "")
+                return super()._run(args, **kwargs)
+
+            def _candidate_failure_diagnostics(self, name):
+                order.append("capture")
+                return {
+                    "state": {"exit_code": 1, "oom_killed": False, "running": False},
+                    "logs": {
+                        "stdout": "hidden context printed here",
+                        "stderr": "Traceback: participant failure",
+                        "stdout_truncated": False,
+                        "stderr_truncated": False,
+                    },
+                }
+
+            def stop_container(self, name):
+                order.append("remove")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = FailedCandidate()
+            output = Path(temporary) / "evaluation"
+            with self.assertRaisesRegex(RuntimeFailure, "^isolated evaluation failed$"):
+                runtime.run_evaluator(
+                    config=TaskConfig.load(TASK),
+                    resources=TrainingResources(),
+                    candidate_dir=TASK.parent / "agent",
+                    split="test",
+                    output_dir=output,
+                )
+            self.assertEqual(order, ["capture", "remove", "remove", "remove"])
+            self.assertIn(
+                "Traceback", (output / "test.candidate.stderr.log").read_text()
+            )
+            metadata = json.loads((output / "test.failure.json").read_text())
+            self.assertEqual(metadata["phase"], "candidate_execution")
+            self.assertEqual(metadata["state"]["exit_code"], 1)
+            self.assertNotIn("hidden context", json.dumps(metadata))
+            for path in output.glob("test.*"):
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(list(output.glob("predictions-*")), [])
+
+    def test_diagnostic_failure_never_skips_teardown_or_changes_public_error(self):
+        class FailedCandidate(CapturingDockerRuntime):
+            def _run(self, args, **kwargs):
+                if args and args[0] == "wait":
+                    return subprocess.CompletedProcess(args, 0, "1\n", "")
+                return super()._run(args, **kwargs)
+
+        for failure in ("capture", "persistence"):
+            with self.subTest(
+                failure=failure
+            ), tempfile.TemporaryDirectory() as temporary:
+                runtime = FailedCandidate()
+                output = Path(temporary) / "evaluation"
+                target = (
+                    patch.object(
+                        runtime,
+                        "_candidate_failure_diagnostics",
+                        side_effect=OSError("unavailable"),
+                    )
+                    if failure == "capture"
+                    else patch(
+                        "envcore.runtime._write_private_diagnostic",
+                        side_effect=OSError("disk full"),
+                    )
+                )
+                with target, self.assertRaisesRegex(
+                    RuntimeFailure, "^isolated evaluation failed$"
+                ):
+                    runtime.run_evaluator(
+                        config=TaskConfig.load(TASK),
+                        resources=TrainingResources(),
+                        candidate_dir=TASK.parent / "agent",
+                        split="test",
+                        output_dir=output,
+                    )
+                self.assertEqual(runtime._pending_evaluations, {})
+                self.assertEqual(list(output.glob("predictions-*")), [])
+
+    def test_local_gpu_receipt_verifies_uuid_selection_but_keeps_preview_evidence(
+        self,
+    ):
+        class GpuRuntime(CapturingDockerRuntime):
+            def _run(self, args, **kwargs):
+                if args and args[0] == "exec" and "nvidia-smi" in args:
+                    self.calls.append(list(args))
+                    self.call_kwargs.append(dict(kwargs))
+                    return subprocess.CompletedProcess(
+                        args,
+                        0,
+                        f"{GPU_ONE}, NVIDIA H100 80GB HBM3, 81559, Disabled\n",
+                        "",
+                    )
+                return super()._run(args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            public_task = root / "task.json"
+            public_task.write_text("{}", encoding="utf-8")
+            publish_agent_api(public_task)
+            reference = "example/training@sha256:" + "a" * 64
+            task = replace(
+                ResearchTaskSpec.from_task(
+                    TaskConfig.load(TASK), public_task.parent / "agent_api"
+                ),
+                training_image=reference,
+            )
+            resources = TrainingResources(
+                nvidia_gpu_count=1,
+                required_gpu_model="H100",
+                minimum_gpu_memory_mib=80000,
+            )
+            envelope = v0_resource_envelope(
+                resources,
+                minimum_enforcement=EnforcementLevel.BEST_EFFORT,
+            )
+            runtime = GpuRuntime()
+            with patch(
+                "envcore.runtime.shutil.which", return_value="nvidia-smi"
+            ), patch(
+                "envcore.runtime.subprocess.run",
+                return_value=gpu_inventory(
+                    f"{GPU_ONE}, NVIDIA H100 80GB HBM3, 81559, Disabled"
+                ),
+            ):
+                runtime.validate_hardware(resources)
+            workload = runtime.resolve_workload(
+                episode_id="episode-1",
+                workload=WorkloadRequest("training", reference),
+                timeout_seconds=RESOLUTION_TIMEOUT,
+            )
+
+            receipt = runtime.start_lease(
+                episode_id="episode-1",
+                lease_id="lease-0001",
+                duration_seconds=60,
+                task=task,
+                workspace=root,
+                resources=resources,
+                resource_envelope=envelope,
+                lease_dir=root / "lease",
+                workload=workload,
+            )
+
+            evidence = {item.name: item for item in receipt.properties}
+            self.assertEqual(
+                evidence["accelerator.model"].workload_visible.value,
+                ("NVIDIA H100 80GB HBM3",),
+            )
+            self.assertEqual(
+                evidence["accelerator.count"].enforcement_level,
+                EnforcementLevel.BEST_EFFORT,
+            )
+
+    def test_local_reference_worker_is_explicitly_development_only(self):
+        descriptor = DockerRuntime(docker_binary="docker").describe_capabilities()
+        self.assertEqual(descriptor.trust_level, TrustLevel.DEVELOPMENT)
+        self.assertFalse(hasattr(descriptor, "conformance"))
+        self.assertEqual(
+            descriptor.capabilities[DEADLINE_TERMINATION].level,
+            EnforcementLevel.BEST_EFFORT,
+        )
+        self.assertEqual(
+            descriptor.capabilities[CANDIDATE_PREDICTION_STORAGE_QUOTA].level,
+            EnforcementLevel.ENFORCED,
+        )
+        self.assertIn(
+            "no unbounded fallback",
+            descriptor.capabilities[CANDIDATE_PREDICTION_STORAGE_QUOTA].mechanism,
+        )
+        self.assertEqual(
+            descriptor.capabilities[CANDIDATE_PREDICTION_ARTIFACT_LIFECYCLE].level,
+            EnforcementLevel.ENFORCED,
+        )
+
+    def test_hidden_dataset_source_is_resolved_only_when_requested(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "private" / "test"
+            runtime = CapturingDockerRuntime(hidden_datasets={"test": source})
+            request = HiddenDatasetRequest("test")
+            task = EvaluationTaskSpec.from_task(TaskConfig.load(TASK))
+
+            self.assertFalse(source.exists())
+            with self.assertRaises(HiddenDatasetResolutionFailure):
+                runtime.resolve_hidden_dataset(
+                    episode_id="episode-1",
+                    task=task,
+                    hidden_dataset=request,
+                    timeout_seconds=RESOLUTION_TIMEOUT,
+                )
+
+            write_hidden_bundle(source)
+            resolved = runtime.resolve_hidden_dataset(
+                episode_id="episode-1",
+                task=task,
+                hidden_dataset=request,
+                timeout_seconds=RESOLUTION_TIMEOUT,
+            )
+
+            self.assertEqual(
+                resolved.sha256,
+                hidden_bundle_sha256(source),
+            )
+            self.assertFalse(hasattr(resolved, "path"))
+
+    def test_workload_resolution_is_episode_bound_and_drives_the_launch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            public_task = root / "task.json"
+            public_task.write_text("{}", encoding="utf-8")
+            publish_agent_api(public_task)
+            reference = "example/training@sha256:" + "a" * 64
+            task = replace(
+                ResearchTaskSpec.from_task(
+                    TaskConfig.load(TASK), public_task.parent / "agent_api"
+                ),
+                training_image=reference,
+            )
+            runtime = CapturingDockerRuntime()
+            resolved = runtime.resolve_workload(
+                episode_id="episode-1",
+                workload=WorkloadRequest("training", reference),
+                timeout_seconds=RESOLUTION_TIMEOUT,
+            )
+
+            with self.assertRaises(WorkloadResolutionFailure):
+                runtime.start_lease(
+                    episode_id="episode-2",
+                    lease_id="lease-0001",
+                    duration_seconds=60,
+                    task=task,
+                    workspace=root,
+                    resources=TrainingResources(),
+                    lease_dir=root / "wrong-lease",
+                    workload=resolved,
+                )
+            self.assertEqual(runtime.calls, [])
+
+            receipt = runtime.start_lease(
+                episode_id="episode-1",
+                lease_id="lease-0001",
+                duration_seconds=60,
+                task=task,
+                workspace=root,
+                resources=TrainingResources(),
+                lease_dir=root / "lease",
+                workload=resolved,
+            )
+
+            launch = next(call for call in runtime.calls if call[0] == "run")
+            self.assertIn(reference, launch)
+            self.assertNotIn(resolved.resolution_id, launch)
+            self.assertEqual(receipt.episode_id, "episode-1")
+            self.assertEqual(receipt.lease_id, "lease-0001")
+            self.assertEqual(
+                {item.name for item in receipt.properties},
+                {"host.count", "accelerator.count"},
+            )
+
+    def test_mutable_preview_tag_is_frozen_to_image_id_before_launch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            public_task = root / "task.json"
+            public_task.write_text("{}", encoding="utf-8")
+            publish_agent_api(public_task)
+            task = ResearchTaskSpec.from_task(
+                TaskConfig.load(TASK), public_task.parent / "agent_api"
+            )
+            runtime = CapturingDockerRuntime()
+            resolved = runtime.resolve_workload(
+                episode_id="episode",
+                workload=WorkloadRequest("training", task.training_image),
+                timeout_seconds=RESOLUTION_TIMEOUT,
+            )
+            runtime.start_lease(
+                episode_id="episode",
+                lease_id="lease-0001",
+                duration_seconds=60,
+                task=task,
+                workspace=root,
+                resources=TrainingResources(),
+                lease_dir=root / "lease",
+                workload=resolved,
+            )
+
+            launch = next(call for call in runtime.calls if call[0] == "run")
+            self.assertEqual(resolved.effective_format, "oci-image-config")
+            self.assertIn("sha256:" + "a" * 64, launch)
+            self.assertNotIn(task.training_image, launch)
+
+    def test_workload_inspect_failure_preserves_resolution_failure_type(self):
+        runtime = DockerRuntime(docker_binary="docker")
+
+        with patch.object(
+            runtime,
+            "_run",
+            side_effect=RuntimeFailure("private Docker diagnostic"),
+        ):
+            with self.assertRaisesRegex(
+                WorkloadResolutionFailure,
+                "private Docker diagnostic",
+            ):
+                runtime.resolve_workload(
+                    episode_id="episode",
+                    workload=WorkloadRequest("training", "mutable:latest"),
+                    timeout_seconds=RESOLUTION_TIMEOUT,
+                )
+
+    def test_workload_inspect_does_not_downgrade_unknown_teardown_state(self):
+        runtime = DockerRuntime(docker_binary="docker")
+
+        with patch.object(
+            runtime,
+            "_run",
+            side_effect=WorkerTeardownFailure("inspection helper still running"),
+        ):
+            with self.assertRaisesRegex(
+                WorkerTeardownFailure,
+                "still running",
+            ):
+                runtime.resolve_workload(
+                    episode_id="episode",
+                    workload=WorkloadRequest("training", "mutable:latest"),
+                    timeout_seconds=RESOLUTION_TIMEOUT,
+                )
+
+    def test_resolved_hidden_dataset_uses_the_receipted_immutable_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = write_hidden_bundle(Path(directory) / "test")
+            original = {
+                name: (source / name).read_bytes()
+                for name in ("contexts.json", "targets.json")
+            }
+            runtime = CapturingDockerRuntime(hidden_datasets={"test": source})
+            task = EvaluationTaskSpec.from_task(TaskConfig.load(TASK))
+            resolved = runtime.resolve_hidden_dataset(
+                episode_id="episode-1",
+                task=task,
+                hidden_dataset=HiddenDatasetRequest("test"),
+                timeout_seconds=RESOLUTION_TIMEOUT,
+            )
+            workloads = resolve_evaluation_workloads(runtime, task, "episode-1")
+            runtime.calls.clear()
+            (source / "contexts.json").write_text(
+                '{"marker":"mutated"}', encoding="utf-8"
+            )
+
+            evaluated_bytes = []
+
+            def evaluate_snapshot(**kwargs):
+                evaluated_bytes.append(
+                    {
+                        name: (kwargs["data_path"] / name).read_bytes()
+                        for name in ("contexts.json", "targets.json")
+                    }
+                )
+                self.assertNotEqual(kwargs["data_path"], source)
+                return CandidateEvaluationResult(
+                    72.5,
+                    {"mean_nll": 1.25},
+                    2.0,
+                    2,
+                    3,
+                    64,
+                )
+
+            with patch.object(
+                runtime,
+                "_run_isolated_evaluator",
+                side_effect=evaluate_snapshot,
+            ):
+                result = runtime.evaluate_candidate(
+                    episode_id="episode-1",
+                    task=task,
+                    resources=TrainingResources(),
+                    candidate_dir=TASK.parent / "agent",
+                    hidden_dataset=resolved,
+                    output_dir=Path(directory) / "output",
+                    **workloads,
+                )
+
+            self.assertEqual(result.performance_score, 72.5)
+            self.assertEqual(evaluated_bytes, [original])
+            snapshot = runtime._resolved_hidden_datasets[
+                ("episode-1", resolved.resolution_id)
+            ][2]
+            self.assertEqual(resolved.sha256, hidden_bundle_sha256(snapshot))
+
+            snapshot_root = runtime._hidden_snapshot_root
+            self.assertIsNotNone(snapshot_root)
+            runtime.close_private_materializations()
+            self.assertFalse(snapshot_root.exists())
+            self.assertEqual(runtime._resolved_hidden_datasets, {})
+
+    def test_private_hidden_snapshots_wait_for_confirmed_evaluation_teardown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = write_hidden_bundle(Path(directory) / "test")
+            runtime = CapturingDockerRuntime(hidden_datasets={"test": source})
+            task = EvaluationTaskSpec.from_task(TaskConfig.load(TASK))
+            runtime.resolve_hidden_dataset(
+                episode_id="episode",
+                task=task,
+                hidden_dataset=HiddenDatasetRequest("test"),
+                timeout_seconds=RESOLUTION_TIMEOUT,
+            )
+            runtime._pending_evaluations[("episode", "test", "candidate")] = (
+                _EvaluationResources(
+                    "candidate",
+                    "evaluator",
+                    "holder",
+                    "predictions",
+                )
+            )
+
+            with self.assertRaisesRegex(
+                WorkerTeardownFailure,
+                "teardown is unconfirmed",
+            ):
+                runtime.close_private_materializations()
+
+            self.assertTrue(runtime._hidden_snapshot_root.exists())
+            runtime._pending_evaluations.clear()
+            runtime.close_private_materializations()
+
+    def test_hidden_dataset_resolution_is_bound_to_one_episode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = write_hidden_bundle(Path(directory) / "test")
+            runtime = CapturingDockerRuntime(hidden_datasets={"test": source})
+            task = EvaluationTaskSpec.from_task(TaskConfig.load(TASK))
+            resolved = runtime.resolve_hidden_dataset(
+                episode_id="episode-1",
+                task=task,
+                hidden_dataset=HiddenDatasetRequest("test"),
+                timeout_seconds=RESOLUTION_TIMEOUT,
+            )
+            workloads = resolve_evaluation_workloads(runtime, task, "episode-1")
+            runtime.calls.clear()
+
+            with self.assertRaises(HiddenDatasetResolutionFailure):
+                runtime.evaluate_candidate(
+                    episode_id="episode-2",
+                    task=task,
+                    resources=TrainingResources(),
+                    candidate_dir=TASK.parent / "agent",
+                    hidden_dataset=resolved,
+                    output_dir=Path(directory) / "output",
+                    **workloads,
+                )
+
+            self.assertEqual(runtime.calls, [])
+
+    def test_stop_container_requires_confirmed_absence(self):
+        runtime = DockerRuntime(docker_binary="docker")
+        removal = subprocess.CompletedProcess(
+            ["docker", "rm"], 1, "", "daemon refused removal"
+        )
+        still_present = subprocess.CompletedProcess(
+            ["docker", "container", "ls"], 0, "agent\n", ""
+        )
+
+        with patch.object(runtime, "_run", side_effect=[removal, still_present]):
+            with self.assertRaisesRegex(RuntimeFailure, "daemon refused removal"):
+                runtime.stop_container("agent")
+
+    def test_runtime_execution_error_has_a_typed_failure(self):
+        runtime = DockerRuntime(docker_binary="docker")
+
+        with patch(
+            "envcore.runtime.subprocess.run",
+            side_effect=OSError("runtime executable disappeared"),
+        ):
+            with self.assertRaisesRegex(RuntimeFailure, "failed to execute"):
+                runtime.stop_container("agent")
+
+    def test_container_state_query_does_not_treat_daemon_failure_as_exit(self):
+        runtime = DockerRuntime(docker_binary="docker")
+
+        with patch.object(
+            runtime,
+            "_run",
+            side_effect=RuntimeFailure("Docker daemon is unavailable"),
+        ):
+            with self.assertRaisesRegex(RuntimeFailure, "daemon is unavailable"):
+                runtime.container_running("agent")
+
+    def test_stop_container_accepts_an_already_absent_container(self):
+        runtime = DockerRuntime(docker_binary="docker")
+        removal = subprocess.CompletedProcess(
+            ["docker", "rm"], 1, "", "No such container"
+        )
+        absent = subprocess.CompletedProcess(
+            ["docker", "container", "ls"], 0, "another-container\n", ""
+        )
+
+        with patch.object(runtime, "_run", side_effect=[removal, absent]):
+            runtime.stop_container("agent")
+
+    def test_remove_network_requires_confirmed_absence(self):
+        runtime = DockerRuntime(docker_binary="docker")
+        removal = subprocess.CompletedProcess(
+            ["docker", "network", "rm"], 1, "", "network has active endpoints"
+        )
+        still_present = subprocess.CompletedProcess(
+            ["docker", "network", "ls"], 0, "evaluation-network\n", ""
+        )
+
+        with patch.object(runtime, "_run", side_effect=[removal, still_present]):
+            with self.assertRaisesRegex(RuntimeFailure, "active endpoints"):
+                runtime.remove_network("evaluation-network")
+
+    def test_failed_lease_stop_keeps_the_runtime_lease_handle(self):
+        runtime = DockerRuntime(docker_binary="docker")
+        runtime._worker_leases[("episode", "lease")] = "training"
+
+        with patch.object(
+            runtime,
+            "stop_container",
+            side_effect=RuntimeFailure("termination not confirmed"),
+        ):
+            with self.assertRaisesRegex(WorkerTeardownFailure, "not confirmed"):
+                runtime.terminate_lease(episode_id="episode", lease_id="lease")
+
+        self.assertEqual(
+            runtime._worker_leases[("episode", "lease")],
+            "training",
+        )
+
+    def test_uncertain_lease_start_keeps_a_retryable_runtime_handle(self):
+        runtime = DockerRuntime(docker_binary="docker")
+        task = ResearchTaskSpec.from_task(
+            TaskConfig.load(TASK), TASK.parent / "agent-api"
+        )
+        task = replace(
+            task,
+            training_image="example/training@sha256:" + "a" * 64,
+        )
+        workload = runtime.resolve_workload(
+            episode_id="episode",
+            workload=WorkloadRequest("training", task.training_image),
+            timeout_seconds=RESOLUTION_TIMEOUT,
+        )
+
+        with patch.object(
+            runtime,
+            "start_training",
+            side_effect=RuntimeFailure("Docker client timed out after create"),
+        ):
+            with patch.object(
+                runtime,
+                "stop_container",
+                side_effect=[
+                    RuntimeFailure("container absence not confirmed"),
+                    None,
+                ],
+            ) as stop:
+                with self.assertRaisesRegex(
+                    WorkerTeardownFailure, "cleanup was not confirmed"
+                ):
+                    runtime.start_lease(
+                        episode_id="episode",
+                        lease_id="lease",
+                        duration_seconds=60,
+                        task=task,
+                        workspace=TASK.parent,
+                        resources=TrainingResources(),
+                        lease_dir=TASK.parent / "lease",
+                        workload=workload,
+                    )
+
+                self.assertIn(("episode", "lease"), runtime._worker_leases)
+                runtime.terminate_lease(episode_id="episode", lease_id="lease")
+
+        self.assertEqual(stop.call_count, 2)
+        self.assertNotIn(("episode", "lease"), runtime._worker_leases)
+
+    def test_fresh_runtime_can_reconstruct_a_lease_cleanup_handle(self):
+        runtime = DockerRuntime(docker_binary="docker")
+        expected = runtime._worker_lease_runtime_name("episode", "lease-0001")
+
+        with patch.object(runtime, "stop_container") as stop:
+            runtime.terminate_lease(episode_id="episode", lease_id="lease-0001")
+
+        stop.assert_called_once_with(expected)
+
+    def test_host_agent_is_stopped_if_log_thread_startup_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            control = root / "control"
+            workspace.mkdir()
+            control.mkdir()
+            public_task = root / "task.json"
+            public_task.write_text("{}", encoding="utf-8")
+            created = []
+            popen = subprocess.Popen
+
+            def launch(*args, **kwargs):
+                process = popen(*args, **kwargs)
+                created.append(process)
+                return process
+
+            with patch("envcore.host_agent.subprocess.Popen", side_effect=launch):
+                with patch(
+                    "envcore.host_agent.threading.Thread.start",
+                    side_effect=RuntimeError("thread startup failed"),
+                ):
+                    with self.assertRaises(HostAgentStartupFailure) as raised:
+                        start_host_agent_process(
+                            command=[
+                                sys.executable,
+                                "-c",
+                                "import time; time.sleep(30)",
+                            ],
+                            workspace=workspace,
+                            control_dir=control,
+                            public_task_path=public_task,
+                            package_root=ROOT,
+                            forwarded_environment=(),
+                            stdout_path=root / "stdout.log",
+                            stderr_path=root / "stderr.log",
+                        )
+
+            self.assertEqual(len(created), 1)
+            self.assertIsNotNone(created[0].poll())
+            self.assertIs(raised.exception.handle.process, created[0])
+            self.assertEqual(
+                str(raised.exception.startup_error), "thread startup failed"
+            )
+            self.assertIsNone(raised.exception.cleanup_error)
+
+    def test_host_agent_closes_first_log_if_second_log_setup_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            control = root / "control"
+            workspace.mkdir()
+            control.mkdir()
+            public_task = root / "task.json"
+            public_task.write_text("{}", encoding="utf-8")
+            stdout_sink = _BoundedLogSink(root / "stdout.log")
+
+            with patch(
+                "envcore.host_agent._BoundedLogSink",
+                side_effect=[stdout_sink, OSError("stderr log unavailable")],
+            ):
+                with self.assertRaisesRegex(OSError, "stderr log unavailable"):
+                    start_host_agent_process(
+                        command=["agent"],
+                        workspace=workspace,
+                        control_dir=control,
+                        public_task_path=public_task,
+                        package_root=ROOT,
+                        forwarded_environment=(),
+                        stdout_path=root / "stdout.log",
+                        stderr_path=root / "stderr.log",
+                    )
+
+            self.assertTrue(stdout_sink.stream.closed)
+
+    def test_host_agent_start_failure_preserves_handle_if_termination_fails(self):
+        class UncertainProcess:
+            def __init__(self):
+                self.pid = 12345
+                self.stdout = io.BytesIO()
+                self.stderr = io.BytesIO()
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            control = root / "control"
+            workspace.mkdir()
+            control.mkdir()
+            public_task = root / "task.json"
+            public_task.write_text("{}", encoding="utf-8")
+            process = UncertainProcess()
+            termination_error = subprocess.TimeoutExpired("host Agent", 3)
+
+            with patch(
+                "envcore.host_agent.subprocess.Popen",
+                return_value=process,
+            ):
+                with patch(
+                    "envcore.host_agent.threading.Thread.start",
+                    side_effect=RuntimeError("thread startup failed"),
+                ):
+                    with patch.object(
+                        HostAgentProcess,
+                        "stop",
+                        side_effect=termination_error,
+                    ):
+                        with self.assertRaises(HostAgentStartupFailure) as raised:
+                            start_host_agent_process(
+                                command=["agent"],
+                                workspace=workspace,
+                                control_dir=control,
+                                public_task_path=public_task,
+                                package_root=ROOT,
+                                forwarded_environment=(),
+                                stdout_path=root / "stdout.log",
+                                stderr_path=root / "stderr.log",
+                            )
+
+            failure = raised.exception
+            self.assertIs(failure.handle.process, process)
+            self.assertEqual(str(failure.startup_error), "thread startup failed")
+            self.assertIs(failure.cleanup_error, termination_error)
+            self.assertTrue(failure.handle.running)
+            failure.handle.close_logs()
+
+    def test_host_agent_stop_closes_unstarted_log_resources_on_timeout(self):
+        class UncertainProcess:
+            def __init__(self):
+                self.pid = 12345
+                self.stdout = io.BytesIO()
+                self.stderr = io.BytesIO()
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+            def wait(self, timeout):
+                raise subprocess.TimeoutExpired("host Agent", timeout)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            process = UncertainProcess()
+            stdout_sink = _BoundedLogSink(root / "stdout.log")
+            stderr_sink = _BoundedLogSink(root / "stderr.log")
+            handle = HostAgentProcess(
+                process=process,
+                stdout_path=root / "stdout.log",
+                stderr_path=root / "stderr.log",
+                _stdout_sink=stdout_sink,
+                _stderr_sink=stderr_sink,
+            )
+
+            with patch("envcore.host_agent.os.killpg") as killpg:
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    handle.stop(timeout_seconds=0.01)
+
+            self.assertEqual(killpg.call_count, 2)
+            self.assertTrue(process.stdout.closed)
+            self.assertTrue(process.stderr.closed)
+            self.assertTrue(stdout_sink.stream.closed)
+            self.assertTrue(stderr_sink.stream.closed)
+            self.assertTrue(handle.running)
+
+    def test_runtime_profile_checks_model_count_and_memory_together(self):
+        resources = TrainingResources(
+            nvidia_gpu_count=2,
+            required_gpu_model="H100",
+            minimum_gpu_memory_mib=80000,
+        )
+        inventory = subprocess.CompletedProcess(
+            ["nvidia-smi"],
+            0,
+            f"{GPU_ONE}, NVIDIA H100 80GB HBM3, 81559, Disabled\n"
+            f"{GPU_TWO}, NVIDIA H100 80GB HBM3, 81559, Disabled\n"
+            "GPU-00000000-0000-0000-0000-000000000003, NVIDIA A100-SXM4-80GB, 81920, Disabled\n",
+            "",
+        )
+        runtime = DockerRuntime(docker_binary="docker")
+        with patch("envcore.runtime.shutil.which", return_value="nvidia-smi"):
+            with patch("envcore.runtime.subprocess.run", return_value=inventory):
+                runtime.validate_hardware(resources)
+
+        undersized = subprocess.CompletedProcess(
+            ["nvidia-smi"],
+            0,
+            f"{GPU_ONE}, NVIDIA H100 80GB HBM3, 81559, Disabled\n"
+            f"{GPU_TWO}, NVIDIA H100 PCIe, 65536, Disabled\n",
+            "",
+        )
+        with patch("envcore.runtime.shutil.which", return_value="nvidia-smi"):
+            with patch("envcore.runtime.subprocess.run", return_value=undersized):
+                with self.assertRaisesRegex(RuntimeFailure, "at least 80000 MiB"):
+                    runtime.validate_hardware(resources)
+
+    def test_training_timeout_decodes_partial_byte_output(self):
+        runtime = DockerRuntime(docker_binary="docker")
+
+        class TimedOutProcess:
+            def __init__(self):
+                self.stdout = io.BytesIO(b"partial stdout: \xff")
+                self.stderr = io.BytesIO(b"partial stderr: \xfe")
+                self.returncode = None
+                self.wait_count = 0
+
+            def wait(self, timeout):
+                del timeout
+                self.wait_count += 1
+                if self.wait_count == 1:
+                    raise subprocess.TimeoutExpired(["docker", "exec"], 5)
+                self.returncode = -9
+                return self.returncode
+
+            def poll(self):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        with patch(
+            "envcore.runtime.subprocess.Popen",
+            return_value=TimedOutProcess(),
+        ):
+            with patch.object(runtime, "stop_container") as stop_container:
+                result = runtime.exec_training(
+                    name="training",
+                    argv=["python", "train.py"],
+                    timeout_seconds=5,
+                )
+
+        stop_container.assert_called_once_with("training")
+        self.assertEqual(result.exit_code, 124)
+        self.assertEqual(result.stdout, "partial stdout: \ufffd")
+        self.assertEqual(result.stderr, "partial stderr: \ufffd")
+        self.assertIsInstance(result.stdout, str)
+        self.assertIsInstance(result.stderr, str)
+        self.assertTrue(result.timed_out)
+
+    def test_training_timeout_kills_exec_client_when_container_stop_fails(self):
+        runtime = DockerRuntime(docker_binary="docker")
+
+        class TimedOutProcess:
+            def __init__(self):
+                self.stdout = io.BytesIO(b"")
+                self.stderr = io.BytesIO(b"")
+                self.returncode = None
+                self.wait_count = 0
+                self.killed = False
+
+            def wait(self, timeout):
+                del timeout
+                self.wait_count += 1
+                if self.wait_count == 1:
+                    raise subprocess.TimeoutExpired(["docker", "exec"], 5)
+                return self.returncode
+
+            def poll(self):
+                return self.returncode
+
+            def kill(self):
+                self.killed = True
+                self.returncode = -9
+
+        process = TimedOutProcess()
+        with patch("envcore.runtime.subprocess.Popen", return_value=process):
+            with patch.object(
+                runtime,
+                "stop_container",
+                side_effect=RuntimeFailure("container remains"),
+            ):
+                with self.assertRaisesRegex(RuntimeFailure, "runtime teardown failed"):
+                    runtime.exec_training(
+                        name="training",
+                        argv=["python", "train.py"],
+                        timeout_seconds=5,
+                    )
+
+        self.assertTrue(process.killed)
+        self.assertEqual(process.wait_count, 2)
+
+    def test_training_output_is_drained_with_a_bounded_capture(self):
+        class CompletedProcess:
+            def __init__(self):
+                self.stdout = io.BytesIO(b"x" * (2 * 1024 * 1024))
+                self.stderr = io.BytesIO(b"")
+                self.returncode = None
+
+            def wait(self, timeout):
+                del timeout
+                self.returncode = 0
+                return 0
+
+            def poll(self):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        runtime = DockerRuntime(docker_binary="docker")
+        with patch(
+            "envcore.runtime.subprocess.Popen",
+            return_value=CompletedProcess(),
+        ):
+            result = runtime.exec_training(
+                name="training",
+                argv=["python", "train.py"],
+                timeout_seconds=5,
+            )
+        self.assertEqual(result.exit_code, 0)
+        self.assertTrue(result.stdout_truncated)
+        self.assertLessEqual(len(result.stdout.encode("utf-8")), 1024 * 1024)
+
+    def test_task_preparation_has_no_implicit_agent_image(self):
+        config = TaskConfig.load(TASK)
+        runtime = CapturingDockerRuntime()
+        runtime.prepare(config)
+        serialized = "\n".join(" ".join(call) for call in runtime.calls)
+        self.assertNotIn("test-agent", serialized)
+        self.assertNotIn("test-gateway", serialized)
+
+    def test_host_cli_runner_uses_workspace_and_a_minimal_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            control = root / "control"
+            workspace.mkdir()
+            control.mkdir()
+            public_task = root / "task.json"
+            public_task.write_text("{}", encoding="utf-8")
+            stdout_path = root / "agent.stdout.log"
+            stderr_path = root / "agent.stderr.log"
+            script = (
+                "import json, os; "
+                "print(json.dumps({'cwd': os.getcwd(), "
+                "'control': os.environ.get('ENVCORE_CONTROL_DIR'), "
+                "'visible': os.environ.get('VISIBLE'), "
+                "'leaked': os.environ.get('SHOULD_NOT_LEAK')}))"
+            )
+            agent = AgentConfig(
+                workspace=workspace,
+                runner="host_cli",
+                command=[sys.executable, "-c", script],
+                initial_workspace="participant_snapshot",
+                environment=["VISIBLE"],
+            )
+            runtime = DockerRuntime(docker_binary="docker")
+            with patch.dict(
+                os.environ,
+                {"VISIBLE": "yes", "SHOULD_NOT_LEAK": "secret"},
+                clear=False,
+            ):
+                handle = runtime.start_host_agent(
+                    agent=agent,
+                    control_dir=control,
+                    public_task_path=public_task,
+                    stdout_path=stdout_path,
+                    stderr_path=stderr_path,
+                )
+                handle.process.wait(timeout=5)
+                self.assertEqual(handle.stop(), 0)
+            payload = json.loads(stdout_path.read_text(encoding="utf-8"))
+            self.assertEqual(Path(payload["cwd"]).resolve(), workspace.resolve())
+            self.assertEqual(Path(payload["control"]).resolve(), control.resolve())
+            self.assertEqual(payload["visible"], "yes")
+            self.assertIsNone(payload["leaked"])
+            self.assertEqual(stdout_path.stat().st_mode & 0o777, 0o600)
+
+    def test_host_agent_jsonl_usage_is_summarized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / "agent.stdout.log"
+            records = [
+                {
+                    "type": "envcore.agent_metadata",
+                    "tool": "codex",
+                    "tool_version": "codex-cli 1.2.3",
+                    "model": "test-model",
+                    "reasoning_effort": "high",
+                },
+                {
+                    "type": "item.started",
+                    "item": {"type": "command_execution"},
+                },
+                {
+                    "type": "turn.completed",
+                    "usage": {
+                        "input_tokens": 20,
+                        "cached_input_tokens": 12,
+                        "output_tokens": 5,
+                        "reasoning_output_tokens": 2,
+                    },
+                },
+            ]
+            trace.write_text(
+                "".join(json.dumps(record) + "\n" for record in records),
+                encoding="utf-8",
+            )
+            summary = summarize_host_agent_trace(trace)
+            self.assertEqual(summary["tool"], "codex")
+            self.assertEqual(summary["model"], "test-model")
+            self.assertEqual(summary["total_tokens"], 25)
+            self.assertEqual(summary["command_executions"], 1)
+            self.assertTrue(summary["usage_complete"])
+
+    def test_tool_independent_host_agent_usage_is_summarized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / "agent.stdout.log"
+            records = [
+                {
+                    "type": "envcore.agent_metadata",
+                    "tool": "example-cli",
+                    "tool_version": "4.2",
+                    "model": "example-model",
+                },
+                {
+                    "type": "envcore.agent_usage",
+                    "usage": {
+                        "input_tokens": 100,
+                        "cached_input_tokens": 25,
+                        "output_tokens": 30,
+                        "reasoning_output_tokens": 4,
+                    },
+                    "usage_complete": True,
+                },
+            ]
+            trace.write_text(
+                "".join(json.dumps(record) + "\n" for record in records),
+                encoding="utf-8",
+            )
+            summary = summarize_host_agent_trace(trace)
+            self.assertEqual(summary["tool"], "example-cli")
+            self.assertEqual(summary["model"], "example-model")
+            self.assertEqual(summary["input_tokens"], 100)
+            self.assertEqual(summary["cached_input_tokens"], 25)
+            self.assertEqual(summary["output_tokens"], 30)
+            self.assertEqual(summary["total_tokens"], 130)
+            self.assertTrue(summary["usage_complete"])
+
+    def test_host_agent_without_usage_records_is_marked_incomplete(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / "agent.stdout.log"
+            trace.write_text("ordinary CLI output\n", encoding="utf-8")
+            summary = summarize_host_agent_trace(trace)
+            self.assertFalse(summary["usage_complete"])
+
+    def test_host_agent_log_truncation_may_split_utf8_without_breaking_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / "agent.stdout.log"
+            sink = _BoundedLogSink(trace)
+            sink.limit = 3
+            sink.drain(io.BytesIO("😀".encode("utf-8")))
+
+            summary = summarize_host_agent_trace(trace)
+
+            self.assertFalse(summary["usage_complete"])
+            self.assertGreater(summary["malformed_records"], 0)
+
+    def test_agent_mount_does_not_expose_repository_or_private_splits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            control = root / "control"
+            workspace.mkdir()
+            control.mkdir()
+            public_task = root / "task.json"
+            public_task.write_text("{}", encoding="utf-8")
+            publish_agent_api(public_task)
+            config = TaskConfig.load(TASK)
+            agent = AgentConfig(
+                workspace=workspace,
+                runner="container",
+                command=["python", "/workspace/agent.py"],
+                initial_workspace="participant_snapshot",
+                image="python:test-agent",
+                egress="denied",
+            )
+            runtime = CapturingDockerRuntime()
+            runtime.start_agent(
+                name="agent",
+                config=config,
+                agent=agent,
+                control_dir=control,
+                public_task_path=public_task,
+            )
+            command = "\n".join(runtime.calls[0])
+            task_path = next(
+                arg.split("=", 1)[1]
+                for arg in runtime.calls[0]
+                if arg.startswith("ENVCORE_TASK=")
+            )
+            self.assertEqual(task_path, "/task/task.json")
+            self.assertIn(
+                f"src={public_task.resolve()},dst={task_path},readonly", command
+            )
+            self.assertIn("dst=/opt/agent-api,readonly", command)
+            self.assertNotIn("dst=/opt/envcore", command)
+            self.assertIn("dst=/control/inbox", command)
+            self.assertIn("dst=/control/outbox", command)
+            self.assertNotIn("dst=/control\n", command)
+            self.assertIn(
+                "/agent-home:rw,nosuid,size=1g,mode=0700,uid=12345,gid=23456", command
+            )
+            self.assertIn("HOME=/agent-home", command)
+            self.assertNotIn("reference_agent", command)
+            self.assertNotIn(str(TASK.parent / "private"), command)
+            self.assertNotIn(str(config.analysis_path), command)
+            self.assertNotIn(str(config.test_path), command)
+
+    def test_egress_denied_inference_uses_trusted_sidecar_and_internal_network(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            control = root / "control"
+            lease = root / "lease"
+            audit = root / "audit"
+            workspace.mkdir()
+            control.mkdir()
+            public_task = root / "task.json"
+            public_task.write_text("{}", encoding="utf-8")
+            publish_agent_api(public_task)
+            inference = InferenceConfig(
+                protocol="openai_compatible",
+                base_url="https://api.openai.com",
+                api_key_env="OPENAI_API_KEY",
+                allowed_models=("researcher-a",),
+                allowed_paths=("/v1/responses",),
+                timeout_seconds=300,
+            )
+            config = TaskConfig.load(TASK)
+            agent = AgentConfig(
+                workspace=workspace,
+                runner="container",
+                command=["node", "/workspace/agent.js"],
+                initial_workspace="participant_snapshot",
+                image="python:test-agent",
+                egress="denied",
+                inference=inference,
+            )
+            runtime = CapturingDockerRuntime()
+            runtime.create_network("agent-net", internal=True)
+            runtime.create_network("egress-net", internal=False)
+            with patch.dict(os.environ, {"OPENAI_API_KEY": "host-secret"}):
+                runtime.start_inference_gateway(
+                    name="gateway",
+                    agent_network="agent-net",
+                    egress_network="egress-net",
+                    config=config,
+                    agent=agent,
+                    audit_dir=audit,
+                )
+            runtime.start_agent(
+                name="agent",
+                config=config,
+                agent=agent,
+                control_dir=control,
+                public_task_path=public_task,
+                inference_network="agent-net",
+            )
+            runtime.start_training(
+                name="training",
+                task=ResearchTaskSpec.from_task(
+                    config, public_task.parent / "agent_api"
+                ),
+                workspace=workspace,
+                resources=TrainingResources(),
+                lease_dir=lease,
+            )
+
+            self.assertIn("--internal", runtime.calls[0])
+            run_calls = [call for call in runtime.calls if call and call[0] == "run"]
+            gateway_command = next(
+                call
+                for call in run_calls
+                if call[call.index("--name") + 1] == "gateway"
+            )
+            agent_command = next(
+                call for call in run_calls if call[call.index("--name") + 1] == "agent"
+            )
+            training_command = next(
+                call
+                for call in run_calls
+                if call[call.index("--name") + 1] == "training"
+            )
+            self.assertEqual(
+                gateway_command[gateway_command.index("--network") + 1], "egress-net"
+            )
+            self.assertEqual(
+                agent_command[agent_command.index("--network") + 1], "agent-net"
+            )
+            self.assertEqual(
+                training_command[training_command.index("--network") + 1], "none"
+            )
+            serialized_agent = "\n".join(agent_command)
+            serialized_gateway = "\n".join(gateway_command)
+            train_path = config.public_manifest("B")["train"]["path"]
+            self.assertEqual(train_path, "/task/train")
+            for command in (agent_command, training_command):
+                self.assertIn(
+                    f"src={config.train_dir.resolve()},dst={train_path},readonly",
+                    "\n".join(command),
+                )
+            self.assertIn(f"ENVCORE_TRAIN_DIR={train_path}", training_command)
+            self.assertIn(
+                "OPENAI_BASE_URL=http://inference-gateway:8765/v1",
+                serialized_agent,
+            )
+            self.assertNotIn("envcore.agent_entrypoint", serialized_agent)
+            self.assertEqual(agent_command[-2:], ["node", "/workspace/agent.js"])
+            for command in (agent_command, training_command, gateway_command):
+                self.assertEqual(command[command.index("--user") + 1], "12345:23456")
+                self.assertEqual(command[command.index("--cap-drop") + 1], "ALL")
+            self.assertNotIn("host-secret", serialized_agent)
+            self.assertNotIn("api.openai.com", serialized_agent)
+            self.assertIn("api.openai.com", serialized_gateway)
+            self.assertNotIn("host-secret", serialized_gateway)
+            self.assertIn("OPENAI_API_KEY", gateway_command)
+            self.assertNotIn("OPENAI_API_KEY", "\n".join(training_command))
+            self.assertIn(
+                [
+                    "network",
+                    "connect",
+                    "--alias",
+                    "inference-gateway",
+                    "agent-net",
+                    "gateway",
+                ],
+                runtime.calls,
+            )
+
+    def test_unrestricted_dev_egress_has_bridge_network_and_is_not_training_network(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            control = root / "control"
+            lease = root / "lease"
+            workspace.mkdir()
+            control.mkdir()
+            public_task = root / "task.json"
+            public_task.write_text("{}", encoding="utf-8")
+            publish_agent_api(public_task)
+            config = TaskConfig.load(TASK)
+            agent = AgentConfig(
+                workspace=workspace,
+                runner="container",
+                command=["python", "/workspace/agent.py"],
+                initial_workspace="participant_snapshot",
+                image="python:test-agent",
+                egress="unrestricted-dev",
+            )
+            runtime = CapturingDockerRuntime()
+            runtime.start_agent(
+                name="agent",
+                config=config,
+                agent=agent,
+                control_dir=control,
+                public_task_path=public_task,
+            )
+            runtime.start_training(
+                name="training",
+                task=ResearchTaskSpec.from_task(
+                    config, public_task.parent / "agent_api"
+                ),
+                workspace=workspace,
+                resources=TrainingResources(),
+                lease_dir=lease,
+            )
+            agent_command, training_command = runtime.calls
+            self.assertEqual(
+                agent_command[agent_command.index("--network") + 1], "bridge"
+            )
+            self.assertEqual(
+                training_command[training_command.index("--network") + 1], "none"
+            )
+
+    def test_training_devices_come_from_episode_resources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            public_task = root / "task.json"
+            public_task.write_text("{}", encoding="utf-8")
+            publish_agent_api(public_task)
+            runtime = CapturingDockerRuntime()
+            with patch(
+                "envcore.runtime.shutil.which", return_value="nvidia-smi"
+            ), patch(
+                "envcore.runtime.subprocess.run",
+                return_value=gpu_inventory(
+                    f"{GPU_ONE}, NVIDIA H100, 81559, Disabled",
+                    f"{GPU_TWO}, NVIDIA H100, 81559, Disabled",
+                ),
+            ):
+                runtime.start_training(
+                    name="training",
+                    task=ResearchTaskSpec.from_task(
+                        TaskConfig.load(TASK), public_task.parent / "agent_api"
+                    ),
+                    workspace=workspace,
+                    resources=TrainingResources(
+                        nvidia_gpu_count=2,
+                        devices=["/dev/accel0"],
+                    ),
+                    lease_dir=root / "lease",
+                )
+            command = runtime.calls[0]
+            self.assertEqual(
+                command[command.index("--gpus") + 1], f'"device={GPU_ONE},{GPU_TWO}"'
+            )
+            self.assertEqual(command[command.index("--device") + 1], "/dev/accel0")
+
+    def test_evaluator_and_candidate_use_separate_internal_containers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = replace(
+                TaskConfig.load(TASK),
+                evaluator_device="cuda",
+            ).validate()
+            resources = TrainingResources(nvidia_gpu_count=1)
+            runtime = CapturingDockerRuntime(monotonic=lambda: 100.0)
+            with patch(
+                "envcore.runtime.shutil.which", return_value="nvidia-smi"
+            ), patch(
+                "envcore.runtime.subprocess.run",
+                return_value=gpu_inventory(f"{GPU_ONE}, NVIDIA H100, 81559, Disabled"),
+            ):
+                runtime.validate_hardware(resources)
+            output = Path(directory) / "output"
+            with patch(
+                "envcore.runtime.shutil.which", return_value="nvidia-smi"
+            ), patch(
+                "envcore.runtime.subprocess.run",
+                return_value=gpu_inventory(f"{GPU_ONE}, NVIDIA H100, 81559, Disabled"),
+            ), self.assertRaises(RuntimeFailure):
+                runtime.run_evaluator(
+                    config=config,
+                    resources=resources,
+                    candidate_dir=TASK.parent / "agent",
+                    split="analysis",
+                    output_dir=output,
+                    timeout_seconds=7,
+                )
+            run_calls = [call for call in runtime.calls if call and call[0] == "run"]
+            candidate = next(
+                call
+                for call in run_calls
+                if "candidate_offline_runner" in " ".join(call)
+            )
+            evaluators = [
+                call for call in run_calls if "/opt/docker-scorer-adapter.py" in call
+            ]
+            self.assertEqual(len(evaluators), 2)
+            validation, evaluator = evaluators
+            for command in (candidate, validation, evaluator):
+                self.assertEqual(command[command.index("--user") + 1], "12345:23456")
+                self.assertEqual(command[command.index("--cap-drop") + 1], "ALL")
+            self.assertIn(
+                "/candidate-home:rw,nosuid,size=1g,mode=0700,uid=12345,gid=23456",
+                candidate,
+            )
+            self.assertIn("dst=/candidate,readonly", "\n".join(candidate))
+            self.assertIn("dst=/opt/candidate-api,readonly", "\n".join(candidate))
+            self.assertNotIn(str(ROOT / "envcore"), "\n".join(candidate))
+            self.assertNotIn(str(config.analysis_path), "\n".join(candidate))
+            self.assertIn(
+                "dst=/eval-input/contexts.json,readonly", "\n".join(candidate)
+            )
+            self.assertNotIn("targets.json", "\n".join(candidate))
+            self.assertIn("dst=/predictions", "\n".join(candidate))
+            holder = next(
+                call
+                for call in run_calls
+                if "envcore.role=prediction-output-holder" in call
+            )
+            self.assertNotIn("contexts.json", "\n".join(holder))
+            self.assertNotIn("targets.json", "\n".join(holder))
+            self.assertEqual(holder[holder.index("--cap-drop") + 1], "ALL")
+            self.assertEqual(holder[holder.index("--network") + 1], "none")
+            candidate_mount = next(
+                item for item in candidate if "dst=/predictions" in item
+            )
+            self.assertTrue(candidate_mount.startswith("type=volume,"))
+            self.assertIn("volume-nocopy", candidate_mount)
+            self.assertNotIn("readonly", candidate_mount)
+            self.assertIn(candidate_mount + ",readonly", holder)
+            self.assertIn(candidate_mount + ",readonly", evaluator)
+            self.assertNotIn("dst=/candidate", "\n".join(evaluator))
+            evaluator_command = "\n".join(evaluator)
+            self.assertNotIn(str(config.analysis_path), evaluator_command)
+            self.assertIn("envcore-hidden-", evaluator_command)
+            self.assertIn("dst=/eval-data/contexts.json,readonly", evaluator_command)
+            self.assertIn("dst=/eval-data/targets.json,readonly", evaluator_command)
+            self.assertIn(str(config.evaluator_entrypoint), "\n".join(evaluator))
+            lengths_index = evaluator.index("--context-lengths")
+            self.assertEqual(
+                evaluator[lengths_index + 1 : lengths_index + 4],
+                ["1", "2", "3"],
+            )
+            self.assertIn("--gpus", candidate)
+            self.assertNotIn("--gpus", evaluator)
+            self.assertEqual(candidate[candidate.index("--network") + 1], "none")
+            self.assertEqual(evaluator[evaluator.index("--network") + 1], "none")
+            self.assertEqual(validation[validation.index("--mode") + 1], "validate")
+            self.assertEqual(evaluator[evaluator.index("--mode") + 1], "score")
+            evaluator_index = next(
+                index
+                for index, call in enumerate(runtime.calls)
+                if "/opt/docker-scorer-adapter.py" in call
+            )
+            self.assertEqual(runtime.call_kwargs[evaluator_index]["timeout"], 7)
+
+    def test_evaluator_deadline_includes_validation_and_candidate_serving(self):
+        class FakeClock:
+            value = 100.0
+
+            def __call__(self):
+                return self.value
+
+            def advance(self, seconds):
+                self.value += seconds
+
+        clock = FakeClock()
+
+        class AdvancingRuntime(CapturingDockerRuntime):
+            def _run(self, args, **kwargs):
+                result = super()._run(args, **kwargs)
+                if "--mode" in args and args[args.index("--mode") + 1] == "validate":
+                    clock.advance(2)
+                elif "candidate_offline_runner" in " ".join(args):
+                    clock.advance(3)
+                return result
+
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = AdvancingRuntime(monotonic=clock)
+            config = TaskConfig.load(TASK)
+            with self.assertRaises(RuntimeFailure):
+                runtime.run_evaluator(
+                    config=config,
+                    resources=TrainingResources(),
+                    candidate_dir=TASK.parent / "agent",
+                    split="analysis",
+                    output_dir=Path(directory) / "output",
+                    timeout_seconds=7,
+                )
+
+            validation_index = next(
+                index
+                for index, call in enumerate(runtime.calls)
+                if "--mode" in call and call[call.index("--mode") + 1] == "validate"
+            )
+            candidate_index = next(
+                index
+                for index, call in enumerate(runtime.calls)
+                if "candidate_offline_runner" in " ".join(call)
+            )
+            evaluator_index = next(
+                index
+                for index, call in enumerate(runtime.calls)
+                if "--mode" in call and call[call.index("--mode") + 1] == "score"
+            )
+            self.assertEqual(runtime.call_kwargs[validation_index]["timeout"], 7)
+            self.assertEqual(runtime.call_kwargs[candidate_index]["timeout"], 5)
+            self.assertEqual(runtime.call_kwargs[evaluator_index]["timeout"], 2)
+
+    def test_serving_clock_excludes_trusted_validation_and_scoring(self):
+        class FakeClock:
+            value = 100.0
+
+            def __call__(self):
+                return self.value
+
+            def advance(self, seconds):
+                self.value += seconds
+
+        clock = FakeClock()
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "evaluation"
+
+            class ResultRuntime(CapturingDockerRuntime):
+                def _run(self, args, **kwargs):
+                    result = super()._run(args, **kwargs)
+                    joined = " ".join(args)
+                    if "--mode" in args:
+                        mode = args[args.index("--mode") + 1]
+                        if mode == "validate":
+                            clock.advance(5)
+                        else:
+                            output.mkdir(parents=True, exist_ok=True)
+                            (output / "analysis.json").write_text(
+                                json.dumps(
+                                    {
+                                        "performance_score": 72.5,
+                                        "raw_metrics": {"mean_nll": 1.25},
+                                        "examples": 3,
+                                        "input_tokens": 6,
+                                        "prediction_bytes": 64,
+                                    }
+                                ),
+                                encoding="utf-8",
+                            )
+                            clock.advance(7)
+                    elif "candidate_offline_runner" in joined:
+                        clock.advance(3)
+                    elif args[:2] == ["volume", "create"]:
+                        clock.advance(2)
+                    return result
+
+            runtime = ResultRuntime(monotonic=clock)
+            result = runtime.run_evaluator(
+                config=TaskConfig.load(TASK),
+                resources=TrainingResources(),
+                candidate_dir=TASK.parent / "agent",
+                split="analysis",
+                output_dir=output,
+                timeout_seconds=20,
+            )
+
+            self.assertEqual(result.performance_score, 72.5)
+            self.assertEqual(result.raw_metrics["mean_nll"], 1.25)
+            self.assertEqual(result.candidate_wall_seconds, 3.0)
+            self.assertEqual(result.task_count, 3)
+            self.assertEqual(result.input_tokens, 6)
+            self.assertEqual(result.prediction_bytes, 64)
+            candidate = next(
+                call
+                for call in runtime.calls
+                if "candidate_offline_runner" in " ".join(call)
+            )
+            self.assertNotIn("--rm", candidate)
+            self.assertEqual(list(output.glob("predictions-*")), [])
+
+    def test_evaluator_teardown_attempts_every_isolated_resource(self):
+        class FailingTeardownRuntime(CapturingDockerRuntime):
+            def __init__(self):
+                super().__init__()
+                self.teardown = []
+
+            def stop_container(self, name):
+                role = "candidate" if "candidate" in name else "evaluator"
+                self.teardown.append(role)
+                if role == "evaluator":
+                    raise RuntimeFailure("evaluator termination not confirmed")
+
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = FailingTeardownRuntime()
+            with self.assertRaisesRegex(
+                WorkerTeardownFailure, "runtime teardown failed"
+            ):
+                runtime.run_evaluator(
+                    config=TaskConfig.load(TASK),
+                    resources=TrainingResources(),
+                    candidate_dir=TASK.parent / "agent",
+                    split="analysis",
+                    output_dir=Path(directory) / "output",
+                )
+            self.assertEqual(runtime.teardown, ["candidate", "candidate", "evaluator"])
+            self.assertEqual(len(runtime._pending_evaluations), 1)
+            storage = next(iter(runtime._pending_evaluations.values()))
+            self.assertNotIn(["volume", "rm", storage.storage_volume], runtime.calls)
+
+            runtime.stop_container = lambda name: runtime.teardown.append(
+                "retry-container"
+            )
+            runtime.teardown_pending_evaluations()
+            runtime.close_private_materializations()
+
+            self.assertIn(["volume", "rm", storage.storage_volume], runtime.calls)
+            self.assertEqual(runtime._pending_evaluations, {})
+            self.assertEqual(
+                runtime.teardown[-3:],
+                [
+                    "retry-container",
+                    "retry-container",
+                    "retry-container",
+                ],
+            )
+
+    def test_prediction_cleanup_failure_remains_pending_teardown(self):
+        runtime = CapturingDockerRuntime()
+        key = ("episode", "evaluation")
+        runtime._pending_evaluations[key] = _EvaluationResources(
+            "candidate", "evaluator", "holder", "predictions"
+        )
+        original = runtime._run
+
+        def blocked(args, **kwargs):
+            if args[:2] == ["volume", "ls"]:
+                return subprocess.CompletedProcess(args, 0, "predictions\n", "")
+            return original(args, **kwargs)
+
+        with patch.object(runtime, "_run", side_effect=blocked), self.assertRaisesRegex(
+            WorkerTeardownFailure, "prediction storage cleanup failed"
+        ):
+            runtime._teardown_evaluation(key)
+        self.assertIn(key, runtime._pending_evaluations)
+        runtime._teardown_evaluation(key)
+        self.assertNotIn(key, runtime._pending_evaluations)
+
+    def test_prediction_admission_failures_never_launch_candidate(self):
+        for fault in ("create", "options", "capacity", "empty", "shape"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
+                runtime = CapturingDockerRuntime()
+                original = runtime._run
+
+                def failing(args, **kwargs):
+                    if args[:2] == ["volume", "create"]:
+                        self.assertEqual(len(runtime._pending_evaluations), 1)
+                        if fault == "create":
+                            raise RuntimeFailure("tmpfs mounting unavailable")
+                    result = original(args, **kwargs)
+                    if fault == "options" and args[:2] == ["volume", "inspect"]:
+                        result.stdout = "{}"
+                    if args[:1] == ["exec"] and args[1].startswith(
+                        "atb-prediction-holder-"
+                    ):
+                        payload = json.loads(result.stdout)
+                        if fault == "capacity":
+                            payload["bytes"] *= 2
+                        if fault == "empty":
+                            payload["empty"] = False
+                        result.stdout = json.dumps(payload)
+                    if fault == "shape" and "--mode" in args:
+                        (Path(directory) / "analysis.validation.json").write_text(
+                            '{"examples":true}', encoding="utf-8"
+                        )
+                    return result
+
+                with patch.object(
+                    runtime, "_run", side_effect=failing
+                ), self.assertRaisesRegex(
+                    RuntimeFailure, "^isolated evaluation failed$"
+                ):
+                    runtime.run_evaluator(
+                        config=TaskConfig.load(TASK),
+                        resources=TrainingResources(),
+                        candidate_dir=TASK.parent / "agent",
+                        split="analysis",
+                        output_dir=Path(directory),
+                    )
+                self.assertFalse(
+                    any(
+                        "candidate_offline_runner" in " ".join(call)
+                        for call in runtime.calls
+                    )
+                )
+                self.assertEqual(runtime._pending_evaluations, {})
+                failure = json.loads(
+                    (Path(directory) / "analysis.failure.json").read_text()
+                )
+                self.assertEqual(failure["phase"], "prediction_storage_setup")
+
+    def test_prediction_holder_failure_retains_volume_for_retry(self):
+        runtime = CapturingDockerRuntime()
+        key = ("episode", "evaluation")
+        runtime._pending_evaluations[key] = _EvaluationResources(
+            "candidate", "scorer", "holder", "predictions"
+        )
+
+        def stop(name):
+            if name == "holder":
+                raise RuntimeFailure("holder termination uncertain")
+
+        with patch.object(
+            runtime, "stop_container", side_effect=stop
+        ), self.assertRaisesRegex(
+            WorkerTeardownFailure, "prediction storage cleanup failed"
+        ):
+            runtime._teardown_evaluation(key)
+        self.assertNotIn(["volume", "rm", "predictions"], runtime.calls)
+        self.assertIn(key, runtime._pending_evaluations)
+        runtime.teardown_pending_evaluations()
+        self.assertEqual(runtime._pending_evaluations, {})
+
+    def test_evaluator_never_accepts_a_stale_result_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "output"
+            output.mkdir()
+            result = output / "analysis.json"
+            result.write_text('{"performance_score": 99.0}', encoding="utf-8")
+            runtime = CapturingDockerRuntime()
+
+            with self.assertRaisesRegex(
+                RuntimeFailure, "valid performance or cost result"
+            ):
+                runtime.run_evaluator(
+                    config=TaskConfig.load(TASK),
+                    resources=TrainingResources(),
+                    candidate_dir=TASK.parent / "agent",
+                    split="analysis",
+                    output_dir=output,
+                )
+
+            self.assertFalse(result.exists())
+            self.assertEqual(list(output.glob("predictions-*")), [])
+
+    def test_candidate_logs_are_private_and_never_enter_runtime_error(self):
+        class FailingRuntime(CapturingDockerRuntime):
+            def _run(self, args, **kwargs):
+                if "candidate_offline_runner" in " ".join(args):
+                    raise RuntimeFailure("hidden input_ids: [0, 1, 2]")
+                return super()._run(args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "evaluation"
+            runtime = FailingRuntime()
+            config = TaskConfig.load(TASK)
+            with self.assertRaisesRegex(
+                RuntimeFailure, "^isolated evaluation failed$"
+            ) as caught:
+                runtime.run_evaluator(
+                    config=config,
+                    resources=TrainingResources(),
+                    candidate_dir=TASK.parent / "agent",
+                    split="analysis",
+                    output_dir=output,
+                )
+            self.assertNotIn("input_ids", str(caught.exception))
+            diagnostic = output / "analysis.failure.log"
+            self.assertEqual(diagnostic.stat().st_mode & 0o777, 0o600)
+            self.assertIn("hidden input_ids", diagnostic.read_text(encoding="utf-8"))
+            self.assertEqual(list(output.glob("predictions-*")), [])
+
+    def test_evaluator_rejects_boolean_and_string_performance_scores(self):
+        for raw_score in (True, "72.5"):
+            with self.subTest(raw_score=raw_score):
+                with tempfile.TemporaryDirectory() as directory:
+                    output = Path(directory) / "evaluation"
+
+                    class ResultRuntime(CapturingDockerRuntime):
+                        def _run(self, args, **kwargs):
+                            result = super()._run(args, **kwargs)
+                            if (
+                                "--mode" in args
+                                and args[args.index("--mode") + 1] == "score"
+                            ):
+                                output.mkdir(parents=True, exist_ok=True)
+                                (output / "analysis.json").write_text(
+                                    json.dumps(
+                                        {
+                                            "performance_score": raw_score,
+                                            "raw_metrics": {"mean_nll": 1.25},
+                                            "examples": 3,
+                                            "input_tokens": 6,
+                                            "prediction_bytes": 64,
+                                        }
+                                    ),
+                                    encoding="utf-8",
+                                )
+                            return result
+
+                    runtime = ResultRuntime()
+                    with self.assertRaisesRegex(
+                        RuntimeFailure, "valid performance or cost result"
+                    ):
+                        runtime.run_evaluator(
+                            config=TaskConfig.load(TASK),
+                            resources=TrainingResources(),
+                            candidate_dir=TASK.parent / "agent",
+                            split="analysis",
+                            output_dir=output,
+                        )
+
+    def test_missing_inference_credential_fails_before_gateway_start(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inference = InferenceConfig(
+                protocol="openai_compatible",
+                base_url="https://api.openai.com",
+                api_key_env="ENVCORE_TEST_MISSING_KEY",
+                allowed_models=("researcher-a",),
+                allowed_paths=("/v1/responses",),
+                timeout_seconds=300,
+            )
+            config = TaskConfig.load(TASK)
+            agent = AgentConfig(
+                workspace=Path(directory),
+                runner="container",
+                command=["agent"],
+                initial_workspace="participant_snapshot",
+                image="agent:image",
+                egress="denied",
+                inference=inference,
+            )
+            runtime = CapturingDockerRuntime()
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("ENVCORE_TEST_MISSING_KEY", None)
+                with self.assertRaises(RuntimeFailure):
+                    runtime.start_inference_gateway(
+                        name="gateway",
+                        agent_network="agent-net",
+                        egress_network="egress-net",
+                        config=config,
+                        agent=agent,
+                        audit_dir=Path(directory) / "audit",
+                    )
+            self.assertEqual(runtime.calls, [])
+
+    def test_host_accelerators_are_recorded_even_when_none_were_requested(self):
+        """A profile declaring no accelerator must still leave a trace.
+
+        A site whose scheduler refuses a zero-accelerator allocation runs a
+        `cpu-local` profile on a GPU node. Recording an empty list there would
+        assert the host had none, which is indistinguishable from never having
+        looked.
+        """
+
+        inventory = subprocess.CompletedProcess(
+            ["nvidia-smi"],
+            0,
+            "NVIDIA H200, GPU-abc, 550.54.15, 143771\n",
+            "",
+        )
+        runtime = CapturingDockerRuntime()
+        with patch("envcore.runtime.shutil.which", return_value="nvidia-smi"):
+            with patch("envcore.runtime.subprocess.run", return_value=inventory):
+                manifest = runtime.environment_manifest(
+                    TaskConfig.load(TASK), resources=TrainingResources()
+                )
+
+        self.assertEqual(manifest["gpu_inventory"], "inspected")
+        self.assertEqual([gpu["name"] for gpu in manifest["gpus"]], ["NVIDIA H200"])
+        self.assertEqual(manifest["training_resources"]["nvidia_gpu_count"], 0)
+
+    def test_an_uninspectable_host_is_not_reported_as_having_no_accelerator(self):
+        runtime = CapturingDockerRuntime()
+        with patch("envcore.runtime.shutil.which", return_value=None):
+            manifest = runtime.environment_manifest(
+                TaskConfig.load(TASK), resources=TrainingResources()
+            )
+
+        self.assertEqual(manifest["gpu_inventory"], "unavailable")
+        self.assertEqual(manifest["gpus"], [])
+
+    def test_a_failing_inventory_query_only_raises_when_accelerators_were_requested(
+        self,
+    ):
+        failure = subprocess.CompletedProcess(["nvidia-smi"], 9, "", "driver error")
+        runtime = CapturingDockerRuntime()
+
+        with patch("envcore.runtime.shutil.which", return_value="nvidia-smi"):
+            with patch("envcore.runtime.subprocess.run", return_value=failure):
+                manifest = runtime.environment_manifest(
+                    TaskConfig.load(TASK), resources=TrainingResources()
+                )
+        self.assertEqual(manifest["gpu_inventory"], "unavailable")
+
+        with patch("envcore.runtime.shutil.which", return_value="nvidia-smi"):
+            with patch("envcore.runtime.subprocess.run", return_value=failure):
+                with self.assertRaisesRegex(RuntimeFailure, "driver error"):
+                    runtime.environment_manifest(
+                        TaskConfig.load(TASK),
+                        resources=TrainingResources(nvidia_gpu_count=1),
+                    )
+
+
+if __name__ == "__main__":
+    unittest.main()

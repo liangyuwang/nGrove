@@ -1,0 +1,588 @@
+"""Helpers for the target-free offline Candidate file protocol."""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import math
+import os
+import stat
+import sys
+import uuid
+from array import array
+from numbers import Real
+from pathlib import Path
+from typing import Any, Dict, Iterable, Sequence, Union
+
+
+DATASET_SCHEMA_VERSION = 2
+PREDICTION_SCHEMA_VERSION = 1
+CANDIDATE_PROTOCOL = "offline_next_token_logits_v3"
+PREDICTIONS_FILENAME = "predictions.json"
+LOGITS_FILENAME = "logits.f32"
+PREDICTION_ARTIFACT_MAX_ENTRIES = 2
+PREDICTION_MANIFEST_MAX_BYTES = 64 * 1024
+PREDICTION_STORAGE_MIN_BYTES = 16 * 1024 * 1024
+PREDICTION_STORAGE_GRANULARITY = 1024 * 1024
+PREDICTION_STORAGE_MAX_INODES = 128
+PREDICTION_ARTIFACT_RETENTION = "ephemeral_until_evaluation_teardown"
+PathInput = Union[str, os.PathLike]
+CONTEXT_MANIFEST_FIELDS = (
+    "schema_version",
+    "candidate_protocol",
+    "dataset_id",
+    "vocab_size",
+    "context_lengths",
+    "examples",
+)
+CONTEXT_EXAMPLE_FIELDS = ("example_id", "input_ids")
+_PREDICTION_MANIFEST_FIELD_SPECS = (
+    ("schema_version", "integer", "constant", PREDICTION_SCHEMA_VERSION),
+    ("candidate_protocol", "string", "constant", CANDIDATE_PROTOCOL),
+    ("dataset_id", "string", "source", "contexts.json.dataset_id"),
+    ("examples", "integer", "source", "len(contexts.json.examples)"),
+    ("vocab_size", "integer", "source", "contexts.json.vocab_size"),
+    ("dtype", "string", "constant", "float32-le"),
+    ("logits_file", "string", "constant", LOGITS_FILENAME),
+)
+PREDICTION_MANIFEST_FIELDS = tuple(
+    field for field, _json_type, _value_kind, _value in _PREDICTION_MANIFEST_FIELD_SPECS
+)
+
+
+def candidate_entrypoint_contract() -> Dict[str, Any]:
+    """Declare the existing Python entrypoint without prescribing a workflow."""
+
+    return {
+        "module_file": "candidate.py",
+        "module_location": "candidate_artifact_root",
+        "function": "run_offline",
+        "signature": "run_offline(candidate_dir, contexts_path, output_dir, device)",
+        "invocation": "python_module_import_then_synchronous_function_call",
+        "argument_passing": "positional_in_declared_order",
+        "arguments": [
+            {
+                "name": "candidate_dir",
+                "python_type": "pathlib.Path",
+                "value": "absolute path to the immutable Candidate artifact directory",
+                "access": "read_only",
+            },
+            {
+                "name": "contexts_path",
+                "python_type": "pathlib.Path",
+                "content_contract": "evaluation.candidate_boundary.context_manifest",
+                "value": (
+                    "absolute path to contexts.json containing all requested "
+                    "example IDs and token contexts, without targets or split labels"
+                ),
+                "access": "read_only",
+            },
+            {
+                "name": "output_dir",
+                "python_type": "pathlib.Path",
+                "value": "absolute path to isolated prediction output storage",
+                "access": "read_write",
+            },
+            {
+                "name": "device",
+                "python_type": "str",
+                "value_source": "evaluation.device",
+                "allowed_values": ["cpu", "cuda"],
+            },
+        ],
+        "module_import": (
+            "module-level code executes during import; __name__ is not '__main__'"
+        ),
+        "process_arguments": "sys.argv is Worker-owned and is not part of the Candidate ABI",
+        "completion": (
+            "return after writing predictions.json and logits.f32 under output_dir "
+            "according to candidate_boundary.prediction_manifest"
+        ),
+        "return_value": "ignored; predictions are read from output files",
+    }
+
+
+def context_manifest_contract() -> Dict[str, Any]:
+    """Describe the complete target-free input object visible to a Candidate."""
+
+    identifier = {
+        "json_type": "string",
+        "min_length": 1,
+        "max_length": 512,
+        "nul_allowed": False,
+        "meaning": "opaque correlation identifier; no split label or source metadata",
+    }
+    return {
+        "filename": "contexts.json",
+        "format": "json_object",
+        "encoding": "utf-8",
+        "exact_fields": list(CONTEXT_MANIFEST_FIELDS),
+        "additional_fields_allowed": False,
+        "json_member_order_significant": False,
+        "fields": {
+            "schema_version": {
+                "json_type": "integer",
+                "constant": DATASET_SCHEMA_VERSION,
+            },
+            "candidate_protocol": {
+                "json_type": "string",
+                "constant": CANDIDATE_PROTOCOL,
+            },
+            "dataset_id": dict(identifier),
+            "vocab_size": {
+                "json_type": "integer",
+                "minimum": 1,
+                "source": "evaluation.vocab_size",
+            },
+            "context_lengths": {
+                "json_type": "array",
+                "items": {
+                    "json_type": "integer",
+                    "minimum": 1,
+                    "maximum_source": "evaluation.max_context_tokens",
+                },
+                "min_items": 1,
+                "order": "strictly_increasing",
+                "meaning": "distinct input lengths present in this request",
+                "value_visibility": "candidate_only_after_research_sealing",
+            },
+            "examples": {
+                "json_type": "array",
+                "min_items": 1,
+                "order": "prediction_row_order",
+                "items": {
+                    "json_type": "object",
+                    "exact_fields": list(CONTEXT_EXAMPLE_FIELDS),
+                    "additional_fields_allowed": False,
+                    "fields": {
+                        "example_id": {
+                            **identifier,
+                            "unique_across": "contexts.json.examples",
+                        },
+                        "input_ids": {
+                            "json_type": "array",
+                            "min_items": 1,
+                            "max_items_source": "evaluation.max_context_tokens",
+                            "length_member_of": "contexts.json.context_lengths",
+                            "order": "oldest_to_newest",
+                            "items": {
+                                "json_type": "integer",
+                                "minimum": 0,
+                                "exclusive_maximum_source": "contexts.json.vocab_size",
+                            },
+                        },
+                    },
+                },
+            },
+        },
+        "prediction_task": "one next-token logit vector per example, after its input_ids",
+        "target_visibility": "no targets, split labels, or protected source metadata",
+    }
+
+
+def prediction_manifest_contract() -> Dict[str, Any]:
+    """Return the exact Agent-facing ``predictions.json`` contract."""
+
+    return {
+        "filename": PREDICTIONS_FILENAME,
+        "format": "json_object",
+        "exact_fields": list(PREDICTION_MANIFEST_FIELDS),
+        "additional_fields_allowed": False,
+        "json_member_order_significant": False,
+        "fields": {
+            field: {"json_type": json_type, value_kind: value}
+            for field, json_type, value_kind, value in (
+                _PREDICTION_MANIFEST_FIELD_SPECS
+            )
+        },
+        "logits_artifact": {
+            "filename": LOGITS_FILENAME,
+            "encoding": "ieee754_float32_little_endian",
+            "layout": "row_major",
+            "header_bytes": 0,
+            "shape": ["len(contexts.json.examples)", "contexts.json.vocab_size"],
+            "row_order": "contexts.json.examples array order",
+            "column_order": "ascending token ID from 0 to vocab_size - 1",
+            "values": "finite next-token logits; NaN and infinity are forbidden",
+            "byte_length": "len(contexts.json.examples) * contexts.json.vocab_size * 4",
+        },
+    }
+
+
+def candidate_helper_api_manifest() -> Dict[str, Any]:
+    """Describe the optional generated helper API available to Candidates."""
+
+    return {
+        "module": "envcore.candidate_protocol",
+        "request_reader": "load_context_request(path)",
+        "request_reader_return": {
+            "python_type": "dict",
+            "contents": "parsed contexts.json with unchanged keys and values",
+            "contract": "evaluation.candidate_boundary.context_manifest",
+        },
+        "path_parameters": "str or os.PathLike (including pathlib.Path)",
+        "prediction_writer": (
+            "write_prediction_artifact(output_dir, *, dataset_id, logits, "
+            "examples, vocab_size)"
+        ),
+        "use": "optional",
+    }
+
+
+def prediction_storage_limit(*, examples: int, vocab_size: int) -> Dict[str, int]:
+    """Separate allocated storage protection from the exact final artifact."""
+
+    for value, field in ((examples, "examples"), (vocab_size, "vocab_size")):
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f"prediction storage {field} must be a positive integer")
+    logits_bytes = examples * vocab_size * 4
+    artifact_max_bytes = logits_bytes + PREDICTION_MANIFEST_MAX_BYTES
+    capacity = max(PREDICTION_STORAGE_MIN_BYTES, 2 * artifact_max_bytes)
+    capacity = (
+        (capacity + PREDICTION_STORAGE_GRANULARITY - 1)
+        // PREDICTION_STORAGE_GRANULARITY
+        * PREDICTION_STORAGE_GRANULARITY
+    )
+    return {
+        "max_bytes": capacity,
+        "max_inodes": PREDICTION_STORAGE_MAX_INODES,
+        "artifact_max_bytes": artifact_max_bytes,
+        "artifact_max_entries": PREDICTION_ARTIFACT_MAX_ENTRIES,
+        "logits_bytes": logits_bytes,
+        "manifest_max_bytes": PREDICTION_MANIFEST_MAX_BYTES,
+    }
+
+
+def prediction_storage_manifest() -> Dict[str, Any]:
+    """Return the machine-readable release rule used to derive hard limits."""
+
+    return {
+        "hard_limit": "required_before_candidate_start",
+        "accounting": "allocated_filesystem_storage_including_open_unlinked_files",
+        "isolated_from": "episode_logs_and_results",
+        "max_inodes": PREDICTION_STORAGE_MAX_INODES,
+        "temporary_entries": "allowed_until_candidate_exit",
+        "artifact_max_entries": PREDICTION_ARTIFACT_MAX_ENTRIES,
+        "logit_bytes": 4,
+        "logit_values": "examples*vocab_size",
+        "manifest_max_bytes": PREDICTION_MANIFEST_MAX_BYTES,
+        "artifact_max_bytes": "examples*vocab_size*4+manifest_max_bytes",
+        "max_bytes": "round_up(max(min_bytes,2*artifact_max_bytes),granularity_bytes)",
+        "min_bytes": PREDICTION_STORAGE_MIN_BYTES,
+        "granularity_bytes": PREDICTION_STORAGE_GRANULARITY,
+    }
+
+
+def serving_timing_manifest() -> Dict[str, Any]:
+    """Return the release-owned Candidate serving wall-clock boundary."""
+
+    return {
+        "clock": "trusted_monotonic_wall",
+        "start": "immediately_before_candidate_process_invocation",
+        "stop": "after_candidate_process_exit_and_prediction_flush",
+        "includes": [
+            "sandbox_startup",
+            "candidate_import",
+            "model_loading",
+            "context_file_read",
+            "participant_scheduling",
+            "inference",
+            "prediction_file_write",
+        ],
+        "excludes": [
+            "hidden_data_materialization",
+            "trusted_input_validation",
+            "trusted_output_validation",
+            "target_join",
+            "metric_computation",
+            "sandbox_teardown",
+        ],
+    }
+
+
+class CandidateProtocolError(RuntimeError):
+    """The Candidate bundle does not implement the public serving contract."""
+
+
+def _expected_prediction_manifest(
+    *, dataset_id: str, examples: int, vocab_size: int
+) -> Dict[str, Any]:
+    source_values = {
+        "contexts.json.dataset_id": dataset_id,
+        "len(contexts.json.examples)": examples,
+        "contexts.json.vocab_size": vocab_size,
+    }
+    return {
+        field: value if value_kind == "constant" else source_values[value]
+        for field, _json_type, value_kind, value in (_PREDICTION_MANIFEST_FIELD_SPECS)
+    }
+
+
+def _validate_prediction_manifest(
+    manifest: Any,
+    *,
+    dataset_id: str,
+    examples: int,
+    vocab_size: int,
+) -> None:
+    """Validate the public manifest with bounded, field-specific diagnostics."""
+
+    if not isinstance(manifest, dict):
+        raise CandidateProtocolError("prediction manifest must be a JSON object")
+
+    expected = _expected_prediction_manifest(
+        dataset_id=dataset_id,
+        examples=examples,
+        vocab_size=vocab_size,
+    )
+    expected_fields = set(PREDICTION_MANIFEST_FIELDS)
+    actual_fields = set(manifest)
+    missing = sorted(expected_fields - actual_fields)
+    unexpected = sorted(actual_fields - expected_fields)
+    if missing or unexpected:
+        details = []
+        if missing:
+            details.append(f"missing fields {json.dumps(missing)}")
+        if unexpected:
+            details.append(f"unexpected fields {json.dumps(unexpected)}")
+        raise CandidateProtocolError(
+            "prediction manifest fields do not match: " + "; ".join(details)
+        )
+
+    field_contract = prediction_manifest_contract()["fields"]
+    for field in PREDICTION_MANIFEST_FIELDS:
+        value = manifest[field]
+        expected_value = expected[field]
+        required_type = int if field_contract[field]["json_type"] == "integer" else str
+        if type(value) is required_type and value == expected_value:
+            continue
+        if "constant" in field_contract[field]:
+            requirement = (
+                f"the {field_contract[field]['json_type']} constant "
+                f"{json.dumps(field_contract[field]['constant'])}"
+            )
+        else:
+            requirement = (
+                f"a {field_contract[field]['json_type']} equal to "
+                f"{field_contract[field]['source']}"
+            )
+        raise CandidateProtocolError(
+            f"prediction manifest field {json.dumps(field)} must be {requirement}"
+        )
+
+
+def load_candidate(candidate_dir: PathInput) -> Any:
+    """Import an offline Candidate inside its untrusted evaluation process."""
+
+    root = Path(candidate_dir).resolve()
+    module_path = root / "candidate.py"
+    if not module_path.is_file():
+        raise CandidateProtocolError("candidate.py is missing")
+    sys.path.insert(0, str(root))
+    module_name = f"envcore_candidate_{uuid.uuid4().hex}"
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise CandidateProtocolError("candidate.py could not be imported")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    if not callable(getattr(module, "run_offline", None)):
+        raise CandidateProtocolError(
+            "candidate.py must define run_offline(candidate_dir, contexts_path, "
+            "output_dir, device)"
+        )
+    return module
+
+
+def load_context_request(path: PathInput) -> Dict[str, Any]:
+    """Read and validate the target-free request visible to a Candidate."""
+
+    path = Path(path)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError) as exc:
+        raise CandidateProtocolError("context request is invalid") from exc
+    if not isinstance(payload, dict) or set(payload) != set(CONTEXT_MANIFEST_FIELDS):
+        raise CandidateProtocolError("context request has an invalid schema")
+    if (
+        isinstance(payload["schema_version"], bool)
+        or not isinstance(payload["schema_version"], int)
+        or payload["schema_version"] != DATASET_SCHEMA_VERSION
+    ):
+        raise CandidateProtocolError("context request has an unsupported schema")
+    if payload["candidate_protocol"] != CANDIDATE_PROTOCOL:
+        raise CandidateProtocolError("context request uses a different protocol")
+    dataset_id = payload["dataset_id"]
+    vocab_size = payload["vocab_size"]
+    lengths = payload["context_lengths"]
+    examples = payload["examples"]
+    if (
+        not isinstance(dataset_id, str)
+        or not dataset_id
+        or len(dataset_id) > 512
+        or "\0" in dataset_id
+    ):
+        raise CandidateProtocolError("context request dataset_id is invalid")
+    if (
+        isinstance(vocab_size, bool)
+        or not isinstance(vocab_size, int)
+        or vocab_size <= 0
+    ):
+        raise CandidateProtocolError("context request vocabulary is invalid")
+    if (
+        not isinstance(lengths, list)
+        or not lengths
+        or any(
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0
+            for value in lengths
+        )
+        or sorted(set(lengths)) != lengths
+    ):
+        raise CandidateProtocolError("context request lengths are invalid")
+    if not isinstance(examples, list) or not examples:
+        raise CandidateProtocolError("context request has no examples")
+    seen_ids = set()
+    observed_lengths = set()
+    for example in examples:
+        if not isinstance(example, dict) or set(example) != set(CONTEXT_EXAMPLE_FIELDS):
+            raise CandidateProtocolError("context example has an invalid schema")
+        example_id = example["example_id"]
+        input_ids = example["input_ids"]
+        if (
+            not isinstance(example_id, str)
+            or not example_id
+            or len(example_id) > 512
+            or "\0" in example_id
+            or example_id in seen_ids
+        ):
+            raise CandidateProtocolError("context example_id is invalid or duplicated")
+        seen_ids.add(example_id)
+        if not isinstance(input_ids, list) or len(input_ids) not in lengths:
+            raise CandidateProtocolError("context example has an undeclared length")
+        if not all(
+            isinstance(token, int)
+            and not isinstance(token, bool)
+            and 0 <= token < vocab_size
+            for token in input_ids
+        ):
+            raise CandidateProtocolError("context token is outside the vocabulary")
+        observed_lengths.add(len(input_ids))
+    if observed_lengths != set(lengths):
+        raise CandidateProtocolError(
+            "context request does not cover every context length"
+        )
+    return payload
+
+
+def write_prediction_artifact(
+    output_dir: PathInput,
+    *,
+    dataset_id: str,
+    logits: Iterable[Sequence[Real]],
+    examples: int,
+    vocab_size: int,
+) -> None:
+    """Write the portable row-major float32 artifact required by the scorer."""
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    logits_path = output_dir / LOGITS_FILENAME
+    rows = 0
+    try:
+        with logits_path.open("xb") as stream:
+            for raw_row in logits:
+                if hasattr(raw_row, "tolist"):
+                    raw_row = raw_row.tolist()
+                if not isinstance(raw_row, (list, tuple)) or len(raw_row) != vocab_size:
+                    raise CandidateProtocolError(
+                        "every prediction row must match the vocabulary size"
+                    )
+                if any(
+                    isinstance(value, bool)
+                    or not isinstance(value, Real)
+                    or not math.isfinite(float(value))
+                    for value in raw_row
+                ):
+                    raise CandidateProtocolError("prediction logits must be finite")
+                values = array("f", (float(value) for value in raw_row))
+                if sys.byteorder != "little":
+                    values.byteswap()
+                stream.write(values.tobytes())
+                rows += 1
+    except (OSError, OverflowError) as exc:
+        raise CandidateProtocolError("prediction logits could not be written") from exc
+    if rows != examples:
+        raise CandidateProtocolError("prediction row count does not match the request")
+    manifest = _expected_prediction_manifest(
+        dataset_id=dataset_id,
+        examples=examples,
+        vocab_size=vocab_size,
+    )
+    try:
+        (output_dir / PREDICTIONS_FILENAME).write_text(
+            json.dumps(manifest, separators=(",", ":"), sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        raise CandidateProtocolError(
+            "prediction manifest could not be written"
+        ) from exc
+
+
+def validate_prediction_artifact(
+    output_dir: PathInput,
+    *,
+    dataset_id: str,
+    examples: int,
+    vocab_size: int,
+) -> int:
+    """Validate a Candidate output without requiring access to hidden targets."""
+
+    output_dir = Path(output_dir)
+    try:
+        entries = {entry.name: entry for entry in output_dir.iterdir()}
+    except OSError as exc:
+        raise CandidateProtocolError("prediction artifact is unavailable") from exc
+    if set(entries) != {PREDICTIONS_FILENAME, LOGITS_FILENAME}:
+        raise CandidateProtocolError("prediction artifact has unexpected entries")
+    for entry in entries.values():
+        metadata = entry.lstat()
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise CandidateProtocolError("prediction entries must be regular files")
+    storage_limit = prediction_storage_limit(
+        examples=examples,
+        vocab_size=vocab_size,
+    )
+    if (
+        entries[PREDICTIONS_FILENAME].stat().st_size
+        > storage_limit["manifest_max_bytes"]
+    ):
+        raise CandidateProtocolError("prediction manifest exceeds its byte limit")
+    try:
+        manifest = json.loads(entries[PREDICTIONS_FILENAME].read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CandidateProtocolError("prediction manifest is invalid") from exc
+    _validate_prediction_manifest(
+        manifest,
+        dataset_id=dataset_id,
+        examples=examples,
+        vocab_size=vocab_size,
+    )
+    expected_bytes = storage_limit["logits_bytes"]
+    if entries[LOGITS_FILENAME].stat().st_size != expected_bytes:
+        raise CandidateProtocolError("prediction logits have the wrong byte length")
+    if array("f").itemsize != 4:
+        raise CandidateProtocolError("platform lacks IEEE-754 float32 arrays")
+    try:
+        with entries[LOGITS_FILENAME].open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                if len(chunk) % 4:
+                    raise CandidateProtocolError("prediction logits are misaligned")
+                values = array("f")
+                values.frombytes(chunk)
+                if sys.byteorder != "little":
+                    values.byteswap()
+                if any(not math.isfinite(value) for value in values):
+                    raise CandidateProtocolError("prediction logits must be finite")
+    except OSError as exc:
+        raise CandidateProtocolError("prediction logits could not be read") from exc
+    return expected_bytes + entries[PREDICTIONS_FILENAME].stat().st_size

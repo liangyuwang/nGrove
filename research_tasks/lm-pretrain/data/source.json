@@ -1,0 +1,37 @@
+{
+  "status": "preview_builder_available",
+  "source": {
+    "dataset": "HuggingFaceFW/fineweb-edu",
+    "url": "https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu",
+    "revision": "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9",
+    "upstream_sample": "sample-10BT",
+    "license": "ODC-By-1.0",
+    "additional_terms": "Common Crawl Terms of Use"
+  },
+  "train": {
+    "nominal_scale_tokens": 10000000000,
+    "default_build_scope": "complete_pinned_source",
+    "exact_canonical_token_count": null,
+    "document_boundaries": "preserved",
+    "public_representations": [
+      "raw_train_parquet_with_text_and_metadata",
+      "gpt2_uint16_token_shards_with_document_index"
+    ],
+    "shard_checksums": "generated-by-prepare_data.py"
+  },
+  "tokenizer": {
+    "name": "gpt2",
+    "vocab_size": 50257,
+    "document_separator_token_id": 50256,
+    "asset_fingerprint": "generated-by-prepare_data.py"
+  },
+  "hidden_evaluation": {
+    "candidate_protocol": "offline_next_token_logits_v3",
+    "dataset_schema_version": 2,
+    "preview_analysis_target_predictions": 2048,
+    "preview_test_target_predictions": 2048,
+    "context_lengths": [64, 128, 256, 512, 1024, 2048],
+    "construction": "balanced non-overlapping single-target contexts from a deterministic local preview holdout excluded from both public representations",
+    "verified_release": "organizer-owned replacement pending"
+  }
+}

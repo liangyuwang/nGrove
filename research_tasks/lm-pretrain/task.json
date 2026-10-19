@@ -1,0 +1,77 @@
+{
+  "schema_version": 7,
+  "task_id": "lm-pretrain",
+  "task_kind": "research",
+  "leaderboard_eligible": false,
+  "paths": {
+    "train": "data/generated/public",
+    "analysis": "data/generated/private/analysis",
+    "test": "data/generated/private/test"
+  },
+  "images": {
+    "training": "pytorch/pytorch@sha256:c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2",
+    "candidate": "pytorch/pytorch@sha256:c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2",
+    "evaluator": "python@sha256:1042b61448fef4ba92d16a8c7eb4996d027568ce64792a7877fd88511e0af7c6",
+    "inference_gateway": "python@sha256:1042b61448fef4ba92d16a8c7eb4996d027568ce64792a7877fd88511e0af7c6"
+  },
+  "evaluation": {
+    "backend": "isolated_candidate",
+    "candidate_protocol": "offline_next_token_logits_v3",
+    "entrypoint": "evaluator/evaluator.py",
+    "performance_score": {
+      "definition_id": "uniform_normalized_log_score_v1",
+      "range": {
+        "minimum": 0.0,
+        "maximum": 100.0
+      },
+      "direction": "maximize",
+      "comparison_scope": "benchmark_release",
+      "raw_metrics": ["mean_nll"]
+    },
+    "cost": {
+      "definition_id": "candidate_end_to_end_time_per_task_v1",
+      "task_unit": "next_token_prediction",
+      "primary_metric": "time_per_task",
+      "unit": "seconds_per_task",
+      "direction": "minimize",
+      "aggregation": "candidate_wall_seconds_divided_by_task_count",
+      "comparison_scope": "benchmark_release",
+      "comparison_requires": [
+        "hidden_dataset_identity",
+        "runtime_profile"
+      ],
+      "submetrics": [
+        "candidate_wall_seconds",
+        "task_count",
+        "input_tokens",
+        "prediction_bytes",
+        "tasks_per_second",
+        "input_tokens_per_second"
+      ]
+    },
+    "vocab_size": 50257,
+    "context_length": 2048,
+    "context_lengths": [64, 128, 256, 512, 1024, 2048],
+    "device": "cuda",
+    "max_candidate_bytes": 137438953472,
+    "max_candidate_files": 100000,
+    "timeout_seconds": 14400
+  },
+  "analysis": {
+    "candidate_selection": "all_committed",
+    "max_candidates": 64,
+    "result_visibility": "organizer_only"
+  },
+  "timing": {
+    "environment_owned_preparation": [
+      "worker_lease_startup"
+    ]
+  },
+  "track_a": {
+    "total_seconds": 28800
+  },
+  "track_b": {
+    "max_leases": 6,
+    "lease_seconds": 3600
+  }
+}

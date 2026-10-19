@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "name": "h100-x4-6x30m",
+  "runtime_profile": {
+    "label": "4 H100 GPUs",
+    "host_count": 1,
+    "accelerator": {
+      "vendor": "nvidia",
+      "model": "NVIDIA H100 80GB HBM3",
+      "model_match": "H100 80GB HBM3",
+      "model_match_mode": "exact",
+      "count": 4,
+      "minimum_memory_mib": 80000
+    }
+  },
+  "budget": {
+    "track": "B",
+    "max_leases": 6,
+    "lease_seconds": 1800
+  }
+}
