@@ -52,8 +52,10 @@ benchmark_id + track + track_config + runtime_profile
 For research on hardware scaling, Envcore also supports run-owned
 [environment configurations](../docs/environments.md). Select `--environment`
 at launch to reuse a task and budget with custom hardware without editing this
-benchmark release. Such runs have no benchmark comparison key and remain
-leaderboard-ineligible. The published-lane rules below apply to benchmark mode.
+benchmark release. Every run freezes an environment. If its effective conditions
+match the explicitly selected Track/runtime preset, the benchmark application
+can attach that lane's comparison key. Changed conditions retain the benchmark
+identity but have no published comparison key and remain leaderboard-ineligible.
 
 Official benchmark comparisons will use a small set of designated reference
 environments, published and frozen with each release. Organizers are responsible

@@ -19,9 +19,14 @@ from .artifact_identity import (
     FILE_IDENTITY_ALGORITHM,
     HIDDEN_BUNDLE_IDENTITY_ALGORITHM,
 )
-from .config import ConfigError, TaskConfig, TrainingResources
-from .gateway_execution import GatewayArtifactIdentity
-from .environment import RuntimeProfile as RuntimeProfile
+from .config import ConfigError, TaskConfig
+from .gateway_execution import GatewayArtifactIdentity, gateway_eligibility_violations
+from .environment import (
+    EnvironmentConfig,
+    ResearchBudget,
+    RuntimeProfile as RuntimeProfile,
+)
+from .run_config import EnvironmentRun, resolve_environment_run
 from .worker_protocol import (
     EnforcementLevel,
     ResourceEnvelope,
@@ -300,14 +305,9 @@ class ReleaseVerificationReceipt:
 
 
 @dataclass(frozen=True)
-class ResolvedBenchmarkRun:
-    task: TaskConfig
-    track: str
-    resources: TrainingResources
-    resource_envelope: ResourceEnvelope
-    comparison_key: ComparisonKey
+class ResolvedBenchmarkRun(EnvironmentRun):
+    comparison_key: Optional[ComparisonKey]
     release_manifest: Dict[str, Any]
-    evaluation_resource_envelope: Optional[ResourceEnvelope] = None
 
 
 @dataclass(frozen=True)
@@ -461,7 +461,8 @@ class BenchmarkRelease:
         task: TaskConfig,
         *,
         track_config_id: str,
-        runtime_profile_id: str,
+        runtime_profile_id: Optional[str] = None,
+        environment: Optional[EnvironmentConfig] = None,
     ) -> ResolvedBenchmarkRun:
         if task.task_id != self.task_id:
             raise ConfigError(
@@ -489,31 +490,57 @@ class BenchmarkRelease:
             track_config = self.track_configs[track_config_id]
         except KeyError as exc:
             raise ConfigError(f"unknown track config: {track_config_id}") from exc
-        try:
-            runtime_profile = self.runtime_profiles[runtime_profile_id]
-        except KeyError as exc:
-            raise ConfigError(f"unknown runtime profile: {runtime_profile_id}") from exc
-        resolved_task = track_config.apply(task)
-        resources = runtime_profile.training_resources().validate_for(resolved_task)
-        resource_envelope = runtime_profile.resource_envelope(
-            minimum_enforcement=(
-                EnforcementLevel.ENFORCED
-                if self.leaderboard_eligible
-                else EnforcementLevel.BEST_EFFORT
+        runtime_profile = None
+        if runtime_profile_id is not None:
+            try:
+                runtime_profile = self.runtime_profiles[runtime_profile_id]
+            except KeyError as exc:
+                raise ConfigError(
+                    f"unknown runtime profile: {runtime_profile_id}"
+                ) from exc
+        if runtime_profile is None and environment is None:
+            raise ConfigError("select --runtime-profile or --environment")
+        task = track_config.apply(task)
+        published = None
+        if runtime_profile is not None:
+            # Published requirements are a preset for the same environment resolver.
+            profile = replace(
+                runtime_profile,
+                resource_contract=runtime_profile.resource_envelope(
+                    minimum_enforcement=(
+                        EnforcementLevel.ENFORCED
+                        if self.leaderboard_eligible
+                        else EnforcementLevel.BEST_EFFORT
+                    )
+                ),
             )
+            published = resolve_environment_run(
+                task, track=track_config.track, environment=EnvironmentConfig(profile)
+            )
+        run = (
+            resolve_environment_run(
+                task, track=track_config.track, environment=environment
+            )
+            if environment is not None
+            else published
         )
-        comparison_key = ComparisonKey(
-            benchmark_id=self.benchmark_id,
-            track=track_config.track,
-            track_config=track_config.config_id,
-            runtime_profile=runtime_profile.profile_id,
+        matches = published is not None and run.environment == published.environment
+        comparison_key = (
+            ComparisonKey(
+                benchmark_id=self.benchmark_id,
+                track=track_config.track,
+                track_config=track_config.config_id,
+                runtime_profile=runtime_profile.profile_id,
+            )
+            if matches
+            else None
         )
         return ResolvedBenchmarkRun(
-            task=resolved_task,
-            track=track_config.track,
-            resources=resources,
-            resource_envelope=resource_envelope,
-            evaluation_resource_envelope=runtime_profile.evaluation_resource_contract,
+            task=replace(
+                run.task, leaderboard_eligible=self.leaderboard_eligible and matches
+            ),
+            track=run.track,
+            environment=run.environment,
             comparison_key=comparison_key,
             release_manifest={
                 "benchmark_id": self.benchmark_id,
@@ -522,15 +549,19 @@ class BenchmarkRelease:
                 "release_stage": self.release_stage,
                 "leaderboard_eligible": self.leaderboard_eligible,
                 "track_config_id": track_config.config_id,
-                "runtime_profile_id": runtime_profile.profile_id,
                 "track_config": track_config.public_manifest(),
-                "runtime_profile": runtime_profile.public_manifest(),
-                "resource_envelope": resource_envelope.public_manifest(),
-                "evaluation_resource_envelope": (
-                    runtime_profile.evaluation_resource_contract.public_manifest()
-                    if runtime_profile.evaluation_resource_contract is not None
-                    else None
-                ),
+                "runtime_profile_id": runtime_profile_id,
+                "runtime_profile": runtime_profile.public_manifest()
+                if runtime_profile is not None
+                else None,
+                "comparison_eligible": matches,
+                "environment_sha256": run.environment.configuration_sha256,
+                "resource_envelope": published.resource_envelope.public_manifest()
+                if matches
+                else None,
+                "evaluation_resource_envelope": published.evaluation_resource_envelope.public_manifest()
+                if matches and published.evaluation_resource_envelope is not None
+                else None,
             },
         )
 
@@ -557,3 +588,259 @@ class BenchmarkRelease:
                 for key, value in self.runtime_profiles.items()
             },
         }
+
+
+def benchmark_eligibility_violations(
+    *,
+    config,
+    policy_compliant,
+    research_assessment,
+    evaluation_assessment,
+    comparison_key,
+    benchmark_release,
+    agent_execution,
+    agent,
+    release_verification,
+    artifact_identities,
+    core_identity,
+    track,
+    resource_envelope,
+    evaluation_resource_envelope,
+    frozen_evaluation_envelope,
+):
+    """Assess optional benchmark evidence at one application boundary."""
+    if (
+        not config.leaderboard_eligible
+        and benchmark_release is None
+        and comparison_key is None
+        and release_verification is None
+    ):
+        return []
+    eligibility_violations = []
+    if not config.leaderboard_eligible:
+        eligibility_violations.append("task_not_leaderboard_eligible")
+    if not policy_compliant:
+        eligibility_violations.append("policy_not_compliant")
+    if not research_assessment.leaderboard_eligible:
+        eligibility_violations.append("research_worker_not_certified")
+    if not evaluation_assessment.leaderboard_eligible:
+        eligibility_violations.append("evaluation_worker_not_certified")
+    required_comparison_fields = {
+        "benchmark_id",
+        "track",
+        "track_config",
+        "runtime_profile",
+    }
+    if (
+        not isinstance(comparison_key, dict)
+        or not required_comparison_fields.issubset(comparison_key)
+        or any(
+            not isinstance(comparison_key.get(field), str)
+            or not comparison_key[field].strip()
+            for field in required_comparison_fields
+        )
+    ):
+        eligibility_violations.append("comparison_key_missing")
+    elif comparison_key.get("track") != track:
+        eligibility_violations.append("comparison_key_track_mismatch")
+    release_ready = isinstance(benchmark_release, dict)
+    if not release_ready:
+        eligibility_violations.append("benchmark_release_missing")
+    else:
+        if benchmark_release.get("release_stage") != "official":
+            eligibility_violations.append("benchmark_release_not_official")
+        if benchmark_release.get("leaderboard_eligible") is not True:
+            eligibility_violations.append("benchmark_release_not_eligible")
+        if isinstance(comparison_key, dict) and benchmark_release.get(
+            "benchmark_id"
+        ) != comparison_key.get("benchmark_id"):
+            eligibility_violations.append("benchmark_release_identity_mismatch")
+        for digest_field in (
+            "benchmark_manifest_sha256",
+            "task_manifest_sha256",
+        ):
+            digest = benchmark_release.get(digest_field)
+            if (
+                not isinstance(digest, str)
+                or len(digest) != 64
+                or any(value not in "0123456789abcdef" for value in digest)
+            ):
+                eligibility_violations.append(f"{digest_field}_missing")
+        if (
+            benchmark_release.get("task_manifest_sha256")
+            != artifact_identities["task_manifest_sha256"]
+        ):
+            eligibility_violations.append("task_manifest_identity_mismatch")
+        for field in ("track_config", "runtime_profile"):
+            selected = benchmark_release.get(field)
+            if (
+                not isinstance(selected, dict)
+                or selected.get("provisional") is not False
+            ):
+                eligibility_violations.append(f"{field}_not_frozen")
+        release_resource_envelope = benchmark_release.get("resource_envelope")
+        if release_resource_envelope is None:
+            eligibility_violations.append("resource_envelope_not_frozen")
+        elif release_resource_envelope != resource_envelope.public_manifest():
+            eligibility_violations.append("resource_envelope_mismatch")
+        if isinstance(comparison_key, dict):
+            for release_field, comparison_field in (
+                ("track_config_id", "track_config"),
+                ("runtime_profile_id", "runtime_profile"),
+            ):
+                if benchmark_release.get(release_field) != comparison_key.get(
+                    comparison_field
+                ):
+                    eligibility_violations.append(f"{release_field}_mismatch")
+    if not agent_execution.immutable_workload_identity:
+        eligibility_violations.append("agent_workload_identity_not_immutable")
+    if not agent_execution.leaderboard_eligible:
+        eligibility_violations.append("agent_execution_not_certified")
+    # The launcher supplies actual Gateway evidence after startup and before
+    # begin(). A configured image is never proof of an executed artifact.
+    if config.leaderboard_eligible and agent.inference is not None:
+        eligibility_violations.extend(
+            gateway_eligibility_violations(
+                None,
+                release_verification.inference_gateway_artifact
+                if release_verification is not None
+                else None,
+            )
+        )
+    core_revision = core_identity.get("revision")
+    if not isinstance(core_revision, str) or not core_revision:
+        eligibility_violations.append("core_identity_unknown")
+    if core_identity.get("dirty") is not False:
+        eligibility_violations.append("core_worktree_not_clean")
+    if release_verification is None:
+        eligibility_violations.append("formal_release_verification_missing")
+    else:
+        receipt = release_verification
+        if not isinstance(
+            comparison_key, dict
+        ) or receipt.release_id != comparison_key.get("benchmark_id"):
+            eligibility_violations.append(
+                "formal_release_verification_identity_mismatch"
+            )
+        if receipt.core_revision != core_revision:
+            eligibility_violations.append("formal_release_verification_core_mismatch")
+        for field in FORMAL_ARTIFACT_DIGEST_FIELDS:
+            if field in {"analysis_sha256", "test_sha256"}:
+                continue
+            if receipt.artifact_sha256[field] != artifact_identities.get(field):
+                eligibility_violations.append(
+                    f"formal_release_verification_artifact_mismatch:{field}"
+                )
+        # Hidden bytes may be absent until research teardown.  TEST is the
+        # primary leaderboard measurement, so eligibility remains
+        # provisional only until the TEST identity is resolved and
+        # matched.  ANALYSIS identity/completeness is reported on its own
+        # diagnostic axis and never gates an otherwise valid TEST result.
+        eligibility_violations.append("formal_test_evaluation_pending")
+    if config.leaderboard_eligible:
+        if (
+            evaluation_resource_envelope is None
+            or not evaluation_resource_envelope.requirements
+            or any(
+                item.minimum_enforcement is not EnforcementLevel.ENFORCED
+                for item in evaluation_resource_envelope.requirements
+            )
+        ):
+            eligibility_violations.append("evaluation_resource_envelope_not_formal")
+        if evaluation_resource_envelope is not None and (
+            frozen_evaluation_envelope is None
+            or frozen_evaluation_envelope.sha256 != evaluation_resource_envelope.sha256
+        ):
+            eligibility_violations.append("evaluation_resource_envelope_not_frozen")
+        if not resource_envelope.requirements or any(
+            requirement.minimum_enforcement is not EnforcementLevel.ENFORCED
+            for requirement in resource_envelope.requirements
+        ):
+            eligibility_violations.append("resource_envelope_not_formal")
+        eligibility_violations.extend(
+            f"workload_resolution_pending:{role}"
+            for role in ("training", "candidate", "evaluator")
+        )
+        eligibility_violations.append("resource_allocation_pending")
+        eligibility_violations.append("evaluation_resource_allocation_pending")
+    return eligibility_violations
+
+
+def resolve_release_evaluation_envelope(release, explicit):
+    """Bind an optional published evaluation preset before execution freezes."""
+    if explicit is not None and not isinstance(explicit, ResourceEnvelope):
+        raise TypeError("evaluation_resource_envelope must be a ResourceEnvelope")
+    raw = (
+        release.get("evaluation_resource_envelope")
+        if isinstance(release, dict)
+        else None
+    )
+    frozen = ResourceEnvelope.from_manifest(raw) if raw is not None else None
+    if frozen is not None:
+        if explicit is None:
+            explicit = frozen
+        elif explicit.sha256 != frozen.sha256:
+            raise ValueError("evaluation resource envelope differs from the release")
+    return explicit, frozen
+
+
+def validate_benchmark_binding(result):
+    """Bind benchmark evidence and comparison labels to the frozen environment."""
+    key = result.get("comparison_key")
+    release = result.get("benchmark_release")
+    # Custom runs retain their source release and its execution identity even
+    # though they do not claim a published comparison lane.
+    if isinstance(release, dict):
+        expected_identity = release.get("environment_sha256")
+        environment = result.get("environment")
+        if expected_identity is not None and (
+            not isinstance(environment, dict)
+            or expected_identity != environment.get("configuration_sha256")
+        ):
+            raise ValueError("benchmark environment identity mismatch")
+    if key is None:
+        if result.get("leaderboard_eligible") is True:
+            raise ValueError(
+                "leaderboard eligibility requires a benchmark comparison key"
+            )
+        return
+    fields = {"benchmark_id", "track", "track_config", "runtime_profile"}
+    if (
+        not isinstance(key, dict)
+        or set(key) != fields
+        or any(not isinstance(value, str) or not value for value in key.values())
+        or not isinstance(release, dict)
+    ):
+        raise ValueError("invalid benchmark comparison key or release")
+    if key["track"] != result.get("track") or any(
+        release.get(release_field) != key[key_field]
+        for release_field, key_field in (
+            ("benchmark_id", "benchmark_id"),
+            ("track_config_id", "track_config"),
+            ("runtime_profile_id", "runtime_profile"),
+        )
+    ):
+        raise ValueError("benchmark comparison key does not match the selected release")
+    # A comparison key requires matching budget and resource contracts even
+    # for preview runs or deployments without a separate environment hash.
+    budget = TrackConfig.load(key["track_config"], release.get("track_config"))
+
+    expected_budget = ResearchBudget(
+        budget.track, budget.total_seconds, budget.max_leases, budget.lease_seconds
+    )
+    if budget.track != result.get(
+        "track"
+    ) or expected_budget.public_budget() != result.get("budget"):
+        raise ValueError(
+            "benchmark comparison budget does not match the frozen environment"
+        )
+    for contract_field in ("resource_envelope", "evaluation_resource_envelope"):
+        declared, actual = release.get(contract_field), result.get(contract_field)
+        if (declared is None) != (actual is None) or (
+            declared is not None
+            and ResourceEnvelope.from_manifest(declared).sha256
+            != ResourceEnvelope.from_manifest(actual).sha256
+        ):
+            raise ValueError(
+                "benchmark comparison resources do not match the frozen environment"
+            )

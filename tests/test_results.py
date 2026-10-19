@@ -1,5 +1,9 @@
 import unittest
 
+from envcore.config import TrainingResources
+from envcore.environment import FrozenEnvironment, ResearchBudget
+from envcore.worker_protocol import ResourceEnvelope
+
 from envcore.artifact_identity import (
     CANDIDATE_TREE_IDENTITY_ALGORITHM,
     FILE_IDENTITY_ALGORITHM,
@@ -117,8 +121,16 @@ def _resource_fields():
             }
         ],
     }
+    frozen = FrozenEnvironment.create(
+        budget=ResearchBudget("B", max_leases=2, lease_seconds=10),
+        resources=TrainingResources(),
+        resource_envelope=ResourceEnvelope.from_manifest(envelope),
+    )
     return {
         "episode_id": "episode-1",
+        "environment": frozen.record(),
+        "track": "B",
+        "budget": frozen.budget.public_budget(),
         "gateway_execution": None,
         "evaluation_resource_envelope": None,
         "evaluation_resource_allocations": [],
@@ -199,6 +211,8 @@ def _finalized(**overrides):
         "test_raw_metrics": {"mean_nll": 0.0},
     }
     payload.update(overrides)
+    if payload["result_schema_version"] < 16:
+        payload.pop("environment", None)
     if payload["result_schema_version"] < 15:
         payload.pop("gateway_execution", None)
     if payload["result_schema_version"] >= 14:

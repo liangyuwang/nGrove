@@ -16,7 +16,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, Optional, Tuple, Union
 
 from .agent_control import (
     MAX_AGENT_CONTROL_RESPONSE_BYTES,
@@ -24,16 +24,17 @@ from .agent_control import (
     ProtocolError,
 )
 from .agent_execution import AgentExecutionEvidence
-from .environment import EnvironmentConfig, ResearchBudget
+from .environment import EnvironmentConfig, FrozenEnvironment, ResearchBudget
 from .artifact_identity import (
     CANDIDATE_TREE_IDENTITY_ALGORITHM,
     FILE_IDENTITY_ALGORITHM,
     HIDDEN_BUNDLE_IDENTITY_ALGORITHM,
 )
 from .benchmark import (
-    FORMAL_ARTIFACT_DIGEST_FIELDS,
     ReleaseVerificationReceipt,
     agent_release_manifest,
+    benchmark_eligibility_violations,
+    resolve_release_evaluation_envelope,
 )
 from .config import (
     AGENT_PROTOCOL_VERSION,
@@ -255,7 +256,7 @@ def _core_identity() -> Dict[str, Any]:
 
 
 class Supervisor:
-    """Own benchmark state while delegating enforcement to a semantic Worker."""
+    """Supervise a frozen research run and delegate enforcement to Workers."""
 
     def __init__(
         self,
@@ -286,7 +287,7 @@ class Supervisor:
             DEFAULT_WORKER_RESOLUTION_TIMEOUT_SECONDS
         ),
         operator_max_research_seconds: Optional[float] = None,
-        environment: Optional["EnvironmentConfig"] = None,
+        environment: Optional[Union[FrozenEnvironment, EnvironmentConfig]] = None,
     ) -> None:
         normalized = track.upper()
         if normalized not in {"A", "B"}:
@@ -334,70 +335,61 @@ class Supervisor:
                 "host_cli Agent execution evidence may not claim a workload image"
             )
         self.agent_execution = agent_execution
+        if isinstance(environment, EnvironmentConfig):
+            environment = FrozenEnvironment.from_config(environment, config, normalized)
+        elif environment is not None and not isinstance(environment, FrozenEnvironment):
+            raise TypeError(
+                "environment must be a FrozenEnvironment or EnvironmentConfig"
+            )
         self.resources = resources.validate_for(config)
-        self.resource_envelope = resource_envelope or v0_resource_envelope(
-            self.resources,
-            minimum_enforcement=(
-                EnforcementLevel.ENFORCED
-                if config.leaderboard_eligible
-                else EnforcementLevel.BEST_EFFORT
-            ),
+        self.resource_envelope = (
+            resource_envelope
+            if resource_envelope is not None
+            else (
+                environment.resource_envelope
+                if environment is not None
+                else v0_resource_envelope(
+                    self.resources,
+                    minimum_enforcement=EnforcementLevel.ENFORCED
+                    if config.leaderboard_eligible
+                    else EnforcementLevel.BEST_EFFORT,
+                )
+            )
         )
         if not isinstance(self.resource_envelope, ResourceEnvelope):
             raise TypeError("resource_envelope must be a ResourceEnvelope")
-        if evaluation_resource_envelope is not None and not isinstance(
-            evaluation_resource_envelope, ResourceEnvelope
-        ):
-            raise TypeError("evaluation_resource_envelope must be a ResourceEnvelope")
-        release_evaluation_envelope = (
-            benchmark_release.get("evaluation_resource_envelope")
-            if isinstance(benchmark_release, dict)
-            else None
-        )
-        frozen_evaluation_envelope = None
-        if release_evaluation_envelope is not None:
-            frozen_evaluation_envelope = ResourceEnvelope.from_manifest(
-                release_evaluation_envelope
+        if evaluation_resource_envelope is None and environment is not None:
+            evaluation_resource_envelope = environment.evaluation_resource_envelope
+        evaluation_resource_envelope, frozen_evaluation_envelope = (
+            resolve_release_evaluation_envelope(
+                benchmark_release, evaluation_resource_envelope
             )
-            if evaluation_resource_envelope is None:
-                evaluation_resource_envelope = frozen_evaluation_envelope
-            elif (
-                evaluation_resource_envelope.sha256 != frozen_evaluation_envelope.sha256
-            ):
-                raise ValueError(
-                    "evaluation resource envelope differs from the release"
-                )
+        )
         self.evaluation_resource_envelope = evaluation_resource_envelope
+        execution_environment = FrozenEnvironment.create(
+            budget=ResearchBudget.from_task(config, normalized),
+            resources=self.resources,
+            resource_envelope=self.resource_envelope,
+            evaluation_resource_envelope=self.evaluation_resource_envelope,
+        )
         if environment is not None:
-            if not isinstance(environment, EnvironmentConfig):
-                raise TypeError("environment must be an EnvironmentConfig")
-            environment = environment.resolve_budget(config, normalized)
-            if environment.budget != ResearchBudget.from_task(config, normalized):
+            if environment.budget != execution_environment.budget:
                 raise ValueError(
                     "environment time budget differs from the requested task configuration"
                 )
-            if (
-                config.leaderboard_eligible
-                or comparison_key is not None
-                or benchmark_release is not None
-                or release_verification is not None
-            ):
-                raise ValueError(
-                    "environment runs cannot claim a benchmark lane or formal release"
-                )
-            if (
-                self.resource_envelope != environment.resource_envelope()
-                or self.evaluation_resource_envelope
-                != environment.profile.evaluation_resource_contract
-            ):
-                raise ValueError(
-                    "environment resource contracts differ from the requested configuration"
-                )
-            if self.resources != environment.profile.training_resources():
+            if environment.resources != execution_environment.resources:
                 raise ValueError(
                     "environment hardware differs from the requested configuration"
                 )
-        self.environment = environment
+            if environment != execution_environment:
+                raise ValueError(
+                    "environment resource contracts differ from the requested configuration"
+                )
+        self.environment = environment = execution_environment
+        # Detach mutable launcher collections before any task is revealed.
+        self.resources = resources = environment.resources
+        self.resource_envelope = environment.resource_envelope
+        self.evaluation_resource_envelope = environment.evaluation_resource_envelope
         self.track = normalized
         if (
             not math.isfinite(worker_resolution_timeout_seconds)
@@ -553,156 +545,23 @@ class Supervisor:
                     f"{role}_worker_capability_insufficient:{capability}"
                 )
         policy_compliant = not policy_violations
-        eligibility_violations = []
-        if not config.leaderboard_eligible:
-            eligibility_violations.append("task_not_leaderboard_eligible")
-        if not policy_compliant:
-            eligibility_violations.append("policy_not_compliant")
-        if not research_assessment.leaderboard_eligible:
-            eligibility_violations.append("research_worker_not_certified")
-        if not evaluation_assessment.leaderboard_eligible:
-            eligibility_violations.append("evaluation_worker_not_certified")
-        required_comparison_fields = {
-            "benchmark_id",
-            "track",
-            "track_config",
-            "runtime_profile",
-        }
-        if (
-            not isinstance(comparison_key, dict)
-            or not required_comparison_fields.issubset(comparison_key)
-            or any(
-                not isinstance(comparison_key.get(field), str)
-                or not comparison_key[field].strip()
-                for field in required_comparison_fields
-            )
-        ):
-            eligibility_violations.append("comparison_key_missing")
-        elif comparison_key.get("track") != self.track:
-            eligibility_violations.append("comparison_key_track_mismatch")
-        release_ready = isinstance(benchmark_release, dict)
-        if not release_ready:
-            eligibility_violations.append("benchmark_release_missing")
-        else:
-            if benchmark_release.get("release_stage") != "official":
-                eligibility_violations.append("benchmark_release_not_official")
-            if benchmark_release.get("leaderboard_eligible") is not True:
-                eligibility_violations.append("benchmark_release_not_eligible")
-            if isinstance(comparison_key, dict) and benchmark_release.get(
-                "benchmark_id"
-            ) != comparison_key.get("benchmark_id"):
-                eligibility_violations.append("benchmark_release_identity_mismatch")
-            for digest_field in (
-                "benchmark_manifest_sha256",
-                "task_manifest_sha256",
-            ):
-                digest = benchmark_release.get(digest_field)
-                if (
-                    not isinstance(digest, str)
-                    or len(digest) != 64
-                    or any(value not in "0123456789abcdef" for value in digest)
-                ):
-                    eligibility_violations.append(f"{digest_field}_missing")
-            if (
-                benchmark_release.get("task_manifest_sha256")
-                != artifact_identities["task_manifest_sha256"]
-            ):
-                eligibility_violations.append("task_manifest_identity_mismatch")
-            for field in ("track_config", "runtime_profile"):
-                selected = benchmark_release.get(field)
-                if (
-                    not isinstance(selected, dict)
-                    or selected.get("provisional") is not False
-                ):
-                    eligibility_violations.append(f"{field}_not_frozen")
-            release_resource_envelope = benchmark_release.get("resource_envelope")
-            if release_resource_envelope is None:
-                eligibility_violations.append("resource_envelope_not_frozen")
-            elif release_resource_envelope != self.resource_envelope.public_manifest():
-                eligibility_violations.append("resource_envelope_mismatch")
-            if isinstance(comparison_key, dict):
-                for release_field, comparison_field in (
-                    ("track_config_id", "track_config"),
-                    ("runtime_profile_id", "runtime_profile"),
-                ):
-                    if benchmark_release.get(release_field) != comparison_key.get(
-                        comparison_field
-                    ):
-                        eligibility_violations.append(f"{release_field}_mismatch")
-        if not agent_execution.immutable_workload_identity:
-            eligibility_violations.append("agent_workload_identity_not_immutable")
-        if not agent_execution.leaderboard_eligible:
-            eligibility_violations.append("agent_execution_not_certified")
-        # The launcher supplies actual Gateway evidence after startup and before
-        # begin(). A configured image is never proof of an executed artifact.
-        if config.leaderboard_eligible and agent.inference is not None:
-            eligibility_violations.extend(
-                gateway_eligibility_violations(
-                    None,
-                    self.release_verification.inference_gateway_artifact
-                    if self.release_verification is not None
-                    else None,
-                )
-            )
-        core_revision = core_identity.get("revision")
-        if not isinstance(core_revision, str) or not core_revision:
-            eligibility_violations.append("core_identity_unknown")
-        if core_identity.get("dirty") is not False:
-            eligibility_violations.append("core_worktree_not_clean")
-        if self.release_verification is None:
-            eligibility_violations.append("formal_release_verification_missing")
-        else:
-            receipt = self.release_verification
-            if not isinstance(
-                comparison_key, dict
-            ) or receipt.release_id != comparison_key.get("benchmark_id"):
-                eligibility_violations.append(
-                    "formal_release_verification_identity_mismatch"
-                )
-            if receipt.core_revision != core_revision:
-                eligibility_violations.append(
-                    "formal_release_verification_core_mismatch"
-                )
-            for field in FORMAL_ARTIFACT_DIGEST_FIELDS:
-                if field in {"analysis_sha256", "test_sha256"}:
-                    continue
-                if receipt.artifact_sha256[field] != artifact_identities.get(field):
-                    eligibility_violations.append(
-                        f"formal_release_verification_artifact_mismatch:{field}"
-                    )
-            # Hidden bytes may be absent until research teardown.  TEST is the
-            # primary leaderboard measurement, so eligibility remains
-            # provisional only until the TEST identity is resolved and
-            # matched.  ANALYSIS identity/completeness is reported on its own
-            # diagnostic axis and never gates an otherwise valid TEST result.
-            eligibility_violations.append("formal_test_evaluation_pending")
-        if config.leaderboard_eligible:
-            if (
-                self.evaluation_resource_envelope is None
-                or not self.evaluation_resource_envelope.requirements
-                or any(
-                    item.minimum_enforcement is not EnforcementLevel.ENFORCED
-                    for item in self.evaluation_resource_envelope.requirements
-                )
-            ):
-                eligibility_violations.append("evaluation_resource_envelope_not_formal")
-            if self.evaluation_resource_envelope is not None and (
-                frozen_evaluation_envelope is None
-                or frozen_evaluation_envelope.sha256
-                != self.evaluation_resource_envelope.sha256
-            ):
-                eligibility_violations.append("evaluation_resource_envelope_not_frozen")
-            if not self.resource_envelope.requirements or any(
-                requirement.minimum_enforcement is not EnforcementLevel.ENFORCED
-                for requirement in self.resource_envelope.requirements
-            ):
-                eligibility_violations.append("resource_envelope_not_formal")
-            eligibility_violations.extend(
-                f"workload_resolution_pending:{role}"
-                for role in ("training", "candidate", "evaluator")
-            )
-            eligibility_violations.append("resource_allocation_pending")
-            eligibility_violations.append("evaluation_resource_allocation_pending")
+        eligibility_violations = benchmark_eligibility_violations(
+            config=config,
+            policy_compliant=policy_compliant,
+            research_assessment=research_assessment,
+            evaluation_assessment=evaluation_assessment,
+            comparison_key=comparison_key,
+            benchmark_release=benchmark_release,
+            agent_execution=agent_execution,
+            agent=agent,
+            release_verification=self.release_verification,
+            artifact_identities=artifact_identities,
+            core_identity=core_identity,
+            track=self.track,
+            resource_envelope=self.resource_envelope,
+            evaluation_resource_envelope=self.evaluation_resource_envelope,
+            frozen_evaluation_envelope=frozen_evaluation_envelope,
+        )
 
         leaderboard_eligible = (
             config.leaderboard_eligible
@@ -739,7 +598,7 @@ class Supervisor:
                 ),
             )
         self.state: Dict[str, Any] = {
-            "environment": environment.record() if environment is not None else None,
+            "environment": environment.record(),
             "budget": config.public_manifest(normalized)["budget"],
             "protocol_version": AGENT_PROTOCOL_VERSION,
             "result_schema_version": RESULT_SCHEMA_VERSION,
@@ -933,9 +792,7 @@ class Supervisor:
         }
         self.sequence = 0
         public_manifest = config.public_manifest(self.track)
-        public_manifest["environment"] = (
-            environment.record() if environment is not None else None
-        )
+        public_manifest["environment"] = environment.record()
         public_manifest["agent_environment"] = agent.public_manifest(
             config.inference_gateway_image,
             policy_compliant=agent_execution.policy_compliant,

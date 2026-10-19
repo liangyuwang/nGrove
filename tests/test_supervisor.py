@@ -710,8 +710,16 @@ class SupervisorTests(unittest.TestCase):
                 self.config.source.read_bytes()
             ).hexdigest(),
             "private_evaluation": {"context_lengths": [1, 3]},
-            "track_config": {"private_extension": "not-for-the-agent"},
+            "track_config": {
+                "track": "B",
+                "max_leases": self.config.track_b_max_leases,
+                "lease_seconds": self.config.track_b_lease_seconds,
+                "private_extension": "not-for-the-agent",
+            },
             "runtime_profile": {"private_extension": "not-for-the-agent"},
+            "resource_envelope": v0_resource_envelope(
+                self.resources, minimum_enforcement=EnforcementLevel.BEST_EFFORT
+            ).public_manifest(),
         }
         supervisor = self.supervisor(
             comparison_key=comparison_key,
@@ -847,7 +855,12 @@ class SupervisorTests(unittest.TestCase):
             "leaderboard_eligible": True,
             "track_config_id": "b-final",
             "runtime_profile_id": "h100-final",
-            "track_config": {"provisional": False},
+            "track_config": {
+                "provisional": False,
+                "track": "B",
+                "max_leases": 2,
+                "lease_seconds": 10,
+            },
             "runtime_profile": {"provisional": False},
         }
         release["resource_envelope"] = v0_resource_envelope(
@@ -1376,8 +1389,16 @@ class SupervisorTests(unittest.TestCase):
                     "leaderboard_eligible": True,
                     "track_config_id": "b-final",
                     "runtime_profile_id": "h100-final",
-                    "track_config": {"provisional": False},
+                    "track_config": {
+                        "provisional": False,
+                        "track": "B",
+                        "max_leases": 2,
+                        "lease_seconds": 10,
+                    },
                     "runtime_profile": {"provisional": False},
+                    "resource_envelope": v0_resource_envelope(
+                        self.resources, minimum_enforcement=EnforcementLevel.ENFORCED
+                    ).public_manifest(),
                 },
                 worker_conformance=worker_conformance,
             )

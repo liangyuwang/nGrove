@@ -8,12 +8,14 @@ task/Track settings; resolved budgets freeze before task reveal. Track A uses
 total research seconds; Track B uses Lease count and seconds per Lease, not a
 total research deadline. Private Operator protection remains separate.
 Existing published runtime profiles remain available.
-The current environment mode retains the training-research task protocol and
-its isolation, sealing and evaluation rules. It is always leaderboard-ineligible
-and has no benchmark comparison key. Benchmark mode still requires the release's
-finite profile map and rejects environment overrides. Record effective resources,
-resolved time budgets and the configuration identity when reporting environment
-runs.
+Every run resolves and freezes one environment before task reveal. Named
+benchmark profiles are optional presets for that same execution path. A user-owned
+`--environment` may replace the selected compute configuration and time budget.
+The benchmark application records a comparison key only when the effective
+conditions match an explicitly selected published lane; custom conditions remain
+leaderboard-ineligible. The training-research protocol retains its isolation,
+sealing and evaluation rules. Record effective resources, resolved time budgets
+and the frozen environment identity for every run.
 See [environment configuration](docs/environments.md).
 
 ## Role
@@ -48,7 +50,7 @@ Research Agent participating in the environment.
 
 Treat requests such as "start this project," "run it," "launch the benchmark,"
 or "test an Agent" as requests to establish a research run contract. Honor any
-mode and configuration already specified by the user. Do not infer unspecified
+configuration already specified by the user. Do not infer unspecified
 choices of local machine, task, Track, compute profile, time budget, Research
 Agent, or execution backend. Do not recommend, synthesize, or
 preselect a Research Agent merely because the request is underspecified. The
@@ -65,8 +67,7 @@ images, allocating resources, or starting an episode:
 
    | Area | Resolved value | Status or question |
    | --- | --- | --- |
-   | Run mode | environment or benchmark | Confirm if unknown |
-   | Run purpose | research experiment, preview, reproducibility, or formal evaluation | Confirm if unknown; formal benchmark evaluation requires benchmark mode |
+   | Run purpose | research experiment, preview, reproducibility, or formal evaluation | Confirm if unknown; formal evaluation requires a matching published lane and trusted evidence |
    | Benchmark/task | manifest or development task | Confirm if unknown |
    | Track | A, B, or both | Confirm if unknown |
    | Time budget | named Track configuration or task budget; environment override when selected | Confirm the source and effective budget before launch |
@@ -98,29 +99,28 @@ commands when possible; ask only for information that cannot be discovered or
 whose choice changes the result. The run-intake table gives the user the full
 picture once; subsequent questions remain progressive and concise.
 
-### Run mode, task, and configuration
+### Task and environment configuration
 
 Confirm the common run settings:
 
-- environment or benchmark mode;
 - the benchmark manifest or development task;
 - Track A, Track B, or both;
 - whether the purpose is a research experiment, a local preview, a
   reproducibility run, or an organizer-controlled formal benchmark evaluation.
 
-For a benchmark run, confirm the named `track_config` and
-`runtime_profile` from the release's finite maps. Benchmark mode rejects
-`--environment` overrides and preserves the release's eligibility rules.
+Confirm the task and environment configuration for every run. Use `--task` with
+`--track`, or select a benchmark task and default budget using `--benchmark` with
+`--track-config`. Named `--runtime-profile` presets require a benchmark release.
+A user-owned `--environment` supplies compute resources and may override the time
+budget; an omitted budget inherits the selected task/Track settings. It can be
+used with a published profile to compare the resolved conditions with that
+preset. Do not combine an environment file with manual GPU/device flags.
 
-For an environment run, confirm the user-owned `--environment` configuration,
-or explicitly use `--mode environment` with a benchmark's published
-`--runtime-profile`. Do not combine these two compute-configuration paths.
-A benchmark-based environment run still requires `--track-config` to select
-its Track and inherited budget; a task-based run requires `--track` instead.
-An explicit environment budget overrides the numeric budget for that Track;
-an omitted budget inherits the selected task/Track settings. Confirm and freeze
-the effective compute configuration and time budget before task reveal. These
-runs have `leaderboard_eligible: false` and `comparison_key: null`.
+Confirm and freeze the effective compute configuration and time budget before
+task reveal. For a formal evaluation, also confirm the named Track and runtime
+profile and the release's eligibility requirements. Custom configurations remain
+valid research inputs; changed conditions have no published comparison key and
+cannot enter the original leaderboard lane.
 
 Do not invent a missing configuration or silently substitute another profile
 or budget. Use `benchmark-info` to show published configuration maps and
@@ -199,9 +199,8 @@ Before consuming a substantial accelerator budget, present a short resolved
 research run contract containing:
 
 - repository revision and dirty/clean state;
-- run mode, benchmark/task, Track, effective compute configuration and time budget;
-- the published configuration names for a benchmark run, or the
-  resolved environment configuration identity for an environment run;
+- task, Track, effective compute configuration and time budget;
+- the frozen environment identity and any selected published configuration names;
 - Research Agent identity, runner, command, workspace, and inference mode;
 - data and image identities;
 - Worker capabilities, conformance, trust, and expected policy status;
@@ -209,7 +208,7 @@ research run contract containing:
 
 Ask the user to approve this contract if those choices or costs were not
 already explicit. One approved attempt does not authorize additional expensive
-retries, a different mode or run configuration, relaxed isolation, or changes
+retries, a different run configuration, relaxed isolation, or changes
 to task or benchmark policy.
 
 ## Run workflow
@@ -219,7 +218,7 @@ to task or benchmark policy.
    manifests before operating a research run. The current training-research
    protocol's isolation and evaluation rules are detailed in the
    [full benchmark reference](docs/benchmark-reference.md); read those rules
-   for either mode, and `benchmarks/README.md` when using a benchmark.
+   for every run, and `benchmarks/README.md` when using a benchmark.
    Inspect implementation entry points only as needed for the requested run.
    Record the exact Git revision and preserve unrelated user changes.
 2. Inspect the target environment read-only. Confirm that the destination is
@@ -264,14 +263,13 @@ to task or benchmark policy.
 8. On failure, collect the smallest relevant logs, identify the direct cause
    and downstream effects, and report them. Do not cancel, mutate, relax policy,
    or submit a replacement job unless the user authorized that action.
-9. At completion, report the run mode, task/Track, effective compute configuration,
+9. At completion, report the task/Track, effective compute configuration,
    resolved time budget, artifact identities, resource usage, postmortem
    Candidate/ANALYSIS trajectory, incumbent, TEST metric, Agent usage completeness,
-   and compliance/eligibility status. For benchmark runs, report the exact lane
-   and compare runs only when their full comparison keys match. For environment
-   runs, report the configuration identity and explicitly identify varied and
-   controlled experimental conditions; a null comparison key does not establish
-   comparability.
+   and compliance/eligibility status. Report the frozen environment identity and
+   explicitly identify varied and controlled experimental conditions. When a
+   benchmark comparison key is present, report the exact lane and compare runs
+   only when their full keys match; a null key does not establish comparability.
 
 Within the approved scope, continue to the next necessary stage after each
 stage completes. Answer status questions and then resume the ongoing work.
@@ -326,9 +324,9 @@ A useful initial request has this shape:
 > I can provide an authorized accelerator environment. Here is how to connect,
 > allocate accelerators, and use the designated working directory. The Research
 > Agent is already present; here are its immutable identity, autonomous command,
-> workspace, and the policy-compliant access or inference path. Run in
-> [environment or benchmark] mode using [task/Track or benchmark/track_config]
-> and [environment configuration or published runtime profile]. Here are the
+> workspace, and the policy-compliant access or inference path. Run using
+> [task/Track or benchmark/track_config] with [environment configuration or
+> published runtime profile]. Here are the
 > selected time budget and resource limits.
 
 Treat that message as authorization to investigate and prepare within the

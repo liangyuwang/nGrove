@@ -1,63 +1,66 @@
-"""Compose an environment with the existing autonomous-training task protocol.
+"""Resolve every research run into one frozen execution environment."""
 
-Compute resources and time budgets are run-owned here. Published lanes remain
-governed by BenchmarkRelease.resolve and cannot be overridden by this composition.
-"""
-
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Optional
 
-from .benchmark import BenchmarkRelease
 from .config import ConfigError, TaskConfig, TrainingResources
-from .environment import EnvironmentConfig
-from .worker_protocol import ResourceEnvelope
+from .environment import EnvironmentConfig, FrozenEnvironment, ResearchBudget
+from .worker_protocol import EnforcementLevel, ResourceEnvelope, v0_resource_envelope
 
 
 @dataclass(frozen=True)
 class EnvironmentRun:
     task: TaskConfig
     track: str
-    environment: EnvironmentConfig
-    resources: TrainingResources
-    resource_envelope: ResourceEnvelope
-    evaluation_resource_envelope: Optional[ResourceEnvelope]
+    environment: FrozenEnvironment
+
+    @property
+    def resources(self) -> TrainingResources:
+        return self.environment.resources
+
+    @property
+    def resource_envelope(self) -> ResourceEnvelope:
+        return self.environment.resource_envelope
+
+    @property
+    def evaluation_resource_envelope(self) -> Optional[ResourceEnvelope]:
+        return self.environment.evaluation_resource_envelope
 
 
 def resolve_environment_run(
     task: TaskConfig,
     *,
-    environment: EnvironmentConfig,
-    track: Optional[str] = None,
-    release: Optional[BenchmarkRelease] = None,
-    track_config_id: Optional[str] = None,
+    track: str,
+    environment: Optional[EnvironmentConfig] = None,
+    resources: Optional[TrainingResources] = None,
+    resource_envelope: Optional[ResourceEnvelope] = None,
+    evaluation_resource_envelope: Optional[ResourceEnvelope] = None,
 ) -> EnvironmentRun:
-    """Reuse a task/budget without claiming membership in a benchmark lane."""
-
-    if release is not None:
-        if track is not None or not track_config_id:
-            raise ConfigError("--benchmark requires --track-config instead of --track")
-        if task.task_id != release.task_id or task.source != release.task_path:
-            raise ConfigError("environment task must match the selected benchmark")
-        try:
-            budget = release.track_configs[track_config_id]
-        except KeyError as exc:
-            raise ConfigError(f"unknown track config: {track_config_id}") from exc
-        task = budget.apply(task)
-        track = budget.track
-    elif track_config_id is not None or track is None:
-        raise ConfigError("a task environment requires --track, without --track-config")
+    """Resolve configuration once; execution does not depend on its source."""
     track = track.upper()
     if track not in {"A", "B"}:
         raise ConfigError("track must be A or B for the training protocol")
-    # Only the run projection changes. Source task/release files remain intact.
-    task = replace(task, leaderboard_eligible=False).validate()
-    environment = environment.resolve_budget(task, track)
-    task = environment.budget.apply(task)
-    return EnvironmentRun(
-        task=task,
-        track=track,
-        environment=environment,
-        resources=environment.profile.training_resources().validate_for(task),
-        resource_envelope=environment.resource_envelope(),
-        evaluation_resource_envelope=environment.profile.evaluation_resource_contract,
-    )
+    if environment is not None:
+        if any(
+            value is not None
+            for value in (resources, resource_envelope, evaluation_resource_envelope)
+        ):
+            raise ConfigError(
+                "choose an environment configuration or explicit execution resources"
+            )
+        frozen = FrozenEnvironment.from_config(environment, task, track)
+    else:
+        resources = resources if resources is not None else TrainingResources()
+        frozen = FrozenEnvironment.create(
+            budget=ResearchBudget.from_task(task, track),
+            resources=resources,
+            resource_envelope=resource_envelope
+            if resource_envelope is not None
+            else v0_resource_envelope(
+                resources, minimum_enforcement=EnforcementLevel.BEST_EFFORT
+            ),
+            evaluation_resource_envelope=evaluation_resource_envelope,
+        )
+    task = frozen.budget.apply(task)
+    frozen.resources.validate_for(task)
+    return EnvironmentRun(task=task, track=track, environment=frozen)

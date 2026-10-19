@@ -55,6 +55,8 @@ trusted launcher, not a standalone launcher or a reference Tested Agent:
 ```python
 from envcore.supervisor import Supervisor
 
+# Supervisor freezes the effective budget, resources and Worker contracts for
+# every run. A resolved FrozenEnvironment may also be supplied as environment=.
 supervisor = Supervisor(
     config=task_config,
     agent=agent_config,

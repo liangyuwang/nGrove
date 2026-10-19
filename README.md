@@ -11,8 +11,9 @@ before task reveal.
 
 **Named benchmarks are bundled applications of Envcore.** Their Track A/B budgets,
 incumbent selection, research sealing and hidden evaluation use the current
-training-research protocol. Custom environment runs use that protocol without
-claiming membership in a published benchmark lane.
+training-research protocol. Every run resolves and freezes its environment through
+one execution path. Benchmarks supply optional presets and comparison rules;
+custom resources and time budgets use the same research lifecycle.
 
 | Layer | Responsibility |
 | --- | --- |

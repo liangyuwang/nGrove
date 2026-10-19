@@ -16,9 +16,13 @@ from unittest.mock import patch
 
 from envcore.agent_api_bundle import publish_agent_api_bundle
 from envcore.benchmark import BenchmarkRelease
-from envcore.cli import build_parser, command_start
+from envcore.cli import _resolve_start_run, build_parser, command_start
 from envcore.config import ConfigError, TaskConfig, TrainingResources
-from envcore.environment import EnvironmentConfig, validate_environment_record
+from envcore.environment import (
+    EnvironmentConfig,
+    FrozenEnvironment,
+    validate_environment_record,
+)
 from envcore.results import ResultSchemaError, normalize_result_report
 from envcore.run_config import resolve_environment_run
 from envcore.supervisor import ProtocolError
@@ -66,10 +70,9 @@ class EnvironmentTests(unittest.TestCase):
                     "runtime_profile": profile,
                 }
             )
-            run = resolve_environment_run(
+            run = release.resolve(
                 task,
                 environment=environment,
-                release=release,
                 track_config_id="preview-a-8h",
             )
             self.assertEqual(run.resources.nvidia_gpu_count, count)
@@ -125,12 +128,10 @@ class EnvironmentTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "identity mismatch"):
             validate_environment_record(record)
 
-    def test_benchmark_rejects_custom_environment_before_data_or_worker_setup(self):
+    def test_invalid_environment_fails_before_data_or_worker_setup(self):
         args = build_parser().parse_args(
             [
                 "start",
-                "--mode",
-                "benchmark",
                 "--task",
                 str(TASK),
                 "--track",
@@ -148,7 +149,9 @@ class EnvironmentTests(unittest.TestCase):
         with patch("envcore.cli.DockerRuntime") as worker, patch(
             "envcore.cli.verify_training_data"
         ) as verify:
-            with self.assertRaisesRegex(ConfigError, "benchmark mode cannot override"):
+            with self.assertRaisesRegex(
+                ConfigError, "cannot read environment configuration"
+            ):
                 command_start(args)
             worker.assert_not_called()
             verify.assert_not_called()
@@ -236,12 +239,16 @@ class EnvironmentTests(unittest.TestCase):
             TaskConfig.load(TASK),
             task_kind="benchmark",
             leaderboard_eligible=True,
+            training_image="training@sha256:" + "a" * 64,
+            candidate_image="candidate@sha256:" + "a" * 64,
+            evaluator_image="evaluator@sha256:" + "a" * 64,
+            inference_gateway_image="gateway@sha256:" + "a" * 64,
         )
         run = resolve_environment_run(
             task, environment=EnvironmentConfig.from_manifest(cpu_config()), track="B"
         )
         self.assertTrue(task.leaderboard_eligible)
-        self.assertFalse(run.task.leaderboard_eligible)
+        self.assertTrue(run.task.leaderboard_eligible)
         self.assertEqual(run.task.track_b_max_leases, task.track_b_max_leases)
         self.assertEqual(
             run.environment.budget.public_budget(), task.public_manifest("B")["budget"]
@@ -265,14 +272,15 @@ class EnvironmentTests(unittest.TestCase):
             raw = cpu_config()
             raw["budget"] = {"track": "A", "total_seconds": seconds}
             environment = EnvironmentConfig.from_manifest(raw)
-            run = resolve_environment_run(
+            run = release.resolve(
                 task,
                 environment=environment,
-                release=release,
                 track_config_id="preview-a-8h",
             )
             self.assertEqual(run.task.track_a_total_seconds, seconds)
-            self.assertEqual(run.environment, environment)
+            self.assertEqual(
+                run.environment, FrozenEnvironment.from_config(environment, task, "A")
+            )
             self.assertEqual(
                 validate_environment_record(environment.record()), environment
             )
@@ -287,18 +295,16 @@ class EnvironmentTests(unittest.TestCase):
         task = replace(
             TaskConfig.load(TASK), source=release.task_path, task_id=release.task_id
         )
-        inherited = resolve_environment_run(
+        inherited = release.resolve(
             task,
             environment=EnvironmentConfig.from_manifest(cpu_config()),
-            release=release,
             track_config_id="preview-a-8h",
         )
         raw = cpu_config()
         raw["budget"] = {"track": "A", "total_seconds": 28800}
-        explicit = resolve_environment_run(
+        explicit = release.resolve(
             task,
             environment=EnvironmentConfig.from_manifest(raw),
-            release=release,
             track_config_id="preview-a-8h",
         )
         self.assertEqual(inherited.environment, explicit.environment)
@@ -431,7 +437,9 @@ class EnvironmentTests(unittest.TestCase):
         try:
             environment = EnvironmentConfig.from_manifest(cpu_config())
             supervisor = fixture.supervisor(environment=environment)
-            environment = environment.resolve_budget(fixture.config, "B")
+            environment = FrozenEnvironment.from_config(
+                environment, fixture.config, "B"
+            )
             supervisor.start_lease()
             committed = supervisor.commit_lease("/output/candidate")
             supervisor.declare_incumbent(committed["candidate_id"])
@@ -553,6 +561,230 @@ class EnvironmentTests(unittest.TestCase):
                             launch[launch.index("--memory") + 1], str(64 * 1024**2)
                         )
                         stop.assert_not_called()
+
+    def test_default_run_and_mutable_inputs_freeze_the_same_execution_contract(self):
+        task = TaskConfig.load(TASK)
+        devices = ["/dev/accel0"]
+        resources = TrainingResources(devices=devices)
+        run = resolve_environment_run(task, track="B", resources=resources)
+        identity = run.environment.configuration_sha256
+        devices.append("/dev/accel1")
+        run.resources.devices.append("/dev/accel2")
+        record = run.environment.record()
+        record["configuration"]["budget"]["max_leases"] = 100
+        self.assertEqual(run.resources.devices, ["/dev/accel0"])
+        self.assertEqual(run.environment.budget.max_leases, task.track_b_max_leases)
+        self.assertEqual(run.environment.configuration_sha256, identity)
+        self.assertEqual(
+            FrozenEnvironment.from_record(run.environment.record()), run.environment
+        )
+        default = resolve_environment_run(task, track="B")
+        self.assertEqual(default.resources, TrainingResources())
+        self.assertEqual(default.environment.budget, run.environment.budget)
+
+    def test_cli_uses_one_environment_with_optional_benchmark_presets(self):
+        release = BenchmarkRelease.load(BENCHMARK)
+        task = replace(
+            TaskConfig.load(TASK), task_id=release.task_id, source=release.task_path
+        )
+        raw = {
+            "schema_version": 1,
+            "name": "user-owned",
+            "runtime_profile": release.runtime_profiles[
+                "h100-sxm-80gb-x4"
+            ].public_manifest(),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "environment.json"
+            argv = [
+                "start",
+                "--benchmark",
+                str(BENCHMARK),
+                "--track-config",
+                "preview-a-8h",
+                "--runtime-profile",
+                "h100-sxm-80gb-x4",
+                "--episodes-root",
+                str(Path(directory) / "episodes"),
+                "--agent-runner",
+                "host_cli",
+                "--agent-command",
+                "participant-agent",
+            ]
+            with patch("envcore.cli.TaskConfig.load", return_value=task):
+                preset, _ = _resolve_start_run(build_parser().parse_args(argv))
+                path.write_text(json.dumps(raw))
+                identical, benchmark = _resolve_start_run(
+                    build_parser().parse_args(argv + ["--environment", str(path)])
+                )
+                self.assertEqual(identical.environment, preset.environment)
+                self.assertIsNotNone(benchmark.comparison_key)
+                raw["budget"] = {"track": "A", "total_seconds": 7200}
+                raw["runtime_profile"]["accelerator"]["count"] = 16
+                path.write_text(json.dumps(raw))
+                scaled, benchmark = _resolve_start_run(
+                    build_parser().parse_args(argv + ["--environment", str(path)])
+                )
+                self.assertEqual(scaled.resources.nvidia_gpu_count, 16)
+                self.assertEqual(scaled.task.track_a_total_seconds, 7200)
+                self.assertIsNone(benchmark.comparison_key)
+                self.assertFalse(scaled.task.leaderboard_eligible)
+                self.assertEqual(
+                    benchmark.release_manifest["benchmark_id"], release.benchmark_id
+                )
+                self.assertEqual(preset.task.track_a_total_seconds, 28800)
+
+    def test_custom_benchmark_environment_completes_the_same_lifecycle(self):
+        fixture = test_supervisor.SupervisorTests()
+        fixture.setUp()
+        try:
+            release = BenchmarkRelease.load(
+                ROOT / "dev_tasks/smoke_lm-pretrain/benchmark.json"
+            )
+            task = replace(fixture.config, task_id=release.task_id)
+            raw = cpu_config()
+            raw["budget"] = {"track": "B", "max_leases": 2, "lease_seconds": 4}
+            run = release.resolve(
+                task,
+                track_config_id="smoke-b-3x75s",
+                runtime_profile_id="cpu-local",
+                environment=EnvironmentConfig.from_manifest(raw),
+            )
+            supervisor = fixture.supervisor(
+                config=run.task,
+                environment=run.environment,
+                benchmark_release=run.release_manifest,
+            )
+            supervisor.start_lease()
+            candidate = supervisor.commit_lease("/output/candidate")
+            supervisor.declare_incumbent(candidate["candidate_id"])
+            supervisor.finish()
+            fixture.finalize_after_agent_stop(supervisor)
+            report = normalize_result_report(supervisor.state)
+            self.assertEqual(report["environment"], run.environment.record())
+            self.assertEqual(
+                report["benchmark_release"]["benchmark_id"], release.benchmark_id
+            )
+            self.assertIsNone(report["comparison_key"])
+            self.assertFalse(report["leaderboard_eligible"])
+            self.assertEqual(fixture.worker.evaluations, ["test", "analysis"])
+            changed = copy.deepcopy(report)
+            larger = FrozenEnvironment.create(
+                budget=replace(run.environment.budget, max_leases=200),
+                resources=run.resources,
+                resource_envelope=run.resource_envelope,
+                evaluation_resource_envelope=run.evaluation_resource_envelope,
+            )
+            changed["environment"] = larger.record()
+            changed["budget"] = larger.budget.public_budget()
+            with self.assertRaisesRegex(
+                ResultSchemaError, "benchmark environment identity mismatch"
+            ):
+                normalize_result_report(changed)
+        finally:
+            fixture.tearDown()
+
+    def test_preview_comparison_checks_contracts_without_an_environment_hash(self):
+        fixture = test_supervisor.SupervisorTests()
+        fixture.setUp()
+        try:
+            release = BenchmarkRelease.load(
+                ROOT / "dev_tasks/smoke_lm-pretrain/benchmark.json"
+            )
+            run = release.resolve(
+                replace(fixture.config, task_id=release.task_id),
+                track_config_id="smoke-b-3x75s",
+                runtime_profile_id="cpu-local",
+            )
+            supervisor = fixture.supervisor(
+                config=run.task,
+                environment=run.environment,
+                benchmark_release=run.release_manifest,
+                comparison_key=run.comparison_key.public_manifest(),
+            )
+            supervisor.start_lease()
+            candidate = supervisor.commit_lease("/output/candidate")
+            supervisor.declare_incumbent(candidate["candidate_id"])
+            supervisor.finish()
+            fixture.finalize_after_agent_stop(supervisor)
+            report = copy.deepcopy(supervisor.state)
+            report["benchmark_release"].pop("environment_sha256")
+            self.assertIsNotNone(normalize_result_report(report)["comparison_key"])
+
+            changed = copy.deepcopy(report)
+            larger = FrozenEnvironment.create(
+                budget=replace(run.environment.budget, max_leases=300),
+                resources=run.resources,
+                resource_envelope=run.resource_envelope,
+                evaluation_resource_envelope=run.evaluation_resource_envelope,
+            )
+            changed["environment"] = larger.record()
+            changed["budget"] = larger.budget.public_budget()
+            with self.assertRaisesRegex(
+                ResultSchemaError, "benchmark comparison budget"
+            ):
+                normalize_result_report(changed)
+
+            for field in ("resource_envelope", "evaluation_resource_envelope"):
+                with self.subTest(field=field):
+                    changed = copy.deepcopy(report)
+                    changed["benchmark_release"][field] = ResourceEnvelope(
+                        requirements=(
+                            ResourceRequirement(
+                                "host.count", "exact", 2, EnforcementLevel.BEST_EFFORT
+                            ),
+                        )
+                    ).public_manifest()
+                    with self.assertRaisesRegex(
+                        ResultSchemaError, "benchmark comparison resources"
+                    ):
+                        normalize_result_report(changed)
+
+            changed = copy.deepcopy(report)
+            changed["benchmark_release"].pop("track_config")
+            with self.assertRaises(ResultSchemaError):
+                normalize_result_report(changed)
+        finally:
+            fixture.tearDown()
+
+    def test_formal_benchmark_keeps_a_frozen_environment_and_rejects_budget_tampering(
+        self,
+    ):
+        fixture = test_supervisor.SupervisorTests()
+        fixture.setUp()
+        try:
+            supervisor, _ = fixture.formal_supervisor()
+            supervisor.start_lease()
+            candidate = supervisor.commit_lease("/output/candidate")
+            supervisor.declare_incumbent(candidate["candidate_id"])
+            supervisor.finish()
+            fixture.finalize_after_agent_stop(supervisor)
+            report = normalize_result_report(supervisor.state)
+            self.assertTrue(report["leaderboard_eligible"])
+            frozen = FrozenEnvironment.from_record(report["environment"])
+            self.assertEqual(frozen.budget.public_budget(), report["budget"])
+            changed = copy.deepcopy(report)
+            # Even a recomputed environment hash cannot relabel a larger budget
+            # as the original published lane.
+            larger = FrozenEnvironment.create(
+                budget=replace(frozen.budget, max_leases=3),
+                resources=frozen.resources,
+                resource_envelope=frozen.resource_envelope,
+                evaluation_resource_envelope=frozen.evaluation_resource_envelope,
+            )
+            changed["environment"] = larger.record()
+            changed["budget"] = larger.budget.public_budget()
+            with self.assertRaisesRegex(
+                ResultSchemaError, "benchmark comparison budget"
+            ):
+                normalize_result_report(changed)
+            for environment in (None, {}):
+                changed = copy.deepcopy(report)
+                changed["environment"] = environment
+                with self.assertRaisesRegex(ResultSchemaError, "environment"):
+                    normalize_result_report(changed)
+        finally:
+            fixture.tearDown()
 
     def test_distribution_exposes_one_package_and_command(self):
         config = configparser.ConfigParser()

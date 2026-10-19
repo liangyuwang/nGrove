@@ -11,7 +11,8 @@ from .artifact_identity import (
     HIDDEN_BUNDLE_IDENTITY_ALGORITHM,
 )
 from .config import AGENT_EGRESS_POLICIES, AGENT_RUNNERS
-from .environment import validate_environment_record
+from .environment import FrozenEnvironment
+from .benchmark import validate_benchmark_binding
 from .gateway_execution import (
     GatewayArtifactIdentity,
     GatewayExecutionReceipt,
@@ -630,9 +631,12 @@ def _validate_agent_system(result: Dict[str, Any]) -> None:
 
 def _validate_current_result(result: Dict[str, Any]) -> None:
     environment = result.get("environment")
-    if environment is not None:
+    if (
+        environment is not None
+        or result.get("result_schema_version") == RESULT_SCHEMA_VERSION
+    ):
         try:
-            config = validate_environment_record(environment)
+            config = FrozenEnvironment.from_record(environment)
         except (TypeError, ValueError) as exc:
             raise ResultSchemaError(
                 f"invalid environment configuration: {exc}"
@@ -651,19 +655,10 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
             raise ResultSchemaError(
                 "environment time budget does not match the recorded run budget"
             )
-        if (
-            result.get("leaderboard_eligible") is not False
-            or result.get("comparison_key") is not None
-            or result.get("benchmark_release") is not None
-            or result.get("formal_release_verification") is not None
-        ):
-            raise ResultSchemaError(
-                "environment runs cannot claim a benchmark lane or formal release"
-            )
-        evaluation = config.profile.evaluation_resource_contract
+        evaluation = config.evaluation_resource_envelope
         if result.get(
             "resource_envelope"
-        ) != config.resource_envelope().public_manifest() or result.get(
+        ) != config.resource_envelope.public_manifest() or result.get(
             "evaluation_resource_envelope"
         ) != (evaluation.public_manifest() if evaluation is not None else None):
             raise ResultSchemaError(
@@ -908,6 +903,11 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
         ):
             raise ResultSchemaError("an operator stop cannot be a benchmark result")
     _validate_evaluation_resources(result)
+
+    try:
+        validate_benchmark_binding(result)
+    except (TypeError, ValueError) as exc:
+        raise ResultSchemaError(str(exc)) from exc
 
 
 def _validate_analysis_summary_counts(

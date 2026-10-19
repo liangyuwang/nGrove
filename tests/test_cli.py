@@ -14,7 +14,7 @@ from envcore.cli import (
     _episode_exit_code,
     _initialize_agent_workspace,
     _report_cleanup_failures,
-    _resolve_benchmark_run,
+    _resolve_start_run,
     _run_cleanup_steps,
     _stop_and_record_container_agent,
     _stop_and_record_host_agent,
@@ -1210,21 +1210,23 @@ class WorkspaceSnapshotTests(unittest.TestCase):
         self.assertEqual(args.runtime_profile, "h100-sxm-80gb-x4")
         self.assertEqual(args.training_gpus, 0)
 
-        task = replace(
-            TaskConfig.load(TASK),
-            task_id="lm-pretrain",
-            task_kind="benchmark",
-        ).validate()
         args.benchmark = LM_PRETRAIN_PREVIEW
-        resolved = _resolve_benchmark_run(args, task)
+        task = replace(
+            TaskConfig.load(TASK), task_id="lm-pretrain", task_kind="benchmark"
+        )
+        with patch("envcore.cli.TaskConfig.load", return_value=task):
+            resolved, benchmark = _resolve_start_run(args)
+        self.assertIs(resolved, benchmark)
         self.assertIsNotNone(resolved)
         self.assertEqual(resolved.track, "B")
         self.assertEqual(resolved.task.track_b_max_leases, 6)
         self.assertEqual(resolved.resources.nvidia_gpu_count, 4)
 
         args.training_gpus = 4
-        with self.assertRaisesRegex(ConfigError, "may not override"):
-            _resolve_benchmark_run(args, task)
+        with patch(
+            "envcore.cli.TaskConfig.load", return_value=task
+        ), self.assertRaisesRegex(ConfigError, "may not override"):
+            _resolve_start_run(args)
 
     def test_benchmark_info_has_a_dedicated_command(self):
         args = build_parser().parse_args(

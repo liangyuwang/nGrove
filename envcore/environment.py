@@ -10,7 +10,7 @@ import hashlib
 import json
 import math
 import re
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -471,3 +471,128 @@ def validate_environment_record(record: Any) -> EnvironmentConfig:
     if config.configuration_sha256 != record["configuration_sha256"]:
         raise ConfigError("environment configuration identity mismatch")
     return config
+
+
+@dataclass(frozen=True)
+class FrozenEnvironment:
+    """Canonical execution settings, detached from mutable launcher inputs.
+
+    Profiles are configuration conveniences. Every execution freezes the same
+    budget, launch resources and Worker contracts, including deployments that
+    supply an extensible resource envelope without a named runtime profile.
+    """
+
+    _configuration_json: str
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        budget: ResearchBudget,
+        resources: TrainingResources,
+        resource_envelope: ResourceEnvelope,
+        evaluation_resource_envelope: Optional[ResourceEnvelope] = None,
+    ) -> "FrozenEnvironment":
+        if not isinstance(budget, ResearchBudget):
+            raise ConfigError("frozen environment requires a resolved research budget")
+        resources.validate()
+        configuration = {
+            "schema_version": 1,
+            "budget": budget.manifest(),
+            "resources": asdict(resources),
+            "resource_envelope": resource_envelope.public_manifest(),
+            "evaluation_resource_envelope": (
+                evaluation_resource_envelope.public_manifest()
+                if evaluation_resource_envelope is not None
+                else None
+            ),
+        }
+        return cls(
+            json.dumps(
+                configuration, sort_keys=True, separators=(",", ":"), allow_nan=False
+            )
+        )
+
+    @classmethod
+    def from_config(
+        cls, config: EnvironmentConfig, task: TaskConfig, track: str
+    ) -> "FrozenEnvironment":
+        resolved = config.resolve_budget(task, track)
+        return cls.create(
+            budget=resolved.budget,
+            resources=resolved.profile.training_resources(),
+            resource_envelope=resolved.resource_envelope(),
+            evaluation_resource_envelope=resolved.profile.evaluation_resource_contract,
+        )
+
+    @classmethod
+    def from_record(cls, record: Any) -> "FrozenEnvironment":
+        if not isinstance(record, dict) or set(record) != {
+            "configuration",
+            "configuration_sha256",
+        }:
+            raise ConfigError("invalid frozen environment record")
+        raw = _mapping(record["configuration"], "frozen environment")
+        if (
+            set(raw)
+            != {
+                "schema_version",
+                "budget",
+                "resources",
+                "resource_envelope",
+                "evaluation_resource_envelope",
+            }
+            or isinstance(raw["schema_version"], bool)
+            or not isinstance(raw["schema_version"], int)
+            or raw["schema_version"] != 1
+        ):
+            raise ConfigError("invalid frozen environment configuration")
+        resources = _mapping(raw["resources"], "frozen resources")
+        if set(resources) != set(asdict(TrainingResources())) or not isinstance(
+            resources["devices"], list
+        ):
+            raise ConfigError("invalid frozen training resources")
+        evaluation = raw["evaluation_resource_envelope"]
+        result = cls.create(
+            budget=ResearchBudget.from_manifest(raw["budget"]),
+            resources=TrainingResources(**resources),
+            resource_envelope=ResourceEnvelope.from_manifest(raw["resource_envelope"]),
+            evaluation_resource_envelope=(
+                ResourceEnvelope.from_manifest(evaluation)
+                if evaluation is not None
+                else None
+            ),
+        )
+        if result.configuration_sha256 != record["configuration_sha256"]:
+            raise ConfigError("environment configuration identity mismatch")
+        return result
+
+    def manifest(self) -> Dict[str, Any]:
+        return json.loads(self._configuration_json)
+
+    @property
+    def budget(self) -> ResearchBudget:
+        return ResearchBudget.from_manifest(self.manifest()["budget"])
+
+    @property
+    def resources(self) -> TrainingResources:
+        return TrainingResources(**self.manifest()["resources"])
+
+    @property
+    def resource_envelope(self) -> ResourceEnvelope:
+        return ResourceEnvelope.from_manifest(self.manifest()["resource_envelope"])
+
+    @property
+    def evaluation_resource_envelope(self) -> Optional[ResourceEnvelope]:
+        raw = self.manifest()["evaluation_resource_envelope"]
+        return ResourceEnvelope.from_manifest(raw) if raw is not None else None
+
+    @property
+    def configuration_sha256(self) -> str:
+        return hashlib.sha256(self._configuration_json.encode("utf-8")).hexdigest()
+
+    def record(self) -> Dict[str, Any]:
+        return {
+            "configuration": self.manifest(),
+            "configuration_sha256": self.configuration_sha256,
+        }

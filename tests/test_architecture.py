@@ -27,6 +27,15 @@ def imported_modules(path: Path) -> set[str]:
 
 
 class ArchitectureBoundaryTests(unittest.TestCase):
+    def test_environment_resolution_does_not_depend_on_benchmark_application(self):
+        for filename in ("environment.py", "run_config.py"):
+            with self.subTest(filename=filename):
+                self.assertTrue(
+                    {"benchmark", "envcore.benchmark"}.isdisjoint(
+                        imported_modules(ROOT / "envcore" / filename)
+                    )
+                )
+
     def test_core_semantics_do_not_import_local_deployment_mechanisms(self):
         forbidden = {
             "local_mailbox",

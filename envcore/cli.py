@@ -13,13 +13,14 @@ import time
 import uuid
 from contextlib import ExitStack
 from datetime import datetime, timezone
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .agent_api_bundle import publish_agent_api_bundle
 from .benchmark import BenchmarkRelease, ResolvedBenchmarkRun
 from .environment import EnvironmentConfig
-from .run_config import resolve_environment_run
+from .run_config import EnvironmentRun, resolve_environment_run
 from .client import Client, ClientError
 from .config import (
     AgentConfig,
@@ -59,7 +60,6 @@ from .operator_status import (
 from .runtime import DockerRuntime, RuntimeFailure
 from .supervisor import Supervisor
 from .training_data import verify_training_data
-from .worker_protocol import EnforcementLevel, v0_resource_envelope
 
 
 CONTAINER_AGENT_DRAIN_SECONDS = 3.0
@@ -316,37 +316,55 @@ def command_prepare(args: argparse.Namespace) -> int:
     return 0
 
 
-def _resolve_benchmark_run(
+def _resolve_start_run(
     args: argparse.Namespace,
-    config: TaskConfig,
-    release: Optional[BenchmarkRelease] = None,
-) -> Optional[ResolvedBenchmarkRun]:
-    """Resolve the named leaderboard lane, or validate an ad-hoc task run."""
-
-    if args.benchmark is None:
+) -> Tuple[EnvironmentRun, Optional[ResolvedBenchmarkRun]]:
+    """Select input presets at the application boundary, then use one lifecycle."""
+    release = BenchmarkRelease.load(args.benchmark) if args.benchmark else None
+    if release is None:
+        if args.task is None:
+            raise ConfigError("--task is required when --benchmark is not used")
         if args.track_config or args.runtime_profile:
             raise ConfigError(
                 "--track-config and --runtime-profile require --benchmark"
             )
         if not args.track:
             raise ConfigError("--track is required when --benchmark is not used")
-        return None
-    if args.track:
+        task_path = args.task
+    else:
+        task_path = release.task_path
+        if args.task is not None and args.task.expanduser().resolve() != task_path:
+            raise ConfigError("--task may not override the task owned by --benchmark")
+        if args.track or not args.track_config:
+            raise ConfigError("--benchmark requires --track-config instead of --track")
+    config = TaskConfig.load(task_path)
+    manual = args.training_gpus or args.training_gpu_model or args.training_devices
+    if manual and (args.environment or release is not None):
         raise ConfigError(
-            "--track is selected by --track-config when --benchmark is used"
+            "manual training resources may not override a selected environment; use --environment"
         )
-    if not args.track_config or not args.runtime_profile:
-        raise ConfigError("--benchmark requires --track-config and --runtime-profile")
-    if args.training_gpus or args.training_gpu_model or args.training_devices:
-        raise ConfigError(
-            "manual training resources may not override a benchmark runtime profile"
+    environment = EnvironmentConfig.load(args.environment) if args.environment else None
+    if release is not None:
+        run = release.resolve(
+            config,
+            track_config_id=args.track_config,
+            runtime_profile_id=args.runtime_profile,
+            environment=environment,
         )
-    release = release or BenchmarkRelease.load(args.benchmark)
-    return release.resolve(
-        config,
-        track_config_id=args.track_config,
-        runtime_profile_id=args.runtime_profile,
+        return run, run
+    run = resolve_environment_run(
+        replace(config, leaderboard_eligible=False),
+        track=args.track,
+        environment=environment,
+        resources=None
+        if environment is not None
+        else TrainingResources(
+            nvidia_gpu_count=args.training_gpus,
+            required_gpu_model=args.training_gpu_model,
+            devices=args.training_devices,
+        ),
     )
+    return run, None
 
 
 def command_start(args: argparse.Namespace) -> int:
@@ -360,84 +378,18 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
             "--agent-mode was renamed to --agent-egress and its values changed: "
             "'sandboxed' is now 'denied'; 'unrestricted-dev' is unchanged"
         )
-    release = BenchmarkRelease.load(args.benchmark) if args.benchmark else None
-    if release is None:
-        if args.task is None:
-            raise ConfigError("--task is required when --benchmark is not used")
-        task_path = args.task
-    else:
-        task_path = release.task_path
-        if args.task is not None and args.task.expanduser().resolve() != task_path:
-            raise ConfigError("--task may not override the task owned by --benchmark")
-    config = TaskConfig.load(task_path)
-    mode = args.mode or ("environment" if args.environment else "benchmark")
-    run_environment = None
-    resolved_environment = None
-    if mode == "environment":
-        if args.training_gpus or args.training_gpu_model or args.training_devices:
-            raise ConfigError(
-                "environment mode uses --environment or --runtime-profile"
-            )
-        if args.environment and args.runtime_profile:
-            raise ConfigError("choose --environment or --runtime-profile, not both")
-        if args.environment:
-            run_environment = EnvironmentConfig.load(args.environment)
-        elif release is not None and args.runtime_profile:
-            try:
-                run_environment = EnvironmentConfig(
-                    release.runtime_profiles[args.runtime_profile]
-                )
-            except KeyError as exc:
-                raise ConfigError(
-                    f"unknown runtime profile: {args.runtime_profile}"
-                ) from exc
-        else:
-            raise ConfigError(
-                "environment mode requires --environment or a published --runtime-profile"
-            )
-        resolved_environment = resolve_environment_run(
-            config,
-            environment=run_environment,
-            track=args.track,
-            release=release,
-            track_config_id=args.track_config,
-        )
-        resolved_benchmark = None
-    else:
-        if args.environment:
-            raise ConfigError(
-                "benchmark mode cannot override hardware with --environment"
-            )
-        resolved_benchmark = _resolve_benchmark_run(args, config, release)
-    comparison_key = None
-    benchmark_release = None
-    evaluation_resource_envelope = None
-    if resolved_environment is not None:
-        run_environment = resolved_environment.environment
-        config = resolved_environment.task
-        track = resolved_environment.track
-        resources = resolved_environment.resources
-        resource_envelope = resolved_environment.resource_envelope
-        evaluation_resource_envelope = resolved_environment.evaluation_resource_envelope
-    elif resolved_benchmark is None:
-        track = args.track
-        resources = TrainingResources(
-            nvidia_gpu_count=args.training_gpus,
-            required_gpu_model=args.training_gpu_model,
-            devices=args.training_devices,
-        ).validate_for(config)
-        resource_envelope = v0_resource_envelope(
-            resources,
-            minimum_enforcement=EnforcementLevel.BEST_EFFORT,
-        )
-    else:
-        config = resolved_benchmark.task
-        track = resolved_benchmark.track
-        resources = resolved_benchmark.resources
-        resource_envelope = resolved_benchmark.resource_envelope
-        evaluation_resource_envelope = resolved_benchmark.evaluation_resource_envelope
-        comparison_key = resolved_benchmark.comparison_key.public_manifest()
-        benchmark_release = resolved_benchmark.release_manifest
+    run, benchmark = _resolve_start_run(args)
+    config, track = run.task, run.track
+    resources = run.resources
+    resource_envelope = run.resource_envelope
+    evaluation_resource_envelope = run.evaluation_resource_envelope
+    run_environment = run.environment
+    comparison_key = (
+        benchmark.comparison_key.public_manifest()
+        if benchmark is not None and benchmark.comparison_key is not None
+        else None
+    )
+    benchmark_release = benchmark.release_manifest if benchmark is not None else None
     operator_limit = resolve_operator_research_limit(
         config.source,
         track,
@@ -547,8 +499,7 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
     reference_runtime = DockerRuntime(
         hidden_datasets={"analysis": config.analysis_path, "test": config.test_path}
     )
-    if run_environment is not None:
-        reference_runtime.preflight_training_resources(resource_envelope)
+    reference_runtime.preflight_training_resources(resource_envelope)
     reference_runtime.preflight_evaluation_resources(
         config,
         resources=resources,
@@ -1290,11 +1241,6 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.set_defaults(function=command_prepare)
 
     start = subparsers.add_parser("start", help="start and supervise an episode")
-    start.add_argument(
-        "--mode",
-        choices=["environment", "benchmark"],
-        help="run-owned environment or fixed benchmark lane; --environment selects environment mode",
-    )
     start.add_argument(
         "--environment",
         type=Path,

@@ -64,8 +64,9 @@ use context to optimize next-token prediction within the resource budget.
 recipe remains reproducible from its public source; this visibility convention
 does not make that recipe suitable as a secret formal evaluation.
 
-In benchmark mode with `--benchmark`, Training resources are selected from the
-finite map in `benchmark.json`, not from `task.json` or manual GPU flags.
+With `--benchmark`, `--runtime-profile` selects a Training resource preset from
+`benchmark.json`. An optional `--environment` supplies custom execution settings
+through the same configuration and freezing flow.
 `cpu-local` keeps the smoke path cheap;
 the GPU profiles mirror the [lm-pretrain hardware map](../../benchmarks/lm-pretrain/README.md#supported-preview-lanes):
 A100 SXM4 80GB, H100 SXM 80GB, H200 SXM 141GB, and H200 NVL 141GB, each with
@@ -79,7 +80,7 @@ envcore benchmark-info \
   --benchmark dev_tasks/smoke_lm-pretrain/benchmark.json
 ```
 
-In environment mode, `--environment` can select custom compute resources and
+`--environment` can select custom compute resources and
 override the time budget without editing the task or benchmark release. Omitted
 budgets inherit the selected task/Track settings. See
 [environment configuration](../../docs/environments.md) for task-based and

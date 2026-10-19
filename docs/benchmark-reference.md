@@ -2135,9 +2135,13 @@ envcore benchmark-info \
   --benchmark benchmarks/lm-pretrain/benchmark.json
 ```
 
-In benchmark mode, `--track-config` selects both the track and its budget, while
-`--runtime-profile` supplies the concrete resources. Manual `--track` and GPU
-overrides are rejected so the recorded key cannot disagree with the run.
+With `--benchmark`, `--track-config` selects the Track and default budget;
+`--runtime-profile` supplies a resource preset. An optional `--environment`
+replaces the compute configuration and may override the time budget. Every path
+uses the same frozen environment and execution lifecycle. A comparison key is
+attached only when the effective conditions match the explicitly selected lane.
+Use `--track` for a task-only launch; manual GPU flags cannot be mixed with a
+benchmark or an environment file. See [environment configuration](environments.md).
 
 The `lm-pretrain` TRAIN mount contains both raw FineWeb-Edu TRAIN documents with
 source metadata and official GPT-2 token shards linked by document IDs and

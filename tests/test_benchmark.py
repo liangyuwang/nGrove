@@ -156,11 +156,11 @@ class BenchmarkReleaseTests(unittest.TestCase):
                                 resolved.task.track_b_lease_seconds, budgets[2]
                             )
                         self.assertEqual(
-                            resolved.resource_envelope,
+                            resolved.resource_envelope.sha256,
                             v0_resource_envelope(
                                 resolved.resources,
                                 minimum_enforcement=EnforcementLevel.BEST_EFFORT,
-                            ),
+                            ).sha256,
                         )
                         keys.add(
                             tuple(resolved.comparison_key.public_manifest().values())
