@@ -1529,6 +1529,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     finish = agent_subparsers.add_parser("finish")
     finish.set_defaults(function=command_agent)
+    # Optional outer research-session layer, independent of episode semantics.
+    from ngrove.branching.cli import add_parser as add_branch_parser
+
+    add_branch_parser(subparsers)
     return parser
 
 

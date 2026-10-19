@@ -5,6 +5,9 @@ Every run records research evidence on the trusted Operator side. The existing
 SHA-256 under `recording/payloads/`. Candidate bundles remain in `candidates/`.
 This records observable interactions, not a complete Agent state or a replayable
 session. It does not implement branching, parallel scheduling, or checkout.
+The separate [branching module](branching.md) adds those state/history mechanisms
+and monitor interfaces. Its recording projection can reference research-visible
+exchanges here; restoring an Agent additionally requires a runner-owned state export.
 
 ## Role in the RSI project
 

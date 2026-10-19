@@ -37,6 +37,7 @@ jobs:
       - run: >-
           python -m unittest -v
           tests.test_benchmark
+          tests.test_branching
           tests.test_config
           tests.test_results
           tests.test_worker_protocol

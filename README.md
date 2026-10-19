@@ -49,6 +49,10 @@ freezes its resolved environment before task reveal.
 > [!NOTE]
 > **Implemented:** autonomous exploration, artifact evaluation, and trajectory recording.
 >
+> The optional [branching module](docs/branching.md) adds research-controlled
+> checkpoints, shared histories, checkout/fork/merge requests and monitor accounting.
+> Real Agent context restoration and platform execution require an admitted adapter.
+>
 > **Future work:** methods that use those experiences to improve the researcher,
 > and an automated recursive improvement loop. Higher artifact scores alone do
 > not demonstrate improved research capability. See [research scope](docs/research-scope.md).

@@ -26,6 +26,13 @@ supplies the environment and records observable evidence of that exploration.
 It does not yet supply a method that consumes trajectories to improve the
 researcher, or an automated loop that feeds those improved systems into new runs.
 
+The optional [branching module](branching.md) now provides checkpoint ancestry,
+shared prefixes, target-requested fork/checkout/merge operations and monitor-side
+resource/time accounting. These are research execution mechanisms. The target
+still chooses the research strategy; provider context restoration and physical
+execution require deployment adapters. This does not implement an automatic
+researcher-update method or certify recursive improvement.
+
 The implementation boundary is a stage of the project. Future methods may be
 developed as modules or separate packages; their placement does not narrow the
 project's RSI scope. No particular update mechanism is selected yet: changes may
