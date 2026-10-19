@@ -1,27 +1,45 @@
-# Benchmarks
+# Research tasks
 
-No frozen, leaderboard-eligible benchmark has been released yet. `lm-pretrain/`
-contains the first runnable preview package, but its data is generated locally
-and its release settings are still provisional.
+This directory contains research problems for Agents to explore in Envcore.
+`lm-pretrain/` is the first runnable preview task; `lm-open-world/` is a design
+proposal. The pretraining preview generates its data locally and its release
+settings remain provisional.
 
-This directory is reserved for published benchmark packages. A
-benchmark owns its dataset construction, hidden evaluation splits, public
-metric and Candidate ABI, task images, budgets, artifact limits, and release
-policy. Participant Agents, starter workspaces, and development fixtures do not
-belong here.
+A research task owns its dataset construction, evaluation splits, public metric
+and Candidate ABI, task images, default budgets, artifact limits, and task
+policy. Run-owned environment configurations can select compute resources and
+override budgets before research begins. Participant Agents, starter workspaces,
+and development fixtures do not belong here.
 
-Every runnable benchmark task must declare:
+During research, the Agent decides whether and how to validate using permitted
+information. Envcore's `evaluation` takes place after research sealing and
+confirmed teardown. TEST measures the final declared Candidate; the existing
+postmortem ANALYSIS measures committed Candidates. These are artifact measurements,
+not an evaluation of how good the research trajectory is.
+
+## Optional benchmark use
+
+Each research task can also be used as a benchmark: fix the comparison conditions
+and use its evaluation results for scoring and comparison. A bundled
+`benchmark.json` supplies named Track/runtime presets and comparison metadata.
+It is optional when launching a task directly with `--task`, `--track`, and a
+user-owned `--environment`; see [environment configuration](../docs/environments.md).
+`--benchmark` and `benchmark-info` retain their existing preset and comparison
+roles. No frozen, leaderboard-eligible benchmark has been released yet.
+
+Runnable research tasks declare their task kind independently of whether a
+benchmark comparison lane is selected:
 
 ```json
 {
-  "task_kind": "benchmark",
+  "task_kind": "research",
   "leaderboard_eligible": false
 }
 ```
 
 `leaderboard_eligible` becomes `true` only when the corresponding submission
-and comparison policy is published. Track A and Track B are execution modes
-inside a benchmark manifest, not directory categories.
+and comparison policy is published. Track A and Track B are research budget
+protocols; benchmark manifests can supply named presets for them.
 
 Core additionally requires an `official` release with no provisional track or
 runtime profiles, a complete comparison key, digest-pinned task and Agent
@@ -142,7 +160,7 @@ Preview profile maps can be inspected without preparing benchmark data:
 
 ```bash
 envcore benchmark-info \
-  --benchmark benchmarks/lm-pretrain/benchmark.json
+  --benchmark research_tasks/lm-pretrain/benchmark.json
 ```
 
 For the lightweight end-to-end development task, use

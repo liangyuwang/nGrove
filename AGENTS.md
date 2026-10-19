@@ -1,7 +1,10 @@
 # Repository Assistant instructions
 
-Envcore is an autonomous research environment framework with bundled
-benchmarks. Environment runs may select user-owned
+Envcore is an autonomous research environment framework with bundled research
+tasks under `research_tasks/`. Each task can also be used as a benchmark under
+fixed comparison conditions. Agents own validation within their research
+trajectories; Envcore evaluates submitted artifacts after research sealing.
+Environment runs may select user-owned
 compute resources and time budgets at launch using `--environment`, without
 editing task or benchmark releases. Omitted time budgets inherit the selected
 task/Track settings; resolved budgets freeze before task reveal. Track A uses
@@ -68,7 +71,7 @@ images, allocating resources, or starting an episode:
    | Area | Resolved value | Status or question |
    | --- | --- | --- |
    | Run purpose | research experiment, preview, reproducibility, or formal evaluation | Confirm if unknown; formal evaluation requires a matching published lane and trusted evidence |
-   | Benchmark/task | manifest or development task | Confirm if unknown |
+   | Research task | task manifest, optional benchmark presets, or development task | Confirm if unknown |
    | Track | A, B, or both | Confirm if unknown |
    | Time budget | named Track configuration or task budget; environment override when selected | Confirm the source and effective budget before launch |
    | Compute configuration | published runtime profile or user-owned environment configuration | Confirm the selected profile/configuration and supported alternatives |
@@ -103,13 +106,13 @@ picture once; subsequent questions remain progressive and concise.
 
 Confirm the common run settings:
 
-- the benchmark manifest or development task;
+- the research task manifest, optionally selected through benchmark presets, or development task;
 - Track A, Track B, or both;
 - whether the purpose is a research experiment, a local preview, a
   reproducibility run, or an organizer-controlled formal benchmark evaluation.
 
 Confirm the task and environment configuration for every run. Use `--task` with
-`--track`, or select a benchmark task and default budget using `--benchmark` with
+`--track`, or select a task and preset budget using `--benchmark` with
 `--track-config`. Named `--runtime-profile` presets require a benchmark release.
 A user-owned `--environment` supplies compute resources and may override the time
 budget; an omitted budget inherits the selected task/Track settings. It can be
@@ -174,7 +177,7 @@ root; the Core-relative `.envcore/episodes` layout is not a valid default.
 This boundary does not remove the Tested Agent's own global configuration or
 participant-owned instructions.
 
-Do not copy benchmark datasets into the Agent workspace. The Worker provides
+Do not copy task datasets into the Agent workspace. The Worker provides
 public TRAIN data through its separate read-only training-data view and keeps
 hidden ANALYSIS/TEST data and resolving credentials outside the Agent and
 Research Worker trust domain. Prefer materializing hidden data only after
@@ -186,7 +189,7 @@ identity must be fixed before the episode starts. Do not create or inject an
 operator-provided reference Agent as an implicit fallback.
 
 Prefer the container runner with `--agent-egress denied`. Route registered
-remote inference only through the benchmark's controlled inference gateway.
+remote inference only through the environment's controlled inference gateway.
 `host_cli` and `unrestricted-dev` are preview/debug modes and must be reported
 as `policy_compliant: false`; never present them as a compliant fallback. If
 the available Agent cannot be accessed within the required boundary, explain
@@ -214,11 +217,11 @@ to task or benchmark policy.
 ## Run workflow
 
 1. Read `README.md`, [environment configuration](docs/environments.md),
-   `docs/worker-protocol.md`, and the selected benchmark/task README and
+   `docs/worker-protocol.md`, and the selected research task README and
    manifests before operating a research run. The current training-research
    protocol's isolation and evaluation rules are detailed in the
    [full benchmark reference](docs/benchmark-reference.md); read those rules
-   for every run, and `benchmarks/README.md` when using a benchmark.
+   for every run, and `research_tasks/README.md` when using a bundled research task.
    Inspect implementation entry points only as needed for the requested run.
    Record the exact Git revision and preserve unrelated user changes.
 2. Inspect the target environment read-only. Confirm that the destination is

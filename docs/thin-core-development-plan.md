@@ -235,7 +235,7 @@ Failure ownership must remain explicit:
 
 - malformed Agent-controlled entries are rejected or become Agent policy
   failures;
-- valid requests that violate benchmark state return a protocol error;
+- valid requests that violate episode state return a protocol error;
 - failure of trusted transport or Coordinator persistence becomes an
   infrastructure failure.
 - raw trusted exception details remain in private Coordinator events; Agent

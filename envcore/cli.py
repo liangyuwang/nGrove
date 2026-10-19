@@ -933,7 +933,7 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
         host_termination_reason = "supervisor_interrupted"
     except Exception as exc:
         supervisor.infrastructure_failed(
-            "benchmark_monitor_failure", private_detail=str(exc)
+            "episode_monitor_failure", private_detail=str(exc)
         )
         raise
     finally:
@@ -1240,7 +1240,7 @@ def command_agent(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="envcore",
-        description="Configurable autonomous research environments and benchmark protocols",
+        description="Configurable autonomous research environments, tasks and evaluation",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 

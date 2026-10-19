@@ -158,7 +158,7 @@ logs, workspaces and captured/training artifacts. It removes only registered
 runtime resources and the journal's private temporary subtree (including hidden
 snapshots). Episode filesystem allocations and retained artifacts remain the
 deployment's retention/disposal responsibility. Historical Core state may still
-show the interrupted phase; cleanup success is not benchmark completion.
+show the interrupted phase; cleanup success is not episode completion.
 
 The trusted [Operator status](operator-status.md) view keeps the Core snapshot,
 current deployment execution, workload cleanup and storage disposal separate.
@@ -218,7 +218,7 @@ The launcher prints these private settings before the first episode workload:
 These are deployment protection settings, not comparison budgets. They do not
 appear in the Agent view. A heartbeat must arrive more often than the configured
 tolerance (the client sends every 0.5 seconds). The five-second grace does not
-authorize a late benchmark result. It permits ordinary timeout/cleanup handling
+authorize a late evaluation result. It permits ordinary timeout/cleanup handling
 before escalating to process termination.
 
 The parent retains its direct child without reaping it until it has signalled
@@ -261,7 +261,7 @@ storage. Successfully persisted reports contain `report_persisted: true`.
 null when none was received before the report snapshot. Cancellation during
 recovery gives exit code 2 even if the launcher had already reported success;
 an earlier deadline or watchdog failure remains the primary trigger when
-present. Cleanup evidence remains separate from the saved benchmark result.
+present. Cleanup evidence remains separate from the saved episode result.
 An abnormal stop or unconfirmed cleanup gives CLI exit code 2. A normally
 completed launcher retains its exit status only if recovery succeeds. Existing
 Core state, research sealing and TEST decisions are preserved; the watchdog

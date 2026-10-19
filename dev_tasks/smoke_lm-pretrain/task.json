@@ -63,7 +63,7 @@
     "result_visibility": "organizer_only"
   },
   "timing": {
-    "benchmark_owned_preparation": [
+    "environment_owned_preparation": [
       "worker_lease_startup"
     ]
   },

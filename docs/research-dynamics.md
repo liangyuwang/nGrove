@@ -234,7 +234,7 @@ and commands described here are proposals, not existing functionality.
 | [`envcore/supervisor.py::_analysis_trajectory`](../envcore/supervisor.py) | Existing links among commits, ANALYSIS metrics, costs, and declaration events. |
 | `inference/inference.jsonl` | Call times, models, usage, and completeness when available; do not assume full prompts or responses are present. |
 | `agent.log`, Lease logs, and other Operator-retained traces | Optional tool-call, experimental-feedback, code-change, and behavioral evidence. Host runners may also use `agent.stdout.log` and `agent.stderr.log`. |
-| [`benchmarks/lm-pretrain/evaluator/evaluator.py`](../benchmarks/lm-pretrain/evaluator/evaluator.py) | The current loss is `analysis_raw_metrics.mean_nll`, with lower values better. The analyzer does not execute this scorer. |
+| [`research_tasks/lm-pretrain/evaluator/evaluator.py`](../research_tasks/lm-pretrain/evaluator/evaluator.py) | The current loss is `analysis_raw_metrics.mean_nll`, with lower values better. The analyzer does not execute this scorer. |
 
 Commits contain:
 
@@ -335,7 +335,7 @@ not imply that the Agent knew that value during research.
 ### 5.3 Budget axes and two distinct costs
 
 Track A uses the Supervisor's recorded `elapsed_seconds` as its primary axis.
-Preserve the existing benchmark-owned overhead deductions; do not reconstruct
+Preserve the existing environment-owned overhead deductions; do not reconstruct
 charged time from UTC timestamp differences.
 
 Track B uses consumed Lease count. Leases that failed after consumption still

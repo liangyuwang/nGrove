@@ -1,7 +1,7 @@
 {
   "schema_version": 7,
   "task_id": "lm-pretrain",
-  "task_kind": "benchmark",
+  "task_kind": "research",
   "leaderboard_eligible": false,
   "paths": {
     "train": "data/generated/public",
@@ -63,7 +63,7 @@
     "result_visibility": "organizer_only"
   },
   "timing": {
-    "benchmark_owned_preparation": [
+    "environment_owned_preparation": [
       "worker_lease_startup"
     ]
   },

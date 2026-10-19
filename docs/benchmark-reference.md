@@ -1,6 +1,8 @@
 [Project overview](../README.md) · [Quick start](#quick-start) · [Benchmark rules](#motivation)
 
-This reference preserves the detailed benchmark design and operating instructions. Run its commands from the repository root.
+This reference covers the shared training-research protocol, evaluation, optional
+benchmark comparisons, and operating instructions. Run its commands from the
+repository root.
 
 The [Repository Assistant](../AGENTS.md) helps the user develop and maintain the
 project. When helping operate a benchmark episode, it takes the trusted
@@ -8,9 +10,17 @@ operator role described here. The Research Agent participating in the environmen
 is called the Tested Agent in this benchmark reference and has a separate
 execution and information boundary.
 
-# Benchmark reference
+# Training-research and benchmark reference
 
-**The shared training-research protocol for Envcore’s bundled benchmarks.**
+**The shared training-research protocol for Envcore’s research tasks.**
+
+Task packages live in `research_tasks/`. Agents choose their own validation
+methods during research; Envcore's evaluation measures submitted artifacts after
+research sealing. The existing postmortem ANALYSIS also measures Candidates, not
+the quality of a research trajectory. Benchmark use fixes comparison conditions
+and uses these evaluation results for standardized scoring and comparison.
+The benchmark configuration and eligibility rules below are optional additions
+to the same research lifecycle.
 
 > **Status:** v0 local reference runtime; no official benchmark released yet
 > **Framework:** Envcore
@@ -207,7 +217,7 @@ Candidate serving boundary as the benchmark preview, while retaining a much
 smaller task-specific corpus and evaluation configuration. It intentionally
 ships no reference Agent.
 
-Future official task packages live under `benchmarks/`. `lm-pretrain/` now
+Bundled research task packages live under `research_tasks/`. `lm-pretrain/` now
 contains a runnable-after-preparation preview task, evaluator, data builder, and
 provisional comparison profiles; no frozen, leaderboard-eligible benchmark has
 been released yet.
@@ -1219,7 +1229,7 @@ A system may choose to:
 
 All of these decisions compete for the same wall-clock budget. At the deadline,
 research workloads are terminated and the previously declared incumbent and
-Candidate inventory are sealed. Benchmark-owned postmortem ANALYSIS and TEST
+Candidate inventory are sealed. Environment-owned postmortem ANALYSIS and TEST
 time does not consume participant research time because the Agent can no longer
 act or benefit from it.
 
@@ -1853,21 +1863,21 @@ Examples include:
 * checkpoint loading;
 * training itself.
 
-Benchmark-owned preparation may occur outside participant timing.
+Environment-owned preparation may occur outside participant timing.
 
 Examples may include:
 
 * provisioning the clean machine;
 * mounting the official dataset;
-* benchmark-standard tokenization or preprocessing;
-* benchmark infrastructure startup.
+* task-defined tokenization or preprocessing;
+* environment infrastructure startup.
 
-The exact boundary is defined by each benchmark release and must be identical across participants.
+The exact boundary is defined by each task release and must be identical across participants in a benchmark comparison.
 
 A release declares that boundary in its task manifest:
 
 ```json
-"timing": { "benchmark_owned_preparation": ["worker_lease_startup"] }
+"timing": { "environment_owned_preparation": ["worker_lease_startup"] }
 ```
 
 `worker_lease_startup` is the wall clock a Worker spends inside
@@ -1879,10 +1889,10 @@ charged to the participant. The field is optional and currently defaults to
 refunding Worker Lease startup; unknown phase names are rejected rather than
 ignored. Because the declaration lives in `task.json`, it is covered by the
 manifest digest recorded with every result, so the accounting boundary belongs
-to the frozen benchmark rather than to whichever runtime revision executed it.
+to the frozen task rather than to whichever runtime revision executed it.
 
 The refund is never hidden. Every result reports the cumulative amount as
-`timing.benchmark_overhead_seconds`, and the Track A deadline moves out by the
+`timing.environment_overhead_seconds`, and the Track A deadline moves out by the
 same amount so that `remaining_wall_clock_seconds` and the duration granted by
 `lease-start` always describe the same instant. Independently of the boundary
 a release chooses, a granted Lease duration is clamped to the budget that
@@ -2103,7 +2113,7 @@ A task fixes the corpus and evaluation semantics, but does not require one
 hardware platform. A benchmark release publishes a deliberately finite map of
 named track configurations and named runtime profiles. The preview publishes
 provisional Track A/Track B budgets and a finite single-host hardware map; see
-the [benchmark's supported preview lanes](../benchmarks/lm-pretrain/README.md#supported-preview-lanes)
+the [benchmark's supported preview lanes](../research_tasks/lm-pretrain/README.md#supported-preview-lanes)
 or use `benchmark-info` for its current profile IDs and requirements.
 
 Official benchmark comparisons will use a small set of published, frozen
@@ -2114,7 +2124,7 @@ responsible for consistent resources, task/data identities, budgets and
 evaluation rules across the Agents they compare, and for disclosing differences.
 Custom runs remain subject to Worker enforcement and do not automatically
 qualify for official rankings. See the
-[reference environment and comparison policy](../benchmarks/README.md#reference-environments-and-custom-comparisons).
+[reference environment and comparison policy](../research_tasks/README.md#reference-environments-and-custom-comparisons).
 
 Every profile-bound episode records the complete comparison key:
 
@@ -2132,7 +2142,7 @@ Inspect a release's supported maps with:
 
 ```bash
 envcore benchmark-info \
-  --benchmark benchmarks/lm-pretrain/benchmark.json
+  --benchmark research_tasks/lm-pretrain/benchmark.json
 ```
 
 With `--benchmark`, `--track-config` selects the Track and default budget;
@@ -2172,7 +2182,7 @@ contract as a benchmark preview:
     "candidate": "pytorch/pytorch@sha256:<digest>",
     "evaluator": "python@sha256:<digest>"
   },
-  "timing": { "benchmark_owned_preparation": ["worker_lease_startup"] },
+  "timing": { "environment_owned_preparation": ["worker_lease_startup"] },
   "analysis": {
     "candidate_selection": "all_committed",
     "max_candidates": 16,
@@ -2410,7 +2420,7 @@ developers can verify a complete episode cheaply. It is explicitly marked
 remain participant-owned.
 
 No frozen benchmark has been released. The `lm-pretrain` preview under
-`benchmarks/` now defines provisional track configurations, a deliberately
+`research_tasks/` now defines provisional track configurations, a deliberately
 finite set of single-host runtime profiles, the four-field comparison
 key, the initial external-resource policy, a task/evaluator, and a builder that
 retains both raw TRAIN documents and GPT-2 token shards. Source bytes are checked

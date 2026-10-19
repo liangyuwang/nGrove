@@ -34,7 +34,7 @@ class CandidateEntrypointTests(unittest.TestCase):
     def test_public_candidate_contracts_agree_with_worker_for_both_tasks_and_tracks(
         self,
     ):
-        for task in ("dev_tasks/smoke_lm-pretrain", "benchmarks/lm-pretrain"):
+        for task in ("dev_tasks/smoke_lm-pretrain", "research_tasks/lm-pretrain"):
             config = self._task_config(task)
             worker = CandidateChannelRequirements(
                 protocol=config.candidate_protocol

@@ -4,8 +4,8 @@
 Research Worker through Worker Protocol v16. It adds reusable Lease lifecycle
 coverage toward original issue 10, alongside the resolution and
 [evaluation resource](worker-evaluation-probe.md) diagnostics. It does not
-create a Tested Agent, run hidden evaluation, select an incumbent, publish a
-benchmark result, or issue a formal `ConformanceReceipt`.
+create a Tested Agent, run hidden evaluation, select an incumbent, publish an
+evaluation result, or issue a formal `ConformanceReceipt`.
 
 ## Disposable inputs
 

@@ -40,6 +40,14 @@ class CodexAdapterTests(unittest.TestCase):
             'shell_environment_policy.set.HOME="/episode/workspace"',
             command,
         )
+        self.assertIn(
+            'shell_environment_policy.set.ENVCORE_TASK="/episode/public/task.json"',
+            command,
+        )
+        self.assertIn(
+            'shell_environment_policy.set.ENVCORE_TRAIN_DIR="/task/train"',
+            command,
+        )
         self.assertFalse(any("CODEX_HOME" in value for value in command))
         self.assertIn(
             'shell_environment_policy.set.VISIBLE="yes"',

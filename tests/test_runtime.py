@@ -1519,6 +1519,15 @@ class RuntimeBoundaryTests(unittest.TestCase):
                 public_task_path=public_task,
             )
             command = "\n".join(runtime.calls[0])
+            task_path = next(
+                arg.split("=", 1)[1]
+                for arg in runtime.calls[0]
+                if arg.startswith("ENVCORE_TASK=")
+            )
+            self.assertEqual(task_path, "/task/task.json")
+            self.assertIn(
+                f"src={public_task.resolve()},dst={task_path},readonly", command
+            )
             self.assertIn("dst=/opt/agent-api,readonly", command)
             self.assertNotIn("dst=/opt/envcore", command)
             self.assertIn("dst=/control/inbox", command)
@@ -1619,6 +1628,14 @@ class RuntimeBoundaryTests(unittest.TestCase):
             )
             serialized_agent = "\n".join(agent_command)
             serialized_gateway = "\n".join(gateway_command)
+            train_path = config.public_manifest("B")["train"]["path"]
+            self.assertEqual(train_path, "/task/train")
+            for command in (agent_command, training_command):
+                self.assertIn(
+                    f"src={config.train_dir.resolve()},dst={train_path},readonly",
+                    "\n".join(command),
+                )
+            self.assertIn(f"ENVCORE_TRAIN_DIR={train_path}", training_command)
             self.assertIn(
                 "OPENAI_BASE_URL=http://inference-gateway:8765/v1",
                 serialized_agent,

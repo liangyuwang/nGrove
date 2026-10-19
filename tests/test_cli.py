@@ -37,7 +37,7 @@ from envcore.results import normalize_result_report
 
 ROOT = Path(__file__).resolve().parents[1]
 TASK = ROOT / "tests/fixtures/task/task.json"
-LM_PRETRAIN_PREVIEW = ROOT / "benchmarks/lm-pretrain/benchmark.json"
+LM_PRETRAIN_PREVIEW = ROOT / "research_tasks/lm-pretrain/benchmark.json"
 
 
 class WorkspaceSnapshotTests(unittest.TestCase):
@@ -144,7 +144,7 @@ class WorkspaceSnapshotTests(unittest.TestCase):
 
     def test_storage_admission_is_private_and_precedes_episode_writes(self):
         for folder, expected in (
-            ("benchmarks/lm-pretrain", 100 * 2**30),
+            ("research_tasks/lm-pretrain", 100 * 2**30),
             ("dev_tasks/smoke_lm-pretrain", 2 * 2**30),
         ):
             for track in ("A", "B"):
@@ -280,7 +280,7 @@ class WorkspaceSnapshotTests(unittest.TestCase):
         self,
     ):
         for folder, lane, flags, expected in (
-            ("benchmarks/lm-pretrain", "preview-b-6x1h", [], 86400),
+            ("research_tasks/lm-pretrain", "preview-b-6x1h", [], 86400),
             ("dev_tasks/smoke_lm-pretrain", "smoke-b-3x75s", [], 1800),
             (
                 "dev_tasks/smoke_lm-pretrain",
@@ -1212,7 +1212,7 @@ class WorkspaceSnapshotTests(unittest.TestCase):
 
         args.benchmark = LM_PRETRAIN_PREVIEW
         task = replace(
-            TaskConfig.load(TASK), task_id="lm-pretrain", task_kind="benchmark"
+            TaskConfig.load(TASK), task_id="lm-pretrain", task_kind="research"
         )
         with patch("envcore.cli.TaskConfig.load", return_value=task):
             resolved, benchmark = _resolve_start_run(args)

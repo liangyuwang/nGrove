@@ -6,14 +6,14 @@ contract. They do not add a platform backend or weaken Worker requirements.
 See [configurable environments](environments.md) for the distinction between
 environment experiments and fixed benchmark lanes.
 
-Envcore owns benchmark decisions.  A Worker deployment owns
+Envcore owns research lifecycle and evaluation decisions. A Worker deployment owns
 execution and enforcement.  The boundary between them is expressed in
-benchmark terms and must not expose a scheduler, container runtime, or cloud
+research protocol terms and must not expose a scheduler, container runtime, or cloud
 API.
 
 ```text
 Envcore Coordinator
-  authoritative benchmark state
+  authoritative episode state
               │
               │ Worker Protocol
               ▼

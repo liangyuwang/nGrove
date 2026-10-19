@@ -1,9 +1,8 @@
 """Benchmark release profiles and leaderboard comparison identities.
 
-A benchmark fixes data and evaluation semantics without fixing one hardware
-platform.  A release instead publishes a deliberately small set of track and
-runtime profiles.  Only episodes with the same comparison key are directly
-comparable.
+A benchmark adds optional comparison presets to a research task's data and
+evaluation contract. A release publishes a deliberately small set of track and
+runtime profiles. Comparison requires matching keys and effective conditions.
 """
 
 from __future__ import annotations

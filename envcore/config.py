@@ -31,7 +31,7 @@ class ConfigError(ValueError):
 # Version 2 renamed the ``agent_mode`` status field to ``agent_egress`` and its
 # ``"sandboxed"`` value to ``"denied"``.
 #
-# Version 3 excludes benchmark-owned preparation from participant timing, so
+# Version 3 excludes environment-owned preparation from participant timing, so
 # ``elapsed_seconds`` and ``remaining_wall_clock_seconds`` no longer track raw
 # wall clock since task reveal.  An Agent that measured the budget with its own
 # clock instead of the reported one would now disagree with the Coordinator.
@@ -89,7 +89,7 @@ def resolve_operator_research_limit(
     override: Optional[float] = None,
     disabled: bool = False,
 ) -> Optional[float]:
-    """Resolve launcher protection without changing the benchmark task identity.
+    """Resolve launcher protection without changing the research task identity.
 
     The optional sibling file belongs to the trusted operator, not the task
     manifest or its public budget. Only the effective value enters episode audit.
@@ -155,12 +155,12 @@ def _operator_default(task_source: Path, field: str) -> Any:
     return raw.get(field)
 
 
-# Phases a release may declare as benchmark-owned rather than participant time.
+# Phases a release may declare as environment-owned rather than participant time.
 # `docs/benchmark-reference.md` requires this boundary to be release-defined and
 # identical across participants, so it belongs in the task manifest digest
 # rather than in whichever Core revision happens to execute the episode.
-BENCHMARK_OWNED_PREPARATION_PHASES = {"worker_lease_startup"}
-DEFAULT_BENCHMARK_OWNED_PREPARATION = ("worker_lease_startup",)
+ENVIRONMENT_OWNED_PREPARATION_PHASES = {"worker_lease_startup"}
+DEFAULT_ENVIRONMENT_OWNED_PREPARATION = ("worker_lease_startup",)
 
 AGENT_RUNNERS = {"container", "host_cli"}
 AGENT_EGRESS_POLICIES = {"denied", "unrestricted-dev"}
@@ -171,7 +171,7 @@ ANALYSIS_RESULT_VISIBILITIES = {
     "delayed_public",
     "public_after_finalization",
 }
-TASK_KINDS = {"benchmark", "development_smoke"}
+TASK_KINDS = {"research", "development_smoke"}
 RESERVED_AGENT_ENVIRONMENT = {
     "ENVCORE_CONTROL_DIR",
     "ENVCORE_FORWARDED_ENVIRONMENT",
@@ -258,8 +258,8 @@ def agent_environment_names(value: Any, field: str = "agent.environment") -> Lis
     return names
 
 
-def benchmark_owned_preparation(
-    value: Any, field: str = "timing.benchmark_owned_preparation"
+def environment_owned_preparation(
+    value: Any, field: str = "timing.environment_owned_preparation"
 ) -> Tuple[str, ...]:
     """Validate the release's participant-timing boundary.
 
@@ -269,12 +269,14 @@ def benchmark_owned_preparation(
     """
 
     if value is None:
-        return DEFAULT_BENCHMARK_OWNED_PREPARATION
+        return DEFAULT_ENVIRONMENT_OWNED_PREPARATION
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
         raise ConfigError(f"{field} must be an array of phase names")
-    unknown = [item for item in value if item not in BENCHMARK_OWNED_PREPARATION_PHASES]
+    unknown = [
+        item for item in value if item not in ENVIRONMENT_OWNED_PREPARATION_PHASES
+    ]
     if unknown:
-        allowed = ", ".join(sorted(BENCHMARK_OWNED_PREPARATION_PHASES))
+        allowed = ", ".join(sorted(ENVIRONMENT_OWNED_PREPARATION_PHASES))
         raise ConfigError(
             f"{field} contains unknown phases {unknown}; allowed: {allowed}"
         )
@@ -425,7 +427,7 @@ class InferenceConfig:
 
 @dataclass(frozen=True)
 class AgentConfig:
-    """Participant-owned Agent selection for one benchmark episode.
+    """Participant-owned Agent selection for one research episode.
 
     This is deliberately separate from :class:`TaskConfig`: a task package
     defines data, budgets, evaluation, and the Training Environment, while the
@@ -602,7 +604,7 @@ class TrainingResources:
 
 @dataclass(frozen=True)
 class TaskConfig:
-    """Fully resolved benchmark task configuration.
+    """Fully resolved research task configuration.
 
     Participant execution is intentionally absent. Private evaluator paths stay
     in trusted host components and are never included in
@@ -626,7 +628,7 @@ class TaskConfig:
     vocab_size: int
     context_length: int
     context_lengths: Tuple[int, ...]
-    benchmark_owned_preparation: Tuple[str, ...]
+    environment_owned_preparation: Tuple[str, ...]
     track_a_total_seconds: int
     track_b_max_leases: int
     track_b_lease_seconds: int
@@ -736,8 +738,8 @@ class TaskConfig:
             context_lengths=_positive_int_list(
                 evaluation.get("context_lengths"), "evaluation.context_lengths"
             ),
-            benchmark_owned_preparation=benchmark_owned_preparation(
-                None if timing is None else timing.get("benchmark_owned_preparation")
+            environment_owned_preparation=environment_owned_preparation(
+                None if timing is None else timing.get("environment_owned_preparation")
             ),
             track_a_total_seconds=_positive_int(
                 track_a.get("total_seconds"), "track_a.total_seconds"
@@ -899,13 +901,15 @@ class TaskConfig:
         return {
             "protocol_version": AGENT_PROTOCOL_VERSION,
             "timing": {
-                "benchmark_owned_preparation": list(self.benchmark_owned_preparation)
+                "environment_owned_preparation": list(
+                    self.environment_owned_preparation
+                )
             },
             "task_id": self.task_id,
             "task_kind": self.task_kind,
             "leaderboard_eligible": self.leaderboard_eligible,
             "track": normalized,
-            "train": {"path": "/benchmark/train", "visibility": "read_only"},
+            "train": {"path": "/task/train", "visibility": "read_only"},
             "validation": {
                 "organizer_feedback": "none",
                 "participant_method": "unprescribed",

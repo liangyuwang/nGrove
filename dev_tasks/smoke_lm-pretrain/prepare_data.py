@@ -1,8 +1,8 @@
-"""Prepare a deterministic, sub-megabyte TinyStories benchmark instance.
+"""Prepare a deterministic, sub-megabyte TinyStories development task.
 
 Only Python's standard library is required. The source dataset revision and the
 ordered sample digest are frozen so a changed upstream fails loudly instead of
-silently creating a different benchmark.
+silently creating a different task.
 """
 
 from __future__ import annotations
@@ -107,7 +107,7 @@ def download_documents() -> List[str]:
     if digest != SOURCE_SHA256:
         raise RuntimeError(
             "TinyStories sample digest changed; expected "
-            f"{SOURCE_SHA256}, received {digest}. The pinned benchmark must not "
+            f"{SOURCE_SHA256}, received {digest}. The pinned task data must not "
             "silently change."
         )
     return documents
@@ -348,7 +348,7 @@ def _existing_data_is_valid() -> bool:
 def prepare(*, force: bool = False) -> Dict[str, object]:
     if not force and _existing_data_is_valid():
         metadata = json.loads(METADATA_PATH.read_text(encoding="utf-8"))
-        print(f"Mini benchmark data is already ready at {DATA_DIR}")
+        print(f"Development task data is already ready at {DATA_DIR}")
         return metadata
 
     if TRAIN_PATH.parent.exists():

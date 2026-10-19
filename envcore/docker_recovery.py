@@ -1,6 +1,6 @@
 """Private, cleanup-only recovery for one local Docker Worker session.
 
-The journal is never a Core/Agent API and contains no resumable benchmark state.
+The journal is never a Core/Agent API and contains no resumable episode state.
 Only a local POSIX filesystem with reliable flock/fsync semantics is supported.
 """
 

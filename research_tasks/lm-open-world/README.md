@@ -8,7 +8,7 @@
 
 **Constrain resources, not ideas. Define the evaluator, not the solution.**
 
-LM Open World is a proposed benchmark for autonomous research on language tasks.
+LM Open World is a proposed research task for autonomous research on language tasks.
 The Agent is free to choose how to achieve the task objective within the
 available world and resource budget. Its central question is:
 
@@ -19,10 +19,10 @@ The participant supplies a research Agent. During an episode, that Agent builds
 or selects the system to submit for independent evaluation. The research Agent
 and its final submission may share components, but need not be identical.
 
-The benchmark should leave the largest practical solution space open, defining
+The research task should leave the largest practical solution space open, defining
 only what makes that freedom meaningful and evaluable:
 
-| Component | What the benchmark should define |
+| Component | What the task and environment should define |
 | --- | --- |
 | **Evaluator** | The task objective and how success and execution cost are measured |
 | **Sandbox and policy** | The world the Agent may act in, including data, tools, services, and network access |
@@ -102,7 +102,7 @@ control capabilities confirmed terminated, before hidden evaluation begins.
 
 The sandbox should define the available world, including any permitted data,
 tools, and network access. Workers should enforce that boundary and its resource
-limits. Envcore should retain platform-independent benchmark semantics.
+limits. Envcore should retain platform-independent research and evaluation semantics.
 
 Opening access to existing models and services also makes the interpretation of
 results central to the design. Final quality and execution cost describe the
@@ -110,8 +110,10 @@ submitted system under its evaluation conditions. Claims about research
 effectiveness also need evidence of the Agent's starting point, the resources it
 could access, and how it used its budget. Choosing an effective existing system
 is a valid research decision; comparisons should make those conditions visible.
+A future benchmark can fix those conditions and compare the task's evaluation
+results; it is an optional use of the research task.
 
-## Help shape the benchmark
+## Help shape the research task
 
 The first priority is to identify a language task that makes this broader
 freedom useful and measurable. We invite proposals around four connected

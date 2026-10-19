@@ -752,7 +752,7 @@ class Supervisor:
             "started_at": None,
             "elapsed_seconds": 0.0,
             "timing": {
-                "benchmark_overhead_seconds": 0.0,
+                "environment_overhead_seconds": 0.0,
                 "training_lease_seconds": 0.0,
                 "analysis_evaluation_seconds": 0.0,
                 "test_evaluation_seconds": 0.0,
@@ -920,24 +920,24 @@ class Supervisor:
             )
             self._save_state()
 
-    def _benchmark_overhead(self) -> float:
-        """Wall clock spent on benchmark-owned preparation, not on the Agent.
+    def _environment_overhead(self) -> float:
+        """Wall clock spent on environment-owned preparation, not on the Agent.
 
-        `docs/benchmark-reference.md` places "benchmark infrastructure startup"
+        `docs/benchmark-reference.md` places "environment infrastructure startup"
         outside participant timing. Worker Lease materialization -- scheduler
         queueing, image conversion, workload startup -- is that preparation,
         and its cost varies by deployment, so billing it to the participant
         would make the same budget mean different things at different sites.
         """
 
-        return float(self.state["timing"]["benchmark_overhead_seconds"])
+        return float(self.state["timing"]["environment_overhead_seconds"])
 
-    def _record_benchmark_overhead(self, phase: str, since_monotonic: float) -> None:
-        """Refund a phase only when the release declares it benchmark-owned."""
+    def _record_environment_overhead(self, phase: str, since_monotonic: float) -> None:
+        """Refund a phase only when the release declares it environment-owned."""
 
-        if phase not in self.config.benchmark_owned_preparation:
+        if phase not in self.config.environment_owned_preparation:
             return
-        self.state["timing"]["benchmark_overhead_seconds"] += max(
+        self.state["timing"]["environment_overhead_seconds"] += max(
             0.0, self.monotonic() - since_monotonic
         )
 
@@ -949,7 +949,7 @@ class Supervisor:
             if self.closed_monotonic is not None
             else self.monotonic()
         )
-        return max(0.0, end - self.started_monotonic - self._benchmark_overhead())
+        return max(0.0, end - self.started_monotonic - self._environment_overhead())
 
     def _freeze_elapsed(self, at_monotonic: Optional[float] = None) -> None:
         if self.closed_monotonic is None:
@@ -963,7 +963,7 @@ class Supervisor:
         return (
             self.started_monotonic
             + self.config.track_a_total_seconds
-            + self._benchmark_overhead()
+            + self._environment_overhead()
         )
 
     def _track_a_remaining(self) -> float:
@@ -990,7 +990,7 @@ class Supervisor:
             )
         result: Dict[str, Any] = {
             "official_elapsed_seconds": round(elapsed, 6),
-            "benchmark_overhead_seconds": round(self._benchmark_overhead(), 6),
+            "environment_overhead_seconds": round(self._environment_overhead(), 6),
             "training_lease_seconds": round(lease_seconds, 6),
             "agent_and_worker_seconds": round(max(0.0, elapsed - lease_seconds), 6),
             "analysis_evaluation_seconds": round(
@@ -1710,7 +1710,7 @@ class Supervisor:
             try:
                 training_workload = self._resolve_workload("training")
             except WorkerTeardownFailure as exc:
-                self._record_benchmark_overhead(
+                self._record_environment_overhead(
                     "worker_lease_startup", worker_call_started
                 )
                 self.deployment_teardown_failed(
@@ -1722,7 +1722,7 @@ class Supervisor:
                     "training workload resolution left unknown Worker state",
                 ) from exc
             except WorkloadResolutionFailure as exc:
-                self._record_benchmark_overhead(
+                self._record_environment_overhead(
                     "worker_lease_startup", worker_call_started
                 )
                 self.infrastructure_failed(
@@ -1768,7 +1768,7 @@ class Supervisor:
                     workload=training_workload,
                 )
             except WorkerTeardownFailure as exc:
-                self._record_benchmark_overhead(
+                self._record_environment_overhead(
                     "worker_lease_startup", worker_call_started
                 )
                 self._event(
@@ -1785,7 +1785,7 @@ class Supervisor:
                     "research worker teardown failed",
                 ) from exc
             except WorkerFailure as exc:
-                self._record_benchmark_overhead(
+                self._record_environment_overhead(
                     "worker_lease_startup", worker_call_started
                 )
                 pending.remove(lease_id)
@@ -1827,7 +1827,7 @@ class Supervisor:
                     worker_id=self.research_worker_id,
                 )
             except (TypeError, ValueError) as exc:
-                self._record_benchmark_overhead(
+                self._record_environment_overhead(
                     "worker_lease_startup", worker_call_started
                 )
                 self._reject_started_lease_allocation(
@@ -1852,7 +1852,7 @@ class Supervisor:
                 accepted=assessment.satisfied,
             )
             if not assessment.satisfied:
-                self._record_benchmark_overhead(
+                self._record_environment_overhead(
                     "worker_lease_startup", worker_call_started
                 )
                 self._reject_started_lease_allocation(
@@ -1866,7 +1866,9 @@ class Supervisor:
                 )
                 raise AssertionError("unreachable")
 
-            self._record_benchmark_overhead("worker_lease_startup", worker_call_started)
+            self._record_environment_overhead(
+                "worker_lease_startup", worker_call_started
+            )
             started = self.monotonic()
             if self.track == "A":
                 # Defence in depth: whatever else consumed budget between the
@@ -3702,7 +3704,7 @@ class Supervisor:
         )
 
     def enforce_operator_limit(self) -> bool:
-        """Seal an operator-aborted run without producing a benchmark result.
+        """Seal an operator-aborted run without producing an evaluation result.
 
         Persist the stop before potentially blocking teardown. The trusted
         launcher/Worker owns termination and retries using retained Lease IDs.

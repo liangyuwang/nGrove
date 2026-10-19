@@ -10,7 +10,7 @@ MAX_AGENT_CONTROL_RESPONSE_BYTES = 3 * 1024 * 1024
 
 
 class ProtocolError(RuntimeError):
-    """An Agent request violates the benchmark protocol."""
+    """An Agent request violates the research protocol."""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)

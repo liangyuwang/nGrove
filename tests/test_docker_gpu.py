@@ -128,7 +128,7 @@ class DockerGpuTests(unittest.TestCase):
     def test_release_gpu_matrix_binds_training_and_cuda_evaluation_resources(self):
         release = BenchmarkRelease.load(
             Path(__file__).resolve().parents[1]
-            / "benchmarks/lm-pretrain/benchmark.json"
+            / "research_tasks/lm-pretrain/benchmark.json"
         )
         for profile_id, profile in release.runtime_profiles.items():
             with self.subTest(profile=profile_id):

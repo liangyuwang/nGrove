@@ -184,7 +184,7 @@ def run_offline(candidate_dir, contexts_path, output_dir, device):
                 timeout=30,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            for task in ("dev_tasks/smoke_lm-pretrain", "benchmarks/lm-pretrain"):
+            for task in ("dev_tasks/smoke_lm-pretrain", "research_tasks/lm-pretrain"):
                 with self.subTest(task=task):
                     spec = importlib.util.spec_from_file_location(
                         "contract_scorer", ROOT / task / "evaluator/evaluator.py"
@@ -199,7 +199,7 @@ def run_offline(candidate_dir, contexts_path, output_dir, device):
                     )
 
     def test_uniform_scores_are_invariant_to_large_finite_logit_offsets(self):
-        for task in ("dev_tasks/smoke_lm-pretrain", "benchmarks/lm-pretrain"):
+        for task in ("dev_tasks/smoke_lm-pretrain", "research_tasks/lm-pretrain"):
             spec = importlib.util.spec_from_file_location(
                 "shifted_logit_evaluator", ROOT / task / "evaluator/evaluator.py"
             )

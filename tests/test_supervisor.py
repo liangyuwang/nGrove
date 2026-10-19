@@ -145,7 +145,7 @@ class FakeWorker:
         self.resource_envelopes = []
         self.resource_receipt_override = None
         self.evaluation_workloads = []
-        # Simulates benchmark-owned preparation inside start_lease: queue wait,
+        # Simulates environment-owned preparation inside start_lease: queue wait,
         # image materialization, workload startup.
         self.start_lease_delay = 0.0
         self.clock = None
@@ -586,7 +586,7 @@ class SupervisorTests(unittest.TestCase):
         with self.assertRaisesRegex(ProtocolError, "closed"):
             supervisor.handle({"op": "lease_start"})
         self.assertEqual(supervisor.state["status"], "operator_stopped")
-        self.assertEqual(supervisor.state["timing"]["benchmark_overhead_seconds"], 11)
+        self.assertEqual(supervisor.state["timing"]["environment_overhead_seconds"], 11)
         self.assertEqual(supervisor._elapsed(), 0)
         supervisor.terminate_worker_leases_for_teardown()
         self.assertFalse(self.worker.running)
@@ -824,7 +824,7 @@ class SupervisorTests(unittest.TestCase):
             self.config,
             source=formal_task,
             train_dir=formal_train_dir,
-            task_kind="benchmark",
+            task_kind="research",
             leaderboard_eligible=True,
             training_image="example/training" + digest,
             candidate_image="example/candidate" + digest,
@@ -1133,7 +1133,7 @@ class SupervisorTests(unittest.TestCase):
         digest = "@sha256:" + "a" * 64
         config = replace(
             self.config,
-            task_kind="benchmark",
+            task_kind="research",
             leaderboard_eligible=True,
             training_image="example/training" + digest,
             candidate_image="example/candidate" + digest,
@@ -1170,7 +1170,7 @@ class SupervisorTests(unittest.TestCase):
         digest = "@sha256:" + "a" * 64
         config = replace(
             self.config,
-            task_kind="benchmark",
+            task_kind="research",
             leaderboard_eligible=True,
             training_image="example/training" + digest,
             candidate_image="example/candidate" + digest,
@@ -1313,7 +1313,7 @@ class SupervisorTests(unittest.TestCase):
         digest = "@sha256:" + "a" * 64
         config = replace(
             self.config,
-            task_kind="benchmark",
+            task_kind="research",
             leaderboard_eligible=True,
             training_image="example/training" + digest,
             candidate_image="example/candidate" + digest,
@@ -1353,7 +1353,7 @@ class SupervisorTests(unittest.TestCase):
         digest = "@sha256:" + "a" * 64
         config = replace(
             self.config,
-            task_kind="benchmark",
+            task_kind="research",
             leaderboard_eligible=True,
             training_image="example/training" + digest,
             candidate_image="example/candidate" + digest,
@@ -2580,10 +2580,10 @@ class SupervisorTests(unittest.TestCase):
             "terminate_lease",
             side_effect=WorkerFailure(private_detail),
         ):
-            supervisor.infrastructure_failed("benchmark_monitor_failure")
+            supervisor.infrastructure_failed("episode_monitor_failure")
 
         self.assertEqual(supervisor.state["status"], "infrastructure_failure")
-        self.assertEqual(supervisor.state["failure"], "benchmark_monitor_failure")
+        self.assertEqual(supervisor.state["failure"], "episode_monitor_failure")
         self.assertIsNotNone(supervisor.state["active_lease"])
         self.assertEqual(
             supervisor.state["deployment_teardown_failures"],
@@ -2612,7 +2612,7 @@ class SupervisorTests(unittest.TestCase):
             "_save_state",
             side_effect=fail_first_reconciliation_save,
         ):
-            supervisor.infrastructure_failed("benchmark_monitor_failure")
+            supervisor.infrastructure_failed("episode_monitor_failure")
 
         self.assertIsNone(supervisor.state["active_lease"])
         self.assertEqual(supervisor.state["deployment_teardown_failures"], [])
@@ -2633,7 +2633,7 @@ class SupervisorTests(unittest.TestCase):
             "terminate_lease",
             side_effect=[WorkerFailure("first stop failed"), None],
         ):
-            supervisor.infrastructure_failed("benchmark_monitor_failure")
+            supervisor.infrastructure_failed("episode_monitor_failure")
             self.clock.advance(30)
             self.assertTrue(supervisor.terminate_worker_leases_for_teardown())
 
@@ -3924,7 +3924,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(state["inference_usage"], summary)
 
     def test_slow_worker_startup_does_not_shorten_the_track_a_lease_it_grants(self):
-        """Worker preparation is benchmark-owned and must not bill the Agent.
+        """Worker preparation is environment-owned and must not bill the Agent.
 
         The fixture budget is 100s. The Agent spends 10s thinking, then asks for
         a lease while the Worker needs 40s to materialize the workload. The
@@ -3947,7 +3947,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(status["elapsed_seconds"], 10)
         self.assertEqual(status["remaining_wall_clock_seconds"], 90)
         self.assertEqual(
-            status["timing"]["benchmark_overhead_seconds"],
+            status["timing"]["environment_overhead_seconds"],
             40,
         )
 
@@ -3977,7 +3977,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "infrastructure_failure")
 
         status = supervisor.public_status()
-        self.assertEqual(status["timing"]["benchmark_overhead_seconds"], 40)
+        self.assertEqual(status["timing"]["environment_overhead_seconds"], 40)
         self.assertEqual(status["elapsed_seconds"], 10)
         self.assertEqual(status["remaining_wall_clock_seconds"], 90)
         # A Lease that never started is not consumed.
@@ -3986,7 +3986,7 @@ class SupervisorTests(unittest.TestCase):
     def test_a_release_may_declare_that_worker_startup_is_participant_time(self):
         """The accounting boundary is the release's choice, not the runtime's."""
 
-        charged = replace(self.config, benchmark_owned_preparation=())
+        charged = replace(self.config, environment_owned_preparation=())
         self.worker.clock = self.clock
         supervisor = self.supervisor(track="A", config=charged)
         self.clock.advance(10)
@@ -3996,7 +3996,7 @@ class SupervisorTests(unittest.TestCase):
         status = supervisor.public_status()
 
         # Nothing is refunded, so the Agent is charged for the 40s of startup...
-        self.assertEqual(status["timing"]["benchmark_overhead_seconds"], 0)
+        self.assertEqual(status["timing"]["environment_overhead_seconds"], 0)
         self.assertEqual(status["elapsed_seconds"], 50)
         self.assertEqual(status["remaining_wall_clock_seconds"], 50)
         # ...and the granted duration is clamped to what actually remains, so

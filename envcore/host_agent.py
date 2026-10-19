@@ -401,7 +401,7 @@ def start_host_agent_process(
             ),
             "ENVCORE_HOST_RUNNER": "1",
             "ENVCORE_TASK": str(public_task_path.resolve()),
-            "ENVCORE_TRAIN_DIR": "/benchmark/train",
+            "ENVCORE_TRAIN_DIR": "/task/train",
             "ENVCORE_TRAIN_WORKSPACE": "/workspace",
             "ENVCORE_WORKSPACE": str(workspace.resolve()),
             "PYTHONPATH": str(package_root.resolve()),

@@ -1,6 +1,6 @@
 """Hardened local-file transport for the Agent control API.
 
-This module owns filesystem mechanics only. Benchmark request semantics remain
+This module owns filesystem mechanics only. Research request semantics remain
 in :mod:`envcore.supervisor`, and Docker or other workload placement
 belongs to a deployment launcher.
 """

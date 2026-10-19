@@ -9,18 +9,28 @@ same task can run with different GPU types/counts, CPU/memory limits and researc
 durations without editing its release. Each run freezes its resolved settings
 before task reveal.
 
-**Named benchmarks are bundled applications of Envcore.** Their Track A/B budgets,
-incumbent selection, research sealing and hidden evaluation use the current
-training-research protocol. Every run resolves and freezes its environment through
-one execution path. Benchmarks supply optional presets and comparison rules;
+**Research tasks define the problems an Agent explores.** The bundled tasks live
+in `research_tasks/`. Their Track A/B budgets, incumbent selection, research
+sealing and evaluation use the current training-research protocol. Every run
+resolves and freezes its environment through one execution path. A task can also
+be used as a benchmark, with optional presets and fixed comparison conditions;
 custom resources and time budgets use the same research lifecycle.
 
 | Layer | Responsibility |
 | --- | --- |
 | Environment configuration | Run-owned compute profiles, resource contracts and time budgets |
 | Worker | Resource admission, execution, isolation and cleanup |
-| Training-research protocol | Leases, immutable Candidates, research history and evaluation |
-| Benchmarks | Published lanes, fixed comparison conditions and formal eligibility |
+| Research tasks | Research problems, task data, artifact interfaces and evaluation contracts |
+| Training-research protocol | Leases, immutable Candidates, research history and sealing |
+| Evaluation | Independent measurement of submitted artifacts after research is sealed |
+| Optional benchmark use | Published lanes, fixed comparison conditions and formal eligibility |
+
+Validation within a research trajectory belongs to the Agent: it decides whether
+and how to validate using permitted information. Envcore's evaluation runs after
+research is sealed. The current TEST evaluates the final declared Candidate;
+postmortem ANALYSIS measures committed Candidates. These measurements describe
+artifacts, not the quality of the research trajectory itself. Benchmark use adds
+standardized comparison of evaluation results.
 
 Start with [configurable environments](docs/environments.md), including examples
 for compute and time scaling. The published GPU profiles remain unchanged. The
@@ -37,17 +47,17 @@ executions and Candidate artifacts. Use `--recording` to configure payload captu
 and post-evaluation artifact retention, and `envcore trajectory --episode PATH`
 to inspect the private evidence.
 
-## Benchmarks
+## Research tasks
 
 **Constrain resources, not ideas. Define the evaluator, not the solution.**
 
 ![An Agent explores many paths within a sandbox and resource limits, co-designing a complete final solution: a model, agent, or agent system. The whole artifact passes through a narrow interface to an isolated evaluator. The goal is better end-to-end performance.](docs/assets/design-philosophy.png)
 
-**A benchmark should define what success means, not tell an AI how to achieve it.**
-The bundled benchmarks follow this principle: leave the largest practical
+**A research task should define what success means, not tell an AI how to achieve it.**
+The bundled research tasks follow this principle: leave the largest practical
 solution space open to the Agent within a defined sandbox and resource budget.
 
-> **Preview:** a runnable LM pretraining benchmark, a development smoke task,
+> **Preview:** a runnable LM pretraining research task, a development smoke task,
 > and completed experimental runs.
 > No frozen, leaderboard-eligible benchmark has been released yet.
 
@@ -57,12 +67,12 @@ solution space open to the Agent within a defined sandbox and resource budget.
 ## Overview
 
 The goal is a final solution that performs well **end to end**. Depending on the
-benchmark, this may be a model, an agent, or a complete agent system. The
+research task, this may be a model, an agent, or a complete agent system. The
 evaluator must define what makes the solution good by assessing its overall
 performance on the task.
 
 To leave the path to that result open, we should minimize assumptions about
-how the Agent gets there. The benchmark should provide only what is necessary:
+how the Agent gets there. The task and environment should provide only what is necessary:
 
 | Component | What it defines |
 | --- | --- |
@@ -78,7 +88,7 @@ the Agent itself. These choices belong to the Agent within the sandbox and
 resource constraints. Our job is not to manually shrink the solution space
 toward approaches we expect.
 
-**The benchmark provides no initial solution or reference implementation.**
+**The research task provides no initial solution or reference implementation.**
 The Agent chooses its own starting point, opening the search space to
 fundamentally different systems and research approaches.
 
@@ -93,31 +103,31 @@ not independent goals for individual parameters. (This analogy concerns the
 shared objective; hidden evaluation feedback remains unavailable during research.)
 
 The space extends to **any** participant-controlled part of the solution or
-research process, including approaches the benchmark authors have not
+research process, including approaches the task authors have not
 anticipated. New directions and combinations are welcome.
 
 **Broad freedom requires a strong boundary.** A narrow artifact interface and
 strong evaluator isolation let the Agent explore without access to the hidden
 evaluator's data or results during research. The sandbox must enforce the resource
 budget. Inside those boundaries, the Agent should be left alone. Strategies
-unlike anything the designers imagined are a feature of the benchmark.
+unlike anything the designers imagined are an intended outcome of the research task.
 
 **Current preview: LM pretraining.** The first implementation is
-[LM pretrain](benchmarks/lm-pretrain/README.md), with a smaller
+[LM pretrain](research_tasks/lm-pretrain/README.md), with a smaller
 [development smoke task](dev_tasks/smoke_lm-pretrain/README.md). It still has
 task-specific restrictions: fixed task data and artifact requirements, plus
-[release policy](benchmarks/lm-pretrain/POLICY.md) limits on extra training
+[release policy](research_tasks/lm-pretrain/POLICY.md) limits on extra training
 corpora and pretrained target-model checkpoints.
 
-**Long-term goal: LM Open World (not implemented).** The benchmark currently
-consists only of a [vision README and open design questions](benchmarks/lm-open-world/README.md).
-We invite the community to help shape a benchmark that opens the solution space
+**Long-term goal: LM Open World (not implemented).** The proposed research task currently
+consists only of a [vision README and open design questions](research_tasks/lm-open-world/README.md).
+We invite the community to help shape a research task that opens the solution space
 beyond the current training-specific assumptions. The [Roadmap](#roadmap)
 describes the sandbox, resource, and evaluator work toward that goal.
 
 **The Tested Agent's initial configuration is fixed before task reveal.
 Autonomous improvement is allowed.** After task reveal, the Agent can improve
-its own software, tools, and research workflow within the benchmark boundary.
+its own software, tools, and research workflow within the task and environment boundary.
 External human intervention is excluded.
 
 For the current training tasks, a **Training Lease** gives the Agent bounded
@@ -137,7 +147,7 @@ incumbent; postmortem ANALYSIS evaluates the committed history.
 Results keep two axes separate: **higher TEST performance** and **lower serving
 time per task**. Comparisons use the same release and comparison conditions.
 
-Core defines the benchmark rules. Workers implement execution and isolation in
+Core defines the research protocol. Workers implement execution and isolation in
 the user's environment. The repository includes a local Docker runtime;
 cluster and other platform integrations live in external Workers.
 
@@ -145,7 +155,7 @@ Official benchmark comparisons will use a small set of published reference
 environments. You can adapt runtime profiles for your own hardware and are
 responsible for fair conditions across the Agents you compare. Custom runs do
 not automatically enter official rankings; see the
-[reference environment and comparison policy](benchmarks/README.md#reference-environments-and-custom-comparisons).
+[reference environment and comparison policy](research_tasks/README.md#reference-environments-and-custom-comparisons).
 
 ## Results
 
@@ -183,22 +193,24 @@ Repository Assistant takes the **trusted operator** role. The **Research Agent**
 is the separate autonomous participant inside the environment, called the
 **Tested Agent** in benchmark runs.
 
-For a benchmark run, ask the Repository Assistant to follow the
+For a research run, ask the Repository Assistant to follow the
 [full reference](docs/benchmark-reference.md) and give it one of the prompts
 below. Repository development and review do not by themselves request a run.
 
-Choose a [benchmark](benchmarks/README.md), such as
-[LM pretrain](benchmarks/lm-pretrain/README.md), and select its published Track
-configuration and a runtime profile matching your hardware. `lm-pretrain` is
-currently a runnable preview benchmark; it is not yet a frozen,
-leaderboard-eligible release.
+Choose a [research task](research_tasks/README.md), such as
+[LM pretrain](research_tasks/lm-pretrain/README.md). Use its `task.json` with
+`--task`, `--track`, and a user-owned `--environment` configuration, or select its
+optional benchmark presets as in the examples below. Those presets supply a
+published Track configuration and runtime profile matching your hardware.
+`lm-pretrain` is a runnable preview task; its benchmark configuration is not yet
+a frozen, leaderboard-eligible release.
 
 ### **1. Evaluate one Tested Agent**
 
 Provide the Agent identity and command, an authorized environment, and a
 dedicated working root. For example:
 
-> Run one episode of `benchmarks/lm-pretrain/benchmark.json` with [published Track
+> Run one episode of `research_tasks/lm-pretrain/benchmark.json` with [published Track
 > configuration] and [runtime profile matching my hardware]. My Tested Agent is
 > [immutable Agent image], with command [autonomous command]. Use [authorized
 > environment] and [working root outside the Core checkout], with an empty Agent
@@ -242,7 +254,7 @@ again replaced with your actual Agent identity and command.
 | Template field | Example value |
 | --- | --- |
 | `[provided Agent identities and commands]` | Agent A and Agent B, each with its frozen image digest and autonomous command |
-| `[benchmark and Track configuration]` | `benchmarks/lm-pretrain/benchmark.json`, `preview-a-8h` |
+| `[benchmark and Track configuration]` | `research_tasks/lm-pretrain/benchmark.json`, `preview-a-8h` |
 | `[provided environments and supported runtime profiles]` | `ssh bench-a100`: `a100-sxm4-80gb-x1`; `ssh bench-h100`: `h100-sxm-80gb-x1` |
 | `[explicit Agent/hardware combinations]` | A/A100, B/A100, A/H100, B/H100 |
 | `[N]` | `2`, with at most one active episode per host |
@@ -276,10 +288,10 @@ Agent-produced preprocessing, checkpoints, and research state remain
 episode-specific. Hidden ANALYSIS/TEST data follows its separate evaluation
 lifecycle. See [TRAIN integrity](docs/training-data.md).
 
-**Limited resources? Use the benchmark's corresponding smoke task.** For
+**Limited resources? Use the corresponding development smoke task.** For
 `lm-pretrain`, [Smoke LM pretrain](dev_tasks/smoke_lm-pretrain/README.md) offers a
 small CPU-capable development run to check Agent integration and the episode
-lifecycle. Choose this explicitly if you cannot allocate the benchmark's data,
+lifecycle. Choose this explicitly if you cannot allocate the research task's data,
 hardware, or time budget. A smoke task is a development counterpart, not the
 benchmark itself; its scores are not benchmark results. The operator
 should explain the resource gap and let you select smoke rather than silently
@@ -291,20 +303,20 @@ You can also operate the CLI directly.
 
 You need **Python 3.9+**, **Docker** for the bundled local runtime, and **your own
 Agent**. The repository does not ship a reference Agent. Match the selected
-benchmark's hardware requirements; NVIDIA GPU runs with Docker additionally
+environment's hardware requirements; NVIDIA GPU runs with Docker additionally
 require the NVIDIA Container Toolkit.
 
-From a checkout of this repository, install the CLI and inspect the benchmark
-configurations:
+From a checkout of this repository, install the CLI and inspect the task's
+optional benchmark presets:
 
 ```bash
 python3 -m pip install -e .
 envcore benchmark-info \
-  --benchmark benchmarks/lm-pretrain/benchmark.json
+  --benchmark research_tasks/lm-pretrain/benchmark.json
 ```
 
-Then follow the benchmark's [data preparation](benchmarks/lm-pretrain/README.md#prepare-data)
-and [run configuration](benchmarks/lm-pretrain/README.md#supported-preview-lanes) steps.
+Then follow the task's [data preparation](research_tasks/lm-pretrain/README.md#prepare-data)
+and [run configuration](research_tasks/lm-pretrain/README.md#supported-preview-lanes) steps.
 They cover the Agent command, resource settings, and a dedicated working root
 outside the Core checkout.
 
@@ -318,19 +330,19 @@ isolated evaluation in three areas:
 
 - **Sandbox.** Add queryable, cancellable Worker operations and explicit recovery
   semantics for interrupted calls, alongside targeted validation of current
-  deployments. For future benchmarks, design controlled data, tool, and network
+  deployments. For future research tasks, design controlled data, tool, and network
   access beyond the current denied/dev-only policies. Platform execution and
   enforcement remain in external Workers.
 - **Resources.** Complete and validate training and evaluation profiles,
   including CPU, host memory, cache, I/O, and contention conditions needed for
   [fair cost comparisons](docs/evaluation-resources.md). Extend the current single-node and NVIDIA-only accelerator restrictions as real Worker deployments require multi-node execution or other accelerators.
-- **Evaluator.** Make artifact and evaluation interfaces benchmark-owned, moving
+- **Evaluator.** Make artifact and evaluation interfaces task-owned, moving
   the hard-coded next-token logits assumptions out of the common task contract
   while retaining the current LM implementation. Establish organizer-controlled
   hidden evaluation and frozen evaluation contracts for formal releases.
 
 Together, these extensions are intended to support
-[LM Open World](benchmarks/lm-open-world/README.md), which currently has a vision
+[LM Open World](research_tasks/lm-open-world/README.md), which currently has a vision
 README only and **no implementation**. Current Envcore implementation status
 and deployment checks are documented in the
 [development plan](docs/thin-core-development-plan.md#current-preview-closeout-boundary)
@@ -339,13 +351,13 @@ and [acceptance matrix](docs/worker-acceptance-matrix.md).
 > **Related future work:** We also plan to build on this sandbox in separate
 > repositories to explore how Agents can develop and improve their research
 > methods, tools, and workflows. This repository will remain focused on the
-> benchmark.
+> research environment, research tasks, and evaluation of submitted artifacts.
 
 ## Contributing
 
-Bring an Agent, an execution environment, or a contribution to the benchmark:
+Bring an Agent, an execution environment, or a contribution to the research tasks:
 
-- **Evaluate your Agent.** Choose a benchmark and use the
+- **Run your Agent.** Choose a research task and use the
   [reproducibility and logging guidance](docs/benchmark-reference.md#reproducibility-and-logging)
   to record the run's configuration, results, and limitations.
 - **Integrate a Worker.** Implement the [Worker Protocol](docs/worker-protocol.md)
@@ -360,13 +372,13 @@ an experiment, integration, or proposal, or
 
 ## Documentation
 
-For the current benchmark rules and operating details, see the
+For the current research protocol, benchmark comparison rules and operating details, see the
 [benchmark reference](docs/benchmark-reference.md).
 
 | Read more | Contents |
 | --- | --- |
 | [Benchmark reference](docs/benchmark-reference.md) | Motivation, complete rules, Track accounting, evaluation, isolation, and local operating instructions |
-| [Benchmarks](benchmarks/README.md) | Preview tasks, release definitions, and comparison lanes |
+| [Research tasks](research_tasks/README.md) | Research problems, evaluation contracts, and optional benchmark presets |
 | [Worker Protocol](docs/worker-protocol.md) and [integration](docs/worker-integration.md) | Execution contracts and external deployment responsibilities |
 | [Operator status](docs/operator-status.md) and [recovery](docs/worker-recovery.md) | Monitoring, interruption evidence, and owned-resource cleanup |
 | [Research dynamics and RSI diagnostics](docs/research-dynamics.md) (design proposal) | Proposed read-only postmortem curves, metrics, process evidence, and data-quality reporting; not implemented |

@@ -115,7 +115,7 @@ actual published response; without this evidence, delivery remains unknown.
 | Evaluate | `evaluate_postmortem()` only when Core is still `closed` and teardown is confirmed | Resolve hidden data only now; Core stages TEST for the declared final incumbent first, then postmortem ANALYSIS |
 | Clean evaluation | Report teardown errors through `deployment_teardown_failed(...)` | Finish all Evaluation Worker workloads, prediction storage, and private hidden materializations, including retrying retained handles after failures |
 | Publish | `publish_postmortem_result()` only after successful required cleanup and when Core remains `closed` | Preserve Core's staged TEST decision and ANALYSIS disposition; refresh the final progress snapshot before its storage is detached |
-| Retain/dispose | No new benchmark transition | Verify the authorized archive, then dispose of owned working storage; record this independently of workload cleanup and benchmark outcome |
+| Retain/dispose | No new episode transition | Verify the authorized archive, then dispose of owned working storage; record this independently of workload cleanup and episode outcome |
 
 `evaluate_postmortem()` does **not** publish a terminal result. Worker methods
 must already confirm their own per-operation teardown before returning; the
@@ -171,7 +171,7 @@ Version output, executable availability, and authentication status are useful
 prechecks, but do not establish real session compatibility. Where invocation is
 authorized, use the selected frozen Agent in a separate disposable diagnostic
 workspace with a harmless task to exercise initialization and required tools.
-Do not reveal the benchmark task, carry that session or its files into the
+Do not reveal the research task, carry that session or its files into the
 episode, or inject training code. Account for inference and resource costs
 within the approved diagnostic scope. If that check cannot be performed, record
 session compatibility as unverified; do not silently claim it passed or change
@@ -179,7 +179,7 @@ the Agent packaging after task reveal.
 
 ## Monitoring and cancellation
 
-Keep three evidence sources distinct: Core's benchmark snapshot, current
+Keep three evidence sources distinct: Core's episode snapshot, current
 execution-system observations, and the operator's preparation/progress record.
 Use [Operator status](operator-status.md) for the first two. A monitor should
 record check time, last actual progress, current work, and the next action and
@@ -266,7 +266,7 @@ mechanisms belong to the deployment:
 
 A reused PID, a matching filename prefix, or an ended allocation is insufficient
 ownership or teardown proof. Missing receipts remain unconfirmed. Cleanup
-success does not create a benchmark result, re-open research, or authorize a
+success does not create an evaluation result, re-open research, or authorize a
 replacement job. The bundled [Docker recovery](worker-recovery.md) command covers
 its own journaled resources; it does not recover arbitrary external Workers.
 

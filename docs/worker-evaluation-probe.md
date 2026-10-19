@@ -8,8 +8,8 @@ reuses evaluation receipts.
 
 `envcore.conformance.probe_worker_evaluation()` provides a reusable,
 platform-independent diagnostic for that gap. It calls the actual supplied
-Evaluation Worker interface. It does not create an Agent, launch a benchmark
-episode, select an incumbent, publish a benchmark result or issue a
+Evaluation Worker interface. It does not create an Agent, launch a research
+episode, select an incumbent, publish an evaluation result or issue a
 `ConformanceReceipt`. Its report always carries `formal_conformance: false`.
 
 This probe supplies part of R08-E in the

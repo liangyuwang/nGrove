@@ -1,15 +1,24 @@
 # LM pretrain preview
 
-`lm-pretrain` is the first formal language-model pretraining benchmark preview. Its identity
-is independent of its initial corpus: this version builds an approximately
+`lm-pretrain` is a language-model pretraining research task, with optional
+benchmark presets for standardized comparisons. Its identity is independent of
+its initial corpus: this version builds an approximately
 10-billion-token TRAIN pool from a pinned FineWeb-Edu revision and fixes GPT-2
 token IDs only at the evaluation boundary.
 
 The package now contains `task.json`, a trusted evaluator, and a reproducible
-data builder. It remains `leaderboard_eligible: false`: the current budgets,
+data builder. `benchmark.json` supplies the optional Track/runtime preset catalog
+and comparison metadata. The task can also run directly through `--task` with
+`--track` and a user-owned `--environment`; see
+[environment configuration](../../docs/environments.md).
+It remains `leaderboard_eligible: false`: the current budgets,
 task images, local preview ANALYSIS/TEST size, and runtime profiles are provisional,
 and a verified release will replace the reproducible local holdouts with
 organizer-owned hidden datasets.
+
+The Agent chooses its own validation methods during research. Envcore's
+evaluation measures submitted Candidates after research is sealed; its scores
+describe those artifacts and do not grade the research trajectory itself.
 
 ## Public TRAIN layout
 
@@ -17,13 +26,13 @@ The downloaded TRAIN pool is intended to simulate the large-scale data resources
 available in real-world training. **We strongly encourage data processing,
 selection, filtering, and other forms of data curation as part of the research.**
 The Agent decides which data to use and how to prepare it within the research
-budget and [release policy](policy.md).
+budget and [release policy](POLICY.md).
 
 Data preparation deliberately retains both representations:
 
 ```text
 data/generated/
-├── public/                    mounted read-only at /benchmark/train
+├── public/                    mounted read-only at /task/train
 │   ├── raw/                   TRAIN text + original source metadata, Parquet
 │   ├── tokenized/             official GPT-2 little-endian uint16 shards
 │   │   ├── documents.jsonl    raw/tokenized document mapping and token spans
@@ -141,21 +150,21 @@ Install Core and the isolated preparation dependencies:
 
 ```bash
 python3 -m pip install -e .
-python3 -m pip install -r benchmarks/lm-pretrain/data/requirements.txt
+python3 -m pip install -r research_tasks/lm-pretrain/data/requirements.txt
 ```
 
 The default source download is roughly 28.5 GB and the tokenized output is
 about 20 GB, in addition to the public raw TRAIN Parquet:
 
 ```bash
-python3 benchmarks/lm-pretrain/prepare_data.py --accept-large-download
-envcore prepare --task benchmarks/lm-pretrain/task.json
+python3 research_tasks/lm-pretrain/prepare_data.py --accept-large-download
+envcore prepare --task research_tasks/lm-pretrain/task.json
 ```
 
 An existing pinned FineWeb-Edu `sample/10BT` download can be reused:
 
 ```bash
-python3 benchmarks/lm-pretrain/prepare_data.py \
+python3 research_tasks/lm-pretrain/prepare_data.py \
   --source-dir /path/to/fineweb-edu-sample-10BT
 ```
 
@@ -245,11 +254,11 @@ build or preserves it under a named backup path instead of deleting it first.
 An existing build using the former progressive-prefix dataset must be rebuilt
 with `--force`; its scores are not comparable with this single-target metric.
 
-Benchmark-local regression checks use the real hash split and default context
+Task-local regression checks use the real hash split and default context
 quotas on synthetic documents, without downloading or rebuilding the corpus:
 
 ```bash
-python3 -m unittest discover -s benchmarks/lm-pretrain -p 'test_prepare_data.py' -v
+python3 -m unittest discover -s research_tasks/lm-pretrain -p 'test_prepare_data.py' -v
 ```
 
 These checks exercise the pool-sizing failure and shortage diagnostics; a full
@@ -318,7 +327,7 @@ Inspect the finite maps:
 
 ```bash
 envcore benchmark-info \
-  --benchmark benchmarks/lm-pretrain/benchmark.json
+  --benchmark research_tasks/lm-pretrain/benchmark.json
 ```
 
 After data preparation, start a profile-bound episode. `task.json` is inferred
@@ -343,7 +352,7 @@ must enforce this in their execution environment. See
 
 ```bash
 envcore start \
-  --benchmark benchmarks/lm-pretrain/benchmark.json \
+  --benchmark research_tasks/lm-pretrain/benchmark.json \
   --track-config preview-b-6x1h \
   --runtime-profile h100-sxm-80gb-x4 \
   --episodes-root /path/to/envcore-runs/episodes \

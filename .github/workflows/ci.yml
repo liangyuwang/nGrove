@@ -23,7 +23,7 @@ jobs:
       - run: ruff check .
       - run: ruff format --check .
       - run: python -m unittest discover -v
-      - run: python -m unittest discover -s benchmarks/lm-pretrain -p 'test_*.py' -v
+      - run: python -m unittest discover -s research_tasks/lm-pretrain -p 'test_*.py' -v
 
   windows-portability:
     runs-on: windows-latest

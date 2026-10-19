@@ -23,7 +23,7 @@ not publication-safe or participant-facing exports.
 The view reads `state.json` directly and validates it using the existing result
 schema. It does not infer final results from `progress.json`, a launcher marker,
 or `RESULT_PUBLICATION_PREPARED`. Only the authoritative state can establish a
-terminal benchmark outcome. An old finalized state remains a valid historical
+terminal episode outcome. An old finalized state remains a valid historical
 result; its age does not undo success or ANALYSIS completion.
 
 Core file modification time describes that snapshot, not process liveness or
@@ -56,7 +56,7 @@ error and is not classified as an Agent failure, a watchdog timeout, or a
 successful cleanup. Each invocation reads again; it neither caches failed
 observations nor updates historical episode files. The command returns zero
 when it produces a view, including an unknown/interrupted view; this exit code
-does not mean benchmark success. Automation must inspect the structured
+does not mean episode success. Automation must inspect the structured
 `summary`, `execution_state`, source availability/freshness and Core outcome.
 
 ## Deployment observation format

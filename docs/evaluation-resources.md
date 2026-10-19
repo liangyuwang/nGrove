@@ -10,7 +10,7 @@ Official reference environments must define evaluation conditions as well as
 Training resources. Organizers of independent Agent comparisons are responsible
 for consistent effective conditions and disclosure of differences; adding a
 runtime profile does not create an official ranking category. See the
-[reference environment and comparison policy](../benchmarks/README.md#reference-environments-and-custom-comparisons).
+[reference environment and comparison policy](../research_tasks/README.md#reference-environments-and-custom-comparisons).
 
 ## Release contract
 

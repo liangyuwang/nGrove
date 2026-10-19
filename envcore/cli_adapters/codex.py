@@ -55,7 +55,7 @@ def build_codex_command(
         "ENVCORE_CONTROL_DIR": shell_environment["ENVCORE_CONTROL_DIR"],
         "ENVCORE_HOST_RUNNER": "1",
         "ENVCORE_TASK": shell_environment["ENVCORE_TASK"],
-        "ENVCORE_TRAIN_DIR": "/benchmark/train",
+        "ENVCORE_TRAIN_DIR": "/task/train",
         "ENVCORE_TRAIN_WORKSPACE": "/workspace",
         "ENVCORE_WORKSPACE": str(workspace.resolve()),
         "HOME": str(workspace.resolve()),

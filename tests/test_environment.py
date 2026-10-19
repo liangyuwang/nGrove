@@ -41,7 +41,7 @@ from tests.test_runtime import CapturingDockerRuntime
 
 ROOT = Path(__file__).resolve().parents[1]
 TASK = ROOT / "tests/fixtures/task/task.json"
-BENCHMARK = ROOT / "benchmarks/lm-pretrain/benchmark.json"
+BENCHMARK = ROOT / "research_tasks/lm-pretrain/benchmark.json"
 
 
 def cpu_config():
@@ -237,7 +237,7 @@ class EnvironmentTests(unittest.TestCase):
     def test_environment_uses_task_budget_without_mutating_eligibility(self):
         task = replace(
             TaskConfig.load(TASK),
-            task_kind="benchmark",
+            task_kind="research",
             leaderboard_eligible=True,
             training_image="training@sha256:" + "a" * 64,
             candidate_image="candidate@sha256:" + "a" * 64,

@@ -1,4 +1,4 @@
-"""Benchmark-local regressions for source scale and holdouts; no corpus download."""
+"""Task-local regressions for source scale and holdouts; no corpus download."""
 
 import importlib.util
 import hashlib

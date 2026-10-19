@@ -22,7 +22,7 @@ from envcore.worker_protocol import (
 
 ROOT = Path(__file__).resolve().parents[1]
 TASK = ROOT / "tests/fixtures/task/task.json"
-LM_PRETRAIN_PREVIEW = ROOT / "benchmarks/lm-pretrain/benchmark.json"
+LM_PRETRAIN_PREVIEW = ROOT / "research_tasks/lm-pretrain/benchmark.json"
 SMOKE_PREVIEW = ROOT / "dev_tasks/smoke_lm-pretrain/benchmark.json"
 
 
@@ -234,7 +234,7 @@ class BenchmarkReleaseTests(unittest.TestCase):
     def test_release_resolves_budget_resources_and_comparison_key(self):
         with tempfile.TemporaryDirectory() as directory:
             release = BenchmarkRelease.load(self._write_release(directory))
-            task = replace(TaskConfig.load(TASK), task_kind="benchmark").validate()
+            task = replace(TaskConfig.load(TASK), task_kind="research").validate()
             resolved = release.resolve(
                 task,
                 track_config_id="b-3x10m",
@@ -412,7 +412,7 @@ class BenchmarkReleaseTests(unittest.TestCase):
 
             release = BenchmarkRelease.load(path)
             resolved = release.resolve(
-                replace(TaskConfig.load(TASK), task_kind="benchmark").validate(),
+                replace(TaskConfig.load(TASK), task_kind="research").validate(),
                 track_config_id="a-1h",
                 runtime_profile_id="h100-80gb-x4",
             )

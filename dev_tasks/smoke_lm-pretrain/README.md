@@ -56,7 +56,7 @@ Candidate that satisfies the public ABI. Concrete runtime provenance and Worker
 capability evidence belong to the episode result. A development deployment
 cannot become leaderboard eligible merely by reporting the expected hardware.
 
-The Agent receives the same variable-length declaration as the benchmark:
+The Agent receives the same variable-length declaration as the LM pretraining task:
 evaluation inputs are variable-length token sequences, the exact length
 distribution is not disclosed during research, and participants choose how to
 use context to optimize next-token prediction within the resource budget.
@@ -68,7 +68,7 @@ With `--benchmark`, `--runtime-profile` selects a Training resource preset from
 `benchmark.json`. An optional `--environment` supplies custom execution settings
 through the same configuration and freezing flow.
 `cpu-local` keeps the smoke path cheap;
-the GPU profiles mirror the [lm-pretrain hardware map](../../benchmarks/lm-pretrain/README.md#supported-preview-lanes):
+the GPU profiles mirror the [lm-pretrain hardware map](../../research_tasks/lm-pretrain/README.md#supported-preview-lanes):
 A100 SXM4 80GB, H100 SXM 80GB, H200 SXM 141GB, and H200 NVL 141GB, each with
 1, 2, 4, or 8 full GPUs on one host. These select Training resources; this smoke
 task's trusted evaluation remains on CPU. The published Track budgets are five
@@ -88,7 +88,7 @@ benchmark-based launch forms.
 
 These profiles are integration configurations, not official comparison
 environments. For custom hardware and independent Agent comparisons, follow the
-[reference environment and comparison policy](../../benchmarks/README.md#reference-environments-and-custom-comparisons).
+[reference environment and comparison policy](../../research_tasks/README.md#reference-environments-and-custom-comparisons).
 
 ## Prepare
 

@@ -66,7 +66,7 @@ conditions. See [evaluation resource semantics](evaluation-resources.md).
 ## Time budgets and freezing
 
 For Track A, `budget` requires `track: "A"` and a positive integer
-`total_seconds`. This is the existing research clock: declared benchmark-owned
+`total_seconds`. This is the existing research clock: declared environment-owned
 preparation is refunded; post-research TEST, ANALYSIS and cleanup use their own
 clocks. It is not the resource allocator's reservation duration.
 
@@ -126,7 +126,7 @@ Or use a benchmark's task and Track with custom compute resources and two hours:
 
 ```bash
 envcore start \
-  --benchmark benchmarks/lm-pretrain/benchmark.json \
+  --benchmark research_tasks/lm-pretrain/benchmark.json \
   --track-config preview-a-8h \
   --environment examples/environments/h100-x4-2h.json \
   --episodes-root /srv/envcore-runs/episodes \

@@ -53,8 +53,8 @@ DATA_DIR = ROOT / "data"
 SOURCE_MANIFEST_PATH = DATA_DIR / "source-files.json"
 DEFAULT_RAW_DIR = DATA_DIR / "raw" / DATASET_REVISION
 DEFAULT_OUTPUT_DIR = DATA_DIR / "generated"
-# Data provenance identity owned by the lm-pretrain benchmark.
-BUILDER_ID = "benchmarks/lm-pretrain"
+# Data provenance identity owned by the lm-pretrain research task.
+BUILDER_ID = "research_tasks/lm-pretrain"
 
 
 class PreparationError(RuntimeError):
@@ -155,7 +155,7 @@ def _directory_metadata_digest(path: Path) -> str:
     """Fingerprint every entry without rereading a multi-billion-token corpus."""
 
     digest = hashlib.sha256()
-    digest.update(b"benchmarks/lm-pretrain/directory-metadata-v1\0")
+    digest.update(b"research_tasks/lm-pretrain/directory-metadata-v1\0")
     try:
         entries = sorted(path.rglob("*"), key=lambda item: os.fsencode(str(item)))
         for entry in entries:
@@ -699,7 +699,7 @@ def _load_dependencies() -> Tuple[Any, Any, Any, Any]:
     except ImportError as exc:
         raise PreparationError(
             "data dependencies are missing; run: "
-            "python -m pip install -r benchmarks/lm-pretrain/data/requirements.txt"
+            "python -m pip install -r research_tasks/lm-pretrain/data/requirements.txt"
         ) from exc
     return snapshot_download, pyarrow, parquet, tiktoken
 

@@ -907,7 +907,7 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
             or result.get("test_raw_metrics") is not None
             or test_cost is not None
         ):
-            raise ResultSchemaError("an operator stop cannot be a benchmark result")
+            raise ResultSchemaError("an operator stop cannot be an evaluation result")
     _validate_evaluation_resources(result)
 
     try:
