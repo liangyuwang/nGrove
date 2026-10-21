@@ -75,6 +75,7 @@ images, allocating resources, or starting an episode:
    | Area | Resolved value | Status or question |
    | --- | --- | --- |
    | Run purpose | research experiment, preview, reproducibility, or formal evaluation | Confirm if unknown; formal evaluation requires a matching published lane and trusted evidence |
+   | Run scale | one episode, or multiple independent episodes; total count and maximum concurrency | Honor explicit counts; ask if unspecified |
    | Research task | task manifest, optional benchmark presets, or development task | Confirm if unknown |
    | Track | A, B, or both | Confirm if unknown |
    | Time budget | named Track configuration or task budget; environment override when selected | Confirm the source and effective budget before launch |
@@ -85,7 +86,17 @@ images, allocating resources, or starting an episode:
    | Agent workspace | empty or participant-owned snapshot | Default to empty only after Agent identity is known |
    | Inference | endpoint, models, and credential variable names | Confirm when applicable |
    | Policy status | Worker capability, trust, conformance, and expected compliance | Resolve before launch |
-   | Resource authorization | job count, accelerator/time budget, and retry scope | Obtain approval before consumption |
+   | Resource authorization | episode and job counts, accelerator/time limits, and retry scope | Obtain approval before consumption |
+
+For multiple episodes, include these additional rows in the same intake table.
+For an explicitly requested single episode, omit these batch-only rows.
+
+   | Area | Resolved value | Status or question |
+   | --- | --- | --- |
+   | Episode plan | same Agent/configuration repeated, or explicit task/Track/Agent/environment combinations with repeat counts | Resolve every intended episode; do not infer a Cartesian product |
+   | Resource assignment | user-provided allocations, mapping to concurrent episodes, and deployment launcher | Ask the user for the arrangement or authorized discovery; verify that it supports the concurrency limit |
+   | Batch limits | aggregate resource/time limits covering preparation, research, evaluation, and cleanup | Keep these separate from each episode's Track budget; include shared inference limits when applicable |
+   | Batch failure policy | queueing, continuation after a failure, retry count, and retry budget | Resolve before launch; retain failed attempts separately |
 
 Populate the table with facts discovered from manifests and the environment,
 mark user-confirmed facts separately from inferred or missing facts, and show
@@ -105,6 +116,30 @@ the facts below before launching an episode. Discover facts with safe read-only
 commands when possible; ask only for information that cannot be discovered or
 whose choice changes the result. The run-intake table gives the user the full
 picture once; subsequent questions remain progressive and concise.
+
+### Multiple independent episodes
+
+Multiple episodes may repeat the same Agent and configuration or compare
+user-selected conditions. Distinguish total episode count, maximum simultaneous
+episodes, and allocator job count; one job may host several episodes. For each
+episode, resolve and freeze its own environment and Track budget before task
+reveal. A batch reservation or elapsed-time limit does not become a Track budget.
+
+Each episode starts a separate Agent session and workspace from its agreed
+initial state, with its own control endpoints, outputs, recording, and evaluation
+lifecycle. Keep sibling research state and results outside the Research Agent's
+boundary, and do not inject batch counts or sibling identities into its task.
+Normal task-permitted platform and resource information remains available.
+Within an episode, the Agent decides how to organize small experiments or run
+them concurrently within its resources and task rules.
+
+The user supplies or authorizes the platform-specific resource arrangement.
+Use the deployment launcher to enforce the agreed concurrency and resource
+assignments; Core supervises individual episodes and does not allocate a shared
+pool across them. Keep an Operator-side batch record mapping requested runs and
+attempts to episode directories, Agent/configuration identities, allocations,
+and outcomes. Verified public TRAIN data and compatible immutable images may
+be reused under the existing isolation rules.
 
 ### Task and environment configuration
 
@@ -211,12 +246,17 @@ research run contract containing:
 - Research Agent identity, runner, command, workspace, and inference mode;
 - data and image identities;
 - Worker capabilities, conformance, trust, and expected policy status;
-- requested resources, time budget, output location, and proposed job count.
+- requested resources, time budget, output location, and proposed job count;
+- for multiple episodes, the episode plan, concurrency limit, resource
+  assignments, aggregate limits, and failure/retry policy.
 
 Ask the user to approve this contract if those choices or costs were not
 already explicit. One approved attempt does not authorize additional expensive
 retries, a different run configuration, relaxed isolation, or changes
 to task or benchmark policy.
+
+An approved batch contract authorizes its listed episodes within those limits;
+do not ask again for each episode unless a material choice or cost changes.
 
 ## Run workflow
 
@@ -277,6 +317,8 @@ to task or benchmark policy.
    explicitly identify varied and controlled experimental conditions. When a
    benchmark comparison key is present, report the exact lane and compare runs
    only when their full keys match; a null key does not establish comparability.
+   For a batch, include the status and evidence location of every requested run
+   and retry, including failures and runs that were never launched.
 
 Within the approved scope, continue to the next necessary stage after each
 stage completes. Answer status questions and then resume the ongoing work.
@@ -333,8 +375,10 @@ A useful initial request has this shape:
 > Agent is already present; here are its immutable identity, autonomous command,
 > workspace, and the policy-compliant access or inference path. Run using
 > [task/Track or benchmark/track_config] with [environment configuration or
-> published runtime profile]. Here are the
-> selected time budget and resource limits.
+> published runtime profile]. Run [one episode, or total episode count with a
+> maximum concurrency]. Here are the per-episode time budgets and resource
+> limits. For multiple episodes, here are the combinations/repeats, resource
+> assignments and launcher, whole-batch limits, and failure/retry policy.
 
 Treat that message as authorization to investigate and prepare within the
 stated scope. Resolve missing run settings and material-cost decisions

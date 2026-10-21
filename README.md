@@ -260,7 +260,8 @@ are public. More results will be added after further testing.
 | --- | --- |
 | Install the CLI and inspect a configuration | [Manual setup](#manual-setup) |
 | Run an episode with my own Agent | [Generate a research trajectory](#1-generate-a-research-trajectory) |
-| Compare Agents across compute configurations | [Study resource configurations](#2-study-agents-across-resource-configurations) |
+| Run my Agent several times independently | [Generate multiple trajectories](#2-generate-multiple-independent-trajectories) |
+| Compare Agents across compute configurations | [Plan a batch of trajectories](#2-generate-multiple-independent-trajectories) |
 | Check integration with a small CPU-capable task | [Smoke LM pretrain](dev_tasks/smoke_lm-pretrain/README.md) |
 
 A coding agent can serve as your **Repository Assistant**, helping you
@@ -279,6 +280,11 @@ Choose a [research task](research_tasks/README.md), such as
 [LM pretrain](research_tasks/lm-pretrain/README.md). Use its `task.json` with
 `--task`, `--track`, and a user-owned `--environment` configuration. The examples
 below generate research trajectories and evaluate the resulting artifacts.
+
+Choose one episode or multiple independent episodes at intake. For multiple
+episodes, specify both the total count and the maximum running at once, along
+with your resource assignment and batch limits. The Repository Assistant uses
+the platform arrangements you provide or authorize it to discover.
 
 ### 1. Generate a research trajectory
 
@@ -312,10 +318,53 @@ the repository does not provide the example Agent.
 
 </details>
 
-### 2. Study Agents across resource configurations
+### 2. Generate multiple independent trajectories
 
-Specify the combinations to run, the concurrency limit, the total budget, and
-the retry policy:
+Repeat the same Agent and configuration to collect independent research paths,
+or specify different Agent/resource combinations. Each episode has its own Agent
+session, workspace, control endpoints, outputs, recording, and evaluation.
+The Operator manages the batch; the Research Agent receives its own task and
+resources, without added information about sibling runs. It remains free to
+organize parallel small experiments within its episode's resource and task rules.
+
+For repeated runs of the same Agent, use a prompt like this:
+
+> Run [M] independent episodes of [research task and Track] using my
+> [Agent identity and command] and [per-episode environment configuration].
+> Run at most [K] episodes at once, queueing the rest. Use my [resource assignment
+> and launcher] and [dedicated working root], with a separate Agent session and
+> empty workspace for each episode. Respect [whole-batch resource/time limits,
+> including preparation, evaluation, and cleanup] and [failure/retry policy].
+> Resolve missing prerequisites and unapproved costs before launch. Retain each
+> trajectory and result with its configuration and capture limitations, and
+> report every requested run, including failures and runs that were not launched.
+
+<details>
+<summary><strong>Example configuration</strong> — four independent runs of one Agent</summary>
+
+Reuse the participant-provided Agent identity and command from the single-run
+example. These illustrative values must be replaced with your authorized
+allocations and limits:
+
+| Setting | Example value |
+| --- | --- |
+| Total episodes / maximum concurrency | Four episodes, at most two at once |
+| Per-episode task and configuration | `research_tasks/lm-pretrain/task.json`, Track A, `examples/environments/h100-x4-2h.json`: four H100 GPUs and two research hours per episode |
+| Resource assignment and launcher | Two user-provided four-H100 allocations, one episode per allocation; the user's deployment launcher starts the next queued episode after cleanup releases an allocation |
+| Dedicated working root | A user-provided external root, with a separate directory for each episode |
+| Whole-batch limits | At most 48 reserved GPU-hours and 12 elapsed hours, including preparation, evaluation, and cleanup; verify all phases fit before launch |
+| Failure/retry policy | No automatic retries; retain failure evidence and continue independent runs when their boundaries remain safe |
+
+Four episodes with a concurrency limit of two use at most eight GPUs at once
+under this assignment. The per-episode research budget and whole-batch reservation
+limit are separate. Track B instead specifies Lease count and seconds per Lease
+for each episode; a batch time limit does not introduce a Track B scoring deadline.
+
+</details>
+
+For comparisons across Agents or resources, list the exact combinations and
+repeat counts as well as the resource assignments, concurrency, total budget,
+and failure/retry policy:
 
 <details>
 <summary><strong>Prompt and example configuration</strong> — two Agents × two hardware configurations</summary>
@@ -323,8 +372,9 @@ the retry policy:
 > Run [provided Agent identities and commands] on [research task and Track]
 > across [provided execution environments and environment configurations].
 > Run [explicit Agent/hardware combinations], with at most [N] episodes in
-> parallel and a total budget of [resource/time limits, including preparation,
-> evaluation, and cleanup]. Use [dedicated working roots] and [retry policy].
+> parallel using [resource assignment and launcher], and a total budget of
+> [resource/time limits, including preparation, evaluation, and cleanup].
+> Use [dedicated working roots] and [retry policy].
 > Reuse verified public TRAIN data and compatible cached images. Give every
 > episode its own Agent workspace, outputs, and resource allocation. Report
 > every result and retained trajectory with its configuration and capture limits.
@@ -342,6 +392,7 @@ again replaced with your actual Agent identity and command.
 | `[provided execution environments and environment configurations]` | Authorized A100 and H100 hosts, each with a user-owned configuration specifying one 80 GB GPU and an eight-hour Track A budget |
 | `[explicit Agent/hardware combinations]` | A/A100, B/A100, A/H100, B/H100 |
 | `[N]` | `2`, with at most one active episode per host |
+| `[resource assignment and launcher]` | The user's deployment launcher assigns A100 episodes to the authorized A100 host and H100 episodes to the H100 host, reusing each host only after the prior episode's cleanup |
 | `[resource/time limits, including preparation, evaluation, and cleanup]` | Four episodes; at most 48 reserved GPU-hours and 36 hours elapsed for the whole batch, including all phases |
 | `[dedicated working roots]` | `/srv/ngrove-runs` on each host, with a separate directory for every episode |
 | `[retry policy]` | No automatic retries; retain failure evidence and continue with independent runs when their boundaries remain safe |
@@ -352,8 +403,10 @@ frozen environment attached to every result.
 </details>
 
 Parallel runs require independent resource allocations and isolation. Batch
-scheduling belongs to the operator's deployment launcher; Core supervises
-individual episodes.
+scheduling and resource assignment belong to the user's deployment launcher;
+Core supervises individual episodes. Episode count and allocator job count may
+differ. The Operator retains a batch record linking each requested run and retry
+to its episode directory, configuration, allocation, and outcome.
 
 ### Run preparation and execution
 
