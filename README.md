@@ -40,9 +40,23 @@ human-provided solutions and encourage independent exploration.
 Model training is our first research setting. Our goal is to discover methods
 that outperform established human-designed procedures under comparable
 conditions—and, crucially, **improve the ability to discover such methods**.
-Improving how a research system finds better paths is meta-optimization. Using
-that improved capability to drive further improvements is the recursive
+**The research process itself is an object of study:** how a system chooses
+hypotheses, designs experiments, uses failures, and spends its research budget.
+Improving that process is meta-optimization.
+
+Independent episodes provide separate paths through a research problem.
+Retaining their available evidence lets us study which approaches recur, where
+they fail, and what might carry into future research. We aim to turn permitted
+experience into a more capable researcher, then test whether that system can
+find further improvements more reliably or efficiently under comparable
+conditions, including new problems or starting points. This is the recursive
 self-improvement (RSI) direction we aim to explore.
+
+**How can experience from independent exploration accumulate into transferable
+research capability?** Which experience transfers, how to use it, and whether
+the resulting gains persist remain open research questions. The
+[research scope](docs/research-scope.md) connects those questions to the current
+implementation and future methods.
 
 > **Constrain resources, not ideas. Define the evaluator, not the solution.**
 
