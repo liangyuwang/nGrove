@@ -460,6 +460,7 @@ def read_recording(episode: Path) -> Dict[str, Any]:
         "schema_version": 1,
         "episode_id": state["episode_id"],
         "episode_status": state["status"],
+        **({"benchmark": state["benchmark"]} if "benchmark" in state else {}),
         "environment": state["environment"],
         "recording": state["recording"],
         "scope": {

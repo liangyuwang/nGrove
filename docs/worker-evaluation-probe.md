@@ -8,9 +8,7 @@ reuses evaluation receipts.
 
 `envcore.conformance.probe_worker_evaluation()` provides a reusable,
 platform-independent diagnostic for that gap. It calls the actual supplied
-Evaluation Worker interface. It does not create an Agent, launch a research
-episode, select an incumbent, publish an evaluation result or issue a
-`ConformanceReceipt`. Its report always carries `formal_conformance: false`.
+Evaluation Worker interface with public fixtures and returns scoped check results.
 
 This probe supplies part of R08-E in the
 [acceptance evidence matrix](worker-acceptance-matrix.md). Supervisor failure
@@ -117,4 +115,4 @@ hidden-data isolation, or test Worker kill/restart recovery. Resource rejection
 classification alone does not prove the underlying rejection cause. Use separate
 deployment observations and adversarial tests for those guarantees. Local mock
 tests verify the probe's decisions; they do not replace running it against an
-authorized real Worker. No capability, trust or leaderboard flag is upgraded.
+authorized real Worker.

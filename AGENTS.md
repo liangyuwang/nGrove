@@ -33,13 +33,11 @@ document, and maintain this project.
 When preparing or operating research runs, act as the trusted operator. Help
 the user configure, launch, monitor, and report runs in an execution environment
 they are authorized to use. The Research Agent is the autonomous participant
-conducting research inside the environment; benchmarks call this
-participant the Tested Agent. Keep operator privileges and repository
+conducting research inside the environment. Keep operator privileges and repository
 instructions separate from the Research Agent's execution boundary.
 
 The run workflow below describes that operator responsibility for the current
-training-research protocol. Follow the applicable task and benchmark
-rules during runs. Ordinary repository assistance does not request an episode.
+training-research protocol. Follow the selected task and environment constraints. Ordinary repository assistance does not request an episode.
 
 Keep this repository platform-independent. Cluster schedulers, container
 runtimes, cloud APIs, and site-specific enforcement belong to the Worker
@@ -55,7 +53,7 @@ Repository Assistant. When preparing or operating a research run, also make
 clear that you are taking the trusted operator role, separate from the
 Research Agent participating in the environment.
 
-Treat requests such as "start this project," "run it," "launch the benchmark,"
+Treat requests such as "start this project," "run it,"
 or "test an Agent" as requests to establish a research run contract. Honor any
 configuration already specified by the user. Do not infer unspecified
 choices of local machine, task, Track, compute profile, time budget, Research
@@ -67,24 +65,22 @@ For a launch request, before changing deployment files, preparing data, pulling
 images, allocating resources, or starting an episode:
 
 1. Inspect the repository and current environment with read-only operations.
-2. Explain briefly that the requested run is a research episode in nGrove,
-   using a benchmark when selected, rather than a long-lived application
-   service.
+2. Explain briefly that the requested run is a research episode in nGrove.
 3. Present one complete run-intake table with these rows:
 
    | Area | Resolved value | Status or question |
    | --- | --- | --- |
-   | Run purpose | research experiment, preview, reproducibility, or formal evaluation | Confirm if unknown; formal evaluation requires a matching published lane and trusted evidence |
-   | Research task | task manifest, optional benchmark presets, or development task | Confirm if unknown |
+   | Run purpose | research experiment, preview, or reproducibility | Confirm if unknown |
+   | Research task | research or development task manifest | Confirm if unknown |
    | Track | A, B, or both | Confirm if unknown |
    | Time budget | named Track configuration or task budget; environment override when selected | Confirm the source and effective budget before launch |
-   | Compute configuration | published runtime profile or user-owned environment configuration | Confirm the selected profile/configuration and supported alternatives |
+   | Compute configuration | user-owned environment configuration | Confirm resources and supported alternatives |
    | Execution environment | access path and available resources | Ask the user to provide or authorize discovery |
    | Trusted working root | Core checkout, data, images, episodes, and logs | Confirm before writes |
-   | Research Agent | immutable identity, runner, and command | Confirm if unknown; called Tested Agent in benchmark runs |
+   | Research Agent | immutable identity, runner, and command | Confirm if unknown |
    | Agent workspace | empty or participant-owned snapshot | Default to empty only after Agent identity is known |
    | Inference | endpoint, models, and credential variable names | Confirm when applicable |
-   | Policy status | Worker capability, trust, conformance, and expected compliance | Resolve before launch |
+   | Execution constraints | Required Worker capabilities, enforced limits, isolation, and known limitations | Resolve before launch |
    | Resource authorization | job count, accelerator/time budget, and retry scope | Obtain approval before consumption |
 
 Populate the table with facts discovered from manifests and the environment,
@@ -110,29 +106,20 @@ picture once; subsequent questions remain progressive and concise.
 
 Confirm the common run settings:
 
-- the research task manifest, optionally selected through benchmark presets, or development task;
+- the research or development task manifest;
 - Track A, Track B, or both;
 - whether the purpose is a research experiment, a local preview, a
-  reproducibility run, or an organizer-controlled formal benchmark evaluation.
+  or reproducibility run.
 
 Confirm the task and environment configuration for every run. Use `--task` with
-`--track`, or select a task and preset budget using `--benchmark` with
-`--track-config`. Named `--runtime-profile` presets require a benchmark release.
-A user-owned `--environment` supplies compute resources and may override the time
-budget; an omitted budget inherits the selected task/Track settings. It can be
-used with a published profile to compare the resolved conditions with that
-preset. Do not combine an environment file with manual GPU/device flags.
+`--track` and a user-owned `--environment` to select compute resources and an
+optional research budget. An omitted budget inherits the selected task/Track
+settings. Do not combine an environment file with manual GPU/device flags.
 
 Confirm and freeze the effective compute configuration and time budget before
-task reveal. For a formal evaluation, also confirm the named Track and runtime
-profile and the release's eligibility requirements. Custom configurations remain
-valid research inputs; changed conditions have no published comparison key and
-cannot enter the original leaderboard lane.
-
-Do not invent a missing configuration or silently substitute another profile
-or budget. Use `benchmark-info` to show published configuration maps and
-`environment-info --environment PATH` to inspect a user-owned configuration.
-The latter does not resolve an omitted budget without the selected task/Track.
+task reveal. Do not invent a missing configuration or silently substitute
+another profile or budget. Use `environment-info --environment PATH` to inspect
+a user-owned configuration; an omitted budget requires the selected task/Track.
 
 ### Execution environment
 
@@ -155,7 +142,7 @@ scope.
 
 ### Research Agent
 
-Require the user to identify the Research Agent and the policy-compliant way to
+Require the user to identify the Research Agent and the permitted way to
 access it:
 
 - immutable Agent image reference and autonomous non-interactive command for a
@@ -194,11 +181,10 @@ operator-provided reference Agent as an implicit fallback.
 
 Prefer the container runner with `--agent-egress denied`. Route registered
 remote inference only through the environment's controlled inference gateway.
-`host_cli` and `unrestricted-dev` are preview/debug modes and must be reported
-as `policy_compliant: false`; never present them as a compliant fallback. If
-the available Agent cannot be accessed within the required boundary, explain
-the gap and ask whether the user wants a clearly labeled non-compliant preview
-or will provide a compliant packaging/deployment.
+`host_cli` shares the host filesystem and network; `unrestricted-dev` allows
+ordinary container egress. Record those concrete execution limitations. If a
+runner cannot enforce the selected task's required boundary, explain the missing
+capability and resolve the deployment choice before launching.
 
 ### Authorization checkpoint
 
@@ -207,16 +193,16 @@ research run contract containing:
 
 - repository revision and dirty/clean state;
 - task, Track, effective compute configuration and time budget;
-- the frozen environment identity and any selected published configuration names;
+- the frozen environment identity;
 - Research Agent identity, runner, command, workspace, and inference mode;
 - data and image identities;
-- Worker capabilities, conformance, trust, and expected policy status;
+- Worker capabilities, enforced boundaries, and known execution limitations;
 - requested resources, time budget, output location, and proposed job count.
 
 Ask the user to approve this contract if those choices or costs were not
 already explicit. One approved attempt does not authorize additional expensive
 retries, a different run configuration, relaxed isolation, or changes
-to task or benchmark policy.
+to task or environment constraints.
 
 ## Run workflow
 
@@ -224,7 +210,7 @@ to task or benchmark policy.
    `docs/worker-protocol.md`, and the selected research task README and
    manifests before operating a research run. The current training-research
    protocol's isolation and evaluation rules are detailed in the
-   [training-research reference](docs/benchmark-reference.md); read those rules
+   [training-research reference](docs/research-protocol.md); read those rules
    for every run, and `research_tasks/README.md` when using a bundled research task.
    Inspect implementation entry points only as needed for the requested run.
    Record the exact Git revision and preserve unrelated user changes.
@@ -273,10 +259,8 @@ to task or benchmark policy.
 9. At completion, report the task/Track, effective compute configuration,
    resolved time budget, artifact identities, resource usage, postmortem
    Candidate/ANALYSIS trajectory, incumbent, TEST metric, Agent usage completeness,
-   and compliance/eligibility status. Report the frozen environment identity and
-   explicitly identify varied and controlled experimental conditions. When a
-   benchmark comparison key is present, report the exact lane and compare runs
-   only when their full keys match; a null key does not establish comparability.
+   and execution limitations. Report the frozen environment identity and
+   explicitly identify varied and controlled experimental conditions.
 
 Within the approved scope, continue to the next necessary stage after each
 stage completes. Answer status questions and then resume the ongoing work.
@@ -319,10 +303,6 @@ episode or additional training.
   termination, and immutable Candidate capture remain Worker-enforced.
 - Missing capabilities or trust are recorded explicitly. Never silently fall
   back to weaker enforcement.
-- Preserve the release's `leaderboard_eligible` setting. A reproducible local
-  preview does not become a formal leaderboard result without organizer-owned
-  hidden evaluation, frozen resources and images, and trusted evaluation and
-  submission infrastructure.
 
 ## Expected user handoff
 
@@ -331,11 +311,30 @@ A useful initial request has this shape:
 > I can provide an authorized accelerator environment. Here is how to connect,
 > allocate accelerators, and use the designated working directory. The Research
 > Agent is already present; here are its immutable identity, autonomous command,
-> workspace, and the policy-compliant access or inference path. Run using
-> [task/Track or benchmark/track_config] with [environment configuration or
-> published runtime profile]. Here are the
+> workspace, and the permitted access or inference path. Run using
+> [task/Track] with [environment configuration]. Here are the
 > selected time budget and resource limits.
 
 Treat that message as authorization to investigate and prepare within the
 stated scope. Resolve missing run settings and material-cost decisions
 with the user before launching the episode.
+
+## Benchmark runs
+
+Apply this section only when the user explicitly selects benchmark functionality.
+Use `--benchmark` and `--track-config`, with a named `--runtime-profile` or an
+`--environment`. Inspect the release's finite configuration map with
+`benchmark-info`. The research participant is called the Tested Agent here.
+
+Keep all benchmark-specific recording and output in the optional `benchmark`
+extension: comparison key, release identity, formal release verification,
+Worker certification, compliance, and leaderboard eligibility. Preserve the
+release's eligibility setting. Follow [benchmark requirements](docs/benchmarks.md).
+
+For formal evaluation, include the published lane, immutable data/images,
+organizer-owned hidden evaluation, trusted release and Worker conformance
+receipts, expected compliance, and submission requirements in the run contract.
+The `host_cli` and `unrestricted-dev` modes do not meet that boundary. Explain
+missing enforcement and obtain the user's choice before changing the contract.
+Report the exact comparison key and eligibility evidence for benchmark runs;
+compare lanes only when their full keys and experimental conditions match.

@@ -104,7 +104,7 @@ class CommandTimeoutProbeTests(unittest.TestCase):
         report = self.probe()
         self.assertTrue(report.passed, report.private_manifest())
         self.assertEqual(report.probe_version, LEASE_COMMAND_TIMEOUT_PROBE_VERSION)
-        self.assertFalse(report.public_manifest()["formal_conformance"])
+        self.assertNotIn("formal_conformance", report.public_manifest())
         self.assertEqual(len(self.worker.starts), 3)
         self.assertEqual(len(self.worker.commands), 5)
         evidence = report.leases[0]["command_timeout"]

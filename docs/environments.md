@@ -87,10 +87,8 @@ separate private protection limit and does not become an Agent-visible budget.
 The task's existing ANALYSIS capacity must cover `max_leases`; increasing the
 Lease count does not silently change evaluation policy.
 
-If `budget` is omitted, resolve it from the selected benchmark's `--track-config`
-or the task's `--track`. An explicit budget overrides those numeric values for
-the environment run, but its Track must match the selected Track. Source task
-and benchmark files remain unchanged. Unknown fields, nonpositive/fractional
+If `budget` is omitted, resolve it from the selected task/Track settings. An explicit budget overrides those numeric values for
+the environment run, but its Track must match the selected Track. Source task files remain unchanged. Unknown fields, nonpositive/fractional
 values and mixed Track A/B fields are errors before Worker setup.
 
 The resolved environment always records the effective budget. It is fixed before
@@ -157,7 +155,7 @@ evaluation envelope into an immutable snapshot. Direct trusted Worker
 compositions freeze these same fields without needing a named profile. Mutating
 input objects or copies of the record cannot change an active run's configuration.
 
-Result schema v16 includes this snapshot as `environment.configuration` and its
+Result schema v17 includes this snapshot as `environment.configuration` and its
 SHA-256 as `environment.configuration_sha256`. The public task, status and trusted
 report carry the same record. It contains execution settings, not private task
 or release fingerprints. The input inspection fingerprint from `environment-info`
@@ -169,7 +167,7 @@ binding.
 
 The environment fingerprint ignores display names and provisional labels, while
 binding resource constraints, evaluation contracts and the resolved budget. It
-is not a complete experiment comparison key. Scaling studies should report deliberately varied
+identifies the configured resources and budget. Scaling studies should report deliberately varied
 compute/time dimensions and control task/data/image identities, Agent initial
 configuration and the remaining execution conditions. Record contention and cache
 differences; matching configuration hashes alone do not prove equal performance
@@ -216,4 +214,4 @@ labels use the `envcore.` prefix; recovery journals default to
 
 The bundled deployment supports one host with CPU or full NVIDIA GPUs. This
 change does not implement distributed execution, add other accelerator runtimes,
-provide an Agent or certify a Worker. Platform mechanisms remain Worker-owned.
+provide an Agent. Platform mechanisms remain Worker-owned.

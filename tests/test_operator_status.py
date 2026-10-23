@@ -187,7 +187,7 @@ class OperatorStatusTests(unittest.TestCase):
         view = self.read()
         self.assertEqual(view["summary"], "finalized")
         self.assertIsNone(view["core"]["agent_termination_reason"])
-        self.assertIn("Policy compliant: false", format_operator_status(view))
+        self.assertNotIn("compliant", format_operator_status(view))
 
     def test_wrong_episode_observation_is_not_used(self):
         self.state()
@@ -272,7 +272,7 @@ class OperatorStatusTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()) as output:
             command_report(args)
         report = json.loads(output.getvalue())
-        self.assertEqual(report["result_schema_version"], 16)
+        self.assertEqual(report["result_schema_version"], 17)
         self.assertEqual(report["outcome"], "success")
         self.assertNotIn("deployment", report)
 

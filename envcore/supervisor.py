@@ -34,8 +34,7 @@ from .artifact_identity import (
 )
 from .benchmark import (
     ReleaseVerificationReceipt,
-    agent_release_manifest,
-    benchmark_eligibility_violations,
+    BenchmarkContext,
     resolve_release_evaluation_envelope,
 )
 from .config import (
@@ -65,7 +64,6 @@ from .worker_protocol import (
     CapabilityRequirement,
     CandidateEvaluationResult,
     CommandResult,
-    ConformanceReceipt,
     EvaluationWorker,
     EnforcementLevel,
     EvaluationTaskSpec,
@@ -278,11 +276,7 @@ class Supervisor:
         agent_control_transport: Optional[AgentControlTransport] = None,
         research_worker_environment: Optional[Dict[str, Any]] = None,
         evaluation_worker_environment: Optional[Dict[str, Any]] = None,
-        comparison_key: Optional[Dict[str, str]] = None,
-        benchmark_release: Optional[Dict[str, Any]] = None,
-        release_verification: Optional[ReleaseVerificationReceipt] = None,
-        research_worker_conformance: Optional[ConformanceReceipt] = None,
-        evaluation_worker_conformance: Optional[ConformanceReceipt] = None,
+        benchmark: Optional[BenchmarkContext] = None,
         monotonic: Callable[[], float] = time.monotonic,
         wall_time: Callable[[], float] = time.time,
         worker_resolution_timeout_seconds: float = (
@@ -308,6 +302,9 @@ class Supervisor:
         )
         # Retry bookkeeping references only successfully written removal intents.
         self._pending_artifact_removals: Dict[str, int] = {}
+        if benchmark is not None and not isinstance(benchmark, BenchmarkContext):
+            raise TypeError("benchmark must be a BenchmarkContext")
+        self.benchmark = copy.deepcopy(benchmark)
         self.config = config.validate()
         # The trusted launcher verifies the data view and the Worker keeps it
         # immutable. Core binds that evidence to its small manifest identity;
@@ -364,7 +361,7 @@ class Supervisor:
                 else v0_resource_envelope(
                     self.resources,
                     minimum_enforcement=EnforcementLevel.ENFORCED
-                    if config.leaderboard_eligible
+                    if self.benchmark is not None and self.benchmark.requested_eligible
                     else EnforcementLevel.BEST_EFFORT,
                 )
             )
@@ -373,11 +370,13 @@ class Supervisor:
             raise TypeError("resource_envelope must be a ResourceEnvelope")
         if evaluation_resource_envelope is None and environment is not None:
             evaluation_resource_envelope = environment.evaluation_resource_envelope
-        evaluation_resource_envelope, frozen_evaluation_envelope = (
-            resolve_release_evaluation_envelope(
-                benchmark_release, evaluation_resource_envelope
+        frozen_evaluation_envelope = None
+        if self.benchmark is not None:
+            evaluation_resource_envelope, frozen_evaluation_envelope = (
+                resolve_release_evaluation_envelope(
+                    self.benchmark.release, evaluation_resource_envelope
+                )
             )
-        )
         self.evaluation_resource_envelope = evaluation_resource_envelope
         execution_environment = FrozenEnvironment.create(
             budget=ResearchBudget.from_task(config, normalized),
@@ -415,14 +414,6 @@ class Supervisor:
         self.episode_dir = episode_dir.resolve()
         self.research_worker = research_worker
         self.evaluation_worker = evaluation_worker
-        for receipt, field_name in (
-            (research_worker_conformance, "research_worker_conformance"),
-            (evaluation_worker_conformance, "evaluation_worker_conformance"),
-        ):
-            if receipt is not None and not isinstance(receipt, ConformanceReceipt):
-                raise TypeError(f"{field_name} must be a ConformanceReceipt")
-        self.research_worker_conformance = research_worker_conformance
-        self.evaluation_worker_conformance = evaluation_worker_conformance
         self.agent_control_transport = agent_control_transport
         agent_control_name = (
             agent_control_transport.transport_name
@@ -434,6 +425,9 @@ class Supervisor:
         ):
             raise ValueError("Agent control transport name must be a non-empty string")
         self.evaluation_task = EvaluationTaskSpec.from_task(config)
+        release_verification = (
+            self.benchmark.verification if self.benchmark is not None else None
+        )
         if release_verification is None:
             self.release_verification = None
         else:
@@ -510,20 +504,13 @@ class Supervisor:
         research_assessment = assess_worker(
             research_descriptor,
             research_requirements,
-            conformance_receipt=self.research_worker_conformance,
         )
         evaluation_assessment = assess_worker(
             evaluation_descriptor,
             evaluation_requirements,
-            conformance_receipt=self.evaluation_worker_conformance,
         )
         core_identity = _core_identity()
         artifact_identities = {
-            "benchmark_manifest_sha256": (
-                benchmark_release.get("benchmark_manifest_sha256")
-                if isinstance(benchmark_release, dict)
-                else None
-            ),
             "task_manifest_sha256": _sha256_file(config.source),
             "policy_sha256": _sha256_file(config.source.parent / "POLICY.md"),
             "evaluator_sha256": _sha256_file(config.evaluator_entrypoint),
@@ -535,55 +522,31 @@ class Supervisor:
             "test_sha256": None,
         }
 
-        policy_violations = []
-        policy_violations.extend(agent_execution.limitations)
-        if not agent_execution.policy_compliant and not agent_execution.limitations:
-            policy_violations.append("agent_execution_boundary")
-        if not config.evaluator_policy_compliant:
-            policy_violations.append("candidate_evaluator_isolation")
+        execution_issues = []
+        execution_issues.extend(agent_execution.limitations)
+        if (
+            agent_execution.enforcement is not EnforcementLevel.ENFORCED
+            and not agent_execution.limitations
+        ):
+            execution_issues.append("agent_execution_boundary")
+        if config.evaluator_backend != "isolated_candidate":
+            execution_issues.append("candidate_evaluator_isolation")
         if "research" not in research_descriptor.roles:
-            policy_violations.append("research_worker_role_missing")
+            execution_issues.append("research_worker_role_missing")
         if "evaluation" not in evaluation_descriptor.roles:
-            policy_violations.append("evaluation_worker_role_missing")
+            execution_issues.append("evaluation_worker_role_missing")
         for role, assessment in (
             ("research", research_assessment),
             ("evaluation", evaluation_assessment),
         ):
             for capability in assessment.missing:
-                policy_violations.append(
+                execution_issues.append(
                     f"{role}_worker_capability_missing:{capability}"
                 )
             for capability in assessment.insufficient:
-                policy_violations.append(
+                execution_issues.append(
                     f"{role}_worker_capability_insufficient:{capability}"
                 )
-        policy_compliant = not policy_violations
-        eligibility_violations = benchmark_eligibility_violations(
-            config=config,
-            policy_compliant=policy_compliant,
-            research_assessment=research_assessment,
-            evaluation_assessment=evaluation_assessment,
-            comparison_key=comparison_key,
-            benchmark_release=benchmark_release,
-            agent_execution=agent_execution,
-            agent=agent,
-            release_verification=self.release_verification,
-            artifact_identities=artifact_identities,
-            core_identity=core_identity,
-            track=self.track,
-            resource_envelope=self.resource_envelope,
-            evaluation_resource_envelope=self.evaluation_resource_envelope,
-            frozen_evaluation_envelope=frozen_evaluation_envelope,
-        )
-
-        leaderboard_eligible = (
-            config.leaderboard_eligible
-            and policy_compliant
-            and research_assessment.leaderboard_eligible
-            and evaluation_assessment.leaderboard_eligible
-            and not eligibility_violations
-        )
-
         episode_id = "episode:" + uuid.uuid4().hex
         self._gateway_execution_request = None
         if self.agent.inference is not None:
@@ -630,24 +593,10 @@ class Supervisor:
             ),
             "task_id": config.task_id,
             "task_kind": config.task_kind,
-            "leaderboard_eligible": leaderboard_eligible,
-            "leaderboard_eligibility_violations": eligibility_violations,
             "track": self.track,
-            "comparison_key": dict(comparison_key) if comparison_key else None,
-            "benchmark_release": (
-                dict(benchmark_release) if benchmark_release else None
-            ),
-            "formal_release_verification": (
-                self.release_verification.private_manifest()
-                if self.release_verification
-                else None
-            ),
             "training_data_verification": training_data_verification,
             "artifact_identities": {
                 "core_git": core_identity,
-                "benchmark_manifest_sha256": artifact_identities[
-                    "benchmark_manifest_sha256"
-                ],
                 "task_manifest_sha256": artifact_identities["task_manifest_sha256"],
                 "policy_sha256": artifact_identities["policy_sha256"],
                 "evaluator_sha256": artifact_identities["evaluator_sha256"],
@@ -675,26 +624,15 @@ class Supervisor:
                 else None
             ),
             "evaluation_resource_allocations": [],
-            "policy_compliant": policy_compliant,
-            "policy_violations": policy_violations,
+            "execution_issues": execution_issues,
             "workers": {
                 "research": {
                     **research_descriptor.public_manifest(),
-                    "conformance": (
-                        self.research_worker_conformance.public_manifest()
-                        if self.research_worker_conformance
-                        else None
-                    ),
                     "assessment": research_assessment.public_manifest(),
                     "environment": dict(research_worker_environment or {}),
                 },
                 "evaluation": {
                     **evaluation_descriptor.public_manifest(),
-                    "conformance": (
-                        self.evaluation_worker_conformance.public_manifest()
-                        if self.evaluation_worker_conformance
-                        else None
-                    ),
                     "assessment": evaluation_assessment.public_manifest(),
                     "environment": dict(evaluation_worker_environment or {}),
                 },
@@ -705,7 +643,6 @@ class Supervisor:
                 "command": list(agent.command),
                 "egress": agent.egress,
                 "network": agent.network,
-                "policy_compliant": agent_execution.policy_compliant,
                 "execution_evidence": agent_execution.public_manifest(),
                 "exit_code": None,
                 "termination_reason": None,
@@ -742,10 +679,6 @@ class Supervisor:
                 "candidate_image": config.candidate_image,
                 "boundary": "candidate_evaluator_channel",
                 "candidate_channel": self.evaluation_task.candidate_channel.public_manifest(),
-                "policy_compliant": (
-                    config.evaluator_policy_compliant
-                    and evaluation_assessment.satisfied
-                ),
             },
             "status": "created",
             "outcome": None,
@@ -803,6 +736,22 @@ class Supervisor:
             "agent_usage": None,
             "failure": None,
         }
+        if self.benchmark is not None:
+            self.state["benchmark"] = self.benchmark.initialize(
+                execution_issues=execution_issues,
+                research_descriptor=research_descriptor,
+                research_requirements=research_requirements,
+                evaluation_descriptor=evaluation_descriptor,
+                evaluation_requirements=evaluation_requirements,
+                agent_execution=agent_execution,
+                agent=agent,
+                artifact_identities=artifact_identities,
+                core_identity=core_identity,
+                track=self.track,
+                resource_envelope=self.resource_envelope,
+                evaluation_resource_envelope=self.evaluation_resource_envelope,
+                frozen_evaluation_envelope=frozen_evaluation_envelope,
+            )
         self.sequence = 0
         self.recording_store = RecordingStore(self.episode_dir, self.recording_config)
         self.state["recording"] = self.recording_config.record()
@@ -810,7 +759,6 @@ class Supervisor:
         public_manifest["environment"] = environment.record()
         public_manifest["agent_environment"] = agent.public_manifest(
             config.inference_gateway_image,
-            policy_compliant=agent_execution.policy_compliant,
             control_transport=agent_control_name,
         )
         public_manifest["training_environment"]["resources"] = (
@@ -819,42 +767,22 @@ class Supervisor:
         public_manifest["training_environment"]["resource_envelope"] = (
             self.resource_envelope.public_manifest()
         )
-        public_manifest["policy"] = {
-            "compliant": policy_compliant,
-            "violations": policy_violations,
-        }
-        public_manifest["leaderboard_eligible"] = leaderboard_eligible
+        public_manifest["execution_issues"] = list(execution_issues)
         public_manifest["candidate_artifact_identity"] = "envcore-tree-v2-sha256"
         public_manifest["incumbent_declaration_limit"] = MAX_INCUMBENT_DECLARATIONS
-        public_manifest["formal_release_verified"] = (
-            self.release_verification is not None
-            and not any(
-                violation == "formal_test_evaluation_pending"
-                or violation.startswith("formal_release_verification")
-                for violation in eligibility_violations
-            )
-        )
-        public_manifest["comparison_key"] = self.state["comparison_key"]
-        if benchmark_release is not None:
-            public_manifest["benchmark_release"] = agent_release_manifest(
-                benchmark_release
-            )
+        if self.benchmark is not None:
+            public_manifest["benchmark"] = self.benchmark.public_manifest()
         self.public_task_path.write_text(
             json.dumps(public_manifest, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
         self._save_state()
 
-    def _refresh_leaderboard_eligibility(self) -> None:
-        research = self.state["workers"]["research"]["assessment"]
-        evaluation = self.state["workers"]["evaluation"]["assessment"]
-        self.state["leaderboard_eligible"] = bool(
-            self.config.leaderboard_eligible
-            and self.state["policy_compliant"]
-            and research["leaderboard_eligible"]
-            and evaluation["leaderboard_eligible"]
-            and not self.state["leaderboard_eligibility_violations"]
-        )
+    def _record_execution_issue(self, code: str) -> None:
+        if code not in self.state["execution_issues"]:
+            self.state["execution_issues"].append(code)
+        if self.benchmark is not None:
+            self.benchmark.add_violation(code, execution=True)
 
     @property
     def gateway_execution_request(self) -> Optional[GatewayExecutionRequest]:
@@ -881,8 +809,8 @@ class Supervisor:
                 raise ValueError("Gateway execution evidence is already fixed")
             receipt.validate_request(request)
             self.state["gateway_execution"]["receipt"] = receipt.private_manifest()
-            if self.config.leaderboard_eligible:
-                violations = self.state["leaderboard_eligibility_violations"]
+            if self.benchmark is not None and self.benchmark.requested_eligible:
+                violations = self.benchmark.record["leaderboard_eligibility_violations"]
                 violations[:] = [
                     item
                     for item in violations
@@ -896,7 +824,7 @@ class Supervisor:
                         else None,
                     )
                 )
-                self._refresh_leaderboard_eligibility()
+                self.benchmark.refresh()
             self._event(
                 "INFERENCE_GATEWAY_EXECUTION_RECORDED", receipt_id=receipt.receipt_id
             )
@@ -923,7 +851,7 @@ class Supervisor:
     def _environment_overhead(self) -> float:
         """Wall clock spent on environment-owned preparation, not on the Agent.
 
-        `docs/benchmark-reference.md` places "environment infrastructure startup"
+        `docs/research-protocol.md` places "environment infrastructure startup"
         outside participant timing. Worker Lease materialization -- scheduler
         queueing, image conversion, workload startup -- is that preparation,
         and its cost varies by deployment, so billing it to the participant
@@ -1112,7 +1040,6 @@ class Supervisor:
             or self.state.get("test_status") is not None
             or self.state.get("analysis_status") is not None
             or self.state.get("final_candidate_id") is not None
-            or self.state.get("leaderboard_eligible") is not False
         ):
             raise RuntimeError("an operator stop must seal research without evaluation")
         if status == "finalized" and outcome not in {"success", "failed"}:
@@ -1232,21 +1159,12 @@ class Supervisor:
                 "episode_id": self.state["episode_id"],
                 "task_id": self.config.task_id,
                 "task_kind": self.config.task_kind,
-                "leaderboard_eligible": self.state["leaderboard_eligible"],
-                "leaderboard_eligibility_violations": list(
-                    self.state["leaderboard_eligibility_violations"]
-                ),
                 "track": self.track,
-                "comparison_key": self.state["comparison_key"],
                 "agent_runner": self.agent.runner,
                 "agent_egress": self.agent.egress,
                 "agent_network": self.agent.network,
-                "policy_compliant": self.state["policy_compliant"],
-                "policy_violations": list(self.state["policy_violations"]),
+                "execution_issues": list(self.state["execution_issues"]),
                 "evaluator_backend": self.config.evaluator_backend,
-                "evaluator_policy_compliant": (
-                    self.state["evaluation_system"]["policy_compliant"]
-                ),
                 "inference_enabled": self.agent.inference is not None,
                 "inference_usage": dict(self.state["inference_usage"]),
                 "agent_usage": self.state["agent_usage"],
@@ -1308,6 +1226,8 @@ class Supervisor:
                 status["test_raw_metrics"] = self.state["test_raw_metrics"]
                 status["test_cost"] = self.state["test_cost"]
                 status["failure"] = self.state["failure"]
+            if self.benchmark is not None:
+                status["benchmark"] = self.benchmark.public_manifest()
             return status
 
     def handle(self, request: Dict[str, Any]) -> Dict[str, Any]:
@@ -1582,28 +1502,23 @@ class Supervisor:
             "acceptance": acceptance,
         }
         self.state["workload_resolutions"][role] = evidence
-        pending = f"workload_resolution_pending:{role}"
-        if pending in self.state["leaderboard_eligibility_violations"]:
-            self.state["leaderboard_eligibility_violations"].remove(pending)
-        if self.config.leaderboard_eligible and acceptance == "unverified":
-            violation = f"workload_resolution_not_accepted:{role}"
-            if violation not in self.state["leaderboard_eligibility_violations"]:
-                self.state["leaderboard_eligibility_violations"].append(violation)
-            self.state["leaderboard_eligible"] = False
-            self._event(
-                "WORKLOAD_RESOLUTION_REJECTED",
-                role=role,
-                requested_identity=request.requested_identity,
-                effective_format=resolved.effective_format,
-                effective_sha256=resolved.effective_sha256,
-            )
-            self._save_state()
-            raise WorkloadResolutionFailure(
-                f"{role} workload resolution is not accepted by the release"
-            )
+        if self.benchmark is not None:
+            self.benchmark.resolve(f"workload_resolution_pending:{role}")
+            if self.benchmark.requested_eligible and acceptance == "unverified":
+                self.benchmark.add_violation(f"workload_resolution_not_accepted:{role}")
+                self._event(
+                    "WORKLOAD_RESOLUTION_REJECTED",
+                    role=role,
+                    requested_identity=request.requested_identity,
+                    effective_format=resolved.effective_format,
+                    effective_sha256=resolved.effective_sha256,
+                )
+                self._save_state()
+                raise WorkloadResolutionFailure(
+                    f"{role} workload resolution is not accepted by the release"
+                )
 
         self._resolved_workloads[role] = resolved
-        self._refresh_leaderboard_eligibility()
         self._event(
             "WORKLOAD_RESOLVED",
             role=role,
@@ -1745,15 +1660,8 @@ class Supervisor:
             pending = self.state["pending_lease_teardowns"]
             pending.append(lease_id)
             resource_pending = "resource_allocation_pending"
-            if (
-                self.config.leaderboard_eligible
-                and resource_pending
-                not in self.state["leaderboard_eligibility_violations"]
-            ):
-                self.state["leaderboard_eligibility_violations"].append(
-                    resource_pending
-                )
-                self._refresh_leaderboard_eligibility()
+            if self.benchmark is not None and self.benchmark.requested_eligible:
+                self.benchmark.add_violation(resource_pending)
             self._save_state()
             try:
                 allocation_receipt = self.research_worker.start_lease(
@@ -1789,11 +1697,8 @@ class Supervisor:
                     "worker_lease_startup", worker_call_started
                 )
                 pending.remove(lease_id)
-                if resource_pending in self.state["leaderboard_eligibility_violations"]:
-                    self.state["leaderboard_eligibility_violations"].remove(
-                        resource_pending
-                    )
-                    self._refresh_leaderboard_eligibility()
+                if self.benchmark is not None:
+                    self.benchmark.resolve(resource_pending)
                 try:
                     shutil.rmtree(lease_dir)
                 except FileNotFoundError:
@@ -1884,11 +1789,8 @@ class Supervisor:
                 "resource_allocation_receipt_id": allocation_receipt.receipt_id,
             }
             pending.remove(lease_id)
-            if resource_pending in self.state["leaderboard_eligibility_violations"]:
-                self.state["leaderboard_eligibility_violations"].remove(
-                    resource_pending
-                )
-                self._refresh_leaderboard_eligibility()
+            if self.benchmark is not None:
+                self.benchmark.resolve(resource_pending)
             self.state["last_lease_id"] = lease_id
             self._event("LEASE_STARTED", lease_id=lease_id, duration_seconds=duration)
             self._save_state()
@@ -2781,9 +2683,8 @@ class Supervisor:
             )
             if primary:
                 violation = f"formal_release_verification_artifact_mismatch:{field}"
-                if violation not in self.state["leaderboard_eligibility_violations"]:
-                    self.state["leaderboard_eligibility_violations"].append(violation)
-                self.state["leaderboard_eligible"] = False
+                if self.benchmark is not None:
+                    self.benchmark.add_violation(violation)
                 self.infrastructure_failed("hidden_dataset_identity_mismatch")
             else:
                 self.state["analysis_identity_verified"] = False
@@ -2793,9 +2694,8 @@ class Supervisor:
 
         if request.name == "test":
             violation = "formal_test_evaluation_pending"
-            if violation in self.state["leaderboard_eligibility_violations"]:
-                self.state["leaderboard_eligibility_violations"].remove(violation)
-            self._refresh_leaderboard_eligibility()
+            if self.benchmark is not None:
+                self.benchmark.resolve(violation)
         elif request.expected_sha256 is not None:
             self.state["analysis_identity_verified"] = True
         if previously_resolved is None:
@@ -3023,11 +2923,8 @@ class Supervisor:
                     raise ValueError("evaluation resource contract is not satisfied")
                 if record["split"] == "test":
                     violation = "evaluation_resource_allocation_pending"
-                    if violation in self.state["leaderboard_eligibility_violations"]:
-                        self.state["leaderboard_eligibility_violations"].remove(
-                            violation
-                        )
-                        self._refresh_leaderboard_eligibility()
+                    if self.benchmark is not None:
+                        self.benchmark.resolve(violation)
         except (TypeError, ValueError) as exc:
             self._event(
                 "EVALUATION_RESOURCE_REJECTED",
@@ -3503,7 +3400,7 @@ class Supervisor:
         # Pre-TEST teardown failures prevent TEST from starting.  A teardown
         # failure discovered while running optional ANALYSIS diagnostics does
         # not erase an already persisted TEST decision; it is represented
-        # independently by policy/eligibility and teardown evidence.  The
+        # independently by execution and teardown evidence.  The
         # composition layer nevertheless calls this method only after all
         # postmortem cleanup attempts have finished, so the published terminal
         # state will not be revised by a later required cleanup step.
@@ -3558,6 +3455,8 @@ class Supervisor:
             self._save_state()
         except BaseException:
             self.state = previous_state
+            if self.benchmark is not None:
+                self.benchmark.record = self.state["benchmark"]
             raise
         self.finalize_recording()
         return True
@@ -3725,11 +3624,9 @@ class Supervisor:
                 research_sealed_at=datetime.fromtimestamp(
                     self.wall_time(), tz=timezone.utc
                 ).isoformat(),
-                leaderboard_eligible=False,
             )
-            self.state["leaderboard_eligibility_violations"].append(
-                "operator_time_limit_reached"
-            )
+            if self.benchmark is not None:
+                self.benchmark.add_violation("operator_time_limit_reached")
             self._event(
                 "EPISODE_OPERATOR_STOPPED",
                 code="operator_time_limit_reached",
@@ -3823,12 +3720,7 @@ class Supervisor:
         if code not in failures:
             failures.append(code)
         violation = "deployment_teardown_incomplete"
-        if violation not in self.state["policy_violations"]:
-            self.state["policy_violations"].append(violation)
-        if violation not in self.state["leaderboard_eligibility_violations"]:
-            self.state["leaderboard_eligibility_violations"].append(violation)
-        self.state["policy_compliant"] = False
-        self.state["leaderboard_eligible"] = False
+        self._record_execution_issue(violation)
         event = {"code": code}
         if private_detail is not None:
             event["message"] = private_detail
@@ -3905,12 +3797,7 @@ class Supervisor:
                 cleanup_infrastructure_failures=1,
             )
             violation = "agent_control_cleanup_incomplete"
-            if violation not in self.state["policy_violations"]:
-                self.state["policy_violations"].append(violation)
-            if violation not in self.state["leaderboard_eligibility_violations"]:
-                self.state["leaderboard_eligibility_violations"].append(violation)
-            self.state["policy_compliant"] = False
-            self.state["leaderboard_eligible"] = False
+            self._record_execution_issue(violation)
             self.deployment_teardown_failed(
                 "agent_control_teardown_failure", private_detail=str(exc)
             )
@@ -3929,20 +3816,10 @@ class Supervisor:
         )
         if not cleanup_complete:
             violation = "agent_control_cleanup_incomplete"
-            if violation not in self.state["policy_violations"]:
-                self.state["policy_violations"].append(violation)
-            if violation not in self.state["leaderboard_eligibility_violations"]:
-                self.state["leaderboard_eligibility_violations"].append(violation)
-            self.state["policy_compliant"] = False
-            self.state["leaderboard_eligible"] = False
+            self._record_execution_issue(violation)
         if cleanup_policy_failure:
             violation = "agent_control_cleanup_policy_violation"
-            if violation not in self.state["policy_violations"]:
-                self.state["policy_violations"].append(violation)
-            if violation not in self.state["leaderboard_eligibility_violations"]:
-                self.state["leaderboard_eligibility_violations"].append(violation)
-            self.state["policy_compliant"] = False
-            self.state["leaderboard_eligible"] = False
+            self._record_execution_issue(violation)
         self._event(
             "AGENT_CONTROL_CLEANED",
             removed=cleanup.removed,

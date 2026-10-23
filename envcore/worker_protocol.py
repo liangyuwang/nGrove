@@ -43,7 +43,8 @@ if TYPE_CHECKING:
 
 # v16 binds evaluation resource evidence to each Candidate invocation, separately
 # from Training Lease allocations. The v15 bounded prediction allocation remains.
-WORKER_PROTOCOL_VERSION = 16
+# v17 uses task-scoped metrics and separates capability checks from certification.
+WORKER_PROTOCOL_VERSION = 17
 WORKER_CONFORMANCE_SUITE_VERSION = f"worker-v{WORKER_PROTOCOL_VERSION}"
 CONFORMANCE_RECEIPT_VERSION = 1
 RESOURCE_ENVELOPE_SCHEMA_VERSION = 1
@@ -51,13 +52,13 @@ RESOURCE_ALLOCATION_RECEIPT_VERSION = 1
 PERFORMANCE_SCORE_MINIMUM = 0.0
 PERFORMANCE_SCORE_MAXIMUM = 100.0
 PERFORMANCE_SCORE_DIRECTION = "maximize"
-PERFORMANCE_SCORE_COMPARISON_SCOPE = "benchmark_release"
+PERFORMANCE_SCORE_COMPARISON_SCOPE = "task_release"
 COST_PRIMARY_METRIC = "time_per_task"
 COST_PRIMARY_UNIT = "seconds_per_task"
 COST_DIRECTION = "minimize"
 COST_AGGREGATION = "candidate_wall_seconds_divided_by_task_count"
-COST_COMPARISON_SCOPE = "benchmark_release"
-COST_COMPARISON_REQUIRES = ("hidden_dataset_identity", "runtime_profile")
+COST_COMPARISON_SCOPE = "task_release"
+COST_COMPARISON_REQUIRES = ("hidden_dataset_identity", "effective_resources")
 COST_SUBMETRICS = (
     "candidate_wall_seconds",
     "task_count",
@@ -314,7 +315,7 @@ class PerformanceScoreContract:
             raise ValueError("performance score direction must be maximize")
         if self.comparison_scope != PERFORMANCE_SCORE_COMPARISON_SCOPE:
             raise ValueError(
-                "performance scores are comparable only within one benchmark release"
+                "performance scores are comparable only within one task release"
             )
 
     @classmethod
@@ -342,7 +343,11 @@ class PerformanceScoreContract:
             minimum=score_range["minimum"],
             maximum=score_range["maximum"],
             direction=value["direction"],
-            comparison_scope=value["comparison_scope"],
+            comparison_scope=(
+                "task_release"
+                if value["comparison_scope"] == "benchmark_release"
+                else value["comparison_scope"]
+            ),
         )
 
     def public_manifest(self) -> Dict[str, Any]:
@@ -434,11 +439,11 @@ class CostContract:
                 "cost aggregation must divide Candidate wall time by task count"
             )
         if self.comparison_scope != COST_COMPARISON_SCOPE:
-            raise ValueError("cost comparison_scope must be benchmark_release")
+            raise ValueError("cost comparison_scope must be task_release")
         if self.comparison_requires != COST_COMPARISON_REQUIRES:
             raise ValueError(
                 "cost comparisons must require hidden dataset identity and "
-                "runtime profile"
+                "effective resources"
             )
         if self.submetrics != COST_SUBMETRICS:
             raise ValueError("cost submetrics do not match the active protocol")
@@ -470,8 +475,16 @@ class CostContract:
             unit=value["unit"],
             direction=value["direction"],
             aggregation=value["aggregation"],
-            comparison_scope=value["comparison_scope"],
-            comparison_requires=tuple(comparison_requires),
+            comparison_scope=(
+                "task_release"
+                if value["comparison_scope"] == "benchmark_release"
+                else value["comparison_scope"]
+            ),
+            comparison_requires=(
+                COST_COMPARISON_REQUIRES
+                if comparison_requires == ["hidden_dataset_identity", "runtime_profile"]
+                else tuple(comparison_requires)
+            ),
             submetrics=tuple(submetrics),
         )
 
@@ -1653,9 +1666,8 @@ class ConformanceReceipt:
 class WorkerDescriptor:
     """Self-description of a concrete Worker deployment.
 
-    Capabilities and deployment trust are intentionally independent.  A
-    user-owned Worker can enforce every technical capability without becoming
-    a certified leaderboard deployment.
+    Capabilities describe execution mechanisms; trust identifies the provenance
+    of those claims and is recorded separately.
     """
 
     worker_id: str
@@ -1709,21 +1721,12 @@ class CapabilityAssessment:
     satisfied: bool
     missing: Tuple[str, ...]
     insufficient: Tuple[str, ...]
-    trust_satisfied: bool
-    conformance_satisfied: bool
-
-    @property
-    def leaderboard_eligible(self) -> bool:
-        return self.satisfied and self.trust_satisfied and self.conformance_satisfied
 
     def public_manifest(self) -> Dict[str, Any]:
         return {
             "capabilities_satisfied": self.satisfied,
             "missing_capabilities": list(self.missing),
             "insufficient_capabilities": list(self.insufficient),
-            "trust_satisfied": self.trust_satisfied,
-            "conformance_satisfied": self.conformance_satisfied,
-            "leaderboard_eligible": self.leaderboard_eligible,
         }
 
 
@@ -1771,17 +1774,8 @@ BASELINE_REQUIREMENTS: Tuple[CapabilityRequirement, ...] = (
 def assess_worker(
     descriptor: WorkerDescriptor,
     requirements: Sequence[CapabilityRequirement],
-    *,
-    conformance_receipt: Optional[ConformanceReceipt] = None,
-    minimum_trust: TrustLevel = TrustLevel.CERTIFIED,
-    require_conformance: bool = True,
 ) -> CapabilityAssessment:
-    """Evaluate capability, trust, and trusted conformance independently."""
-
-    if conformance_receipt is not None and not isinstance(
-        conformance_receipt, ConformanceReceipt
-    ):
-        raise TypeError("conformance_receipt must be a ConformanceReceipt")
+    """Check the execution capabilities required by a task and environment."""
 
     missing = []
     insufficient = []
@@ -1793,22 +1787,8 @@ def assess_worker(
             insufficient.append(requirement.name)
     return CapabilityAssessment(
         satisfied=not missing and not insufficient,
-        # A capability may be required by more than one role, so a shortfall
-        # can be recorded more than once.  Report each name once: callers that
-        # need per-role attribution assess each role separately.
         missing=tuple(sorted(set(missing))),
         insufficient=tuple(sorted(set(insufficient))),
-        trust_satisfied=descriptor.trust_level.rank >= minimum_trust.rank,
-        conformance_satisfied=(
-            not require_conformance
-            or bool(
-                conformance_receipt
-                and conformance_receipt.suite_version
-                == WORKER_CONFORMANCE_SUITE_VERSION
-                and conformance_receipt.worker_id == descriptor.worker_id
-                and conformance_receipt.passed is True
-            )
-        ),
     )
 
 

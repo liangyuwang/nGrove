@@ -96,9 +96,8 @@ remain visible even if a later deployment observation confirms cleanup.
 Optional `detail` supplies a concise
 trusted explanation. Unknown fields are rejected to catch mapping mistakes.
 
-Observation schema version 1 belongs only to this Operator view. It is neither
-a `ConformanceReceipt` nor execution attestation, and never changes policy
-compliance or leaderboard eligibility.
+Observation schema version 1 belongs to this Operator view. It reports current
+observations without changing the recorded execution outcome.
 
 ## Producer responsibilities
 

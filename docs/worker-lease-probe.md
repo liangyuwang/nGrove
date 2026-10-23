@@ -1,7 +1,7 @@
 # Research Worker Lease diagnostic
 
 `envcore.conformance.probe_worker_leases()` exercises the supplied
-Research Worker through Worker Protocol v16. It adds reusable Lease lifecycle
+Research Worker through Worker Protocol v17. It adds reusable Lease lifecycle
 coverage toward original issue 10, alongside the resolution and
 [evaluation resource](worker-evaluation-probe.md) diagnostics. It does not
 create a Tested Agent, run hidden evaluation, select an incumbent, publish an
@@ -198,8 +198,7 @@ separate deployment tests.
 
 ## Evidence and remaining coverage
 
-`public_manifest()` reports stable check codes and always sets
-`formal_conformance: false`. `private_manifest()` additionally retains attempted
+`public_manifest()` reports stable check codes and the observed outcome. `private_manifest()` additionally retains attempted
 Lease requests, resolutions, returned resource receipts, assessments, command
 diagnostics and cleanup observations. Command streams in that report are capped
 at 4096 characters with explicit truncation flags. A compensated failure remains

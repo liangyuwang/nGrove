@@ -1,3 +1,4 @@
+from envcore.benchmark import assess_benchmark_worker
 import json
 import unittest
 
@@ -584,7 +585,7 @@ class WorkerProtocolTests(unittest.TestCase):
             )
 
     def test_capabilities_are_separate_from_deployment_trust(self):
-        assessment = assess_worker(
+        assessment = assess_benchmark_worker(
             descriptor(),
             BASELINE_REQUIREMENTS,
         )
@@ -594,7 +595,7 @@ class WorkerProtocolTests(unittest.TestCase):
         self.assertFalse(assessment.leaderboard_eligible)
 
     def test_certified_conformant_worker_can_be_eligible(self):
-        assessment = assess_worker(
+        assessment = assess_benchmark_worker(
             descriptor(trust=TrustLevel.CERTIFIED),
             BASELINE_REQUIREMENTS,
             conformance_receipt=conformance_receipt(),
@@ -639,7 +640,7 @@ class WorkerProtocolTests(unittest.TestCase):
             )
 
     def test_stale_conformance_suite_cannot_certify_a_new_protocol(self):
-        assessment = assess_worker(
+        assessment = assess_benchmark_worker(
             descriptor(trust=TrustLevel.CERTIFIED),
             BASELINE_REQUIREMENTS,
             conformance_receipt=conformance_receipt(suite_version="worker-v8"),
@@ -649,7 +650,7 @@ class WorkerProtocolTests(unittest.TestCase):
         self.assertFalse(assessment.leaderboard_eligible)
 
     def test_conformance_receipt_is_bound_to_the_assessed_worker(self):
-        assessment = assess_worker(
+        assessment = assess_benchmark_worker(
             descriptor(trust=TrustLevel.CERTIFIED),
             BASELINE_REQUIREMENTS,
             conformance_receipt=conformance_receipt(worker_id="another-worker"),
@@ -677,14 +678,14 @@ class WorkerProtocolTests(unittest.TestCase):
         requirements = tuple(BASELINE_REQUIREMENTS) + (
             CapabilityRequirement("site_attestation"),
         )
-        assessment = assess_worker(worker, requirements)
+        assessment = assess_benchmark_worker(worker, requirements)
         self.assertFalse(assessment.satisfied)
         self.assertEqual(assessment.missing, ("site_attestation",))
         self.assertEqual(assessment.insufficient, ("training_network_isolation",))
 
     def test_descriptor_manifest_contains_no_platform_schema(self):
         manifest = descriptor().public_manifest()
-        self.assertEqual(manifest["protocol_version"], 16)
+        self.assertEqual(manifest["protocol_version"], 17)
         self.assertEqual(manifest["roles"], ["research", "evaluation"])
         self.assertNotIn("conformance", manifest)
         serialized = json.dumps(manifest).lower()
@@ -709,7 +710,7 @@ class WorkerProtocolTests(unittest.TestCase):
         so an undeduplicated shortfall list reports the same gap twice.
         """
 
-        assessment = assess_worker(
+        assessment = assess_benchmark_worker(
             descriptor(
                 overrides={
                     IMMUTABLE_WORKLOAD_IDENTITY: Capability(EnforcementLevel.UNVERIFIED)
@@ -737,7 +738,7 @@ class WorkerProtocolTests(unittest.TestCase):
             capabilities=capabilities,
         )
 
-        assessment = assess_worker(incomplete, BASELINE_REQUIREMENTS)
+        assessment = assess_benchmark_worker(incomplete, BASELINE_REQUIREMENTS)
 
         self.assertEqual(assessment.missing, (IMMUTABLE_WORKLOAD_IDENTITY,))
 

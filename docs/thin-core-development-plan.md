@@ -108,11 +108,9 @@ site-specific adapters are not prerequisites.
 
 - The Coordinator remains authoritative for Track A/B budgets, Lease
   admission, Candidate commit timing, incumbent selection, irreversible
-  research sealing, postmortem ANALYSIS/TEST lifecycle, results, and
-  leaderboard eligibility. It provides no organizer feedback during research.
+  research sealing, postmortem ANALYSIS/TEST lifecycle and results. It provides no organizer feedback during research.
 - The frozen environment defines each run's effective resource requirements.
-  An optional Benchmark Release adds conditions normative for comparison or
-  eligibility. Core validates the requested requirements and their semantic
+  Core validates the requested requirements and their semantic
   evidence. A Worker deployment chooses the platform mechanism, enforces the
   allocation, and reports effective evidence.
 - Core decides when a Candidate must become immutable and defines its
@@ -162,15 +160,13 @@ The v0 support statement is:
   dataset requests and resolutions are path-free.
 - The bundled Agent-facing control transport is a local file mailbox. Mailbox
   filesystem operations and their operating-system support are transport
-  properties, not benchmark semantics.
+  properties.
 - `training_image`, `candidate_image`, `evaluator_image`, and
   `inference_gateway_image` are release-selected OCI-style workload references
-  in v0. They are not Docker container IDs; leaderboard-eligible releases
-  require digest-pinned values.
+  in v0. The Worker records their resolved identities.
 - Core has no native remote artifact handoff, deployment discovery, scheduler
   integration, or non-Docker formal execution path yet.
-- The current local Docker and `host_cli` paths are development/preview paths;
-  no official leaderboard benchmark has been released.
+- The current local Docker and `host_cli` paths are development/preview paths.
 - The bundled Docker Worker freezes matching GPU UUIDs and checks the Training
   workload's visible set before returning a Lease. Hardware isolation and
   independent evaluation-resource certification remain reference-Worker
@@ -179,14 +175,13 @@ The v0 support statement is:
   process, but the bundled bind-mounted storage does not yet provide a hard
   filesystem quota. Pre-inspection disk containment is a known local Worker
   deployment limitation, not a reason for Core to traverse hostile trees or
-  define site storage policy. The bundled launcher records this limitation and
-  therefore does not claim policy compliance.
+  define site storage policy. The bundled launcher records this limitation.
 - After the v0 Worker stops a Lease, the Coordinator validates, copies, hashes,
   and atomically stores the Candidate from a shared path. Version 6 has no
   Worker-side capture operation or remote `ArtifactRef`.
 
 Phase A originally changed documentation only. The later postmortem-evaluation
-migration deliberately advanced the Agent, Worker, task, benchmark, and result
+migration deliberately advanced the Agent, Worker, task and result
 schemas; it still did not claim support for a new deployment.
 
 ## Phase B: expose the existing seams
@@ -292,17 +287,15 @@ Status: complete as a deliberately narrow v0 seam. `AgentConfig` describes the
 participant selection and launch parameters. A trusted launcher separately
 supplies `AgentExecutionEvidence`, including its evidence source, mechanism,
 overall semantic enforcement level, deployment trust, immutable workload
-identity, and explicit limitations. The Supervisor assesses those fields and
-does not infer compliance merely from `container` or `host_cli`. In v0, a
+identity, and explicit limitations. The Supervisor records those fields. In v0, a
 container evidence identity must exactly match the selected Agent image.
 
 The strings `container` and `host_cli` describe bundled v0 launch mechanisms;
-they are not proof of isolation. The Coordinator must eventually base Agent
-policy compliance on trusted semantic evidence supplied by the deployment.
+they are not proof of isolation. The Coordinator uses the semantic execution evidence supplied by the deployment.
 
 Phase B should establish that seam without attempting to define a complete
 cross-platform attestation format. Until sufficient trusted evidence exists,
-the run remains ineligible rather than receiving a capability fallback.
+execution limitations remain explicit.
 
 This aggregate v0 evidence is not the final per-capability attestation format.
 The bundled local launcher is development-trust only. A real external Worker
@@ -394,8 +387,7 @@ The prototype deliberately retained the then-current local/shared-filesystem
 - the Research and Evaluation implementations map semantic Worker operations
   to the site runtime;
 - OCI workloads are consumed directly or mapped to prebuilt SIF artifacts;
-- every OCI-to-SIF mapping is recorded explicitly and the deployment remains
-  leaderboard-ineligible unless that mapping is organizer-approved;
+- every OCI-to-SIF mapping is recorded explicitly;
 - Worker-local deadline and termination behavior are exercised rather than
   simulated by Core.
 
@@ -419,15 +411,14 @@ complete formal receipt.
 
 Status: implemented in the development schemas.
 
-The current versions are Task schema v7, Benchmark schema v4 (v2/v3 releases remain
-readable), Agent Protocol v12, Worker Protocol v16, and result schema v16. The entries below identify the
+The current versions are Task schema v8, Agent Protocol v13, Worker Protocol v17,
+and result schema v17. The entries below identify the
 versions that introduced each change.
 
-- Worker v16, Benchmark v3, and result v14 add a separate evaluation resource
+- Worker v16 and result v14 add a separate evaluation resource
   envelope and per-invocation allocation receipt. Core checks binding, effective
   values and enforcement before accepting cost or performance, and attributes a
-  rejected receipt to infrastructure. TEST resource acceptance gates formal
-  eligibility; later ANALYSIS resource failures remain diagnostic. Docker can
+  rejected receipt to infrastructure; later ANALYSIS resource failures remain diagnostic. Docker can
   apply CPU quota and memory caps with best-effort configuration evidence, while
   unsupported normative cache/I/O/exclusivity conditions fail closed. The bundled
   preview profiles remain unchanged and do not yet freeze a comparable evaluation
@@ -454,10 +445,10 @@ versions that introduced each change.
   override, and an explicit opt-out with a token-consumption warning. The later
   local parent watchdog adds independent termination/recovery for the container
   CLI. Asynchronous Worker operations and remote deployment supervision remain
-  outstanding; this does not change benchmark budgets or formal evidence.
+  outstanding.
 
 - Agent Protocol v4 makes Candidate commit return artifact acceptance only.
-- Task schema v2 and Benchmark schema v2 replaced legacy VAL with hidden ANALYSIS and a
+- Task schema v2 replaced legacy VAL with hidden ANALYSIS and a
   release-frozen Candidate limit, selection rule, and result-visibility policy.
 - Task schema v3 and Worker Protocol v10 replace progressive all-prefix scoring
   with balanced, non-overlapping contexts that each contribute one permanently
@@ -476,7 +467,7 @@ versions that introduced each change.
 - Task schema v5, Worker Protocol v13, and result schema v11 replace
   NLL/perplexity-shaped Core fields with a generic `[0, 100]`, maximize-oriented
   `performance_score` interface. Each release freezes its score definition and
-  exact raw metric names; scores are comparable only within that benchmark
+  exact raw metric names; scores are comparable only within that task
   release. The frozen trusted task evaluator owns the formula; Core validates
   only the generic contract and result shape. The current normalized log-score
   mapping assigns perfect prediction 100 and uniform prediction or worse 0;
@@ -508,8 +499,7 @@ versions that introduced each change.
   bound back to its commit and declaration event evidence. Because the project
   is still pre-preview, earlier development schemas are rejected rather than
   migrated. The first published preview establishes the compatibility baseline.
-- Ordinary ANALYSIS incompleteness never erases TEST or gates leaderboard
-  eligibility. A post-TEST evaluation teardown failure is recorded independently
+- Ordinary ANALYSIS incompleteness never erases TEST. A post-TEST evaluation teardown failure is recorded independently
   as a deployment-integrity violation. TEST remains staged if a cleanup retry
   succeeds; teardown that remains unconfirmed blocks publication and becomes an
   infrastructure failure. Terminal publication happens only after all

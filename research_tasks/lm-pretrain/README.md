@@ -82,8 +82,7 @@ canonical mean NLL raw metric retains distinctions among results at that floor.
 The frozen trusted Evaluator owns this formula; Core validates only the generic
 score contract and result shape. Perplexity may be derived for display but is
 not a required finite result field. The score definition and raw metric names
-are frozen by the release and are not comparable with another benchmark
-release. A run without a successful finite TEST measurement has no performance
+are frozen by the task release and require the same definition for comparison. A run without a successful finite TEST measurement has no performance
 score or raw metrics and is reported as a failed experiment.
 
 The independent cost axis is Candidate `time_per_task`, defined as end-to-end
@@ -101,7 +100,7 @@ the root. Temporary entries are allowed during execution; the final artifact
 still consists of exactly `logits.f32` and `predictions.json` with strict sizes
 and format. The Docker Worker enforces this allocation using bounded tmpfs and
 removes it after scoring or failure and confirmed teardown. See
-[Worker Protocol v15](../../docs/worker-protocol.md) for the allocation formula,
+[Worker Protocol v17](../../docs/worker-protocol.md) for the allocation formula,
 memory provisioning and compatibility changes.
 
 The Agent-visible task manifest declares the invocation contract at
@@ -282,7 +281,9 @@ research lifecycle. Configure capture and retention with `--recording` and
 inspect the private evidence with `ngrove trajectory --episode PATH`; see
 [research recording](../../docs/recording.md).
 
-## Supported preview lanes
+<a id="supported-preview-lanes"></a>
+
+## Benchmark preview lanes
 
 For benchmark comparisons, `benchmark.json` supplies named Track/runtime presets
 and comparison metadata. It remains `leaderboard_eligible: false`: the current
@@ -363,7 +364,7 @@ preparation. Add `--operator-max-research-seconds SECONDS` to change it or
 `--no-operator-research-limit` to disable it for one run. Disabling protection
 risks extremely high token consumption. The setting and notices are never sent
 to the Tested Agent and do not change the six one-hour Leases or comparison key.
-See [operator protection semantics](../../docs/benchmark-reference.md#track-b--lease-bounded-autonomous-research).
+See [operator protection semantics](../../docs/research-protocol.md#track-b--lease-bounded-autonomous-research).
 
 Both Tracks also default to **100 GiB of private operator storage protection**.
 The Worker deployment must provide an empty, bounded filesystem at the selected
@@ -372,7 +373,7 @@ episode parent directory; an ordinary directory will fail admission. Use
 `--no-operator-storage-limit` to explicitly accept unprotected storage. This
 does not change Track budgets or the prediction-output protocol. Remote Workers
 must enforce this in their execution environment. See
-[storage protection requirements](../../docs/benchmark-reference.md#private-operator-storage-protection).
+[storage protection requirements](../../docs/research-protocol.md#private-operator-storage-protection).
 
 ```bash
 ngrove start \

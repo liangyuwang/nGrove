@@ -148,10 +148,7 @@ def read_operator_status(
                 status=state["status"],
                 outcome=state["outcome"],
                 phase=_core_phase(state),
-                comparison_key=state.get("comparison_key"),
                 environment=state.get("environment"),
-                policy_compliant=state.get("policy_compliant"),
-                leaderboard_eligible=state.get("leaderboard_eligible"),
                 closure_reason=state.get("closure_reason"),
                 research_sealed_at=state.get("research_sealed_at"),
                 leases_used=state.get("leases_used", 0),
@@ -175,6 +172,16 @@ def read_operator_status(
                     "deployment_teardown_failures", []
                 ),
             )
+            if "benchmark" in state:
+                core["benchmark"] = {
+                    name: state["benchmark"][name]
+                    for name in ("comparison_key", "policy_compliant", "leaderboard_eligible")
+                }
+            elif state.get("benchmark_release") is not None:
+                core["benchmark"] = {
+                    name: state.get(name)
+                    for name in ("comparison_key", "policy_compliant", "leaderboard_eligible")
+                }
         except (ValueError, TypeError, KeyError, AttributeError) as exc:
             core.update(availability="invalid", error=str(exc))
             state = None
@@ -258,8 +265,6 @@ def format_operator_status(view: Dict[str, Any]) -> str:
             [
                 f"Core snapshot: {core['status']} / {core['phase']} ({core['freshness']}; written {core['modified_at']})",
                 f"Outcome: {display(core['outcome'])}; failure: {display(core['failure'])}",
-                f"Comparison key: {display(core['comparison_key'])}",
-                f"Policy compliant: {display(core['policy_compliant'])}; leaderboard eligible: {display(core['leaderboard_eligible'])}",
                 f"Research sealed: {display(core['research_sealed_at'])}; reason: {display(core['closure_reason'])}",
                 f"Lease snapshot: {core['leases_used']} started; active: {display(core['active_lease_id'])}",
                 f"Candidates: {core['candidate_count']}; incumbent: {display(core['incumbent_id'])}; final: {display(core['final_candidate_id'])}",
@@ -268,6 +273,12 @@ def format_operator_status(view: Dict[str, Any]) -> str:
                 f"Pending Lease teardowns: {display(core['pending_lease_teardowns'])}; teardown failures: {display(core['deployment_teardown_failures'])}",
             ]
         )
+        if "benchmark" in core:
+            benchmark = core["benchmark"]
+            lines.extend([
+                f"Benchmark comparison key: {display(benchmark['comparison_key'])}",
+                f"Benchmark policy compliant: {display(benchmark['policy_compliant'])}; leaderboard eligible: {display(benchmark['leaderboard_eligible'])}",
+            ])
         if core["outcome"] == "success":
             lines.append(
                 f"TEST score: {core['test_performance_score']}; seconds/task: {core['test_cost']['time_per_task']}"

@@ -153,7 +153,7 @@ class DeadlineProbeTests(unittest.TestCase):
         report = self.probe()
         self.assertTrue(report.passed, report.private_manifest())
         self.assertEqual(report.probe_version, LEASE_DEADLINE_PROBE_VERSION)
-        self.assertFalse(report.public_manifest()["formal_conformance"])
+        self.assertNotIn("formal_conformance", report.public_manifest())
         self.assertFalse(hasattr(report, "receipt"))
         self.assertEqual(len(self.worker.starts), 1)
         self.assertEqual(len(self.worker.stops), 1)

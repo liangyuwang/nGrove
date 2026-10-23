@@ -143,7 +143,7 @@ class EvaluationProbeTests(unittest.TestCase):
         self.assertTrue(
             all(call["evaluator_workload"].role == "evaluator" for call in calls)
         )
-        self.assertFalse(report.public_manifest()["formal_conformance"])
+        self.assertNotIn("formal_conformance", report.public_manifest())
         self.assertFalse(hasattr(report, "receipt"))
         self.assertFalse(hasattr(self.worker, "start_lease"))
         self.assertEqual(list(self.candidate.iterdir()), [])

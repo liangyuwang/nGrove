@@ -3,8 +3,7 @@
 The Python namespace is `envcore.worker_protocol`.
 Run-owned environment configurations use this same admission and evidence
 contract. They do not add a platform backend or weaken Worker requirements.
-See [configurable environments](environments.md) for the distinction between
-environment experiments and fixed benchmark lanes.
+See [configurable environments](environments.md) for resource selection and freezing.
 
 Core owns research lifecycle and evaluation decisions. A Worker deployment owns
 execution and enforcement.  The boundary between them is expressed in
@@ -38,8 +37,7 @@ The core repository owns:
 - semantic capability and trust requirements;
 - canonical Candidate validation and artifact identity;
 - validation and recording of trusted TRAIN verification evidence;
-- conformance specifications;
-- leaderboard eligibility decisions.
+- execution diagnostics and failure evidence.
 
 Platform packages own:
 
@@ -78,7 +76,7 @@ The Coordinator decides:
 - when research is irreversibly sealed;
 - when postmortem ANALYSIS and TEST are allowed;
 - which frozen Candidate inventory is selected for ANALYSIS;
-- whether the result is leaderboard eligible.
+- whether the result has complete evaluation and execution evidence.
 
 The Worker enforces:
 
@@ -99,7 +97,7 @@ from a shared path after the Worker has stopped the Lease. Worker-side capture
 and transfer are future protocol capabilities for deployments without shared
 paths; Core still owns Candidate acceptance and canonical identity.
 
-## Capabilities, conformance, and trust
+## Capabilities and execution evidence
 
 `envcore.worker_protocol` describes capabilities by semantic name and
 an enforcement level:
@@ -121,29 +119,10 @@ It also requires `candidate_prediction_storage_quota` and
 hard-bounded during execution and then removed according to the release-owned
 ephemeral lifecycle.
 
-Three independent checks govern formal eligibility:
-
-```text
-required capabilities satisfied
-AND conformance receipt passed
-AND deployment trust is certified
-```
-
-Passing conformance does not certify a user-controlled deployment.  Likewise,
-an organizer-controlled deployment is not eligible when required technical
-capabilities are missing.  Missing or insufficient capabilities are recorded
-explicitly and never trigger a fallback. A receipt is conformant only for the
-suite version associated with the active Worker Protocol; a passing v15 receipt
-cannot certify a v16 Worker boundary.
-
-Worker Protocol v16 retains the v9 evidence direction. `WorkerDescriptor`
-contains only Worker self-description and cannot carry conformance. The trusted
-Operator composition supplies `ConformanceReceipt` independently to the
-Coordinator. The receipt binds its schema and suite versions, the assessed
-Worker ID, issuing authority, organizer-owned report SHA-256, and pass/fail
-decision. Core checks the Worker binding before using the receipt. This local
-trusted-input seam does not pretend to be a cryptographic remote attestation;
-authentication of a future remote receipt belongs to the deployment transport.
+`assess_worker` checks the required capabilities and records missing or
+insufficient enforcement. `AgentExecutionEvidence` records the mechanism,
+workload identity, enforcement level, provenance and concrete limitations.
+The run retains those facts in `execution_issues` and the detailed evidence.
 
 `envcore.conformance` provides resolution,
 [Research Lease](worker-lease-probe.md), and
@@ -166,14 +145,12 @@ as a side effect of inspection. The optional Worker pause/termination case uses
 deployment fault injection and independently verifies that the fault remains
 active through expiry. After injection is attempted, cleanup uses only external
 recovery and observation, with no further call into the potentially lost Worker.
-They do not test the complete physical enforcement, isolation, deadline and
-recovery contract or issue a formal `ConformanceReceipt`. A complete
-organizer-controlled suite remains required before a formal deployment can
-receive one.
+Physical enforcement, isolation and recovery require additional deployment
+checks beyond these scoped observations.
 
 ## Research and evaluation roles
 
-Worker Protocol v16 models ResearchWorker and EvaluationWorker as separate
+Worker Protocol v17 models ResearchWorker and EvaluationWorker as separate
 interfaces because their trust domains differ:
 
 - ResearchWorker sees TRAIN, the Agent workspace, and training outputs, but
@@ -201,17 +178,14 @@ returns `ResolvedWorkload`: effective format and SHA-256, optional immutable
 transformation provenance, and an opaque resolution ID. Core passes that exact
 resolution into `start_lease()` or `evaluate_candidate()`. A digest-pinned OCI
 identity is accepted when the effective OCI digest is unchanged. Any derived
-artifact is formally usable only when the evidence matches a
-`WorkloadResolutionAcceptance` supplied through the trusted organizer release
-receipt. Worker self-description is never organizer acceptance.
+artifact records its effective identity and transformation provenance.
 
 Version 15 is a breaking interface revision in the current unreleased
 development snapshot; it does not imply a package release version. Older
 Workers are rejected rather than adapted implicitly. Version 15 retains the v6
 workload-resolution rules, the v7 requirement that a successful `start_lease()`
 return a `ResourceAllocationReceipt`, and the v8 mandatory resolution
-deadlines, as well as the v9 trusted conformance input and v10 single-target
-semantics, the v11 offline two-artifact file contract, and the v12 hidden-bundle
+deadlines, as well as v10 single-target semantics, the v11 offline two-artifact file contract, and the v12 hidden-bundle
 identity and prediction-storage rules. It also retains the v13 generic
 performance-score contract and the v14 release-scoped cost contract. External
 Worker packages must implement workload and hidden-data resolution, bind
@@ -223,9 +197,9 @@ particular storage or sandbox implementation. Version 15 separates the bounded
 runtime prediction allocation from strict final artifact validation, as
 specified under [Candidate channel](#candidate-channel).
 
-A local development Worker may implement both roles in one process. A future
-formal deployment may place them on separate services connected only through
-an immutable artifact reference. The current version 16 Python interface does
+A local development Worker may implement both roles in one process. A distributed
+deployment may place them on separate services connected only through
+an immutable artifact reference. The current version 17 Python interface does
 not yet define that remote artifact transport.
 
 Worker operation failures and teardown failures have different episode
@@ -237,8 +211,7 @@ deployment-integrity evidence: further evaluation must not continue and the
 Coordinator records a stable teardown code while retaining deployment-specific
 details only in its trusted event stream. Before TEST it terminates the episode.
 During optional post-TEST ANALYSIS it retains the staged TEST decision when a
-cleanup retry succeeds, while recording the run as non-compliant and
-leaderboard-ineligible; cleanup that remains unconfirmed blocks terminal result
+cleanup retry succeeds, while recording the execution boundary failure; cleanup that remains unconfirmed blocks terminal result
 publication. In particular,
 `start_lease()` may fail after the
 platform has created a workload but before the caller receives an
@@ -269,8 +242,8 @@ are not additive timeout grants.
 
 ### Known liveness limit: cooperative deadlines
 
-Worker Protocol v16 is a synchronous, in-process Python interface. Its timeout
-arguments are semantic deadlines and a conformance requirement, but they are
+Worker Protocol v17 is a synchronous, in-process Python interface. Its timeout
+arguments are semantic deadlines and an execution requirement, but they are
 cooperative rather than a Core-side preemption mechanism. Core can reject a
 result returned after its deadline; while a call has not returned, however,
 Core cannot safely interrupt arbitrary Worker code or continue processing other
@@ -316,15 +289,13 @@ those handles are not added to the Core protocol.
 
 The current task fields `training_image`, `candidate_image`,
 `evaluator_image`, and `inference_gateway_image` are release-selected OCI-style
-workload references. They are not Docker container IDs. Leaderboard-eligible
-releases require digest-pinned values, so their semantic requirement is an
-immutable, release-owned workload identity rather than use of the Docker
-Engine. Development tasks may still use mutable references and remain
-ineligible.
+workload references. A digest-pinned reference identifies immutable workload
+content; a mutable reference requires the Worker to record the resolved identity.
+These references describe content independently of the runtime that executes it.
 
 A non-Docker Worker may consume the OCI artifact directly. If it executes a
 derived SIF, VM image, or platform artifact, the mapping must be reproducible,
-identified, recorded, and accepted by the organizer. A Worker may not silently
+identified and recorded. A Worker may not silently
 replace the workload environment. Version 6 defines that semantic evidence and
 operation binding without defining how a platform converts or stores the
 artifact.
@@ -343,7 +314,7 @@ teardown failure. Only then may it invoke the Evaluation Worker. ANALYSIS scores
 the release-selected frozen Candidate history and never changes the incumbent;
 TEST scores only the final Agent-declared incumbent. TEST runs first and its
 decision is persisted before diagnostic ANALYSIS begins. ANALYSIS completeness
-does not gate the TEST outcome or leaderboard eligibility; separate deployment
+does not gate the TEST outcome; separate deployment
 integrity evidence still fails closed if an evaluation boundary cannot be
 confirmed. A failed hidden-data resolution cannot reopen research.
 
@@ -486,7 +457,7 @@ for [cleanup after Worker process loss](worker-recovery.md), with exclusive
 ownership, identity checks and conservative handling of unknown creations.
 Recovery does not resume or publish an episode. The Worker remains
 development-trusted with best-effort deadlines; this
-capability does not grant formal leaderboard eligibility.
+capability describes the enforced execution boundary.
 
 Separately, the trusted local launcher can require a deployment-provided,
 capacity-bounded filesystem for the entire episode. Its private operator limit
@@ -595,7 +566,7 @@ trusted source metadata.
 `evaluate_candidate()` returns `CandidateEvaluationResult`, carrying a generic
 `performance_score`, release-declared `raw_metrics`, and trusted cost evidence. The
 score contract fixes a finite `[0, 100]` range, `maximize` direction, exact raw
-metric names, a definition ID, and `comparison_scope: benchmark_release`. The
+metric names, a definition ID, and `comparison_scope: task_release`. The
 task evaluator owns the mapping from task metrics into this interface; Core and
 the Worker protocol do not assume NLL, perplexity, accuracy, or another
 particular formula. The current `uniform_normalized_log_score_v1` definition is
@@ -621,19 +592,19 @@ and output flush, so it includes sandbox startup, Candidate import/model load,
 context-file reading, participant-controlled scheduling/inference, and
 prediction writing. Hidden resolution, trusted validation, target joining, and
 score computation are outside that clock. Teardown is confirmed before the
-operation returns. Cost comparisons require the same benchmark release, hidden
-dataset identity, and runtime profile. Matching profile names do not prove
-equivalent effective resources or cache/contending-workload conditions.
+operation returns. Cost comparisons require the same task release, hidden
+dataset identity, and effective evaluation resources. Matching resource descriptions do not prove
+equivalent cache or contending-workload conditions.
 
 Worker v16 additionally receives `evaluation_id` and `resource_envelope` on each
 evaluation. When the latter is non-null, `CandidateEvaluationResult` must carry
 an `EvaluationResourceReceipt` binding that ID, episode, Worker and request hash.
 Core validates effective normative values and enforcement before accepting the
-score, and records/revalidates the evidence in result v14. The Benchmark v3
-`evaluation_resource_contract` is separate from Training requirements. A resource
+score, and records/revalidates the evidence in the result. The evaluation
+resource envelope is separate from Training requirements. A resource
 rejection is an infrastructure failure; a later ANALYSIS failure preserves an
 accepted TEST decision. See [evaluation resource contracts](evaluation-resources.md)
-for comparison limits, protocol migration, Docker support, and formal gating.
+for comparison limits, protocol migration and Docker support.
 
 ## Current migration stage
 
@@ -709,14 +680,13 @@ MIG-enabled devices are excluded instead of treating a partition as the
 profile's full GPU. It does not change MIG mode or allocate accelerators.
 
 GPU resource evidence remains `best_effort`: command-boundary regressions and
-inventory checks do not certify denial of access to every ungranted device,
+inventory checks do not establish denial of access to every ungranted device,
 exclusive use, a remote allocator's ownership, or the independent Evaluation
 allocation contract. The local deployment must already be authorized to use
 the selectable host devices. Scheduler-specific ownership and grants remain
 external Worker responsibilities. A real heterogeneous-host and negative-access
 acceptance run is still required before strengthening these guarantees; the
-bundled Worker remains development-trust and does not satisfy an `enforced`
-formal GPU envelope.
+bundled Worker reports development trust and best-effort GPU enforcement.
 
 `CommandResult` streams are capped at 1 MiB each by the local Worker and again
 by the Supervisor before they enter the mailbox or `commands.jsonl`. Concrete
@@ -729,7 +699,7 @@ compatibility implementation, not the extension point for more platforms.  A
 later extraction moves it to a separately distributed Worker package without
 changing Supervisor semantics. Its container CLI supplies an independent
 process watchdog, but the synchronous protocol, grace-based escalation and
-uncertified deployment still report `BEST_EFFORT` deadline evidence. Direct
+bundled development deployment still report `BEST_EFFORT` deadline evidence. Direct
 runtime integrations do not inherit the CLI's process supervision.
 
 Deliberately deferred work includes:
@@ -739,9 +709,6 @@ Deliberately deferred work includes:
 3. asynchronous operations and idempotent operation IDs so slow Worker calls do
    not block deadline enforcement;
 4. remote authenticated Worker transports where a real topology requires one;
-5. deployment certification;
-6. evaluation-operation resource evidence if a future release makes resources
-   outside Training Leases independently normative.
 
 Those features should be added to the Worker protocol and external Worker SDK,
 not by adding platform code to Core.

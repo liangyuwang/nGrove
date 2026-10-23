@@ -296,6 +296,5 @@ is healthy, turn Track A accounting into a fixed wall-clock cap, or cover
 pre-journal readiness resources. Runtime outages, uninterruptible host I/O,
 storage loss or unreliable locking can still prevent cleanup. Loss of the
 watchdog/host itself requires an external service or later manual recovery;
-distributed fencing, power-loss certification and automatic episode
-continuation remain separate capabilities. Development trust, best-effort
-deadline evidence and leaderboard ineligibility remain unchanged.
+distributed fencing, power-loss recovery and automatic episode
+continuation remain separate capabilities. Deadline enforcement remains best-effort.

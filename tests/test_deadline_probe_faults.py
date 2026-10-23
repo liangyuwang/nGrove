@@ -55,7 +55,7 @@ class WorkerFaultDeadlineTests(unittest.TestCase):
                 self.assertEqual(
                     report.probe_version, WORKER_FAULT_DEADLINE_PROBE_VERSION
                 )
-                self.assertFalse(report.public_manifest()["formal_conformance"])
+                self.assertNotIn("formal_conformance", report.public_manifest())
                 self.assertTrue(report.lease["deadline_passed"])
                 self.assertTrue(report.lease["worker_fault"]["accepted"])
                 self.assertTrue(report.lease["cleanup_confirmed"])

@@ -276,7 +276,6 @@ class ResultMetricTests(unittest.TestCase):
             outcome="aborted",
             failure="operator_time_limit_reached",
             closure_reason="operator_time_limit_reached",
-            leaderboard_eligible=False,
             final_candidate_id=None,
             test_status=None,
             test_performance_score=None,
@@ -765,6 +764,7 @@ class ResultMetricTests(unittest.TestCase):
         with self.assertRaisesRegex(ResultSchemaError, "unverified workload"):
             normalize_result_report(
                 _finalized(
+                    result_schema_version=16,
                     leaderboard_eligible=True,
                     workload_resolutions=resolutions,
                 )

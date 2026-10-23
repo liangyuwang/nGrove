@@ -77,7 +77,7 @@ class EnvironmentTests(unittest.TestCase):
             )
             self.assertEqual(run.resources.nvidia_gpu_count, count)
             self.assertEqual(run.task.track_a_total_seconds, 28800)
-            self.assertFalse(run.task.leaderboard_eligible)
+            self.assertFalse(hasattr(run.task, "leaderboard_eligible"))
             identities.add(environment.configuration_sha256)
         self.assertEqual(len(identities), 3)
         self.assertEqual(
@@ -234,11 +234,10 @@ class EnvironmentTests(unittest.TestCase):
             )
             worker.assert_not_called()
 
-    def test_environment_uses_task_budget_without_mutating_eligibility(self):
+    def test_environment_uses_task_budget_without_mutating_task(self):
         task = replace(
             TaskConfig.load(TASK),
             task_kind="research",
-            leaderboard_eligible=True,
             training_image="training@sha256:" + "a" * 64,
             candidate_image="candidate@sha256:" + "a" * 64,
             evaluator_image="evaluator@sha256:" + "a" * 64,
@@ -247,8 +246,8 @@ class EnvironmentTests(unittest.TestCase):
         run = resolve_environment_run(
             task, environment=EnvironmentConfig.from_manifest(cpu_config()), track="B"
         )
-        self.assertTrue(task.leaderboard_eligible)
-        self.assertTrue(run.task.leaderboard_eligible)
+        self.assertFalse(hasattr(task, "leaderboard_eligible"))
+        self.assertFalse(hasattr(run.task, "leaderboard_eligible"))
         self.assertEqual(run.task.track_b_max_leases, task.track_b_max_leases)
         self.assertEqual(
             run.environment.budget.public_budget(), task.public_manifest("B")["budget"]
@@ -447,8 +446,7 @@ class EnvironmentTests(unittest.TestCase):
             fixture.finalize_after_agent_stop(supervisor)
             report = normalize_result_report(supervisor.state)
             self.assertEqual(report["environment"], environment.record())
-            self.assertIsNone(report["comparison_key"])
-            self.assertFalse(report["leaderboard_eligible"])
+            self.assertNotIn("benchmark", report)
             self.assertEqual(fixture.worker.evaluations, ["test", "analysis"])
             for field, value in (
                 ("leaderboard_eligible", True),
@@ -628,7 +626,7 @@ class EnvironmentTests(unittest.TestCase):
                 self.assertEqual(scaled.resources.nvidia_gpu_count, 16)
                 self.assertEqual(scaled.task.track_a_total_seconds, 7200)
                 self.assertIsNone(benchmark.comparison_key)
-                self.assertFalse(scaled.task.leaderboard_eligible)
+                self.assertFalse(hasattr(scaled.task, "leaderboard_eligible"))
                 self.assertEqual(
                     benchmark.release_manifest["benchmark_id"], release.benchmark_id
                 )
@@ -663,10 +661,10 @@ class EnvironmentTests(unittest.TestCase):
             report = normalize_result_report(supervisor.state)
             self.assertEqual(report["environment"], run.environment.record())
             self.assertEqual(
-                report["benchmark_release"]["benchmark_id"], release.benchmark_id
+                report["benchmark"]["release"]["benchmark_id"], release.benchmark_id
             )
-            self.assertIsNone(report["comparison_key"])
-            self.assertFalse(report["leaderboard_eligible"])
+            self.assertIsNone(report["benchmark"]["comparison_key"])
+            self.assertFalse(report["benchmark"]["leaderboard_eligible"])
             self.assertEqual(fixture.worker.evaluations, ["test", "analysis"])
             changed = copy.deepcopy(report)
             larger = FrozenEnvironment.create(
@@ -708,8 +706,8 @@ class EnvironmentTests(unittest.TestCase):
             supervisor.finish()
             fixture.finalize_after_agent_stop(supervisor)
             report = copy.deepcopy(supervisor.state)
-            report["benchmark_release"].pop("environment_sha256")
-            self.assertIsNotNone(normalize_result_report(report)["comparison_key"])
+            report["benchmark"]["release"].pop("environment_sha256")
+            self.assertIsNotNone(normalize_result_report(report)["benchmark"]["comparison_key"])
 
             changed = copy.deepcopy(report)
             larger = FrozenEnvironment.create(
@@ -728,7 +726,7 @@ class EnvironmentTests(unittest.TestCase):
             for field in ("resource_envelope", "evaluation_resource_envelope"):
                 with self.subTest(field=field):
                     changed = copy.deepcopy(report)
-                    changed["benchmark_release"][field] = ResourceEnvelope(
+                    changed["benchmark"]["release"][field] = ResourceEnvelope(
                         requirements=(
                             ResourceRequirement(
                                 "host.count", "exact", 2, EnforcementLevel.BEST_EFFORT
@@ -741,7 +739,7 @@ class EnvironmentTests(unittest.TestCase):
                         normalize_result_report(changed)
 
             changed = copy.deepcopy(report)
-            changed["benchmark_release"].pop("track_config")
+            changed["benchmark"]["release"].pop("track_config")
             with self.assertRaises(ResultSchemaError):
                 normalize_result_report(changed)
         finally:
@@ -760,7 +758,7 @@ class EnvironmentTests(unittest.TestCase):
             supervisor.finish()
             fixture.finalize_after_agent_stop(supervisor)
             report = normalize_result_report(supervisor.state)
-            self.assertTrue(report["leaderboard_eligible"])
+            self.assertTrue(report["benchmark"]["leaderboard_eligible"])
             frozen = FrozenEnvironment.from_record(report["environment"])
             self.assertEqual(frozen.budget.public_budget(), report["budget"])
             changed = copy.deepcopy(report)

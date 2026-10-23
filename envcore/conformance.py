@@ -136,7 +136,6 @@ class WorkerProbeReport:
             "run_id": self.run_id,
             "worker_id": self.worker_id,
             "passed": self.passed,
-            "formal_conformance": False,
             "checks": [item.public_manifest() for item in self.checks],
         }
 

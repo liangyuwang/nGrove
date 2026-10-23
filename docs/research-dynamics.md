@@ -213,7 +213,7 @@ command found in a log, and never load hidden data. Identity checks use existing
 identity records and trusted snapshot evidence; they must not read hidden content
 to recompute its digest.
 
-Do not change incumbents, TEST, leaderboards, resource accounting, visibility
+Do not change incumbents, TEST, resource accounting, visibility
 policy, or original episode files. Write all derived outputs to a separate
 directory outside the source episode or snapshot, with no overlap.
 
@@ -685,8 +685,7 @@ that equality requirement.
 Ordinary comparisons across Agents must check:
 
 ```text
-comparison_key
-Release / data / evaluator identities
+Task / data / evaluator identities
 Effective resource conditions
 Metric definitions
 Analysis configuration and coverage rules
@@ -883,10 +882,10 @@ Repository facts refer to these files at the revision recorded above:
 - [`envcore/operator_status.py`](../envcore/operator_status.py): the distinction
   between Core state and independent execution observations.
 
-For shared research semantics, see the [full reference](benchmark-reference.md),
-particularly [ANALYSIS](benchmark-reference.md#analysis),
-[Intermediate Incumbents and Research Curves](benchmark-reference.md#intermediate-incumbents-and-research-curves),
-and [Evaluation Axes](benchmark-reference.md#evaluation-axes).
+For shared research semantics, see the [full reference](research-protocol.md),
+particularly [ANALYSIS](research-protocol.md#analysis),
+[Intermediate Incumbents and Research Curves](research-protocol.md#intermediate-incumbents-and-research-curves),
+and [Evaluation Axes](research-protocol.md#evaluation-axes).
 
 Methodological background, not code dependencies:
 

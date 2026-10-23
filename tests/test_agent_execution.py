@@ -1,3 +1,4 @@
+from envcore.benchmark import agent_policy_compliant, agent_benchmark_eligible
 import tempfile
 import unittest
 from dataclasses import replace
@@ -20,8 +21,8 @@ class AgentExecutionEvidenceTests(unittest.TestCase):
             immutable_workload_identity=True,
         )
 
-        self.assertFalse(evidence.policy_compliant)
-        self.assertFalse(evidence.leaderboard_eligible)
+        self.assertFalse(agent_policy_compliant(evidence))
+        self.assertFalse(agent_benchmark_eligible(evidence))
 
     def test_local_container_mechanism_does_not_imply_compliance_or_trust(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -36,8 +37,8 @@ class AgentExecutionEvidenceTests(unittest.TestCase):
 
             evidence = describe_local_agent_execution(agent)
 
-            self.assertFalse(evidence.policy_compliant)
-            self.assertFalse(evidence.leaderboard_eligible)
+            self.assertFalse(agent_policy_compliant(evidence))
+            self.assertFalse(agent_benchmark_eligible(evidence))
             self.assertEqual(evidence.trust_level, TrustLevel.DEVELOPMENT)
             self.assertEqual(
                 evidence.limitations,
@@ -47,15 +48,15 @@ class AgentExecutionEvidenceTests(unittest.TestCase):
                 agent, operator_storage_bounded=True
             )
             self.assertNotIn("agent_writable_storage_unbounded", protected.limitations)
-            self.assertFalse(protected.policy_compliant)
-            self.assertFalse(protected.leaderboard_eligible)
+            self.assertFalse(agent_policy_compliant(protected))
+            self.assertFalse(agent_benchmark_eligible(protected))
             certified = replace(
                 evidence,
                 enforcement=EnforcementLevel.ENFORCED,
                 trust_level=TrustLevel.CERTIFIED,
                 limitations=(),
             )
-            self.assertTrue(certified.leaderboard_eligible)
+            self.assertTrue(agent_benchmark_eligible(certified))
 
     def test_host_process_reports_the_boundary_limitation(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -68,7 +69,7 @@ class AgentExecutionEvidenceTests(unittest.TestCase):
 
             evidence = describe_local_agent_execution(agent)
 
-            self.assertFalse(evidence.policy_compliant)
+            self.assertFalse(agent_policy_compliant(evidence))
             self.assertEqual(
                 evidence.limitations,
                 (

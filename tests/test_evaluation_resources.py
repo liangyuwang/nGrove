@@ -189,11 +189,7 @@ class EvaluationResourceSupervisorTests(unittest.TestCase):
             self.formal_supervisor()[0]
             if formal
             else self.supervisor(
-                benchmark_release={
-                    "evaluation_resource_envelope": envelope().public_manifest()
-                    if contract
-                    else None,
-                }
+                evaluation_resource_envelope=envelope() if contract else None
             )
         )
         supervisor.start_lease()
@@ -222,6 +218,7 @@ class EvaluationResourceSupervisorTests(unittest.TestCase):
         self.assertEqual(request.sha256, reordered.sha256)
         supervisor = self.supervisor(
             benchmark_release={
+                "benchmark_id": "resource-preview",
                 "evaluation_resource_envelope": request.public_manifest()
             },
             evaluation_resource_envelope=reordered,
@@ -251,6 +248,7 @@ class EvaluationResourceSupervisorTests(unittest.TestCase):
             ):
                 self.supervisor(
                     benchmark_release={
+                        "benchmark_id": "resource-preview",
                         "evaluation_resource_envelope": request.public_manifest()
                     },
                     evaluation_resource_envelope=explicit,
@@ -260,21 +258,21 @@ class EvaluationResourceSupervisorTests(unittest.TestCase):
         constructor = test_supervisor.Supervisor
 
         def reordered_release(**kwargs):
-            release = copy.deepcopy(kwargs["benchmark_release"])
+            release = copy.deepcopy(kwargs["benchmark"].release)
             raw = copy.deepcopy(release["evaluation_resource_envelope"])
             release["evaluation_resource_envelope"] = raw
             kwargs["evaluation_resource_envelope"] = ResourceEnvelope.from_manifest(raw)
             raw["normative"].reverse()
-            kwargs["benchmark_release"] = release
+            kwargs["benchmark"].release = release
             return constructor(**kwargs)
 
         with patch.object(test_supervisor, "Supervisor", side_effect=reordered_release):
             state = self.finish(formal=True)
-        self.assertTrue(state["leaderboard_eligible"])
-        self.assertEqual(state["leaderboard_eligibility_violations"], [])
+        self.assertTrue(state["benchmark"]["leaderboard_eligible"])
+        self.assertEqual(state["benchmark"]["leaderboard_eligibility_violations"], [])
         normalize_result_report(state)
         changed = copy.deepcopy(state)
-        changed["benchmark_release"]["evaluation_resource_envelope"]["normative"][0][
+        changed["benchmark"]["release"]["evaluation_resource_envelope"]["normative"][0][
             "value"
         ] = 99
         with self.assertRaisesRegex(ResultSchemaError, "must match the frozen release"):
@@ -293,9 +291,9 @@ class EvaluationResourceSupervisorTests(unittest.TestCase):
             "evaluation_resource_contract_failure",
         )
         self.assertEqual(state["deployment_teardown_failures"], [])
-        self.assertTrue(state["policy_compliant"])
-        self.assertTrue(state["leaderboard_eligible"])
-        self.assertEqual(state["leaderboard_eligibility_violations"], [])
+        self.assertTrue(state["benchmark"]["policy_compliant"])
+        self.assertTrue(state["benchmark"]["leaderboard_eligible"])
+        self.assertEqual(state["benchmark"]["leaderboard_eligibility_violations"], [])
         normalize_result_report(state)
 
     def test_missing_analysis_receipt_preserves_formal_eligibility(self):
@@ -317,12 +315,12 @@ class EvaluationResourceSupervisorTests(unittest.TestCase):
         state = self.finish(transform, formal=True)
         self.assertEqual(state["outcome"], "success")
         self.assertIsNotNone(state["test_cost"])
-        self.assertFalse(state["leaderboard_eligible"])
-        self.assertFalse(state["policy_compliant"])
+        self.assertFalse(state["benchmark"]["leaderboard_eligible"])
+        self.assertFalse(state["benchmark"]["policy_compliant"])
         self.assertTrue(state["deployment_teardown_failures"])
         self.assertIn(
             "deployment_teardown_incomplete",
-            state["leaderboard_eligibility_violations"],
+            state["benchmark"]["leaderboard_eligibility_violations"],
         )
         normalize_result_report(state)
 
@@ -358,7 +356,7 @@ class EvaluationResourceSupervisorTests(unittest.TestCase):
         self.assertIsNone(state["test_cost"])
         self.assertIsNone(state["test_performance_score"])
         self.assertEqual(self.worker.evaluations, ["test"])
-        self.assertFalse(state["leaderboard_eligible"])
+        self.assertFalse(state["benchmark"]["leaderboard_eligible"])
         normalize_result_report(state)
 
     def test_analysis_gpu_query_failure_preserves_formal_eligibility(self):

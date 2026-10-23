@@ -61,7 +61,7 @@ freezes its resolved environment before task reveal.
 | Configure | Explore & evaluate | Record & study |
 | --- | --- | --- |
 | Choose a research task, compute resources, and time budget. | Let the Agent conduct research; evaluate submitted artifacts after sealing and confirmed teardown. | Retain observable actions, executions, and Candidate artifacts for future meta-optimization. |
-| [Environment configuration →](docs/environments.md) | [Research protocol →](docs/benchmark-reference.md) | [Research recording →](docs/recording.md) |
+| [Environment configuration →](docs/environments.md) | [Research protocol →](docs/research-protocol.md) | [Research recording →](docs/recording.md) |
 
 > [!NOTE]
 > **Implemented:** autonomous exploration, artifact evaluation, and trajectory recording.
@@ -81,7 +81,6 @@ freezes its resolved environment before task reveal.
 | Training-research protocol | Leases, immutable Candidates, research history, and sealing |
 | Research recording | Observable actions, feedback evidence, executions, and artifacts for future meta-optimization |
 | Evaluation | Independent measurement of submitted artifacts after research is sealed |
-| [Benchmark comparisons](#benchmark-comparisons) | Published lanes, fixed comparison conditions, and formal eligibility |
 
 Core defines the research protocol. Workers implement execution and isolation in
 the user's environment. The repository includes a local Docker runtime for the
@@ -192,7 +191,8 @@ Research tasks can also be used for standardized comparisons through named
 Track/runtime presets and fixed comparison conditions. No frozen,
 leaderboard-eligible benchmark has been released yet. See
 [benchmark use](research_tasks/README.md#optional-benchmark-use) for configuration,
-comparison keys and eligibility requirements.
+comparison keys and eligibility requirements. The [benchmark guide](docs/benchmarks.md)
+describes the optional result extension and formal evaluation requirements.
 
 ## Results
 
@@ -240,13 +240,13 @@ Scores use the preview's 0–100 performance metric; time per task measures
 Candidate serving, not training.
 
 > [!IMPORTANT]
-> These are **non-compliant, leaderboard-ineligible `host_cli` previews**. Each
+> These runs used **`host_cli`**, which shares the host filesystem and network. Each
 > configuration ran once, so seed variance is not estimated, and the table is
 > ordered by model name rather than ranked. Earlier failed attempts for
 > `glm-5.3` in Track B and `deepseek-v4-flash` in Track A are excluded in favor
 > of their later attempts.
 
-Historical success also does not certify the current Worker revision; see the
+Historical success describes the recorded Worker revision; see the
 [recorded evidence scope](docs/worker-acceptance-matrix.md#historical-evidence-catalog).
 
 The [interactive dashboard](https://xiehuanyi.github.io/ngrove-viz/?lang=en) shows every run's Candidate ANALYSIS
@@ -272,7 +272,7 @@ Repository Assistant takes the **trusted operator** role. The **Research Agent**
 is the separate autonomous participant inside the environment.
 
 For a research run, ask the Repository Assistant to follow the
-[full reference](docs/benchmark-reference.md) and give it one of the prompts
+[full reference](docs/research-protocol.md) and give it one of the prompts
 below. Repository development and review do not by themselves request a run.
 
 Choose a [research task](research_tasks/README.md), such as
@@ -421,7 +421,7 @@ and [research run configuration](research_tasks/lm-pretrain/README.md#run-a-rese
 They cover the Agent command, resource settings, and a dedicated working root
 outside the Core checkout.
 
-- **Existing host CLI Agent:** [host-native preview setup](docs/benchmark-reference.md#bring-your-own-agent-host-native-cli-tools).
+- **Existing host CLI Agent:** [host-native preview setup](docs/research-protocol.md#bring-your-own-agent-host-native-cli-tools).
 - **Your own execution environment:** [external Worker integration](docs/worker-integration.md).
 
 ## Roadmap
@@ -477,8 +477,7 @@ protocol and resource contracts:
   [fair cost comparisons](docs/evaluation-resources.md). Extend the current single-node and NVIDIA-only accelerator restrictions as real Worker deployments require multi-node execution or other accelerators.
 - **Evaluator.** Make artifact and evaluation interfaces task-owned, moving
   the hard-coded next-token logits assumptions out of the common task contract
-  while retaining the current LM implementation. Establish organizer-controlled
-  hidden evaluation and frozen evaluation contracts for formal releases.
+  while retaining the current LM implementation. Keep evaluation data and its construction isolated from research workloads.
 
 Current implementation status and deployment checks are documented in the
 [development plan](docs/thin-core-development-plan.md#current-preview-closeout-boundary)
@@ -491,7 +490,7 @@ and [acceptance matrix](docs/worker-acceptance-matrix.md).
 Bring an Agent, an execution environment, or a contribution to the research tasks:
 
 - **Run your Agent.** Choose a research task and use the
-  [reproducibility and logging guidance](docs/benchmark-reference.md#reproducibility-and-logging)
+  [reproducibility and logging guidance](docs/research-protocol.md#reproducibility-and-logging)
   to record the run's configuration, results, and limitations.
 - **Integrate a Worker.** Implement the [Worker Protocol](docs/worker-protocol.md)
   for your environment, using the existing [integration guide](docs/worker-integration.md)
@@ -506,14 +505,14 @@ an experiment, integration, or proposal, or
 ## Documentation
 
 For the current research protocol and operating details, see the
-[training-research reference](docs/benchmark-reference.md).
+[training-research reference](docs/research-protocol.md).
 
 | Read more | Contents |
 | --- | --- |
 | [Research scope and current implementation](docs/research-scope.md) | RSI and meta-optimization goals, the current stage, and the recording interface for future methods |
 | [Environment configuration](docs/environments.md) | Compute resources, time budgets, frozen identities, and scaling examples |
 | [Research recording](docs/recording.md) | Implemented trajectory capture, runner observations, artifact retention and read-only export |
-| [Training-research reference](docs/benchmark-reference.md) | Shared protocol, Track accounting, evaluation, isolation and local operation |
+| [Training-research reference](docs/research-protocol.md) | Shared protocol, Track accounting, evaluation, isolation and local operation |
 | [Research tasks](research_tasks/README.md) | Research problems, evaluation contracts and run configuration |
 | [Worker Protocol](docs/worker-protocol.md) and [integration](docs/worker-integration.md) | Execution contracts and external deployment responsibilities |
 | [Operator status](docs/operator-status.md) and [recovery](docs/worker-recovery.md) | Monitoring, interruption evidence, and owned-resource cleanup |

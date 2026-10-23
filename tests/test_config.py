@@ -206,14 +206,13 @@ class ConfigTests(unittest.TestCase):
         self.assertNotIn("agent", public)
         self.assertNotIn("hardware", public)
         self.assertEqual(public["task_kind"], "development_smoke")
-        self.assertFalse(public["leaderboard_eligible"])
+        self.assertNotIn("leaderboard_eligible", public)
         self.assertNotIn("official_val_queries_per_lease", public["budget"])
         self.assertEqual(public["validation"]["organizer_feedback"], "none")
         self.assertEqual(public["analysis"]["feedback"], "never_agent_visible")
         self.assertEqual(config.context_lengths, (1, 2, 3))
         self.assertEqual(config.evaluator_device, "cpu")
         self.assertEqual(config.evaluator_backend, "isolated_candidate")
-        self.assertTrue(config.evaluator_policy_compliant)
         boundary = public["evaluation"]["candidate_boundary"]
         self.assertEqual(boundary["target_artifact_mount"], "none")
         self.assertEqual(boundary["context_artifact_access"], "read_only")
@@ -268,7 +267,7 @@ class ConfigTests(unittest.TestCase):
                 "definition_id": "uniform_normalized_log_score_v1",
                 "range": {"minimum": 0.0, "maximum": 100.0},
                 "direction": "maximize",
-                "comparison_scope": "benchmark_release",
+                "comparison_scope": "task_release",
                 "raw_metrics": ["mean_nll"],
             },
         )
@@ -284,10 +283,10 @@ class ConfigTests(unittest.TestCase):
                 "unit": "seconds_per_task",
                 "direction": "minimize",
                 "aggregation": "candidate_wall_seconds_divided_by_task_count",
-                "comparison_scope": "benchmark_release",
+                "comparison_scope": "task_release",
                 "comparison_requires": [
                     "hidden_dataset_identity",
-                    "runtime_profile",
+                    "effective_resources",
                 ],
                 "submetrics": [
                     "candidate_wall_seconds",
@@ -356,28 +355,21 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ConfigError, "episode-owned"):
                 TaskConfig.load(task)
 
-    def test_task_classification_is_explicit_and_smoke_is_never_ranked(self):
+    def test_task_classification_is_explicit(self):
+        config = TaskConfig.load(TASK)
+        self.assertEqual(config.task_kind, "development_smoke")
+        self.assertFalse(hasattr(config, "leaderboard_eligible"))
         with tempfile.TemporaryDirectory() as directory:
             task = self._write_task(directory)
-            payload = json.loads(task.read_text(encoding="utf-8"))
-
-            payload.pop("task_kind")
-            task.write_text(json.dumps(payload), encoding="utf-8")
-            with self.assertRaisesRegex(ConfigError, "task_kind"):
-                TaskConfig.load(task)
-
-            payload["task_kind"] = "development_smoke"
-            payload["leaderboard_eligible"] = True
-            task.write_text(json.dumps(payload), encoding="utf-8")
-            with self.assertRaisesRegex(ConfigError, "may not be leaderboard"):
-                TaskConfig.load(task)
-
+            payload = json.loads(task.read_text())
+            for value in (None, "unknown"):
+                payload["task_kind"] = value
+                task.write_text(json.dumps(payload))
+                with self.assertRaisesRegex(ConfigError, "task_kind"):
+                    TaskConfig.load(task)
             payload["task_kind"] = "research"
-            payload["leaderboard_eligible"] = False
-            task.write_text(json.dumps(payload), encoding="utf-8")
-            config = TaskConfig.load(task)
-            self.assertEqual(config.task_kind, "research")
-            self.assertFalse(config.leaderboard_eligible)
+            task.write_text(json.dumps(payload))
+            self.assertEqual(TaskConfig.load(task).task_kind, "research")
 
     def test_task_requires_the_generic_performance_score_contract(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -393,7 +385,7 @@ class ConfigTests(unittest.TestCase):
                 "definition_id": "accuracy_v2",
                 "range": {"minimum": 0.0, "maximum": 100.0},
                 "direction": "maximize",
-                "comparison_scope": "benchmark_release",
+                "comparison_scope": "task_release",
                 "raw_metrics": ["accuracy"],
             }
             task.write_text(json.dumps(payload), encoding="utf-8")
@@ -423,26 +415,17 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ConfigError, "evaluation.cost"):
                 TaskConfig.load(task)
 
-    def test_leaderboard_task_requires_digest_pinned_images(self):
+    def test_task_schema_8_rejects_embedded_ranking_policy(self):
         with tempfile.TemporaryDirectory() as directory:
             task = self._write_task(directory)
             payload = json.loads(task.read_text(encoding="utf-8"))
-            payload["task_kind"] = "research"
             payload["leaderboard_eligible"] = True
             task.write_text(json.dumps(payload), encoding="utf-8")
-            with self.assertRaisesRegex(ConfigError, "digest-pinned"):
+            with self.assertRaisesRegex(ConfigError, "does not declare"):
                 TaskConfig.load(task)
-
-            digest = "@sha256:" + "a" * 64
-            for name in payload["images"]:
-                payload["images"][name] = f"example/{name}{digest}"
+            payload["schema_version"] = 7
             task.write_text(json.dumps(payload), encoding="utf-8")
-            self.assertTrue(TaskConfig.load(task).leaderboard_eligible)
-
-            payload["images"]["training"] = f"example/training image{digest}"
-            task.write_text(json.dumps(payload), encoding="utf-8")
-            with self.assertRaisesRegex(ConfigError, "digest-pinned"):
-                TaskConfig.load(task)
+            self.assertFalse(hasattr(TaskConfig.load(task), "leaderboard_eligible"))
 
     def test_hidden_datasets_must_be_distinct_and_outside_train(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -478,7 +461,7 @@ class ConfigTests(unittest.TestCase):
         # The Agent reads this manifest and the `agent status` response.  A
         # rename in either surface must move this version with it.
         self.assertEqual(manifest["protocol_version"], AGENT_PROTOCOL_VERSION)
-        self.assertEqual(AGENT_PROTOCOL_VERSION, 12)
+        self.assertEqual(AGENT_PROTOCOL_VERSION, 13)
 
     def test_prior_task_storage_semantics_are_not_silently_reinterpreted(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -486,7 +469,7 @@ class ConfigTests(unittest.TestCase):
             payload = json.loads(task.read_text(encoding="utf-8"))
             payload["schema_version"] = 6
             task.write_text(json.dumps(payload), encoding="utf-8")
-            with self.assertRaisesRegex(ConfigError, "schema_version must be 7"):
+            with self.assertRaisesRegex(ConfigError, "schema_version must be 7 or 8"):
                 TaskConfig.load(task)
 
     def test_agent_egress_environment_and_host_runner_are_separate(self):
@@ -504,7 +487,6 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(
                 container.public_manifest(
                     "python:gateway",
-                    policy_compliant=True,
                     control_transport="test_transport",
                 )["workspace_scope"],
                 "episode_snapshot",
@@ -545,7 +527,6 @@ class ConfigTests(unittest.TestCase):
             ).validate()
             public = agent.public_manifest(
                 "gateway:image",
-                policy_compliant=True,
                 control_transport="test_transport",
             )["inference"]
             self.assertTrue(public["enabled"])

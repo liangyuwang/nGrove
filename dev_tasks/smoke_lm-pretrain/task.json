@@ -1,8 +1,7 @@
 {
-  "schema_version": 7,
+  "schema_version": 8,
   "task_id": "tinystories-byte-lm-smoke-v1",
   "task_kind": "development_smoke",
-  "leaderboard_eligible": false,
   "paths": {
     "train": "data/train",
     "analysis": "data/private/analysis",
@@ -25,7 +24,7 @@
         "maximum": 100.0
       },
       "direction": "maximize",
-      "comparison_scope": "benchmark_release",
+      "comparison_scope": "task_release",
       "raw_metrics": ["mean_nll"]
     },
     "cost": {
@@ -35,10 +34,10 @@
       "unit": "seconds_per_task",
       "direction": "minimize",
       "aggregation": "candidate_wall_seconds_divided_by_task_count",
-      "comparison_scope": "benchmark_release",
+      "comparison_scope": "task_release",
       "comparison_requires": [
         "hidden_dataset_identity",
-        "runtime_profile"
+        "effective_resources"
       ],
       "submetrics": [
         "candidate_wall_seconds",

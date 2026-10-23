@@ -21,6 +21,7 @@ from envcore.agent_api_bundle import publish_agent_api_bundle
 from envcore.benchmark import (
     FORMAL_ARTIFACT_DIGEST_FIELDS,
     FORMAL_ARTIFACT_IDENTITY_ALGORITHMS,
+    BenchmarkContext,
     BenchmarkRelease,
     ReleaseVerificationReceipt,
 )
@@ -509,11 +510,12 @@ class SupervisorTests(unittest.TestCase):
             research_worker=self.worker,
             evaluation_worker=self.worker,
             agent_control_transport=self.mailbox,
-            comparison_key=comparison_key,
-            benchmark_release=benchmark_release,
-            release_verification=release_verification,
-            research_worker_conformance=worker_conformance,
-            evaluation_worker_conformance=worker_conformance,
+            benchmark=BenchmarkContext(
+                release=benchmark_release, comparison_key=comparison_key,
+                verification=release_verification,
+                research_conformance=worker_conformance,
+                evaluation_conformance=worker_conformance,
+            ) if benchmark_release is not None else None,
             monotonic=self.clock,
             wall_time=lambda: 1_700_000_000.0,
             operator_max_research_seconds=operator_max_research_seconds,
@@ -564,7 +566,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(state["active_lease"]["lease_id"], lease["lease_id"])
         self.assertIsNone(state["final_candidate_id"])
         self.assertIsNone(state["test_status"])
-        self.assertFalse(state["leaderboard_eligible"])
+        self.assertNotIn("leaderboard_eligible", state)
         with self.assertRaises(ProtocolError):
             supervisor.handle({"op": "finish"})
         supervisor.terminate_worker_leases_for_teardown()
@@ -619,7 +621,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(supervisor.state["status"], "operator_stopped")
         self.assertEqual(supervisor.state["outcome"], "aborted")
         self.assertEqual(supervisor.state["failure"], "operator_time_limit_reached")
-        self.assertFalse(supervisor.state["policy_compliant"])
+        self.assertNotIn("policy_compliant", supervisor.state)
         self.assertIsNotNone(supervisor.state["active_lease"])
 
     def test_local_guard_revokes_a_workload_while_core_waits_inside_worker(self):
@@ -727,15 +729,15 @@ class SupervisorTests(unittest.TestCase):
             comparison_key=comparison_key,
             benchmark_release=release,
         )
-        self.assertEqual(supervisor.state["comparison_key"], comparison_key)
-        self.assertFalse(supervisor.state["leaderboard_eligible"])
-        self.assertEqual(supervisor.public_status()["comparison_key"], comparison_key)
+        self.assertEqual(supervisor.state["benchmark"]["comparison_key"], comparison_key)
+        self.assertFalse(supervisor.state["benchmark"]["leaderboard_eligible"])
+        self.assertEqual(supervisor.public_status()["benchmark"]["comparison_key"], comparison_key)
         public_task = json.loads(
             supervisor.public_task_path.read_text(encoding="utf-8")
         )
-        self.assertEqual(public_task["comparison_key"], comparison_key)
-        self.assertEqual(public_task["benchmark_release"], public_release)
-        self.assertEqual(supervisor.state["benchmark_release"], release)
+        self.assertEqual(public_task["benchmark"]["comparison_key"], comparison_key)
+        self.assertEqual(public_task["benchmark"]["release"], public_release)
+        self.assertEqual(supervisor.state["benchmark"]["release"], release)
 
     def test_full_agent_manifest_does_not_identify_hidden_length_choices(self):
         root = self.episode.parent
@@ -787,7 +789,7 @@ class SupervisorTests(unittest.TestCase):
                         supervisor.state_path.read_text(encoding="utf-8")
                     )
                     for record in (
-                        audit["benchmark_release"],
+                        audit["benchmark"]["release"],
                         audit["artifact_identities"],
                     ):
                         self.assertEqual(
@@ -804,7 +806,7 @@ class SupervisorTests(unittest.TestCase):
             for digest in private_digests:
                 self.assertNotIn(digest, serialized)
 
-    def formal_supervisor(self, *, inference=None, gateway_artifact=None, begin=True):
+    def formal_supervisor(self, *, inference=None, gateway_artifact=None, workload_acceptance=None, begin=True):
         """A trusted test deployment with every formal contract input supplied."""
         digest = "@sha256:" + "a" * 64
         formal_task_dir = self.episode.parent / "formal-task"
@@ -825,7 +827,6 @@ class SupervisorTests(unittest.TestCase):
             source=formal_task,
             train_dir=formal_train_dir,
             task_kind="research",
-            leaderboard_eligible=True,
             training_image="example/training" + digest,
             candidate_image="example/candidate" + digest,
             evaluator_image="example/evaluator" + digest,
@@ -893,6 +894,7 @@ class SupervisorTests(unittest.TestCase):
             artifact_sha256=artifacts,
             artifact_identity_algorithms=FORMAL_ARTIFACT_IDENTITY_ALGORITHMS,
             inference_gateway_artifact=gateway_artifact,
+            workload_resolution_acceptance=workload_acceptance or {},
         )
         with patch(
             "envcore.supervisor._core_identity",
@@ -972,8 +974,8 @@ class SupervisorTests(unittest.TestCase):
             receipt.private_manifest(),
         )
         final = self.finalize_gateway_supervisor(supervisor)
-        self.assertTrue(final["leaderboard_eligible"])
-        self.assertEqual(final["leaderboard_eligibility_violations"], [])
+        self.assertTrue(final["benchmark"]["leaderboard_eligible"])
+        self.assertEqual(final["benchmark"]["leaderboard_eligibility_violations"], [])
         self.assertEqual(
             normalize_result_report(supervisor.state)["gateway_execution"],
             supervisor.state["gateway_execution"],
@@ -995,7 +997,7 @@ class SupervisorTests(unittest.TestCase):
             if field == "receipt":
                 payload["gateway_execution"]["receipt"] = None
             else:
-                payload["formal_release_verification"]["inference_gateway_artifact"] = (
+                payload["benchmark"]["formal_release_verification"]["inference_gateway_artifact"] = (
                     None
                 )
             with self.subTest(field=field), self.assertRaisesRegex(
@@ -1038,16 +1040,16 @@ class SupervisorTests(unittest.TestCase):
             supervisor.record_gateway_execution(receipt)
         self.assertIn(
             "inference_gateway_workload_evidence_missing",
-            supervisor.state["leaderboard_eligibility_violations"],
+            supervisor.state["benchmark"]["leaderboard_eligibility_violations"],
         )
 
     def test_gateway_without_frozen_release_artifact_remains_ineligible(self):
         supervisor, receipt = self.gateway_supervisor(expected_artifact=False)
         supervisor.record_gateway_execution(receipt)
         final = self.finalize_gateway_supervisor(supervisor)
-        self.assertFalse(final["leaderboard_eligible"])
+        self.assertFalse(final["benchmark"]["leaderboard_eligible"])
         self.assertEqual(
-            final["leaderboard_eligibility_violations"],
+            final["benchmark"]["leaderboard_eligibility_violations"],
             ["inference_gateway_release_artifact_missing"],
         )
         self.assertEqual(final["test_status"], "evaluated")
@@ -1057,9 +1059,9 @@ class SupervisorTests(unittest.TestCase):
         receipt = replace(receipt, artifact=replace(receipt.artifact, sha256="e" * 64))
         supervisor.record_gateway_execution(receipt)
         final = self.finalize_gateway_supervisor(supervisor)
-        self.assertFalse(final["leaderboard_eligible"])
+        self.assertFalse(final["benchmark"]["leaderboard_eligible"])
         self.assertEqual(
-            final["leaderboard_eligibility_violations"],
+            final["benchmark"]["leaderboard_eligibility_violations"],
             ["inference_gateway_artifact_mismatch"],
         )
 
@@ -1069,9 +1071,9 @@ class SupervisorTests(unittest.TestCase):
             replace(receipt, trust_level=TrustLevel.DEVELOPMENT)
         )
         final = self.finalize_gateway_supervisor(supervisor)
-        self.assertFalse(final["leaderboard_eligible"])
+        self.assertFalse(final["benchmark"]["leaderboard_eligible"])
         self.assertEqual(
-            final["leaderboard_eligibility_violations"],
+            final["benchmark"]["leaderboard_eligibility_violations"],
             ["inference_gateway_execution_not_certified"],
         )
 
@@ -1084,9 +1086,9 @@ class SupervisorTests(unittest.TestCase):
 
     def test_leaderboard_eligibility_requires_the_complete_formal_contract(self):
         supervisor, artifacts = self.formal_supervisor()
-        self.assertFalse(supervisor.state["leaderboard_eligible"])
+        self.assertFalse(supervisor.state["benchmark"]["leaderboard_eligible"])
         self.assertEqual(
-            supervisor.state["leaderboard_eligibility_violations"],
+            supervisor.state["benchmark"]["leaderboard_eligibility_violations"],
             [
                 "formal_test_evaluation_pending",
                 "workload_resolution_pending:training",
@@ -1099,7 +1101,7 @@ class SupervisorTests(unittest.TestCase):
         public_task = json.loads(
             supervisor.public_task_path.read_text(encoding="utf-8")
         )
-        self.assertFalse(public_task["formal_release_verified"])
+        self.assertFalse(public_task["benchmark"]["formal_release_verified"])
 
         supervisor.start_lease()
         candidate = supervisor.commit_lease("/output/candidate")
@@ -1107,8 +1109,8 @@ class SupervisorTests(unittest.TestCase):
         supervisor.finish()
         final = self.finalize_after_agent_stop(supervisor)
 
-        self.assertTrue(final["leaderboard_eligible"])
-        self.assertEqual(final["leaderboard_eligibility_violations"], [])
+        self.assertTrue(final["benchmark"]["leaderboard_eligible"])
+        self.assertEqual(final["benchmark"]["leaderboard_eligibility_violations"], [])
         self.assertEqual(
             [
                 (request.name, request.expected_sha256)
@@ -1134,7 +1136,6 @@ class SupervisorTests(unittest.TestCase):
         config = replace(
             self.config,
             task_kind="research",
-            leaderboard_eligible=True,
             training_image="example/training" + digest,
             candidate_image="example/candidate" + digest,
             evaluator_image="example/evaluator" + digest,
@@ -1148,7 +1149,7 @@ class SupervisorTests(unittest.TestCase):
             transformation_sha256="c" * 64,
             resolution_id="derived-training",
         )
-        supervisor = self.supervisor(config=config)
+        supervisor, _ = self.formal_supervisor()
 
         with self.assertRaisesRegex(
             ProtocolError, "training workload resolution failed"
@@ -1162,7 +1163,7 @@ class SupervisorTests(unittest.TestCase):
         )
         self.assertIn(
             "workload_resolution_not_accepted:training",
-            supervisor.state["leaderboard_eligibility_violations"],
+            supervisor.state["benchmark"]["leaderboard_eligibility_violations"],
         )
         self.assertEqual(self.worker.lease_workloads, [])
 
@@ -1171,7 +1172,6 @@ class SupervisorTests(unittest.TestCase):
         config = replace(
             self.config,
             task_kind="research",
-            leaderboard_eligible=True,
             training_image="example/training" + digest,
             candidate_image="example/candidate" + digest,
             evaluator_image="example/evaluator" + digest,
@@ -1193,17 +1193,7 @@ class SupervisorTests(unittest.TestCase):
             effective_sha256=resolved.effective_sha256,
             transformation_sha256=resolved.transformation_sha256,
         )
-        receipt = ReleaseVerificationReceipt(
-            authority="test-organizer",
-            release_id="test-byte-lm-v1",
-            core_revision="d" * 40,
-            artifact_sha256={
-                field: "a" * 64 for field in FORMAL_ARTIFACT_DIGEST_FIELDS
-            },
-            artifact_identity_algorithms=FORMAL_ARTIFACT_IDENTITY_ALGORITHMS,
-            workload_resolution_acceptance={"training": acceptance},
-        )
-        supervisor = self.supervisor(config=config, release_verification=receipt)
+        supervisor, _ = self.formal_supervisor(workload_acceptance={"training": acceptance})
 
         supervisor.start_lease()
 
@@ -1214,7 +1204,7 @@ class SupervisorTests(unittest.TestCase):
         )
         self.assertNotIn(
             "workload_resolution_pending:training",
-            supervisor.state["leaderboard_eligibility_violations"],
+            supervisor.state["benchmark"]["leaderboard_eligibility_violations"],
         )
 
     def test_evaluation_workloads_are_not_resolved_before_research_teardown(self):
@@ -1314,7 +1304,6 @@ class SupervisorTests(unittest.TestCase):
         config = replace(
             self.config,
             task_kind="research",
-            leaderboard_eligible=True,
             training_image="example/training" + digest,
             candidate_image="example/candidate" + digest,
             evaluator_image="example/evaluator" + digest,
@@ -1333,11 +1322,11 @@ class SupervisorTests(unittest.TestCase):
             ),
         )
 
-        supervisor = self.supervisor(config=config, agent=agent)
+        supervisor, _ = self.formal_supervisor(inference=agent.inference)
 
         self.assertIn(
             "inference_gateway_workload_evidence_missing",
-            supervisor.state["leaderboard_eligibility_violations"],
+            supervisor.state["benchmark"]["leaderboard_eligibility_violations"],
         )
 
     def test_mutable_agent_image_cannot_be_declared_immutable(self):
@@ -1354,7 +1343,6 @@ class SupervisorTests(unittest.TestCase):
         config = replace(
             self.config,
             task_kind="research",
-            leaderboard_eligible=True,
             training_image="example/training" + digest,
             candidate_image="example/candidate" + digest,
             evaluator_image="example/evaluator" + digest,
@@ -1404,18 +1392,18 @@ class SupervisorTests(unittest.TestCase):
                 },
                 worker_conformance=worker_conformance,
             )
-        self.assertFalse(supervisor.state["leaderboard_eligible"])
+        self.assertFalse(supervisor.state["benchmark"]["leaderboard_eligible"])
         self.assertIn(
             "task_manifest_identity_mismatch",
-            supervisor.state["leaderboard_eligibility_violations"],
+            supervisor.state["benchmark"]["leaderboard_eligibility_violations"],
         )
         self.assertIn(
             "core_worktree_not_clean",
-            supervisor.state["leaderboard_eligibility_violations"],
+            supervisor.state["benchmark"]["leaderboard_eligibility_violations"],
         )
         self.assertIn(
             "formal_release_verification_missing",
-            supervisor.state["leaderboard_eligibility_violations"],
+            supervisor.state["benchmark"]["leaderboard_eligibility_violations"],
         )
 
     def test_core_identity_is_recomputed_for_each_episode(self):
@@ -1485,10 +1473,10 @@ class SupervisorTests(unittest.TestCase):
     def test_track_b_interactive_lease_commit_and_finish(self):
         supervisor = self.supervisor()
         self.assertEqual(supervisor.state["agent_system"]["network"], "disabled")
-        self.assertFalse(supervisor.state["agent_system"]["policy_compliant"])
-        self.assertFalse(supervisor.state["policy_compliant"])
+        self.assertNotIn("policy_compliant", supervisor.state["agent_system"])
+        self.assertNotIn("policy_compliant", supervisor.state)
         self.assertEqual(
-            supervisor.state["policy_violations"],
+            supervisor.state["execution_issues"],
             ["agent_writable_storage_unbounded"],
         )
         self.assertEqual(
@@ -1504,16 +1492,12 @@ class SupervisorTests(unittest.TestCase):
                 "capabilities_satisfied"
             ]
         )
-        self.assertFalse(
-            supervisor.state["workers"]["research"]["assessment"][
-                "leaderboard_eligible"
-            ]
-        )
+        self.assertNotIn("leaderboard_eligible", supervisor.state["workers"]["research"]["assessment"])
         self.assertEqual(
             supervisor.state["evaluation_system"]["backend"],
             "isolated_candidate",
         )
-        self.assertTrue(supervisor.state["evaluation_system"]["policy_compliant"])
+        self.assertEqual(supervisor.state["evaluation_system"]["backend"], "isolated_candidate")
         self.assertEqual(
             len(supervisor.state["agent_system"]["initial_workspace_sha256"]), 64
         )
@@ -1533,7 +1517,7 @@ class SupervisorTests(unittest.TestCase):
             0,
         )
         self.assertEqual(
-            public_task["policy"]["violations"],
+            public_task["execution_issues"],
             ["agent_writable_storage_unbounded"],
         )
         lease = supervisor.start_lease()
@@ -2058,7 +2042,7 @@ class SupervisorTests(unittest.TestCase):
             final["deployment_teardown_failures"],
             ["evaluation_worker_teardown_failure"],
         )
-        self.assertFalse(final["policy_compliant"])
+        self.assertNotIn("policy_compliant", final)
         self.assertEqual(self.worker.evaluations, [])
         self.assertNotIn(private_detail, json.dumps(final))
         self.assertIn(
@@ -2682,9 +2666,9 @@ class SupervisorTests(unittest.TestCase):
             public["deployment_teardown_failures"],
             ["agent_termination_failure"],
         )
-        self.assertFalse(public["policy_compliant"])
-        self.assertFalse(public["leaderboard_eligible"])
-        self.assertIn("deployment_teardown_incomplete", public["policy_violations"])
+        self.assertNotIn("policy_compliant", public)
+        self.assertNotIn("leaderboard_eligible", public)
+        self.assertIn("deployment_teardown_incomplete", public["execution_issues"])
         events = supervisor.events_path.read_text(encoding="utf-8")
         self.assertIn("DEPLOYMENT_TEARDOWN_FAILED", events)
         self.assertIn(private_detail, events)
@@ -2747,7 +2731,7 @@ class SupervisorTests(unittest.TestCase):
         )
         self.assertIn(
             "evaluation_worker_capability_insufficient:hidden_dataset_isolation",
-            supervisor.state["policy_violations"],
+            supervisor.state["execution_issues"],
         )
 
     def test_hidden_dataset_identity_verification_is_a_required_capability(self):
@@ -2760,7 +2744,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertIn(
             "evaluation_worker_capability_insufficient:"
             "hidden_dataset_identity_verification",
-            supervisor.state["policy_violations"],
+            supervisor.state["execution_issues"],
         )
 
     def test_prediction_storage_quota_is_a_required_capability(self):
@@ -2773,16 +2757,16 @@ class SupervisorTests(unittest.TestCase):
         self.assertIn(
             "evaluation_worker_capability_insufficient:"
             "candidate_prediction_storage_quota",
-            supervisor.state["policy_violations"],
+            supervisor.state["execution_issues"],
         )
 
     def test_worker_descriptor_must_declare_its_assigned_roles(self):
         self.worker.roles = ("research",)
         supervisor = self.supervisor()
-        self.assertFalse(supervisor.state["policy_compliant"])
+        self.assertNotIn("policy_compliant", supervisor.state)
         self.assertIn(
             "evaluation_worker_role_missing",
-            supervisor.state["policy_violations"],
+            supervisor.state["execution_issues"],
         )
 
     def test_commit_accepts_only_stopped_lease_output(self):
@@ -3137,8 +3121,8 @@ class SupervisorTests(unittest.TestCase):
             public["deployment_teardown_failures"],
             ["evaluation_worker_teardown_failure"],
         )
-        self.assertFalse(supervisor.state["policy_compliant"])
-        self.assertFalse(supervisor.state["leaderboard_eligible"])
+        self.assertNotIn("policy_compliant", supervisor.state)
+        self.assertNotIn("leaderboard_eligible", supervisor.state)
         self.assertNotIn(private_detail, json.dumps(public))
         self.assertIn(
             private_detail,
@@ -3303,7 +3287,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertEqual(result["status"], "active")
         self.assertEqual(result["task_kind"], "development_smoke")
-        self.assertFalse(result["leaderboard_eligible"])
+        self.assertNotIn("leaderboard_eligible", result)
         self.assertEqual(result["agent_network"], "disabled")
         self.assertEqual(result["agent_egress"], "denied")
         serialized = json.dumps(result)
@@ -3478,11 +3462,11 @@ class SupervisorTests(unittest.TestCase):
         self.assertFalse(supervisor.state["agent_control"]["cleanup_complete"])
         self.assertEqual(supervisor.state["agent_control"]["cleanup_removed"], 2)
         self.assertEqual(supervisor.state["agent_control"]["cleanup_failures"], 1)
-        self.assertFalse(supervisor.state["policy_compliant"])
-        self.assertFalse(supervisor.state["leaderboard_eligible"])
+        self.assertNotIn("policy_compliant", supervisor.state)
+        self.assertNotIn("leaderboard_eligible", supervisor.state)
         self.assertIn(
             "agent_control_cleanup_incomplete",
-            supervisor.state["policy_violations"],
+            supervisor.state["execution_issues"],
         )
         self.assertEqual(
             supervisor.state["deployment_teardown_failures"],
@@ -3838,7 +3822,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertIn("MAILBOX_RESPONSE_REJECTED", events)
         self.assertNotIn("EPISODE_INFRASTRUCTURE_FAILURE", events)
 
-    def test_host_cli_runner_is_recorded_as_non_compliant(self):
+    def test_host_cli_runner_records_execution_boundary_limitations(self):
         agent = AgentConfig(
             workspace=self.workspace,
             runner="host_cli",
@@ -3849,7 +3833,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(supervisor.state["agent_system"]["runner"], "host_cli")
         self.assertIsNone(supervisor.state["agent_system"]["image"])
         self.assertEqual(supervisor.state["agent_system"]["network"], "host_managed")
-        self.assertFalse(supervisor.state["agent_system"]["policy_compliant"])
+        self.assertNotIn("policy_compliant", supervisor.state["agent_system"])
         usage = {"tool": "codex", "total_tokens": 42}
         supervisor.finish()
         supervisor.record_agent_execution(
@@ -3873,10 +3857,10 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(status["agent_termination_reason"], "exited")
         self.assertTrue(status["agent_finish_observed"])
         self.assertEqual(status["agent_drain_seconds"], 2.5)
-        self.assertFalse(status["policy_compliant"])
-        self.assertIn("agent_execution_boundary", status["policy_violations"])
+        self.assertNotIn("policy_compliant", status)
+        self.assertIn("agent_execution_boundary", status["execution_issues"])
         self.assertEqual(
-            status["policy_violations"],
+            status["execution_issues"],
             ["agent_execution_boundary", "agent_writable_storage_unbounded"],
         )
 

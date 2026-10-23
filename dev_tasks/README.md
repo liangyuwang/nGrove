@@ -1,8 +1,7 @@
 # Development tasks
 
 Development tasks exercise the `envcore` runtime and Agent integration
-surface. They are not leaderboard benchmarks and their results must not be
-placed on a leaderboard. They use the same task-and-environment launch,
+surface. They use the same task-and-environment launch,
 policy, recording, and trusted Evaluator contracts as research task packages.
 Task-scale data and evaluation choices may be smaller.
 

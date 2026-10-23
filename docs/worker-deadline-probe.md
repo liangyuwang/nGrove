@@ -4,8 +4,7 @@
 Research Lease through an independent deployment observer, optionally while its
 Worker control execution is paused or terminated. This extends the
 [Lease lifecycle diagnostic](worker-lease-probe.md), which explicitly stops its
-Leases and therefore cannot establish autonomous expiry. It contributes to
-original issues 4/8/10 without changing Worker Protocol v16 or formal eligibility.
+Leases and therefore cannot establish autonomous expiry. It exercises idle expiry and Worker-loss behavior.
 
 ## Independent observation
 
@@ -195,8 +194,7 @@ authorization. This helper does not authorize an allocation or further retries.
 
 ## Report and limits
 
-The public Operator summary contains stable check codes and always states
-`formal_conformance: false`. The private report retains the Lease request,
+The public Operator summary contains stable check codes and the observed outcome. The private report retains the Lease request,
 workload and allocation evidence, caller monotonic timestamps, observer requests
 and returned observations, including unaccepted late replies when available.
 An observation's `accepted` flag means its timeliness and identity bindings
@@ -220,8 +218,7 @@ allocation receipts are fixtures; they are not a real v16 Worker deployment run.
 
 Passing does not prove observer honesty, the whole deployment's independence,
 exact Worker-local activation timing, command cancellation, allocation/host loss
-recovery, physical isolation or full conformance. A fault case covers only its
+recovery, physical isolation. A fault case covers only its
 selected fault and frozen fixture; the ordinary idle case covers no Worker fault.
 Those require independently reviewed deployment evidence and the remaining
-cases in the [acceptance matrix](worker-acceptance-matrix.md). No capability,
-trust, compliance or leaderboard flag is upgraded by this report.
+cases in the [acceptance matrix](worker-acceptance-matrix.md).

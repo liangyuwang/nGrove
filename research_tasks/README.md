@@ -42,21 +42,12 @@ user-owned `--environment`; see [environment configuration](../docs/environments
 `--benchmark` and `benchmark-info` retain their existing preset and comparison
 roles. No frozen, leaderboard-eligible benchmark has been released yet.
 
-Runnable research tasks declare their task kind independently of whether a
-benchmark comparison lane is selected:
+Benchmark releases declare `leaderboard_eligible` in `benchmark.json`.
+Task schema 8 contains the research task definition. Benchmark launches attach
+comparison and qualification evidence in the result's optional `benchmark`
+extension; see the [benchmark guide](../docs/benchmarks.md).
 
-```json
-{
-  "task_kind": "research",
-  "leaderboard_eligible": false
-}
-```
-
-`leaderboard_eligible` becomes `true` only when the corresponding submission
-and comparison policy is published. Track A and Track B are research budget
-protocols; benchmark manifests can supply named presets for them.
-
-Core additionally requires an `official` release with no provisional track or
+Formal benchmark evaluation requires an `official` release with no provisional track or
 runtime profiles, a complete comparison key, digest-pinned task and Agent
 images, policy-compliant execution, and certified conformant Research and
 Evaluation Workers. Formal deployments must also supply a trusted
@@ -68,7 +59,7 @@ image, or other artifact rather than the canonical digest-pinned OCI artifact,
 the same trusted receipt must also contain the accepted workload-resolution
 evidence. A Worker's own transformation claim is not organizer acceptance.
 Missing evidence is recorded in
-`leaderboard_eligibility_violations`; it never silently promotes a preview.
+`benchmark.leaderboard_eligibility_violations`; it never silently promotes a preview.
 
 A benchmark release also publishes finite `track_configs` and
 `runtime_profiles` maps. The task remains hardware-independent; the runtime
@@ -179,6 +170,6 @@ ngrove benchmark-info \
 ```
 
 For the lightweight end-to-end development task, use
-`dev_tasks/smoke_lm-pretrain/`. It remains permanently non-leaderboard, but uses the
+`dev_tasks/smoke_lm-pretrain/`. It uses the
 same task-and-environment launch, policy boundary, recording and trusted
 Evaluator implementation as the research tasks.

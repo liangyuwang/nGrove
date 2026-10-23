@@ -62,7 +62,9 @@ class ConfigError(ValueError):
 # Operator protection settings themselves are never Agent-visible.
 # Version 12 declares bounded prediction runtime storage with temporary files;
 # Task schema 7 binds that revised rule into the task release fingerprint.
-AGENT_PROTOCOL_VERSION = 12
+# Version 13 exposes research execution facts; optional comparison metadata lives
+# in an explicitly selected benchmark extension. Task schema 8 follows that split.
+AGENT_PROTOCOL_VERSION = 13
 
 
 def operator_research_limit(value: Any, track: str) -> Optional[float]:
@@ -156,7 +158,7 @@ def _operator_default(task_source: Path, field: str) -> Any:
 
 
 # Phases a release may declare as environment-owned rather than participant time.
-# `docs/benchmark-reference.md` requires this boundary to be release-defined and
+# `docs/research-protocol.md` requires this boundary to be release-defined and
 # identical across participants, so it belongs in the task manifest digest
 # rather than in whichever Core revision happens to execute the episode.
 ENVIRONMENT_OWNED_PREPARATION_PHASES = {"worker_lease_startup"}
@@ -497,7 +499,6 @@ class AgentConfig:
         self,
         gateway_image: str,
         *,
-        policy_compliant: bool,
         control_transport: Optional[str],
     ) -> Dict[str, Any]:
         inference_manifest: Dict[str, Any] = {"enabled": False}
@@ -522,7 +523,6 @@ class AgentConfig:
             "control": control_transport,
             "forwarded_environment": list(self.environment or []),
             "inference": inference_manifest,
-            "policy_compliant": policy_compliant,
         }
 
 
@@ -615,7 +615,6 @@ class TaskConfig:
     schema_version: int
     task_id: str
     task_kind: str
-    leaderboard_eligible: bool
     train_dir: Path
     analysis_path: Path
     test_path: Path
@@ -654,6 +653,8 @@ class TaskConfig:
             raise ConfigError(f"invalid JSON in {source}: {exc}") from exc
 
         root = _mapping(raw, "root")
+        if root.get("schema_version") == 8 and "leaderboard_eligible" in root:
+            raise ConfigError("task schema 8 does not declare leaderboard eligibility")
         paths = _mapping(root.get("paths"), "paths")
         images = _mapping(root.get("images"), "images")
         if "agent" in root:
@@ -707,9 +708,6 @@ class TaskConfig:
             schema_version=_positive_int(root.get("schema_version"), "schema_version"),
             task_id=_string(root.get("task_id"), "task_id"),
             task_kind=task_kind(root.get("task_kind")),
-            leaderboard_eligible=_boolean(
-                root.get("leaderboard_eligible"), "leaderboard_eligible"
-            ),
             train_dir=resolved_path("train", directory=True),
             # Hidden data may be materialized by the Evaluation Worker only
             # after research sealing. Loading a task must not require either
@@ -790,11 +788,9 @@ class TaskConfig:
 
     def validate(self) -> "TaskConfig":
         """Validate the immutable task definition and its release classification."""
-        if self.schema_version != 7:
-            raise ConfigError("task schema_version must be 7")
+        if self.schema_version not in {7, 8}:
+            raise ConfigError("task schema_version must be 7 or 8")
         task_kind(self.task_kind)
-        if self.task_kind == "development_smoke" and self.leaderboard_eligible:
-            raise ConfigError("development smoke tasks may not be leaderboard eligible")
         if not isinstance(self.performance_score, PerformanceScoreContract):
             raise ConfigError("evaluation.performance_score is invalid")
         if not isinstance(self.cost, CostContract):
@@ -847,23 +843,6 @@ class TaskConfig:
             )
         if self.max_analysis_candidates < self.track_b_max_leases:
             raise ConfigError("analysis.max_candidates must cover every Track B Lease")
-        if self.leaderboard_eligible:
-            images = {
-                "images.training": self.training_image,
-                "images.candidate": self.candidate_image,
-                "images.evaluator": self.evaluator_image,
-                "images.inference_gateway": self.inference_gateway_image,
-            }
-            mutable = [
-                field
-                for field, reference in images.items()
-                if not immutable_image_reference(reference)
-            ]
-            if mutable:
-                raise ConfigError(
-                    "leaderboard-eligible tasks require digest-pinned images: "
-                    + ", ".join(mutable)
-                )
         if not self.evaluator_entrypoint.is_file():
             raise ConfigError(
                 "evaluation.entrypoint is not a file: " f"{self.evaluator_entrypoint}"
@@ -879,10 +858,6 @@ class TaskConfig:
                 self.evaluator_image,
             }
         )
-
-    @property
-    def evaluator_policy_compliant(self) -> bool:
-        return self.evaluator_backend == "isolated_candidate"
 
     def public_manifest(self, track: str) -> Dict[str, Any]:
         normalized = track.upper()
@@ -907,7 +882,6 @@ class TaskConfig:
             },
             "task_id": self.task_id,
             "task_kind": self.task_kind,
-            "leaderboard_eligible": self.leaderboard_eligible,
             "track": normalized,
             "train": {"path": "/task/train", "visibility": "read_only"},
             "validation": {
@@ -946,7 +920,6 @@ class TaskConfig:
                     "max_bytes": self.candidate_max_bytes,
                     "max_files": self.candidate_max_files,
                 },
-                "policy_compliant": self.evaluator_policy_compliant,
                 "candidate_boundary": {
                     "entrypoint": candidate_entrypoint_contract(),
                     "context_manifest": context_manifest_contract(),

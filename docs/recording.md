@@ -24,8 +24,7 @@ below.
 
 ## Launch configuration
 
-Pass `--recording recording.json` to `ngrove start`, with either a task or a
-benchmark selection. Omission uses these defaults:
+Pass `--recording recording.json` to `ngrove start`. Omission uses these defaults:
 
 ```json
 {
@@ -42,7 +41,7 @@ benchmark selection. Omission uses these defaults:
 
 The configuration is resolved before launch and frozen with its own fingerprint
 in the private result's `recording` field. It is independent of the compute/time
-configuration and benchmark comparison key. Record both fingerprints when
+configuration. Record both fingerprints when
 comparing experiments. Trusted launchers may pass a `RecordingConfig` directly
 to `Supervisor`.
 

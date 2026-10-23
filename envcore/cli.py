@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .agent_api_bundle import publish_agent_api_bundle
-from .benchmark import BenchmarkRelease, ResolvedBenchmarkRun
+from .benchmark import BenchmarkContext, BenchmarkRelease, ResolvedBenchmarkRun
 from .environment import EnvironmentConfig
 from .recording import RecordingConfig, read_recording
 from .run_config import EnvironmentRun, resolve_environment_run
@@ -306,10 +306,8 @@ def command_prepare(args: argparse.Namespace) -> int:
             "training_data_verification": training_data_verification,
             "task_id": config.task_id,
             "task_kind": config.task_kind,
-            "leaderboard_eligible": config.leaderboard_eligible,
             "images": config.images,
             "evaluator_backend": config.evaluator_backend,
-            "evaluator_policy_compliant": config.evaluator_policy_compliant,
             "worker": reference_runtime.describe_capabilities().public_manifest(),
             "worker_environment": worker_environment,
         }
@@ -324,13 +322,13 @@ def _resolve_start_run(
     release = BenchmarkRelease.load(args.benchmark) if args.benchmark else None
     if release is None:
         if args.task is None:
-            raise ConfigError("--task is required when --benchmark is not used")
+            raise ConfigError("--task is required")
         if args.track_config or args.runtime_profile:
             raise ConfigError(
                 "--track-config and --runtime-profile require --benchmark"
             )
         if not args.track:
-            raise ConfigError("--track is required when --benchmark is not used")
+            raise ConfigError("--track is required for a task run")
         task_path = args.task
     else:
         task_path = release.task_path
@@ -354,7 +352,7 @@ def _resolve_start_run(
         )
         return run, run
     run = resolve_environment_run(
-        replace(config, leaderboard_eligible=False),
+        config,
         track=args.track,
         environment=environment,
         resources=None
@@ -620,8 +618,10 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
             research_worker_environment=worker_environment,
             evaluation_worker_environment=worker_environment,
             operator_max_research_seconds=operator_limit,
-            comparison_key=comparison_key,
-            benchmark_release=benchmark_release,
+            benchmark=(
+                BenchmarkContext(benchmark_release, comparison_key)
+                if benchmark_release is not None else None
+            ),
             environment=run_environment,
             recording=recording,
         )
@@ -1260,7 +1260,7 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument(
         "--task",
         type=Path,
-        help="task manifest; inferred from --benchmark in profile-bound runs",
+        help="research task manifest",
     )
     start.add_argument("--track", choices=["A", "B", "a", "b"])
     start.add_argument(
@@ -1311,8 +1311,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["denied", "unrestricted-dev"],
         help=(
             "Agent egress policy; denied gives the Agent no route to the public "
-            "internet, while unrestricted-dev is convenient for debugging but "
-            "is not policy-compliant"
+            "internet; unrestricted-dev allows unrestricted network access"
         ),
     )
     start.add_argument(

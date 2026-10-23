@@ -250,7 +250,7 @@ class EvaluationPreflightTests(unittest.TestCase):
                 self.request,
             )
             self.assertEqual(
-                supervisor.call_args.kwargs["benchmark_release"][
+                supervisor.call_args.kwargs["benchmark"].release[
                     "evaluation_resource_envelope"
                 ],
                 self.request.public_manifest(),

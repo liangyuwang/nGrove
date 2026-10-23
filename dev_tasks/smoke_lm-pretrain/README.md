@@ -6,8 +6,7 @@ task/participant boundary, Policy, trusted Evaluator implementation, Track
 A/Track B state machine, Candidate isolation, and incumbent semantics as
 `lm-pretrain`. Its corpus, tokenization, context, data layout, split recipe,
 evaluation resources, and budgets are deliberately smaller development
-choices. Its scores are not benchmark results and it is never leaderboard
-eligible.
+choices.
 
 ## Ownership boundary
 
@@ -53,8 +52,7 @@ incumbent.
 The trusted evaluation path runs on CPU. A participant may train with any
 approach supported by the selected Training Environment and must export a
 Candidate that satisfies the public ABI. Concrete runtime provenance and Worker
-capability evidence belong to the episode result. A development deployment
-cannot become leaderboard eligible merely by reporting the expected hardware.
+capability evidence belong to the episode result.
 
 The Agent receives the same variable-length declaration as the LM pretraining task:
 evaluation inputs are variable-length token sequences, the exact length
@@ -65,32 +63,9 @@ recipe remains reproducible from its public source; this visibility convention
 does not make that recipe suitable as a secret formal evaluation.
 
 Use `--task`, `--track` and `--environment` for an integration episode, as shown
-below. With `--benchmark`, `--runtime-profile`
-selects a Training resource preset from
-`benchmark.json`. An optional `--environment` supplies custom execution settings
-through the same configuration and freezing flow.
-`cpu-local` keeps the smoke path cheap;
-the GPU profiles mirror the [lm-pretrain hardware map](../../research_tasks/lm-pretrain/README.md#supported-preview-lanes):
-A100 SXM4 80GB, H100 SXM 80GB, H200 SXM 141GB, and H200 NVL 141GB, each with
-1, 2, 4, or 8 full GPUs on one host. These select Training resources; this smoke
-task's trusted evaluation remains on CPU. The published Track budgets are five
-minutes for Track A and three 75-second Leases for Track B at every GPU count.
-When using these presets, inspect their supported Track and runtime choices:
-
-```bash
-ngrove benchmark-info \
-  --benchmark dev_tasks/smoke_lm-pretrain/benchmark.json
-```
-
-`--environment` can select custom compute resources and
-override the time budget without editing the task or benchmark release. Omitted
-budgets inherit the selected task/Track settings. See
-[environment configuration](../../docs/environments.md) for task-based and
-benchmark-based launch forms.
-
-These profiles are integration configurations, not official comparison
-environments. For custom hardware and independent Agent comparisons, follow the
-[reference environment and comparison policy](../../research_tasks/README.md#reference-environments-and-custom-comparisons).
+below. An environment selects compute resources and may override the task's
+research budget. This task's trusted evaluation runs on CPU. See
+[environment configuration](../../docs/environments.md).
 
 ## Prepare
 
@@ -121,8 +96,8 @@ protection**, configured in `operator-defaults.json`. The launcher announces it
 before run preparation. Add `--operator-max-research-seconds SECONDS` to change
 it or `--no-operator-research-limit` to disable it for one run. Disabling protection
 risks extremely high token consumption. The setting and notices are never sent
-to the Tested Agent and do not change the three 75-second Leases or comparison key.
-See [operator protection semantics](../../docs/benchmark-reference.md#track-b--lease-bounded-autonomous-research).
+to the Tested Agent and do not change the three 75-second Leases .
+See [operator protection semantics](../../docs/research-protocol.md#track-b--lease-bounded-autonomous-research).
 
 Both Tracks also default to **2 GiB of private operator storage protection**.
 The Worker deployment must provide an empty, bounded filesystem at the selected
@@ -132,7 +107,7 @@ episode parent directory; an ordinary directory will fail admission. Use
 `host_cli` preview requires explicit disabling. This does not change Track
 budgets or the prediction-output protocol. Remote Workers must enforce this in
 their execution environment. See
-[storage protection requirements](../../docs/benchmark-reference.md#private-operator-storage-protection).
+[storage protection requirements](../../docs/research-protocol.md#private-operator-storage-protection).
 
 An egress-denied participant is supplied explicitly as an Agent Container.
 The image contains the Agent executable, while the writable episode workspace
@@ -142,20 +117,6 @@ starts empty:
 ngrove start \
   --task dev_tasks/smoke_lm-pretrain/task.json --track A \
   --environment examples/environments/cpu-2cores.json \
-  --episodes-root /path/to/ngrove-runs/episodes \
-  --agent-runner container \
-  --agent-image participant-agent@sha256:DIGEST \
-  --agent-command "participant-agent run"
-```
-
-For optional preset-based integration, the same smoke task can exercise a
-published accelerator profile without changing the task or using manual resource overrides:
-
-```bash
-ngrove start \
-  --benchmark dev_tasks/smoke_lm-pretrain/benchmark.json \
-  --track-config smoke-a-5m \
-  --runtime-profile h100-sxm-80gb-x4 \
   --episodes-root /path/to/ngrove-runs/episodes \
   --agent-runner container \
   --agent-image participant-agent@sha256:DIGEST \
@@ -180,12 +141,10 @@ ngrove start \
   --agent-command "python3 -m envcore.cli_adapters.codex --model MODEL --reasoning-effort high"
 ```
 
-The `host_cli` run reports `policy_compliant: false` because a host process can
-access files and networking outside the enforced episode boundary. The
-Candidate/Evaluator boundary remains isolated. An egress-denied participant
-container exercises the strongest local v0 path, but the bundled Worker is a
-Development deployment and its deadline guard shares the Coordinator process.
-It therefore cannot produce a formal leaderboard result.
+A `host_cli` process can access the host filesystem and network; these execution
+limitations are recorded in `execution_issues`. The Candidate/Evaluator boundary
+remains isolated. A container Agent with denied egress provides a confined
+research workspace and network boundary.
 
 The Tested Agent is governed by the same [preview Policy](POLICY.md) as
 `lm-pretrain`. In particular, the initial Agent image/workspace may not
@@ -215,7 +174,7 @@ revealed later through a longer prefix or reused inside another context from
 the same source span. The evaluator retains mean NLL as its raw metric, then
 maps it to the release's generic `[0, 100]` performance score. Perplexity can be
 derived for display when representable. This development result is not
-comparable with a different benchmark release.
+comparable with a different task release.
 
 The public task manifest declares the invocation contract under
 `evaluation.candidate_boundary.entrypoint`. The Worker imports `candidate.py`
@@ -286,7 +245,7 @@ files, exact logits length, and a manifest no larger than 65536 bytes. The
 Docker Worker verifies and enforces an independent tmpfs allocation; filling it
 does not consume episode log/result filesystem capacity. See
 [Worker Protocol v15](../../docs/worker-protocol.md) for memory/swap needs,
-cleanup behavior and compatibility. This does not grant formal compliance.
+cleanup behavior and compatibility.
 
 After research sealing and confirmed Agent/Research teardown, the bundled
 Docker Worker runs three network-disabled steps for each ANALYSIS/TEST evaluation:
@@ -326,3 +285,19 @@ the independent `time_per_task` cost axis. `time_per_task` divides that wall
 time by the frozen number of next-token tasks, while total time and throughput
 remain cost submetrics. The two axes form a Pareto frontier and are not folded
 into one score.
+
+## Benchmark presets
+
+For optional preset-based integration, the same smoke task can exercise a
+published accelerator profile without changing the task or using manual resource overrides:
+
+```bash
+ngrove start \
+  --benchmark dev_tasks/smoke_lm-pretrain/benchmark.json \
+  --track-config smoke-a-5m \
+  --runtime-profile h100-sxm-80gb-x4 \
+  --episodes-root /path/to/ngrove-runs/episodes \
+  --agent-runner container \
+  --agent-image participant-agent@sha256:DIGEST \
+  --agent-command "participant-agent run"
+```

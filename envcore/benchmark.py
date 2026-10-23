@@ -7,6 +7,7 @@ runtime profiles. Comparison requires matching keys and effective conditions.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -18,7 +19,7 @@ from .artifact_identity import (
     FILE_IDENTITY_ALGORITHM,
     HIDDEN_BUNDLE_IDENTITY_ALGORITHM,
 )
-from .config import ConfigError, TaskConfig
+from .config import ConfigError, TaskConfig, immutable_image_reference
 from .gateway_execution import GatewayArtifactIdentity, gateway_eligibility_violations
 from .environment import (
     EnvironmentConfig,
@@ -27,6 +28,11 @@ from .environment import (
 )
 from .run_config import EnvironmentRun, resolve_environment_run
 from .worker_protocol import (
+    CapabilityAssessment,
+    ConformanceReceipt,
+    TrustLevel,
+    WORKER_CONFORMANCE_SUITE_VERSION,
+    assess_worker,
     EnforcementLevel,
     ResourceEnvelope,
     WorkloadResolutionAcceptance,
@@ -471,11 +477,24 @@ class BenchmarkRelease:
             raise ConfigError(
                 "development smoke releases may not be leaderboard eligible"
             )
-        if self.leaderboard_eligible and not task.leaderboard_eligible:
-            raise ConfigError(
-                "a leaderboard-eligible release requires a leaderboard-eligible task"
-            )
         if self.leaderboard_eligible:
+            legacy_task = json.loads(task.source.read_text(encoding="utf-8"))
+            if (
+                legacy_task.get("schema_version") == 7
+                and legacy_task.get("leaderboard_eligible") is not True
+            ):
+                raise ConfigError(
+                    "a legacy leaderboard release requires a leaderboard-eligible task"
+                )
+            mutable = [
+                name for name, image in task.images.items()
+                if not immutable_image_reference(image)
+            ]
+            if mutable:
+                raise ConfigError(
+                    "leaderboard releases require digest-pinned images: "
+                    + ", ".join(mutable)
+                )
             if _sha256_file(self.source) != self.manifest_sha256:
                 raise ConfigError("benchmark manifest changed after it was loaded")
             if (
@@ -535,9 +554,7 @@ class BenchmarkRelease:
             else None
         )
         return ResolvedBenchmarkRun(
-            task=replace(
-                run.task, leaderboard_eligible=self.leaderboard_eligible and matches
-            ),
+            task=run.task,
             track=run.track,
             environment=run.environment,
             comparison_key=comparison_key,
@@ -591,7 +608,7 @@ class BenchmarkRelease:
 
 def benchmark_eligibility_violations(
     *,
-    config,
+    requested_eligible,
     policy_compliant,
     research_assessment,
     evaluation_assessment,
@@ -608,16 +625,9 @@ def benchmark_eligibility_violations(
     frozen_evaluation_envelope,
 ):
     """Assess optional benchmark evidence at one application boundary."""
-    if (
-        not config.leaderboard_eligible
-        and benchmark_release is None
-        and comparison_key is None
-        and release_verification is None
-    ):
-        return []
     eligibility_violations = []
-    if not config.leaderboard_eligible:
-        eligibility_violations.append("task_not_leaderboard_eligible")
+    if not requested_eligible:
+        eligibility_violations.append("run_not_leaderboard_eligible")
     if not policy_compliant:
         eligibility_violations.append("policy_not_compliant")
     if not research_assessment.leaderboard_eligible:
@@ -693,11 +703,11 @@ def benchmark_eligibility_violations(
                     eligibility_violations.append(f"{release_field}_mismatch")
     if not agent_execution.immutable_workload_identity:
         eligibility_violations.append("agent_workload_identity_not_immutable")
-    if not agent_execution.leaderboard_eligible:
+    if not agent_benchmark_eligible(agent_execution):
         eligibility_violations.append("agent_execution_not_certified")
     # The launcher supplies actual Gateway evidence after startup and before
     # begin(). A configured image is never proof of an executed artifact.
-    if config.leaderboard_eligible and agent.inference is not None:
+    if requested_eligible and agent.inference is not None:
         eligibility_violations.extend(
             gateway_eligibility_violations(
                 None,
@@ -736,7 +746,7 @@ def benchmark_eligibility_violations(
         # matched.  ANALYSIS identity/completeness is reported on its own
         # diagnostic axis and never gates an otherwise valid TEST result.
         eligibility_violations.append("formal_test_evaluation_pending")
-    if config.leaderboard_eligible:
+    if requested_eligible:
         if (
             evaluation_resource_envelope is None
             or not evaluation_resource_envelope.requirements
@@ -843,3 +853,205 @@ def validate_benchmark_binding(result):
             raise ValueError(
                 "benchmark comparison resources do not match the frozen environment"
             )
+
+
+def agent_policy_compliant(evidence) -> bool:
+    return (
+        evidence.enforcement.rank >= EnforcementLevel.ENFORCED.rank
+        and not evidence.limitations
+    )
+
+
+def agent_benchmark_eligible(evidence) -> bool:
+    return (
+        agent_policy_compliant(evidence)
+        and evidence.trust_level == TrustLevel.CERTIFIED
+        and evidence.immutable_workload_identity
+    )
+
+
+@dataclass(frozen=True)
+class BenchmarkWorkerAssessment(CapabilityAssessment):
+    trust_satisfied: bool
+    conformance_satisfied: bool
+
+    @property
+    def leaderboard_eligible(self) -> bool:
+        return self.satisfied and self.trust_satisfied and self.conformance_satisfied
+
+    def public_manifest(self) -> Dict[str, Any]:
+        return {
+            **super().public_manifest(),
+            "trust_satisfied": self.trust_satisfied,
+            "conformance_satisfied": self.conformance_satisfied,
+            "leaderboard_eligible": self.leaderboard_eligible,
+        }
+
+
+def assess_benchmark_worker(
+    descriptor,
+    requirements,
+    *,
+    conformance_receipt=None,
+    minimum_trust=TrustLevel.CERTIFIED,
+    require_conformance=True,
+) -> BenchmarkWorkerAssessment:
+    if conformance_receipt is not None and not isinstance(
+        conformance_receipt, ConformanceReceipt
+    ):
+        raise TypeError("conformance_receipt must be a ConformanceReceipt")
+    capability = assess_worker(descriptor, requirements)
+    return BenchmarkWorkerAssessment(
+        satisfied=capability.satisfied,
+        missing=capability.missing,
+        insufficient=capability.insufficient,
+        trust_satisfied=descriptor.trust_level.rank >= minimum_trust.rank,
+        conformance_satisfied=(
+            not require_conformance
+            or bool(
+                conformance_receipt
+                and conformance_receipt.suite_version == WORKER_CONFORMANCE_SUITE_VERSION
+                and conformance_receipt.worker_id == descriptor.worker_id
+                and conformance_receipt.passed is True
+            )
+        ),
+    )
+
+
+@dataclass
+class BenchmarkContext:
+    """Explicit comparison extension, owned by one research episode."""
+
+    release: Dict[str, Any]
+    comparison_key: Optional[Dict[str, str]] = None
+    verification: Optional[ReleaseVerificationReceipt] = None
+    research_conformance: Optional[ConformanceReceipt] = None
+    evaluation_conformance: Optional[ConformanceReceipt] = None
+    record: Dict[str, Any] = field(default_factory=dict, init=False)
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.release, dict)
+            or not isinstance(self.release.get("benchmark_id"), str)
+            or not self.release["benchmark_id"].strip()
+        ):
+            raise ValueError("benchmark context requires an identified release")
+        if self.comparison_key is not None and not isinstance(self.comparison_key, dict):
+            raise TypeError("comparison_key must be an object")
+        self.release = copy.deepcopy(self.release)
+        self.comparison_key = copy.deepcopy(self.comparison_key)
+        if self.verification is not None and not isinstance(
+            self.verification, ReleaseVerificationReceipt
+        ):
+            raise TypeError("verification must be a ReleaseVerificationReceipt")
+        for receipt in (self.research_conformance, self.evaluation_conformance):
+            if receipt is not None and not isinstance(receipt, ConformanceReceipt):
+                raise TypeError("conformance must be a ConformanceReceipt")
+
+    @property
+    def requested_eligible(self) -> bool:
+        return (
+            self.release.get("leaderboard_eligible") is True
+            and self.comparison_key is not None
+        )
+
+    def initialize(
+        self,
+        *,
+        execution_issues,
+        research_descriptor,
+        research_requirements,
+        evaluation_descriptor,
+        evaluation_requirements,
+        **evidence,
+    ) -> Dict[str, Any]:
+        research = assess_benchmark_worker(
+            research_descriptor,
+            research_requirements,
+            conformance_receipt=self.research_conformance,
+        )
+        evaluation = assess_benchmark_worker(
+            evaluation_descriptor,
+            evaluation_requirements,
+            conformance_receipt=self.evaluation_conformance,
+        )
+        identities = {
+            **evidence.pop("artifact_identities"),
+            "benchmark_manifest_sha256": self.release.get("benchmark_manifest_sha256"),
+        }
+        violations = benchmark_eligibility_violations(
+            requested_eligible=self.requested_eligible,
+            policy_compliant=not execution_issues,
+            research_assessment=research,
+            evaluation_assessment=evaluation,
+            comparison_key=self.comparison_key,
+            benchmark_release=self.release,
+            release_verification=self.verification,
+            artifact_identities=identities,
+            **evidence,
+        )
+        self.record = {
+            "release": copy.deepcopy(self.release),
+            "comparison_key": copy.deepcopy(self.comparison_key),
+            "formal_release_verification": (
+                self.verification.private_manifest() if self.verification else None
+            ),
+            "policy_compliant": not execution_issues,
+            "policy_violations": list(execution_issues),
+            "leaderboard_eligible": False,
+            "leaderboard_eligibility_violations": violations,
+            "workers": {
+                role: {
+                    "assessment": assessment.public_manifest(),
+                    "conformance": receipt.public_manifest() if receipt else None,
+                }
+                for role, assessment, receipt in (
+                    ("research", research, self.research_conformance),
+                    ("evaluation", evaluation, self.evaluation_conformance),
+                )
+            },
+        }
+        self.refresh()
+        return self.record
+
+    def refresh(self) -> None:
+        self.record["leaderboard_eligible"] = bool(
+            self.requested_eligible
+            and self.record["policy_compliant"]
+            and all(
+                worker["assessment"]["leaderboard_eligible"]
+                for worker in self.record["workers"].values()
+            )
+            and not self.record["leaderboard_eligibility_violations"]
+        )
+
+    def add_violation(self, code: str, *, execution: bool = False) -> None:
+        if code not in self.record["leaderboard_eligibility_violations"]:
+            self.record["leaderboard_eligibility_violations"].append(code)
+        if execution:
+            self.record["policy_compliant"] = False
+            if code not in self.record["policy_violations"]:
+                self.record["policy_violations"].append(code)
+        self.refresh()
+
+    def resolve(self, code: str) -> None:
+        if code in self.record["leaderboard_eligibility_violations"]:
+            self.record["leaderboard_eligibility_violations"].remove(code)
+        self.refresh()
+
+    def public_manifest(self) -> Dict[str, Any]:
+        return {
+            "release": agent_release_manifest(self.release),
+            "comparison_key": copy.deepcopy(self.comparison_key),
+            "leaderboard_eligible": self.record["leaderboard_eligible"],
+            "policy_compliant": self.record["policy_compliant"],
+            "policy_violations": list(self.record["policy_violations"]),
+            "leaderboard_eligibility_violations": list(
+                self.record["leaderboard_eligibility_violations"]
+            ),
+            "formal_release_verified": self.verification is not None and not any(
+                item == "formal_test_evaluation_pending"
+                or item.startswith("formal_release_verification")
+                for item in self.record["leaderboard_eligibility_violations"]
+            ),
+        }

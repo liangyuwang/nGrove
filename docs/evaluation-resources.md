@@ -18,15 +18,14 @@ of its training `resource_contract`. The resolved `FrozenEnvironment` binds both
 contracts and the research budget before task reveal; see
 [environment configuration](environments.md).
 
-Benchmark schema v3 adds an optional `evaluation_resource_contract` to each
-runtime profile. It is independent of the Training `resource_contract` and uses
-the same property-extensible `ResourceEnvelope`. Core does not impose a universal
-CPU, filesystem, scheduler or cache vocabulary. The release owner must define the
+Both contracts use the property-extensible `ResourceEnvelope`. Core does not
+impose a universal CPU, filesystem, scheduler or cache vocabulary. The operator
+must define the
 meaning of each property and select which conditions are normative and which are
 only observed. An absent property is unspecified.
 
-For example, a **derived local preview** profile could add this envelope (the
-values are illustrative, not defaults or official requirements):
+For example, an environment configuration could include this envelope (the
+values are illustrative):
 
 ```json
 "evaluation_resource_contract": {
@@ -43,17 +42,8 @@ values are illustrative, not defaults or official requirements):
 
 The frozen environment records the effective evaluation envelope. Trusted
 launchers pass it to the Supervisor through the environment or explicitly as
-`evaluation_resource_envelope=ResourceEnvelope(...)`. When a benchmark release
-also fixes an evaluation envelope, conflicting execution and release contracts
-are rejected. The contract is bound by its canonical SHA-256 and environment
-identity; benchmark comparisons additionally bind the selected release identity.
-Public profile names alone are insufficient.
-
-Existing Benchmark v2 profiles remain readable without evaluation contracts. V2
-rejects this new field, and older Cores reject v3, avoiding silent omission of a
-selected contract. The current preview profiles leave CPU, host-memory, cache,
-I/O and exclusivity conditions unspecified; their GPU declarations do not
-establish a verified cost environment.
+`evaluation_resource_envelope=ResourceEnvelope(...)`. The contract is bound by
+its canonical SHA-256 and environment identity.
 
 ## Startup preflight
 
@@ -74,15 +64,14 @@ validates its actual receipt. A successful preflight cannot authorize a changed
 backend, a substitute GPU, or an unsupported later invocation.
 
 `prepare --task` has no resolved run environment, so its readiness
-output does not certify an evaluation contract. External launchers should perform
+output does not inspect an evaluation contract. External launchers should perform
 equivalent Worker-side checks before spending a research budget. This local
-preflight does not add a remote operation or change Worker Protocol v16.
+preflight runs within the local Worker.
 
 After preparation, external deployments can use the
 [evaluation Worker diagnostic](worker-evaluation-probe.md) on public fixtures to
 exercise actual protocol calls, receipt binding and typed rejection. This is a
-separately authorized disposable test, not an automatic step in `start` or a
-formal conformance receipt.
+separately authorized disposable test.
 
 ## Worker v16 and result v14
 
@@ -125,13 +114,10 @@ record includes the evaluation ID, Candidate, split, receipt, recomputed
 assessment and `accepted`. The report reader revalidates the evidence and checks
 that each measured cost has a matching evaluation record. Missing contracts use
 `null`, with `receipt: null`, `assessment: null`, `accepted: false`; this is an
-unspecified preview, not a verified cost environment. V12/v13 reports retain their
+an unspecified evaluation environment. V12/v13 reports retain their
 original semantics without fabricated retrospective receipts.
 
-Formal releases require a nonempty enforced evaluation contract, matching the
-frozen release, and accepted TEST resource evidence before eligibility can become
-true. This is additional to existing identities, hidden data, trust, policy and
-conformance checks. **Acceptance verifies only the declared envelope.** Core
+**Acceptance verifies only the declared envelope.** Core
 cannot establish that the organizer selected every property needed for a fair
 comparison. A weakly specified contract does not justify a broad comparability
 claim.
@@ -154,7 +140,7 @@ requests no GPUs even if Training had a GPU grant; CUDA requests the frozen UUID
 The recorded GPU device request is checked against that selection.
 
 These are **best-effort configuration/allocation observations**. Workload-visible
-views remain unavailable, and no new enforced/formal guarantee is claimed. A
+views remain unavailable. A
 contract requiring stronger enforcement or unsupported normative properties is
 rejected; unavailable observational properties are explicitly recorded. The
 backend settings follow [Docker's resource limit semantics](https://docs.docker.com/engine/containers/resource_constraints/).
@@ -171,5 +157,18 @@ the release's chosen contract.
 Before comparing costs externally, the organizer still needs to freeze suitable
 conditions, implement and validate their enforcement in the authorized Worker,
 and record every invocation's evidence. Local command-boundary tests are not real
-Docker/GPU admission or formal conformance evidence. Existing external preview
+Docker/GPU admission evidence. Existing external preview
 measurements retain their original comparison limits.
+
+## Benchmark evaluation resources
+
+Benchmark schema v3 adds an optional `evaluation_resource_contract` to each runtime
+profile. If a selected benchmark fixes an evaluation envelope, Core rejects a
+conflicting run environment and records the frozen release identity. V2 profiles
+remain readable without evaluation contracts and reject this newer field. Current
+preview profiles leave CPU, host-memory, cache, I/O and exclusivity unspecified.
+
+Formal qualification requires a nonempty enforced evaluation contract matching the
+release, and accepted TEST allocation evidence. These checks contribute to the
+optional result's `benchmark` extension alongside the other
+[benchmark requirements](benchmarks.md#formal-qualification).

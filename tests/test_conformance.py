@@ -100,7 +100,7 @@ class ResolutionProbeTests(unittest.TestCase):
 
         self.assertTrue(report.passed, report.private_manifest())
         self.assertEqual(report.probe_version, RESOLUTION_PROBE_VERSION)
-        self.assertFalse(report.public_manifest()["formal_conformance"])
+        self.assertNotIn("formal_conformance", report.public_manifest())
         self.assertFalse(hasattr(report, "receipt"))
         # This object intentionally lacks Lease and evaluation methods. Passing
         # the narrow probe must never imply full Worker Protocol conformance.

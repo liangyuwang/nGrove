@@ -36,7 +36,6 @@ class GatewayExecutionTests(unittest.TestCase):
 
     def report(self):
         return _finalized(
-            leaderboard_eligible=False,
             agent_system={
                 "runner": "container",
                 "egress": "denied",

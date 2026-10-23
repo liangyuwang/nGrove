@@ -13,12 +13,9 @@ from .artifact_identity import (
 from .config import AGENT_EGRESS_POLICIES, AGENT_RUNNERS
 from .environment import FrozenEnvironment
 from .recording import RecordingConfig
-from .benchmark import validate_benchmark_binding
 from .gateway_execution import (
-    GatewayArtifactIdentity,
     GatewayExecutionReceipt,
     GatewayExecutionRequest,
-    gateway_eligibility_violations,
     inference_policy_sha256,
 )
 from .worker_protocol import (
@@ -32,7 +29,7 @@ from .worker_protocol import (
 )
 
 
-RESULT_SCHEMA_VERSION = 16
+RESULT_SCHEMA_VERSION = 17
 _VALID_STATUSES = {
     "created",
     "active",
@@ -69,7 +66,7 @@ def normalize_result_report(payload: Any) -> Dict[str, Any]:
     version = payload.get("result_schema_version")
     if isinstance(version, bool) or not isinstance(version, int):
         raise ResultSchemaError("result_schema_version must be an integer")
-    if version not in {12, 13, 14, 15, RESULT_SCHEMA_VERSION}:
+    if version not in {12, 13, 14, 15, 16, RESULT_SCHEMA_VERSION}:
         raise ResultSchemaError(f"unsupported result schema version: {version}")
     if version == 12 and (
         payload.get("status") == "operator_stopped"
@@ -104,6 +101,9 @@ def normalize_result_report(payload: Any) -> Dict[str, Any]:
     result.setdefault("deployment_teardown_failures", [])
     result.pop("pending_result", None)
     _validate_current_result(result)
+    from .benchmark_results import validate_result_extensions
+
+    validate_result_extensions(result)
     return result
 
 
@@ -122,27 +122,6 @@ def _validate_artifact_identity_algorithms(result: Dict[str, Any]) -> None:
     if algorithms != expected:
         raise ResultSchemaError(
             "artifact identity algorithms do not match the active protocol"
-        )
-
-    verification = result.get("formal_release_verification")
-    if verification is None:
-        return
-    if not isinstance(verification, dict):
-        raise ResultSchemaError("formal_release_verification must be an object")
-    receipt_algorithms = verification.get("artifact_identity_algorithms")
-    expected_receipt = {
-        "file": FILE_IDENTITY_ALGORITHM,
-        "hidden_evaluation": HIDDEN_BUNDLE_IDENTITY_ALGORITHM,
-    }
-    if not isinstance(receipt_algorithms, dict) or set(receipt_algorithms) != set(
-        expected_receipt
-    ):
-        raise ResultSchemaError(
-            "formal release verification must identify artifact algorithms"
-        )
-    if receipt_algorithms != expected_receipt:
-        raise ResultSchemaError(
-            "formal release artifact algorithms do not match the active protocol"
         )
 
 
@@ -174,12 +153,7 @@ def _validate_performance_measurement(
         raise ResultSchemaError(f"invalid {field}: {exc}") from exc
 
 
-def _validate_workload_resolutions(
-    value: Any,
-    *,
-    leaderboard_eligible: bool,
-    release_verification: Any,
-) -> None:
+def _validate_workload_resolutions(value: Any) -> None:
     roles = {"training", "candidate", "evaluator"}
     if not isinstance(value, dict) or set(value) != roles:
         raise ResultSchemaError(
@@ -188,10 +162,6 @@ def _validate_workload_resolutions(
     for role in sorted(roles):
         evidence = value[role]
         if evidence is None:
-            if leaderboard_eligible:
-                raise ResultSchemaError(
-                    "a leaderboard-eligible result requires every workload resolution"
-                )
             continue
         if not isinstance(evidence, dict) or evidence.get("role") != role:
             raise ResultSchemaError(
@@ -260,30 +230,6 @@ def _validate_workload_resolutions(
                 raise ResultSchemaError(
                     f"workload resolution {role} is not a canonical identity"
                 )
-        if acceptance == "organizer_receipt":
-            accepted = (
-                release_verification.get("workload_resolution_acceptance", {}).get(role)
-                if isinstance(release_verification, dict)
-                else None
-            )
-            observed = {
-                field: evidence.get(field)
-                for field in (
-                    "role",
-                    "requested_identity",
-                    "effective_format",
-                    "effective_sha256",
-                    "transformation_sha256",
-                )
-            }
-            if accepted != observed:
-                raise ResultSchemaError(
-                    f"workload resolution {role} lacks matching organizer acceptance"
-                )
-        if leaderboard_eligible and acceptance == "unverified":
-            raise ResultSchemaError(
-                "a leaderboard-eligible result cannot use an unverified workload"
-            )
 
 
 def _validate_resource_allocations(result: Dict[str, Any]) -> None:
@@ -365,26 +311,6 @@ def _validate_resource_allocations(result: Dict[str, Any]) -> None:
         if receipt_id not in {receipt.receipt_id for receipt in accepted_receipts}:
             raise ResultSchemaError(
                 "an active Lease must reference its accepted resource allocation"
-            )
-    if result.get("leaderboard_eligible") is True:
-        if not accepted_receipts or len(accepted_receipts) != len(allocations):
-            raise ResultSchemaError(
-                "a leaderboard-eligible result requires accepted allocation evidence"
-            )
-        if any(
-            requirement.minimum_enforcement.value != "enforced"
-            for requirement in envelope.requirements
-        ):
-            raise ResultSchemaError(
-                "a leaderboard-eligible resource envelope must require enforcement"
-            )
-        benchmark_release = result.get("benchmark_release")
-        if (
-            not isinstance(benchmark_release, dict)
-            or benchmark_release.get("resource_envelope") != envelope.public_manifest()
-        ):
-            raise ResultSchemaError(
-                "leaderboard resource evidence must match the frozen release"
             )
 
 
@@ -495,38 +421,6 @@ def _validate_evaluation_resources(result: Dict[str, Any]) -> None:
             raise ResultSchemaError(
                 "measured cost requires matching evaluation resource evidence"
             )
-    if result.get("leaderboard_eligible") is True:
-        if (
-            envelope is None
-            or not envelope.requirements
-            or any(
-                item.minimum_enforcement.value != "enforced"
-                for item in envelope.requirements
-            )
-        ):
-            raise ResultSchemaError(
-                "leaderboard evaluation resources must require enforcement"
-            )
-        test_record = measurements.get(("test", result.get("final_candidate_id")))
-        if test_record is None or not test_record["accepted"]:
-            raise ResultSchemaError(
-                "leaderboard cost requires accepted TEST resource evidence"
-            )
-        release = result.get("benchmark_release")
-        try:
-            frozen = ResourceEnvelope.from_manifest(
-                release.get("evaluation_resource_envelope")
-                if isinstance(release, dict)
-                else None
-            )
-        except (TypeError, ValueError) as exc:
-            raise ResultSchemaError(
-                "invalid frozen evaluation resource envelope"
-            ) from exc
-        if frozen.sha256 != envelope.sha256:
-            raise ResultSchemaError(
-                "leaderboard evaluation resources must match the frozen release"
-            )
 
 
 def _validate_gateway_execution(result: Dict[str, Any]) -> None:
@@ -568,17 +462,6 @@ def _validate_gateway_execution(result: Dict[str, Any]) -> None:
         )
         if receipt is not None:
             receipt.validate_request(request)
-        verification = result.get("formal_release_verification")
-        expected = (
-            verification.get("inference_gateway_artifact")
-            if isinstance(verification, dict)
-            else None
-        )
-        artifact = (
-            GatewayArtifactIdentity.from_manifest(expected)
-            if expected is not None
-            else None
-        )
     except (TypeError, ValueError) as exc:
         raise ResultSchemaError(f"invalid Gateway execution evidence: {exc}") from exc
     identities = result.get("artifact_identities")
@@ -590,19 +473,6 @@ def _validate_gateway_execution(result: Dict[str, Any]) -> None:
         or request.core_revision != core.get("revision")
     ):
         raise ResultSchemaError("Gateway request does not match the episode")
-    if result.get("leaderboard_eligible") is True:
-        if (
-            request.core_revision is None
-            or not isinstance(verification, dict)
-            or request.core_revision != verification.get("core_revision")
-        ):
-            raise ResultSchemaError("Gateway Core revision does not match the release")
-        violations = gateway_eligibility_violations(receipt, artifact)
-        if violations:
-            raise ResultSchemaError(
-                "leaderboard-eligible Gateway evidence is incomplete: "
-                + ", ".join(violations)
-            )
 
 
 def _validate_agent_system(result: Dict[str, Any]) -> None:
@@ -636,10 +506,16 @@ def _validate_agent_system(result: Dict[str, Any]) -> None:
 
 
 def _validate_current_result(result: Dict[str, Any]) -> None:
+    if result["result_schema_version"] >= 17:
+        issues = result.get("execution_issues", [])
+        if not isinstance(issues, list) or any(
+            not isinstance(code, str) or not code for code in issues
+        ):
+            raise ResultSchemaError("execution_issues must be an array of codes")
     environment = result.get("environment")
     if (
         environment is not None
-        or result.get("result_schema_version") == RESULT_SCHEMA_VERSION
+        or result.get("result_schema_version") >= 16
     ):
         try:
             config = FrozenEnvironment.from_record(environment)
@@ -682,11 +558,7 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
     performance_contract = _performance_score_contract(result)
     cost_contract = _cost_contract(result)
     _validate_artifact_identity_algorithms(result)
-    _validate_workload_resolutions(
-        result.get("workload_resolutions"),
-        leaderboard_eligible=result.get("leaderboard_eligible") is True,
-        release_verification=result.get("formal_release_verification"),
-    )
+    _validate_workload_resolutions(result.get("workload_resolutions"))
     _validate_resource_allocations(result)
     status = result.get("status")
     if status not in _VALID_STATUSES:
@@ -899,7 +771,6 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
             or result.get("closure_reason") != "operator_time_limit_reached"
             or not isinstance(research_sealed_at, str)
             or not research_sealed_at
-            or result.get("leaderboard_eligible") is not False
             or candidate_id is not None
             or test_status is not None
             or analysis_status is not None
@@ -910,10 +781,6 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
             raise ResultSchemaError("an operator stop cannot be an evaluation result")
     _validate_evaluation_resources(result)
 
-    try:
-        validate_benchmark_binding(result)
-    except (TypeError, ValueError) as exc:
-        raise ResultSchemaError(str(exc)) from exc
 
 
 def _validate_analysis_summary_counts(

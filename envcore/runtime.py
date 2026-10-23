@@ -1074,7 +1074,7 @@ class DockerRuntime:
             resolved_resources.validate()
         else:
             resolved_resources.validate_for(config)
-        # `docs/benchmark-reference.md` promises that the discovered runtime
+        # `docs/research-protocol.md` promises that the discovered runtime
         # inventory is recorded alongside the requested resources, so inspect
         # the host whenever that is possible rather than only when accelerators
         # were requested. Recording an empty list for an uninspected host would

@@ -1,26 +1,10 @@
 # Inference Gateway execution evidence
 
 Core can record a trusted launcher's observation of the actual inference
-Gateway before task reveal. This addresses the Core interface in original
-issue 12. It does not certify a deployment, add a launcher backend, or change
-Worker Protocol v16. Gateway lifecycle remains owned by the trusted composition.
+Gateway before task reveal. Gateway lifecycle remains owned by the trusted
+composition.
 
-## Release identity and actual execution
-
-For formal registered inference, the organizer supplies
-`ReleaseVerificationReceipt.inference_gateway_artifact` as a
-`GatewayArtifactIdentity(format, sha256)`. This is independent verification of
-the complete executable artifact selected for that release. The format defines
-the hashing procedure; Core compares exact format and digest values, without
-loading a platform artifact or interpreting deployment handles.
-
-The identity must cover every executable input: the runtime environment,
-dependencies, entrypoint and any injected implementation code. A deployment
-may define a canonical composite manifest when these are separate artifacts.
-The organizer must verify that manifest and its components independently of
-the launcher's claim. A configured image reference, a base-image digest, or a
-label naming a Core revision is insufficient when other code is injected.
-Changes to the executable bundle require a newly approved artifact identity.
+## Actual execution
 
 After construction, `Supervisor.gateway_execution_request` is a frozen
 `GatewayExecutionRequest`, or `None` when inference is disabled. It binds:
@@ -39,7 +23,7 @@ configuration separately through its trusted composition, never from the Agent.
 
 ## Launcher sequence
 
-1. Construct the Supervisor with the verified release and other frozen inputs.
+1. Construct the Supervisor with the frozen task and environment inputs.
 2. Obtain `supervisor.gateway_execution_request`. Register ownership and bounded
    cleanup before attempting to create the Gateway.
 3. Start the Gateway with that request's workload and inference registration.
@@ -48,7 +32,7 @@ configuration separately through its trusted composition, never from the Agent.
 4. Return a `GatewayExecutionReceipt` containing `receipt_id`, the request's
    `sha256`, `source`, observed `artifact`, `enforcement`, `trust_level`, and
    explicit `limitations`. Call `supervisor.record_gateway_execution(receipt)`.
-5. Call `supervisor.begin()` immediately before starting the Tested Agent.
+5. Call `supervisor.begin()` immediately before starting the Research Agent.
    Enforce the fixed Gateway artifact and registration for the execution
    lifetime, and include it in normal, failed-start and interrupted cleanup.
 
@@ -62,10 +46,33 @@ or a certificate authority.
 Registration is allowed once while the episode is `created`. A receipt for
 another request is rejected, including reuse across episodes or a change of
 inference registration. Duplicate registration and registration after `begin()`
-are rejected; missing evidence cannot be repaired retroactively to upgrade an
-episode's eligibility. Startup failure still requires deployment cleanup.
+are rejected. Startup failure still requires deployment cleanup.
 
-## Eligibility and reporting
+Result schema v15 stores `gateway_execution` in the private state/report:
+`null` when disabled, otherwise a request and a nullable receipt. The reader
+revalidates request binding. The Agent's public task/status contains neither
+the receipt nor the private registration fingerprint. Historical v12/v13/v14
+reports remain readable under their original semantics and cannot contain the
+new evidence fields.
+
+## Benchmark qualification
+
+For formal registered inference, the organizer supplies
+`ReleaseVerificationReceipt.inference_gateway_artifact` as a
+`GatewayArtifactIdentity(format, sha256)`. This is independent verification of
+the complete executable artifact selected for that release. The format defines
+the hashing procedure; Core compares exact format and digest values, without
+loading a platform artifact or interpreting deployment handles.
+
+The identity must cover every executable input: the runtime environment,
+dependencies, entrypoint and any injected implementation code. A deployment
+may define a canonical composite manifest when these are separate artifacts.
+The organizer must verify that manifest and its components independently of
+the launcher's claim. A configured image reference, a base-image digest, or a
+label naming a Core revision is insufficient when other code is injected.
+Changes to the executable bundle require a newly approved artifact identity.
+
+
 
 Formal eligibility requires the observed artifact to match the organizer's
 release artifact, `enforcement=ENFORCED`, `trust_level=CERTIFIED`, and no
@@ -75,7 +82,8 @@ organizer's trusted launcher boundary; a mechanism name or self-description
 does not establish it. Worker conformance and all other formal checks remain
 independent requirements.
 
-Missing or insufficient evidence keeps the run ineligible using these codes:
+When benchmark functionality is selected, missing or insufficient evidence is
+recorded in `benchmark.leaderboard_eligibility_violations` using these codes:
 
 | Code | Meaning |
 | --- | --- |
@@ -87,14 +95,6 @@ Missing or insufficient evidence keeps the run ineligible using these codes:
 These are eligibility findings. They do not blame a Candidate, erase an
 otherwise accepted TEST measurement, or stand in for deployment teardown
 failures. A malformed or misbound receipt is rejected at registration.
-
-Result schema v15 stores `gateway_execution` in the private state/report:
-`null` when disabled, otherwise a request and a nullable receipt. The reader
-revalidates request binding and checks the evidence and release artifact before
-accepting an eligible result. The Agent's public task/status contains neither
-the receipt nor the private registration fingerprint. Historical v12/v13/v14
-reports remain readable under their original semantics and cannot contain the
-new evidence fields.
 
 The bundled local launcher remains a development composition and does not
 issue this receipt. In particular, its Gateway uses a base image plus a mounted

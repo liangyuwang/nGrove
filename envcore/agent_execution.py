@@ -52,21 +52,6 @@ class AgentExecutionEvidence:
         if len(set(self.limitations)) != len(self.limitations):
             raise ValueError("Agent execution limitations must be unique")
 
-    @property
-    def policy_compliant(self) -> bool:
-        return (
-            self.enforcement.rank >= EnforcementLevel.ENFORCED.rank
-            and not self.limitations
-        )
-
-    @property
-    def leaderboard_eligible(self) -> bool:
-        return (
-            self.policy_compliant
-            and self.trust_level == TrustLevel.CERTIFIED
-            and self.immutable_workload_identity
-        )
-
     def public_manifest(self) -> Dict[str, Any]:
         return {
             "source": self.source,
@@ -76,6 +61,4 @@ class AgentExecutionEvidence:
             "workload_identity": self.workload_identity,
             "immutable_workload_identity": self.immutable_workload_identity,
             "limitations": list(self.limitations),
-            "policy_compliant": self.policy_compliant,
-            "leaderboard_eligible": self.leaderboard_eligible,
         }

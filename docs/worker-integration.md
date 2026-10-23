@@ -20,7 +20,7 @@ deployment revision; do not rewrite a running or archived deployment.
 
 ## Composition and lifecycle
 
-Worker Protocol v16 is synchronous Python. The trusted launcher constructs the
+Worker Protocol v17 is synchronous Python. The trusted launcher constructs the
 Supervisor with its Research Worker, Evaluation Worker, Agent execution
 evidence, and Agent-control transport. Remaining `Path` arguments require a
 deployment in which their consumers can resolve the intended files; they are
@@ -30,16 +30,15 @@ credentials are private Evaluation Worker configuration.
 Registered inference has a separate [Gateway execution evidence](gateway-execution.md)
 interface. A trusted launcher obtains `Supervisor.gateway_execution_request`,
 starts and inspects the Gateway, and records a `GatewayExecutionReceipt` before
-`begin()`. Formal eligibility requires the complete running artifact to match
-the organizer's release verification; a configured image string is insufficient.
-The bundled development launcher still provides no certified Gateway receipt.
+`begin()`. The receipt describes the actual running artifact and inference
+registration.
 
 When updating a deployment from v15, `evaluate_candidate()` must accept the new
 `evaluation_id` and `resource_envelope` keyword arguments. An explicit envelope
 requires an operation-bound `EvaluationResourceReceipt` on the returned result.
 It cannot reuse Training or another evaluation's receipt. The Supervisor reads
 the effective evaluation envelope from the frozen run environment or explicit
-launcher input, and validates any additional selected benchmark contract.
+launcher input.
 Resolve unsupported normative properties before authorizing an expensive run. See the
 [evaluation resource contract and evidence example](evaluation-resources.md).
 
@@ -74,22 +73,15 @@ supervisor = Supervisor(
     agent_control_transport=agent_control,
     research_worker_environment=research_environment,
     evaluation_worker_environment=evaluation_environment,
-    research_worker_conformance=research_conformance,
-    evaluation_worker_conformance=evaluation_conformance,
     worker_resolution_timeout_seconds=resolution_timeout,
     operator_max_research_seconds=operator_research_limit,
 )
 ```
 
 Use `resolve_environment_run` to resolve the task, Track, user-owned environment
-and resource envelopes before constructing these inputs. Benchmark
-presets use the same resolver. Supply `comparison_key`, `benchmark_release` and
-`release_verification` only when applicable to the selected benchmark use.
+and resource envelopes before constructing these inputs.
 Supply verified TRAIN evidence bound to the actual manifest; keep TRAIN read-only. Publish only
-the generated Agent API into the participant view, not the Core package. Use
-the release's comparison metadata and trusted receipts where applicable;
-missing organizer verification or conformance remains missing evidence.
-Self-description and diagnostic test results cannot manufacture those receipts.
+the generated Agent API into the participant view, not the Core package.
 The Supervisor writes trusted episode state and may prepare the selected
 control transport during construction, so storage and ownership admission must
 already be complete.
@@ -331,7 +323,7 @@ boundary; otherwise keep that guarantee pending until the scoped checks pass.
 
 | Stage | Minimum evidence before progressing |
 | --- | --- |
-| Interface | Protocol/version compatibility, bound workload/resource receipts, hidden resolution rules, and required failure types; the resolution diagnostic alone is not full conformance |
+| Interface | Protocol/version compatibility, bound workload/resource receipts, hidden resolution rules, and required failure types; the resolution diagnostic covers only input resolution |
 | Boundary and recovery | Required role visibility, permissions, resource/device limits, immutable capture, deadline enforcement, and owned-resource cleanup, using disposable fixtures without hidden evaluation content |
 | Agent startup | The selected runtime view and actual required tools initialize successfully, or the remaining preview limitation is explicit |
 | Short complete episode | An agreed development lane within the approved diagnostic scope reaches Lease, commit, Agent-declared incumbent, research sealing, confirmed teardown, TEST, ANALYSIS disposition, final publication and final status refresh |
@@ -362,8 +354,7 @@ The [evaluation Worker diagnostic](worker-evaluation-probe.md) supplies a reusab
 interface check for supported TEST/ANALYSIS resource receipts and deliberately
 unsupported contracts. Run it only on public disposable fixtures, with the
 deployment's independent watchdog and explicit cleanup confirmation. It accepts
-temporary external Worker implementations through the same protocol; no site
-adapter or formal certification is bundled into Core.
+temporary external Worker implementations through the same protocol; platform mechanisms stay in the deployment.
 
 Include focused regressions for the integration changes: runtime-private host
 paths absent from Agent temporary-directory variables, real file-tool operation, short live log
@@ -374,9 +365,8 @@ on a pipe whose destination filled, and retained usage must reflect capture
 loss even when a truncation marker could not be written.
 Use disposable owned resources with bounded costs. Unit simulations establish
 logic; real-runtime tests establish the observed deployment behavior. A normal
-successful episode alone does not certify cancellation, hard quota exhaustion,
-or host-loss cleanup. Full adversarial conformance remains an organizer-owned
-assessment, not a claim inferred from these preview checks.
+successful episode does not exercise cancellation, hard quota exhaustion,
+or host-loss cleanup; test those failure paths separately.
 
 Record resource clocks explicitly before submission:
 
