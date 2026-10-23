@@ -189,6 +189,20 @@ class OperatorStatusTests(unittest.TestCase):
         self.assertIsNone(view["core"]["agent_termination_reason"])
         self.assertNotIn("compliant", format_operator_status(view))
 
+    def test_execution_issues_distinguish_missing_from_empty(self):
+        for fields, expected, rendered in (
+            ({"result_schema_version": 16}, None, "unknown"),
+            ({"execution_issues": []}, [], "[]"),
+        ):
+            with self.subTest(fields=fields):
+                self.state(_finalized(episode_id="episode-1", **fields))
+                view = self.read()
+                self.assertEqual(view["core"]["availability"], "available")
+                self.assertEqual(view["core"]["execution_issues"], expected)
+                self.assertIn(
+                    f"Execution issues: {rendered}", format_operator_status(view)
+                )
+
     def test_wrong_episode_observation_is_not_used(self):
         self.state()
         self.observation(episode_id="another-episode", execution_state="terminated")
@@ -258,16 +272,29 @@ class OperatorStatusTests(unittest.TestCase):
         self.assertEqual(self.read()["core"]["phase"], "analysis_pending")
 
     def test_cli_text_and_json_status_do_not_change_existing_report(self):
-        self.state(_finalized(episode_id="episode-1"))
+        issues = ["agent_execution_boundary", "agent_writable_storage_unbounded"]
+        self.state(
+            _finalized(
+                episode_id="episode-1",
+                agent_system={"runner": "host_cli", "termination_reason": "exited"},
+                execution_issues=issues,
+            )
+        )
+        before = self.state_path.read_bytes()
         parser = build_parser()
         for flags in ([], ["--json"]):
             args = parser.parse_args(["status", "--episode", str(self.root), *flags])
             with redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(args.function(args), 0)
             if flags:
-                self.assertEqual(json.loads(output.getvalue())["summary"], "finalized")
+                view = json.loads(output.getvalue())
+                self.assertEqual(view["summary"], "finalized")
+                self.assertEqual(view["core"]["execution_issues"], issues)
             else:
                 self.assertIn("Summary: finalized", output.getvalue())
+                for issue in issues:
+                    self.assertIn(issue, output.getvalue())
+        self.assertEqual(self.state_path.read_bytes(), before)
         args = parser.parse_args(["report", "--episode", str(self.root)])
         with redirect_stdout(io.StringIO()) as output:
             command_report(args)

@@ -149,6 +149,7 @@ def read_operator_status(
                 outcome=state["outcome"],
                 phase=_core_phase(state),
                 environment=state.get("environment"),
+                execution_issues=state.get("execution_issues"),
                 closure_reason=state.get("closure_reason"),
                 research_sealed_at=state.get("research_sealed_at"),
                 leases_used=state.get("leases_used", 0),
@@ -273,6 +274,7 @@ def format_operator_status(view: Dict[str, Any]) -> str:
             [
                 f"Core snapshot: {core['status']} / {core['phase']} ({core['freshness']}; written {core['modified_at']})",
                 f"Outcome: {display(core['outcome'])}; failure: {display(core['failure'])}",
+                f"Execution issues: {display(core.get('execution_issues'))}",
                 f"Research sealed: {display(core['research_sealed_at'])}; reason: {display(core['closure_reason'])}",
                 f"Lease snapshot: {core['leases_used']} started; active: {display(core['active_lease_id'])}",
                 f"Candidates: {core['candidate_count']}; incumbent: {display(core['incumbent_id'])}; final: {display(core['final_candidate_id'])}",
