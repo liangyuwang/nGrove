@@ -159,16 +159,3 @@ conditions, implement and validate their enforcement in the authorized Worker,
 and record every invocation's evidence. Local command-boundary tests are not real
 Docker/GPU admission evidence. Existing external preview
 measurements retain their original comparison limits.
-
-## Benchmark evaluation resources
-
-Benchmark schema v3 adds an optional `evaluation_resource_contract` to each runtime
-profile. If a selected benchmark fixes an evaluation envelope, Core rejects a
-conflicting run environment and records the frozen release identity. V2 profiles
-remain readable without evaluation contracts and reject this newer field. Current
-preview profiles leave CPU, host-memory, cache, I/O and exclusivity unspecified.
-
-Formal qualification requires a nonempty enforced evaluation contract matching the
-release, and accepted TEST allocation evidence. These checks contribute to the
-optional result's `benchmark` extension alongside the other
-[benchmark requirements](benchmarks.md#formal-qualification).

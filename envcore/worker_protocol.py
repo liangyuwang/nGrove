@@ -319,7 +319,9 @@ class PerformanceScoreContract:
             )
 
     @classmethod
-    def from_manifest(cls, value: Any) -> "PerformanceScoreContract":
+    def from_manifest(
+        cls, value: Any, *, allow_legacy: bool = False
+    ) -> "PerformanceScoreContract":
         if not isinstance(value, dict) or set(value) != {
             "definition_id",
             "range",
@@ -345,7 +347,7 @@ class PerformanceScoreContract:
             direction=value["direction"],
             comparison_scope=(
                 "task_release"
-                if value["comparison_scope"] == "benchmark_release"
+                if allow_legacy and value["comparison_scope"] == "benchmark_release"
                 else value["comparison_scope"]
             ),
         )
@@ -449,7 +451,7 @@ class CostContract:
             raise ValueError("cost submetrics do not match the active protocol")
 
     @classmethod
-    def from_manifest(cls, value: Any) -> "CostContract":
+    def from_manifest(cls, value: Any, *, allow_legacy: bool = False) -> "CostContract":
         if not isinstance(value, dict) or set(value) != {
             "definition_id",
             "task_unit",
@@ -477,12 +479,15 @@ class CostContract:
             aggregation=value["aggregation"],
             comparison_scope=(
                 "task_release"
-                if value["comparison_scope"] == "benchmark_release"
+                if allow_legacy and value["comparison_scope"] == "benchmark_release"
                 else value["comparison_scope"]
             ),
             comparison_requires=(
                 COST_COMPARISON_REQUIRES
-                if comparison_requires == ["hidden_dataset_identity", "runtime_profile"]
+                if allow_legacy
+                and value["comparison_scope"] == "benchmark_release"
+                and comparison_requires
+                == ["hidden_dataset_identity", "runtime_profile"]
                 else tuple(comparison_requires)
             ),
             submetrics=tuple(submetrics),

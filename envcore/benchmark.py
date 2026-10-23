@@ -473,28 +473,8 @@ class BenchmarkRelease:
             raise ConfigError(
                 f"benchmark expects task_id {self.task_id!r}, received {task.task_id!r}"
             )
-        if task.task_kind == "development_smoke" and self.leaderboard_eligible:
-            raise ConfigError(
-                "development smoke releases may not be leaderboard eligible"
-            )
         if self.leaderboard_eligible:
-            legacy_task = json.loads(task.source.read_text(encoding="utf-8"))
-            if (
-                legacy_task.get("schema_version") == 7
-                and legacy_task.get("leaderboard_eligible") is not True
-            ):
-                raise ConfigError(
-                    "a legacy leaderboard release requires a leaderboard-eligible task"
-                )
-            mutable = [
-                name for name, image in task.images.items()
-                if not immutable_image_reference(image)
-            ]
-            if mutable:
-                raise ConfigError(
-                    "leaderboard releases require digest-pinned images: "
-                    + ", ".join(mutable)
-                )
+            validate_benchmark_task(task)
             if _sha256_file(self.source) != self.manifest_sha256:
                 raise ConfigError("benchmark manifest changed after it was loaded")
             if (
@@ -604,6 +584,33 @@ class BenchmarkRelease:
                 for key, value in self.runtime_profiles.items()
             },
         }
+
+
+def validate_benchmark_task(task: TaskConfig) -> None:
+    """Check task prerequisites at every formal benchmark execution boundary."""
+    if task.task_kind == "development_smoke":
+        raise ConfigError("development smoke releases may not be leaderboard eligible")
+    legacy_task = json.loads(task.source.read_text(encoding="utf-8"))
+    if (
+        legacy_task.get("schema_version") == 7
+        and legacy_task.get("leaderboard_eligible") is not True
+    ):
+        raise ConfigError(
+            "a legacy leaderboard release requires a leaderboard-eligible task"
+        )
+    images = {
+        "images.training": task.training_image,
+        "images.candidate": task.candidate_image,
+        "images.evaluator": task.evaluator_image,
+        "images.inference_gateway": task.inference_gateway_image,
+    }
+    mutable = [
+        name for name, image in images.items() if not immutable_image_reference(image)
+    ]
+    if mutable:
+        raise ConfigError(
+            "leaderboard releases require digest-pinned images: " + ", ".join(mutable)
+        )
 
 
 def benchmark_eligibility_violations(
@@ -910,7 +917,8 @@ def assess_benchmark_worker(
             not require_conformance
             or bool(
                 conformance_receipt
-                and conformance_receipt.suite_version == WORKER_CONFORMANCE_SUITE_VERSION
+                and conformance_receipt.suite_version
+                == WORKER_CONFORMANCE_SUITE_VERSION
                 and conformance_receipt.worker_id == descriptor.worker_id
                 and conformance_receipt.passed is True
             )
@@ -936,7 +944,9 @@ class BenchmarkContext:
             or not self.release["benchmark_id"].strip()
         ):
             raise ValueError("benchmark context requires an identified release")
-        if self.comparison_key is not None and not isinstance(self.comparison_key, dict):
+        if self.comparison_key is not None and not isinstance(
+            self.comparison_key, dict
+        ):
             raise TypeError("comparison_key must be an object")
         self.release = copy.deepcopy(self.release)
         self.comparison_key = copy.deepcopy(self.comparison_key)
@@ -1049,7 +1059,8 @@ class BenchmarkContext:
             "leaderboard_eligibility_violations": list(
                 self.record["leaderboard_eligibility_violations"]
             ),
-            "formal_release_verified": self.verification is not None and not any(
+            "formal_release_verified": self.verification is not None
+            and not any(
                 item == "formal_test_evaluation_pending"
                 or item.startswith("formal_release_verification")
                 for item in self.record["leaderboard_eligibility_violations"]

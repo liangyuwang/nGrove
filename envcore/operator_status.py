@@ -175,12 +175,20 @@ def read_operator_status(
             if "benchmark" in state:
                 core["benchmark"] = {
                     name: state["benchmark"][name]
-                    for name in ("comparison_key", "policy_compliant", "leaderboard_eligible")
+                    for name in (
+                        "comparison_key",
+                        "policy_compliant",
+                        "leaderboard_eligible",
+                    )
                 }
             elif state.get("benchmark_release") is not None:
                 core["benchmark"] = {
                     name: state.get(name)
-                    for name in ("comparison_key", "policy_compliant", "leaderboard_eligible")
+                    for name in (
+                        "comparison_key",
+                        "policy_compliant",
+                        "leaderboard_eligible",
+                    )
                 }
         except (ValueError, TypeError, KeyError, AttributeError) as exc:
             core.update(availability="invalid", error=str(exc))
@@ -275,10 +283,12 @@ def format_operator_status(view: Dict[str, Any]) -> str:
         )
         if "benchmark" in core:
             benchmark = core["benchmark"]
-            lines.extend([
-                f"Benchmark comparison key: {display(benchmark['comparison_key'])}",
-                f"Benchmark policy compliant: {display(benchmark['policy_compliant'])}; leaderboard eligible: {display(benchmark['leaderboard_eligible'])}",
-            ])
+            lines.extend(
+                [
+                    f"Benchmark comparison key: {display(benchmark['comparison_key'])}",
+                    f"Benchmark policy compliant: {display(benchmark['policy_compliant'])}; leaderboard eligible: {display(benchmark['leaderboard_eligible'])}",
+                ]
+            )
         if core["outcome"] == "success":
             lines.append(
                 f"TEST score: {core['test_performance_score']}; seconds/task: {core['test_cost']['time_per_task']}"

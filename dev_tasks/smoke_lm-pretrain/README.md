@@ -59,8 +59,7 @@ evaluation inputs are variable-length token sequences, the exact length
 distribution is not disclosed during research, and participants choose how to
 use context to optimize next-token prediction within the resource budget.
 `evaluation.max_context_tokens` publishes only the input bound. The local smoke
-recipe remains reproducible from its public source; this visibility convention
-does not make that recipe suitable as a secret formal evaluation.
+recipe remains reproducible from its public source.
 
 Use `--task`, `--track` and `--environment` for an integration episode, as shown
 below. An environment selects compute resources and may override the task's
@@ -96,7 +95,7 @@ protection**, configured in `operator-defaults.json`. The launcher announces it
 before run preparation. Add `--operator-max-research-seconds SECONDS` to change
 it or `--no-operator-research-limit` to disable it for one run. Disabling protection
 risks extremely high token consumption. The setting and notices are never sent
-to the Tested Agent and do not change the three 75-second Leases .
+to the Research Agent and do not change the three 75-second Leases .
 See [operator protection semantics](../../docs/research-protocol.md#track-b--lease-bounded-autonomous-research).
 
 Both Tracks also default to **2 GiB of private operator storage protection**.
@@ -128,7 +127,7 @@ workspace by omitting `--agent-workspace`. The episode root remains explicit
 and outside the Core checkout. This matters for host-native tools that discover
 instructions from parent directories: an empty workspace nested beneath the
 Core would still inherit the Repository Assistant's `AGENTS.md` instructions
-and is rejected before task reveal. The Tested Agent's own global configuration
+and is rejected before task reveal. The Research Agent's own global configuration
 and participant-owned instructions remain in scope.
 
 ```bash
@@ -146,7 +145,7 @@ limitations are recorded in `execution_issues`. The Candidate/Evaluator boundary
 remains isolated. A container Agent with denied egress provides a confined
 research workspace and network boundary.
 
-The Tested Agent is governed by the same [preview Policy](POLICY.md) as
+The Research Agent is governed by the same [preview Policy](POLICY.md) as
 `lm-pretrain`. In particular, the initial Agent image/workspace may not
 contain extra training corpora or a pretrained target-model checkpoint.
 
@@ -285,19 +284,3 @@ the independent `time_per_task` cost axis. `time_per_task` divides that wall
 time by the frozen number of next-token tasks, while total time and throughput
 remain cost submetrics. The two axes form a Pareto frontier and are not folded
 into one score.
-
-## Benchmark presets
-
-For optional preset-based integration, the same smoke task can exercise a
-published accelerator profile without changing the task or using manual resource overrides:
-
-```bash
-ngrove start \
-  --benchmark dev_tasks/smoke_lm-pretrain/benchmark.json \
-  --track-config smoke-a-5m \
-  --runtime-profile h100-sxm-80gb-x4 \
-  --episodes-root /path/to/ngrove-runs/episodes \
-  --agent-runner container \
-  --agent-image participant-agent@sha256:DIGEST \
-  --agent-command "participant-agent run"
-```

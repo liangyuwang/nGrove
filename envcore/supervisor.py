@@ -36,6 +36,7 @@ from .benchmark import (
     ReleaseVerificationReceipt,
     BenchmarkContext,
     resolve_release_evaluation_envelope,
+    validate_benchmark_task,
 )
 from .config import (
     AGENT_PROTOCOL_VERSION,
@@ -306,6 +307,8 @@ class Supervisor:
             raise TypeError("benchmark must be a BenchmarkContext")
         self.benchmark = copy.deepcopy(benchmark)
         self.config = config.validate()
+        if self.benchmark is not None and self.benchmark.requested_eligible:
+            validate_benchmark_task(self.config)
         # The trusted launcher verifies the data view and the Worker keeps it
         # immutable. Core binds that evidence to its small manifest identity;
         # it does not inventory or read the dataset files.
@@ -917,7 +920,7 @@ class Supervisor:
                 max(0.0, self.monotonic() - active["started_monotonic"]),
             )
         result: Dict[str, Any] = {
-            "official_elapsed_seconds": round(elapsed, 6),
+            "research_elapsed_seconds": round(elapsed, 6),
             "environment_overhead_seconds": round(self._environment_overhead(), 6),
             "training_lease_seconds": round(lease_seconds, 6),
             "agent_and_worker_seconds": round(max(0.0, elapsed - lease_seconds), 6),
@@ -1482,27 +1485,28 @@ class Supervisor:
             self._save_state()
             raise WorkloadResolutionFailure(detail)
 
-        if self._identity_workload_resolution(request, resolved):
-            acceptance = "canonical_identity"
-        else:
-            accepted = (
-                self.release_verification.workload_resolution_acceptance.get(role)
-                if self.release_verification is not None
-                else None
-            )
-            acceptance = (
-                "organizer_receipt"
-                if accepted is not None and accepted.matches(resolved)
-                else "unverified"
-            )
-
         evidence = {
             **resolved.evidence_manifest(),
             "worker_id": self.state["workers"][worker_scope]["worker_id"],
-            "acceptance": acceptance,
         }
         self.state["workload_resolutions"][role] = evidence
+        benchmark_evidence = {}
         if self.benchmark is not None:
+            if self._identity_workload_resolution(request, resolved):
+                acceptance = "canonical_identity"
+            else:
+                accepted = (
+                    self.release_verification.workload_resolution_acceptance.get(role)
+                    if self.release_verification is not None
+                    else None
+                )
+                acceptance = (
+                    "organizer_receipt"
+                    if accepted is not None and accepted.matches(resolved)
+                    else "unverified"
+                )
+            benchmark_evidence["acceptance"] = acceptance
+            evidence.update(benchmark_evidence)
             self.benchmark.resolve(f"workload_resolution_pending:{role}")
             if self.benchmark.requested_eligible and acceptance == "unverified":
                 self.benchmark.add_violation(f"workload_resolution_not_accepted:{role}")
@@ -1526,7 +1530,7 @@ class Supervisor:
             effective_format=resolved.effective_format,
             effective_sha256=resolved.effective_sha256,
             transformation_sha256=resolved.transformation_sha256,
-            acceptance=acceptance,
+            **benchmark_evidence,
         )
         self._save_state()
         return resolved

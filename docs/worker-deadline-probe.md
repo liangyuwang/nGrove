@@ -89,8 +89,8 @@ Select **one** authorized fault per fresh diagnostic scope with
 `worker_fault=WorkerFaultKind.PAUSED` or `WorkerFaultKind.TERMINATED`, and supply
 an `inject_fault()` callback. These parameters must be supplied together. The
 default remains the ordinary idle case. The fault version reports
-`worker-v16-worker-fault-deadline-probe-v1`; the ordinary idle version retains
-`worker-v16-idle-deadline-probe-v1`.
+`worker-v17-worker-fault-deadline-probe-v1`; the ordinary idle version retains
+`worker-v17-idle-deadline-probe-v1`.
 
 The callback receives `episode_id`, `lease_id`, `worker_id`, a fresh `fault_id`,
 the typed `kind`, and `timeout_seconds`, and must return `None`. The deployment
@@ -103,7 +103,7 @@ execution that handles this fixture's lifecycle calls**, including its internal
 deadline enforcement and replacement Workers. The independently supervised
 deadline controller, observer, diagnostic caller and external recovery path must
 survive that fault in the frozen deployment. Do not move or add a controller just
-for the diagnostic and certify the original deployment. The injector must not terminate
+for the diagnostic and claim guarantees for the original deployment. The injector must not terminate
 the Lease workload, trigger its deadline, change the grant, or resume/restart
 Worker control before the expiry decision. An unavailable client connection or
 failed Worker status request is not evidence that control execution stopped.
@@ -144,7 +144,7 @@ scope; the probe does not automatically escalate a pause to termination or retry
 
 ## Clocks and cleanup
 
-Worker v16 has no atomic cross-clock activation receipt. The successful
+Worker v17 has no atomic cross-clock activation receipt. The successful
 `start_lease()` return is used as a **conservative latest activation bound**.
 Confirmation must return by that time plus `duration_seconds` and the explicit
 termination grace. This is an upper-bound diagnostic, not proof of exact
@@ -214,7 +214,7 @@ Regression coverage includes deterministic failed-injection/revival/evidence and
 cleanup cases, plus real local control/workload/controller processes. The process
 fixtures cover pause and termination with an independent controller, and reject
 the case where pausing Worker control disables deadline enforcement. Their
-allocation receipts are fixtures; they are not a real v16 Worker deployment run.
+allocation receipts are fixtures; they are not a real v17 Worker deployment run.
 
 Passing does not prove observer honesty, the whole deployment's independence,
 exact Worker-local activation timing, command cancellation, allocation/host loss

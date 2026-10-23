@@ -5,7 +5,7 @@ private Worker journal. Recovery reclaims resources; it does not resume an
 episode, retry training/evaluation, change budgets, reopen research, or publish
 results. When authorized to perform recovery, the Repository Assistant acting
 as trusted operator may invoke the same recovery command that a deployment
-supervisor invokes. The Tested Agent receives neither the journal nor recovery
+supervisor invokes. The Research Agent receives neither the journal nor recovery
 authority.
 
 ## Launch and recover
@@ -172,7 +172,7 @@ activation: Agent and inference Gateway containers, Training containers,
 Candidate/scorer containers, prediction holders/volumes, created networks and
 Worker-private hidden snapshots. Readiness probes completed before activation,
 standalone `prepare`, `host_cli`, external scheduler allocations and resources
-created through a custom Worker are not certified by this journal. Direct
+created through a custom Worker are not covered by this journal. Direct
 DockerRuntime integrations must call `enable_recovery` before their workloads
 and retain ownership until all Worker calls stop.
 Custom deployments must supply their own owned-resource inspection and
@@ -270,7 +270,7 @@ does not finalize, publish or resume an interrupted episode.
 Local regressions deliver real `SIGTERM` and `SIGINT` signals during process
 creation, active supervision, fencing and recovery. They verify child reaping,
 handler restoration, cleanup reports and preservation of saved Core state with
-the test Docker backend. These tests do not certify a live Docker daemon,
+the test Docker backend. These tests do not validate a live Docker daemon,
 allocator-wide cancellation, device isolation, or node-loss recovery.
 Recovery regressions also cover cumulative command timeouts, late deletion
 responses, elapsed filesystem work, retained handles and retry. Equal-budget
@@ -286,7 +286,7 @@ Fresh-process regressions stall journal reading, saving, private-tree removal,
 journal close and report writing until killed. They verify bounded return,
 ownership-lock retention by surviving runtime clients, retry from durable
 progress, cancellation, malformed/missing replies and unchanged Core results.
-These fixtures simulate the blocked filesystem operation; they do not certify
+These fixtures simulate the blocked filesystem operation; they do not validate
 real uninterruptible kernel I/O or a particular cluster/storage deployment.
 
 This covers one local POSIX execution host and its bundled Docker Worker, not

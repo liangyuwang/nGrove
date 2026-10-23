@@ -13,7 +13,6 @@ import time
 import uuid
 from contextlib import ExitStack
 from datetime import datetime, timezone
-from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -620,7 +619,8 @@ def _command_start(args: argparse.Namespace, lifetime: ExitStack) -> int:
             operator_max_research_seconds=operator_limit,
             benchmark=(
                 BenchmarkContext(benchmark_release, comparison_key)
-                if benchmark_release is not None else None
+                if benchmark_release is not None
+                else None
             ),
             environment=run_environment,
             recording=recording,

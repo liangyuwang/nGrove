@@ -51,7 +51,7 @@ The curve describes more than the final result: how loss falls, how much compute
 the next improvement requires, how the improvement rate changes, and where
 progress plateaus or reverses.
 
-The same intuition applies here: **treat the Tested Agent's autonomous
+The same intuition applies here: **treat the Research Agent's autonomous
 research as a higher-level learning process and examine how experience changes
 the quality of its delivered results.**
 

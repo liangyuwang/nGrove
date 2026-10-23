@@ -36,7 +36,6 @@ from envcore.worker_protocol import (
     WORKER_CONFORMANCE_SUITE_VERSION,
     WorkerDescriptor,
     assess_resource_allocation,
-    assess_worker,
 )
 
 
@@ -427,6 +426,30 @@ class WorkerProtocolTests(unittest.TestCase):
                 "next_token_prediction",
                 primary_metric="candidate_wall_seconds",
             )
+
+    def test_legacy_metric_contracts_require_explicit_read_compatibility(self):
+        contracts = (
+            PerformanceScoreContract("accuracy_v2", ("accuracy",)),
+            CostContract("serving_time_v1", "prediction"),
+        )
+        for contract in contracts:
+            legacy = contract.public_manifest()
+            legacy["comparison_scope"] = "benchmark_release"
+            if isinstance(contract, CostContract):
+                legacy["comparison_requires"] = [
+                    "hidden_dataset_identity",
+                    "runtime_profile",
+                ]
+            with self.subTest(contract=type(contract).__name__):
+                with self.assertRaises(ValueError):
+                    type(contract).from_manifest(legacy)
+                self.assertEqual(
+                    type(contract).from_manifest(legacy, allow_legacy=True), contract
+                )
+        mixed = contracts[1].public_manifest()
+        mixed["comparison_requires"] = ["hidden_dataset_identity", "runtime_profile"]
+        with self.assertRaisesRegex(ValueError, "effective resources"):
+            CostContract.from_manifest(mixed, allow_legacy=True)
 
     def test_cost_contract_rejects_unrepresentable_counts(self):
         contract = CostContract(

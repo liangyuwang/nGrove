@@ -196,6 +196,70 @@ class ConfigTests(unittest.TestCase):
                         {"environment_owned_preparation": list(expected)},
                     )
 
+    def test_preparation_field_migration_preserves_legacy_budgets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = self._write_task(directory)
+            payload = json.loads(task.read_text())
+            for phases in ([], ["worker_lease_startup"]):
+                payload["schema_version"] = 7
+                payload["timing"] = {"benchmark_owned_preparation": phases}
+                task.write_text(json.dumps(payload))
+                before = task.read_bytes()
+                loaded = TaskConfig.load(task)
+                self.assertEqual(loaded.environment_owned_preparation, tuple(phases))
+                self.assertEqual(task.read_bytes(), before)
+                self.assertEqual(
+                    loaded.public_manifest("A")["timing"],
+                    {"environment_owned_preparation": phases},
+                )
+                payload["schema_version"] = 8
+                task.write_text(json.dumps(payload))
+                with self.assertRaisesRegex(
+                    ConfigError, "rename timing.*preserve its value"
+                ):
+                    TaskConfig.load(task)
+            for version in (7, 8):
+                payload["schema_version"] = version
+                payload["timing"] = {
+                    "benchmark_owned_preparation": [],
+                    "environment_owned_preparation": ["worker_lease_startup"],
+                }
+                task.write_text(json.dumps(payload))
+                with self.assertRaisesRegex(
+                    ConfigError, "both preparation field names"
+                ):
+                    TaskConfig.load(task)
+
+    def test_legacy_metric_contracts_are_only_migrated_for_task_schema_7(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = self._write_task(directory)
+            payload = json.loads(task.read_text())
+            for name in ("performance_score", "cost"):
+                payload["evaluation"][name]["comparison_scope"] = "benchmark_release"
+            payload["evaluation"]["cost"]["comparison_requires"] = [
+                "hidden_dataset_identity",
+                "runtime_profile",
+            ]
+            payload["schema_version"] = 7
+            task.write_text(json.dumps(payload))
+            loaded = TaskConfig.load(task)
+            self.assertEqual(loaded.performance_score.comparison_scope, "task_release")
+            self.assertEqual(loaded.cost.comparison_scope, "task_release")
+            self.assertEqual(
+                loaded.cost.comparison_requires,
+                ("hidden_dataset_identity", "effective_resources"),
+            )
+            payload["schema_version"] = 8
+            task.write_text(json.dumps(payload))
+            with self.assertRaisesRegex(ConfigError, "performance_score"):
+                TaskConfig.load(task)
+            payload["evaluation"]["performance_score"]["comparison_scope"] = (
+                "task_release"
+            )
+            task.write_text(json.dumps(payload))
+            with self.assertRaisesRegex(ConfigError, "evaluation.cost"):
+                TaskConfig.load(task)
+
     def test_public_task_manifest_hides_private_splits_and_has_no_participant(self):
         config = TaskConfig.load(TASK)
         public = config.public_manifest("B")

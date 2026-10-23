@@ -29,7 +29,9 @@ from .worker_protocol import (
 )
 
 
-RESULT_SCHEMA_VERSION = 17
+# v18 keeps workload acceptance in benchmark runs and uses task-scoped metrics.
+# v17 reports remain readable under their original evidence contract.
+RESULT_SCHEMA_VERSION = 18
 _VALID_STATUSES = {
     "created",
     "active",
@@ -66,7 +68,7 @@ def normalize_result_report(payload: Any) -> Dict[str, Any]:
     version = payload.get("result_schema_version")
     if isinstance(version, bool) or not isinstance(version, int):
         raise ResultSchemaError("result_schema_version must be an integer")
-    if version not in {12, 13, 14, 15, 16, RESULT_SCHEMA_VERSION}:
+    if version not in {12, 13, 14, 15, 16, 17, RESULT_SCHEMA_VERSION}:
         raise ResultSchemaError(f"unsupported result schema version: {version}")
     if version == 12 and (
         payload.get("status") == "operator_stopped"
@@ -128,7 +130,9 @@ def _validate_artifact_identity_algorithms(result: Dict[str, Any]) -> None:
 def _performance_score_contract(result: Dict[str, Any]) -> PerformanceScoreContract:
     value = result.get("performance_score_contract")
     try:
-        return PerformanceScoreContract.from_manifest(value)
+        return PerformanceScoreContract.from_manifest(
+            value, allow_legacy=result["result_schema_version"] < 18
+        )
     except (TypeError, ValueError) as exc:
         raise ResultSchemaError(f"invalid performance score contract: {exc}") from exc
 
@@ -136,7 +140,9 @@ def _performance_score_contract(result: Dict[str, Any]) -> PerformanceScoreContr
 def _cost_contract(result: Dict[str, Any]) -> CostContract:
     value = result.get("cost_contract")
     try:
-        return CostContract.from_manifest(value)
+        return CostContract.from_manifest(
+            value, allow_legacy=result["result_schema_version"] < 18
+        )
     except (TypeError, ValueError) as exc:
         raise ResultSchemaError(f"invalid cost contract: {exc}") from exc
 
@@ -208,28 +214,6 @@ def _validate_workload_resolutions(value: Any) -> None:
             raise ResultSchemaError(
                 f"workload resolution {role} requires a Worker identity"
             )
-        acceptance = evidence.get("acceptance")
-        if acceptance not in {
-            "canonical_identity",
-            "organizer_receipt",
-            "unverified",
-        }:
-            raise ResultSchemaError(
-                f"workload resolution {role} has an invalid acceptance status"
-            )
-        if acceptance == "canonical_identity":
-            marker = "@sha256:"
-            requested_digest = (
-                requested.rsplit(marker, 1)[1] if marker in requested else None
-            )
-            if (
-                requested_digest != evidence["effective_sha256"]
-                or evidence["effective_format"] != "oci"
-                or evidence.get("transformation_sha256") is not None
-            ):
-                raise ResultSchemaError(
-                    f"workload resolution {role} is not a canonical identity"
-                )
 
 
 def _validate_resource_allocations(result: Dict[str, Any]) -> None:
@@ -513,10 +497,7 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
         ):
             raise ResultSchemaError("execution_issues must be an array of codes")
     environment = result.get("environment")
-    if (
-        environment is not None
-        or result.get("result_schema_version") >= 16
-    ):
+    if environment is not None or result.get("result_schema_version") >= 16:
         try:
             config = FrozenEnvironment.from_record(environment)
         except (TypeError, ValueError) as exc:
@@ -780,7 +761,6 @@ def _validate_current_result(result: Dict[str, Any]) -> None:
         ):
             raise ResultSchemaError("an operator stop cannot be an evaluation result")
     _validate_evaluation_resources(result)
-
 
 
 def _validate_analysis_summary_counts(

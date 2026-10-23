@@ -190,9 +190,8 @@ time per task**. Comparisons use the same release and comparison conditions.
 Research tasks can also be used for standardized comparisons through named
 Track/runtime presets and fixed comparison conditions. No frozen,
 leaderboard-eligible benchmark has been released yet. See
-[benchmark use](research_tasks/README.md#optional-benchmark-use) for configuration,
-comparison keys and eligibility requirements. The [benchmark guide](docs/benchmarks.md)
-describes the optional result extension and formal evaluation requirements.
+[benchmark guide](docs/benchmarks.md) for configuration, comparison keys,
+the optional result extension and formal evaluation requirements.
 
 ## Results
 
@@ -517,7 +516,7 @@ For the current research protocol and operating details, see the
 | [Worker Protocol](docs/worker-protocol.md) and [integration](docs/worker-integration.md) | Execution contracts and external deployment responsibilities |
 | [Operator status](docs/operator-status.md) and [recovery](docs/worker-recovery.md) | Monitoring, interruption evidence, and owned-resource cleanup |
 | [Research dynamics and RSI diagnostics](docs/research-dynamics.md) (design proposal) | Proposed read-only postmortem curves, metrics, process evidence, and data-quality reporting; not implemented |
-| [Development plan](docs/thin-core-development-plan.md#current-preview-closeout-boundary) and [acceptance matrix](docs/worker-acceptance-matrix.md) | Preview implementation status, remaining deployment checks, and deferred formal release work |
+| [Development plan](docs/thin-core-development-plan.md#current-preview-closeout-boundary) and [acceptance matrix](docs/worker-acceptance-matrix.md) | Preview implementation status, remaining deployment checks, and deployment evidence |
 
 ---
 

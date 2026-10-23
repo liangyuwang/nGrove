@@ -219,7 +219,7 @@ class EvaluationResourceSupervisorTests(unittest.TestCase):
         supervisor = self.supervisor(
             benchmark_release={
                 "benchmark_id": "resource-preview",
-                "evaluation_resource_envelope": request.public_manifest()
+                "evaluation_resource_envelope": request.public_manifest(),
             },
             evaluation_resource_envelope=reordered,
         )
@@ -249,7 +249,7 @@ class EvaluationResourceSupervisorTests(unittest.TestCase):
                 self.supervisor(
                     benchmark_release={
                         "benchmark_id": "resource-preview",
-                        "evaluation_resource_envelope": request.public_manifest()
+                        "evaluation_resource_envelope": request.public_manifest(),
                     },
                     evaluation_resource_envelope=explicit,
                 )

@@ -4,8 +4,8 @@
 Research Worker through Worker Protocol v17. It adds reusable Lease lifecycle
 coverage toward original issue 10, alongside the resolution and
 [evaluation resource](worker-evaluation-probe.md) diagnostics. It does not
-create a Tested Agent, run hidden evaluation, select an incumbent, publish an
-evaluation result, or issue a formal `ConformanceReceipt`.
+create a Research Agent, run hidden evaluation, select an incumbent or publish
+an evaluation result.
 
 ## Disposable inputs
 
@@ -111,8 +111,8 @@ Pass `command_timeout_case=timeout_case` to `probe_worker_leases()` above. This
 adds one command and two observations, with no additional Lease starts. Include
 that command, its resources and possible failed cleanup in the authorized fixture
 scope. The resulting probe version is
-`worker-v16-lease-command-timeout-probe-v1`; omitting the case retains
-`worker-v16-lease-probe-v1`. Both remain non-formal diagnostics.
+`worker-v17-lease-command-timeout-probe-v1`; omitting the case retains
+`worker-v17-lease-probe-v1`. Both retain their scoped diagnostic coverage.
 
 The independent, read-only observer receives `episode_id`, `lease_id`,
 `worker_id`, the exact `argv`, `command_sha256`, a fresh `observation_id`, and
@@ -135,7 +135,7 @@ timeout grant; Lease expiry, unrelated exit or Operator cleanup cannot substitut
 for command timeout enforcement. Worker return flags alone cannot supply these
 observations. Retain the underlying evidence in the trusted deployment.
 
-Worker v16 supplies no command operation ID. This fixture uses a fresh episode
+Worker v17 supplies no command operation ID. This fixture uses a fresh episode
 and Lease, a distinct timeout argument vector, and exactly one such invocation to
 establish the observed scope. `command_sha256` hashes the UTF-8 JSON argument array
 with ASCII escaping and separators `(',', ':')`; the observer receives it directly.
@@ -186,7 +186,7 @@ cleanup. A rejected request may still create work in a faulty implementation;
 include that possibility in the resource authorization.
 
 Run the entire diagnostic behind the deployment's independent watchdog. The
-synchronous v16 `start_lease`, `lease_state` and `terminate_lease` methods have no
+synchronous v17 `start_lease`, `lease_state` and `terminate_lease` methods have no
 timeout argument. Checking elapsed time can reject a late reply but cannot
 preempt a wedged method or callback. No thread left behind by a local timeout is
 treated as terminated. The separate [idle deadline diagnostic](worker-deadline-probe.md)
@@ -212,6 +212,6 @@ A passing report verifies these protocol observations. It does not independently
 prove physical resource enforcement, absence of a workload hidden by the Worker,
 the cause of resource rejection, or that a failed post-stop command executed no
 instructions. It also does not establish cross-UID access, hidden-data isolation,
-Candidate immutability, independent deadlines, crash recovery or certification.
+Candidate immutability, independent deadlines or crash recovery.
 Use adversarial fixtures and independent deployment observations for those
 guarantees, following the [acceptance matrix](worker-acceptance-matrix.md).

@@ -57,7 +57,9 @@ class ResearchRunOutputTests(unittest.TestCase):
         self.fixture.finalize_after_agent_stop(supervisor)
         return normalize_result_report(supervisor.state)
 
-    def test_research_lifecycle_never_assesses_or_exports_comparison_qualification(self):
+    def test_research_lifecycle_never_assesses_or_exports_comparison_qualification(
+        self,
+    ):
         with patch(
             "envcore.benchmark.benchmark_eligibility_violations",
             side_effect=AssertionError("qualification must be explicitly selected"),
@@ -66,7 +68,9 @@ class ResearchRunOutputTests(unittest.TestCase):
             side_effect=AssertionError("certification must be explicitly selected"),
         ):
             supervisor = self.fixture.supervisor()
-            self.assert_research_only(json.loads(supervisor.public_task_path.read_text()))
+            self.assert_research_only(
+                json.loads(supervisor.public_task_path.read_text())
+            )
             self.assert_research_only(supervisor.public_status())
             self.assert_research_only(self.complete(supervisor))
             report = normalize_result_report(supervisor.state)
@@ -94,9 +98,12 @@ class ResearchRunOutputTests(unittest.TestCase):
     def test_execution_failure_keeps_concrete_evidence_without_qualification(self):
         supervisor = self.fixture.supervisor()
         supervisor.deployment_teardown_failed("research_worker_teardown_failure")
-        self.assertIn("deployment_teardown_incomplete", supervisor.state["execution_issues"])
         self.assertIn(
-            "research_worker_teardown_failure", supervisor.state["deployment_teardown_failures"]
+            "deployment_teardown_incomplete", supervisor.state["execution_issues"]
+        )
+        self.assertIn(
+            "research_worker_teardown_failure",
+            supervisor.state["deployment_teardown_failures"],
         )
         self.assert_research_only(supervisor.public_status())
         self.assert_research_only(supervisor.state)
@@ -112,6 +119,11 @@ class ResearchRunOutputTests(unittest.TestCase):
         supervisor, _ = self.fixture.formal_supervisor()
         report = self.complete(supervisor)
         self.assertTrue(report["benchmark"]["leaderboard_eligible"])
+        historical = copy.deepcopy(report)
+        historical["result_schema_version"] = 17
+        original = copy.deepcopy(historical)
+        self.assertEqual(normalize_result_report(historical), original)
+        self.assertEqual(historical, original)
         self.assertNotIn("leaderboard_eligible", report)
         self.assert_research_only(report["agent_system"])
         self.assert_research_only(report["workers"])
@@ -132,14 +144,21 @@ class ResearchRunOutputTests(unittest.TestCase):
     def test_benchmark_certification_cannot_disagree_with_execution_evidence(self):
         supervisor, _ = self.fixture.formal_supervisor()
         report = self.complete(supervisor)
-        for mutation in ("missing_workers", "missing_receipt", "different_worker", "trust"):
+        for mutation in (
+            "missing_workers",
+            "missing_receipt",
+            "different_worker",
+            "trust",
+        ):
             changed = copy.deepcopy(report)
             if mutation == "missing_workers":
                 changed["benchmark"]["workers"] = {}
             elif mutation == "missing_receipt":
                 changed["benchmark"]["workers"]["research"]["conformance"] = None
             elif mutation == "different_worker":
-                changed["benchmark"]["workers"]["research"]["conformance"]["worker_id"] = "other"
+                changed["benchmark"]["workers"]["research"]["conformance"][
+                    "worker_id"
+                ] = "other"
             else:
                 changed["workers"]["research"]["trust_level"] = "development"
             with self.subTest(mutation=mutation), self.assertRaises(ResultSchemaError):
@@ -168,7 +187,9 @@ class ResearchRunOutputTests(unittest.TestCase):
         supervisor.deployment_teardown_failed("agent_control_teardown_failure")
         report = normalize_result_report(supervisor.state)
         self.assertFalse(report["benchmark"]["leaderboard_eligible"])
-        self.assertIn("deployment_teardown_incomplete", report["benchmark"]["policy_violations"])
+        self.assertIn(
+            "deployment_teardown_incomplete", report["benchmark"]["policy_violations"]
+        )
 
     def test_historical_result_is_read_without_rewriting_or_reclassifying_it(self):
         historical = _finalized(

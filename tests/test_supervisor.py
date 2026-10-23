@@ -19,7 +19,6 @@ from unittest.mock import patch
 from envcore.agent_control import AgentControlStepResult
 from envcore.agent_api_bundle import publish_agent_api_bundle
 from envcore.benchmark import (
-    FORMAL_ARTIFACT_DIGEST_FIELDS,
     FORMAL_ARTIFACT_IDENTITY_ALGORITHMS,
     BenchmarkContext,
     BenchmarkRelease,
@@ -511,11 +510,14 @@ class SupervisorTests(unittest.TestCase):
             evaluation_worker=self.worker,
             agent_control_transport=self.mailbox,
             benchmark=BenchmarkContext(
-                release=benchmark_release, comparison_key=comparison_key,
+                release=benchmark_release,
+                comparison_key=comparison_key,
                 verification=release_verification,
                 research_conformance=worker_conformance,
                 evaluation_conformance=worker_conformance,
-            ) if benchmark_release is not None else None,
+            )
+            if benchmark_release is not None
+            else None,
             monotonic=self.clock,
             wall_time=lambda: 1_700_000_000.0,
             operator_max_research_seconds=operator_max_research_seconds,
@@ -729,9 +731,13 @@ class SupervisorTests(unittest.TestCase):
             comparison_key=comparison_key,
             benchmark_release=release,
         )
-        self.assertEqual(supervisor.state["benchmark"]["comparison_key"], comparison_key)
+        self.assertEqual(
+            supervisor.state["benchmark"]["comparison_key"], comparison_key
+        )
         self.assertFalse(supervisor.state["benchmark"]["leaderboard_eligible"])
-        self.assertEqual(supervisor.public_status()["benchmark"]["comparison_key"], comparison_key)
+        self.assertEqual(
+            supervisor.public_status()["benchmark"]["comparison_key"], comparison_key
+        )
         public_task = json.loads(
             supervisor.public_task_path.read_text(encoding="utf-8")
         )
@@ -806,7 +812,14 @@ class SupervisorTests(unittest.TestCase):
             for digest in private_digests:
                 self.assertNotIn(digest, serialized)
 
-    def formal_supervisor(self, *, inference=None, gateway_artifact=None, workload_acceptance=None, begin=True):
+    def formal_supervisor(
+        self,
+        *,
+        inference=None,
+        gateway_artifact=None,
+        workload_acceptance=None,
+        begin=True,
+    ):
         """A trusted test deployment with every formal contract input supplied."""
         digest = "@sha256:" + "a" * 64
         formal_task_dir = self.episode.parent / "formal-task"
@@ -997,9 +1010,9 @@ class SupervisorTests(unittest.TestCase):
             if field == "receipt":
                 payload["gateway_execution"]["receipt"] = None
             else:
-                payload["benchmark"]["formal_release_verification"]["inference_gateway_artifact"] = (
-                    None
-                )
+                payload["benchmark"]["formal_release_verification"][
+                    "inference_gateway_artifact"
+                ] = None
             with self.subTest(field=field), self.assertRaisesRegex(
                 ResultSchemaError, "Gateway evidence is incomplete"
             ):
@@ -1193,7 +1206,9 @@ class SupervisorTests(unittest.TestCase):
             effective_sha256=resolved.effective_sha256,
             transformation_sha256=resolved.transformation_sha256,
         )
-        supervisor, _ = self.formal_supervisor(workload_acceptance={"training": acceptance})
+        supervisor, _ = self.formal_supervisor(
+            workload_acceptance={"training": acceptance}
+        )
 
         supervisor.start_lease()
 
@@ -1301,14 +1316,6 @@ class SupervisorTests(unittest.TestCase):
 
     def test_formal_inference_fails_closed_without_gateway_execution_evidence(self):
         digest = "@sha256:" + "a" * 64
-        config = replace(
-            self.config,
-            task_kind="research",
-            training_image="example/training" + digest,
-            candidate_image="example/candidate" + digest,
-            evaluator_image="example/evaluator" + digest,
-            inference_gateway_image="example/gateway" + digest,
-        )
         agent = replace(
             self.agent,
             image="example/agent" + digest,
@@ -1492,12 +1499,17 @@ class SupervisorTests(unittest.TestCase):
                 "capabilities_satisfied"
             ]
         )
-        self.assertNotIn("leaderboard_eligible", supervisor.state["workers"]["research"]["assessment"])
+        self.assertNotIn(
+            "leaderboard_eligible",
+            supervisor.state["workers"]["research"]["assessment"],
+        )
         self.assertEqual(
             supervisor.state["evaluation_system"]["backend"],
             "isolated_candidate",
         )
-        self.assertEqual(supervisor.state["evaluation_system"]["backend"], "isolated_candidate")
+        self.assertEqual(
+            supervisor.state["evaluation_system"]["backend"], "isolated_candidate"
+        )
         self.assertEqual(
             len(supervisor.state["agent_system"]["initial_workspace_sha256"]), 64
         )
@@ -2303,7 +2315,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertTrue(response["result"]["stdout_truncated"])
         self.assertEqual(supervisor.state["active_lease"]["exec_count"], 1)
 
-    def test_official_elapsed_time_freezes_before_agent_drain(self):
+    def test_research_elapsed_time_freezes_before_agent_drain(self):
         supervisor = self.supervisor()
         self.clock.advance(4)
         supervisor.finish()
@@ -2998,7 +3010,7 @@ class SupervisorTests(unittest.TestCase):
         supervisor.declare_incumbent(candidate["candidate_id"])
         final = supervisor.finish()
         timing = final["timing"]
-        self.assertEqual(timing["official_elapsed_seconds"], 3.0)
+        self.assertEqual(timing["research_elapsed_seconds"], 3.0)
         self.assertEqual(timing["training_lease_seconds"], 3.0)
         self.assertEqual(timing["analysis_evaluation_seconds"], 0.0)
         self.assertEqual(timing["agent_and_worker_seconds"], 0.0)

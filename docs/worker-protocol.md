@@ -23,7 +23,7 @@ Research Worker      Evaluation Worker
 ```
 
 This is distinct from the Agent-facing control API. In the bundled reference
-deployment, the Tested Agent sends semantic requests such as `lease_start` and
+deployment, the Research Agent sends semantic requests such as `lease_start` and
 `lease_commit` through a local file mailbox. The mailbox is one Agent-control
 transport; it is not the Coordinator-to-Worker Protocol and is not a required
 Worker implementation mechanism.

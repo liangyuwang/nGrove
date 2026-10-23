@@ -513,9 +513,9 @@ For debugging, `--agent-egress unrestricted-dev` gives the Agent Container
 ordinary Docker bridge egress. The selected network boundary is recorded with
 its execution limitations.
 
-Current reports use result schema v17. They record execution limitations in
+Current reports use result schema v18. They record execution limitations in
 `execution_issues`, with the detailed evidence under `agent_system`, `workers`,
-resource allocations, and teardown records. Historical result schemas v12–v16
+resource allocations, and teardown records. Historical result schemas v12–v17
 remain readable without rewriting their source files.
 
 The Supervisor prints the episode directory. The trusted Operator can inspect
@@ -541,9 +541,9 @@ ngrove report \
   --episode /path/to/ngrove-runs/episodes/<episode-id>
 ```
 
-Episode states declare `result_schema_version: 17`. V16 introduced the run-owned
+Episode states declare `result_schema_version: 18`. V16 introduced the run-owned
 environment configuration described in [configurable environments](environments.md).
-`report` also accepts v12/v13/v14/v15/v16
+`report` also accepts v12/v13/v14/v15/v16/v17
 reports under their original semantics; v12 cannot contain operator-protection
 fields or aborted outcomes. V12/v13 carry no verified evaluation
 resource evidence. V15 adds private, request-bound

@@ -1,7 +1,7 @@
 # Evaluation Worker diagnostic probe
 
 External Worker testing distinguishes a successful preview from acceptance of its
-Worker's failure paths. Worker v16 also requires evaluation resource receipts
+Worker's failure paths. Worker v17 also requires evaluation resource receipts
 that an older temporary deployment may not implement. The resolution probe
 cannot detect a Worker that resolves inputs correctly but omits, misbinds or
 reuses evaluation receipts.
@@ -110,7 +110,7 @@ Store this report and the output directory in trusted diagnostic storage.
 
 A passing probe means these calls and the explicit deployment cleanup check
 passed in that run. It does not independently observe physical CPU/GPU/storage
-enforcement, prove that rejected requests never launched a workload, certify
+enforcement, prove that rejected requests never launched a workload, establish
 hidden-data isolation, or test Worker kill/restart recovery. Resource rejection
 classification alone does not prove the underlying rejection cause. Use separate
 deployment observations and adversarial tests for those guarantees. Local mock

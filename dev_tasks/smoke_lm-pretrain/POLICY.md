@@ -12,10 +12,9 @@ initial workspace or image containing extra training corpora or a pretrained
 target-model checkpoint are outside policy.
 
 The **user/operator** prepares and launches the run and may itself be a human or
-another Agent; it is part of the trusted host boundary. The **Tested Agent** is
+another Agent; it is part of the trusted host boundary. The **Research Agent** is
 the submitted autonomous system conducting research. The runtime isolates the
-Tested Agent from prohibited network and evaluator resources where practical.
+Research Agent from prohibited network and evaluator resources where practical.
 It records immutable inputs and execution provenance for reproducibility and
 audit, but does not try to prevent a user/operator or administrator from
-modifying its own host. Local results are self-reported until a separately
-operated verification service exists.
+modifying its own host. The run records its actual execution boundary and enforcement limitations.

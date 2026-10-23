@@ -40,8 +40,8 @@ without an integrity inventory requires data preparation again in this path.
 
 The trusted launcher passes `training_data_verification` to `Supervisor`.
 Core requires a verified status and a digest matching the current root manifest,
-copies the evidence into trusted state, and uses that identity for formal release
-verification. It does not interpret the file inventory or scan the dataset.
+copies the evidence into trusted state and binds the run to that identity.
+It does not interpret the file inventory or scan the dataset.
 Other trusted launchers may obtain evidence from their Worker or immutable data
 view without using this local scanning implementation. The evidence is a trusted
 composition input, never an Agent-supplied claim.
@@ -50,8 +50,7 @@ The trusted result records `training_data_verification`: verification status,
 inventory version, manifest SHA-256, file count, and total file bytes excluding
 the root manifest. `artifact_identities.train_manifest_sha256` binds that same
 verified manifest. Existing version 12 results may lack the new audit field;
-absence is not evidence of verification. Formal releases must still bind the
-expected manifest identity through their trusted release receipt.
+absence is not evidence of verification.
 
 Verification checks changes while reading, but it does not enforce isolation or
 authenticate a manifest that an operator replaced together with its files. The

@@ -27,8 +27,13 @@ _FIELDS = {
 }
 _WORKER_FIELDS = {"trust_satisfied", "conformance_satisfied", "leaderboard_eligible"}
 _EXTENSION_FIELDS = {
-    "release", "comparison_key", "formal_release_verification", "policy_compliant",
-    "policy_violations", "leaderboard_eligible", "leaderboard_eligibility_violations",
+    "release",
+    "comparison_key",
+    "formal_release_verification",
+    "policy_compliant",
+    "policy_violations",
+    "leaderboard_eligible",
+    "leaderboard_eligibility_violations",
     "workers",
 }
 
@@ -37,12 +42,16 @@ def validate_result_extensions(result):
     legacy = result["result_schema_version"] < 17
     if legacy:
         if "benchmark" in result:
-            raise ResultSchemaError("benchmark extension requires result schema version 17")
+            raise ResultSchemaError(
+                "benchmark extension requires result schema version 17"
+            )
         view = result
     else:
         # Reject misplaced fields instead of silently dropping evidence.
         if _FIELDS.intersection(result):
-            raise ResultSchemaError("comparison fields belong inside the benchmark extension")
+            raise ResultSchemaError(
+                "comparison fields belong inside the benchmark extension"
+            )
         for name in ("agent_system", "evaluation_system"):
             component = result.get(name)
             if component is None:
@@ -56,7 +65,9 @@ def validate_result_extensions(result):
                     "execution evidence must contain facts, not comparison judgments"
                 )
         if "benchmark_manifest_sha256" in result.get("artifact_identities", {}):
-            raise ResultSchemaError("benchmark identity belongs inside the benchmark extension")
+            raise ResultSchemaError(
+                "benchmark identity belongs inside the benchmark extension"
+            )
         for worker in result.get("workers", {}).values():
             if "conformance" in worker or _WORKER_FIELDS.intersection(
                 worker.get("assessment", {})
@@ -65,11 +76,22 @@ def validate_result_extensions(result):
                     "Worker certification belongs inside the benchmark extension"
                 )
         if "benchmark" not in result:
-            if any(
-                isinstance(item, dict) and item.get("acceptance") == "organizer_receipt"
-                for item in result["workload_resolutions"].values()
-            ):
-                raise ResultSchemaError("organizer acceptance requires a benchmark extension")
+            for role, evidence in result["workload_resolutions"].items():
+                if evidence is None:
+                    continue
+                if result["result_schema_version"] >= 18:
+                    if "acceptance" in evidence:
+                        raise ResultSchemaError(
+                            "workload acceptance requires a benchmark extension"
+                        )
+                else:
+                    # Version 17 emitted identity judgments for ordinary runs.
+                    # Preserve their validation without admitting organizer claims.
+                    acceptance = _validate_workload_acceptance(role, evidence)
+                    if acceptance == "organizer_receipt":
+                        raise ResultSchemaError(
+                            "organizer acceptance requires a benchmark extension"
+                        )
             return
         extension = result["benchmark"]
         if not isinstance(extension, dict) or set(extension) != _EXTENSION_FIELDS:
@@ -90,9 +112,13 @@ def validate_result_extensions(result):
             ):
                 raise ResultSchemaError(f"benchmark {field} must be an array of codes")
         if extension["policy_compliant"] != (not extension["policy_violations"]):
-            raise ResultSchemaError("benchmark compliance disagrees with its violations")
+            raise ResultSchemaError(
+                "benchmark compliance disagrees with its violations"
+            )
         if extension["policy_violations"] != result.get("execution_issues", []):
-            raise ResultSchemaError("benchmark compliance disagrees with execution evidence")
+            raise ResultSchemaError(
+                "benchmark compliance disagrees with execution evidence"
+            )
         _validate_workers(result, extension)
         if extension["leaderboard_eligible"] and (
             not extension["policy_compliant"]
@@ -102,7 +128,10 @@ def validate_result_extensions(result):
         ):
             raise ResultSchemaError("benchmark eligibility disagrees with its evidence")
         view = {**result, **extension, "benchmark_release": release}
-    if view.get("outcome") == "aborted" and view.get("leaderboard_eligible") is not False:
+    if (
+        view.get("outcome") == "aborted"
+        and view.get("leaderboard_eligible") is not False
+    ):
         raise ResultSchemaError("an operator stop cannot be an evaluation result")
     _validate_verification(view)
     _validate_workloads(view)
@@ -131,7 +160,9 @@ def _validate_workers(result, extension):
         try:
             receipt = ConformanceReceipt(**receipt) if receipt is not None else None
         except (TypeError, ValueError) as exc:
-            raise ResultSchemaError(f"invalid benchmark Worker conformance: {exc}") from exc
+            raise ResultSchemaError(
+                f"invalid benchmark Worker conformance: {exc}"
+            ) from exc
         trust = descriptor.get("trust_level") == "certified"
         conformance = bool(
             receipt
@@ -140,7 +171,9 @@ def _validate_workers(result, extension):
             and receipt.passed
         )
         capability = descriptor.get("assessment", {})
-        eligible = capability.get("capabilities_satisfied") is True and trust and conformance
+        eligible = (
+            capability.get("capabilities_satisfied") is True and trust and conformance
+        )
         expected = {
             **capability,
             "trust_satisfied": trust,
@@ -148,7 +181,9 @@ def _validate_workers(result, extension):
             "leaderboard_eligible": eligible,
         }
         if record["assessment"] != expected:
-            raise ResultSchemaError("benchmark Worker assessment disagrees with execution evidence")
+            raise ResultSchemaError(
+                "benchmark Worker assessment disagrees with execution evidence"
+            )
         if extension["leaderboard_eligible"] and not eligible:
             raise ResultSchemaError("benchmark eligibility requires qualified Workers")
 
@@ -176,14 +211,46 @@ def _validate_verification(result):
         )
 
 
+def _validate_workload_acceptance(role, evidence):
+    """Validate the identity judgment shared by legacy and benchmark records."""
+    acceptance = evidence.get("acceptance")
+    if not isinstance(acceptance, str) or acceptance not in {
+        "canonical_identity",
+        "organizer_receipt",
+        "unverified",
+    }:
+        raise ResultSchemaError(
+            f"workload resolution {role} has an invalid acceptance status"
+        )
+    if acceptance == "canonical_identity":
+        marker = "@sha256:"
+        requested_digest = (
+            evidence["requested_identity"].rsplit(marker, 1)[1]
+            if marker in evidence["requested_identity"]
+            else None
+        )
+        if (
+            requested_digest != evidence["effective_sha256"]
+            or evidence["effective_format"] != "oci"
+            or evidence.get("transformation_sha256") is not None
+        ):
+            raise ResultSchemaError(
+                f"workload resolution {role} is not a canonical identity"
+            )
+
+    return acceptance
+
+
 def _validate_workloads(result):
     release_verification = result.get("formal_release_verification")
     for role, evidence in result["workload_resolutions"].items():
         if evidence is None:
             if result.get("leaderboard_eligible") is True:
-                raise ResultSchemaError("a leaderboard-eligible result requires every workload resolution")
+                raise ResultSchemaError(
+                    "a leaderboard-eligible result requires every workload resolution"
+                )
             continue
-        acceptance = evidence["acceptance"]
+        acceptance = _validate_workload_acceptance(role, evidence)
         if acceptance == "organizer_receipt":
             accepted = (
                 release_verification.get("workload_resolution_acceptance", {}).get(role)
@@ -284,7 +351,8 @@ def _validate_gateway(result):
     request = GatewayExecutionRequest.from_manifest(record["request"])
     receipt = (
         GatewayExecutionReceipt.from_manifest(record["receipt"])
-        if record["receipt"] is not None else None
+        if record["receipt"] is not None
+        else None
     )
     try:
         verification = result.get("formal_release_verification")

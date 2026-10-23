@@ -16,9 +16,7 @@ historical test.
 
 Generic diagnostic development is closed for this preview repair cycle under
 the [development plan](thin-core-development-plan.md#current-preview-closeout-boundary).
-This document is a case catalog and closeout checklist. Complete formal
-conformance (#10) and formal release/publication (#13) are deferred to the formal
-evaluation milestone and remain incomplete.
+This document is a case catalog and closeout checklist.
 
 Use this matrix on the user's own authorized execution environment. Core defines
 the common Worker contract; the deployment supplies its platform integration.
@@ -33,7 +31,7 @@ configurations; this matrix does not require repeating them on the same sites.
 | Local logic/command test | Core decisions, generated runtime arguments and handling of injected responses | Actual container limits, device isolation or physical resource cleanup |
 | Local process test | Observed pipes, signals, process-group fencing or filesystem/lock behavior in the local fixture | Real Docker/scheduler behavior; several process fixtures still use a fake backend |
 | Historical deployment observation | The stated scenario on the recorded Core/Worker/runtime combination | Acceptance of a later implementation or another deployment |
-| Current deployment acceptance | A completed, scoped real-runtime test with identities, observations and cleanup evidence | Unexercised scenarios, other releases, or formal certification |
+| Current deployment acceptance | A completed, scoped real-runtime test with identities, observations and cleanup evidence | Unexercised scenarios or other deployments |
 
 **A historical v15 source baseline has been recommended; a current v16 target
 deployment has not yet been adapted and frozen for this closeout.**
@@ -62,7 +60,7 @@ acceptance claim.
 | --- | --- | --- |
 | H-FAULT | Targeted resource and failure diagnostics | Actual byte/file-entry exhaustion, open-but-unlinked storage accounting, paused Worker deadline enforcement, independent cleanup after forced termination, separate prediction storage/final validation and accelerator identity checks. These cover the tested implementation and cases only. |
 | H-COMPLETE | Complete preview episodes | Successful Track A and Track B runs across separate deployments, including Candidate/incumbent, sealing, research/control teardown, TEST then ANALYSIS, publication, archive verification and working-storage disposal. Normal completion did not exercise private-limit expiry or every failure path. |
-| H-ADMISSION | Execution identity and tool admission | One deployment's final identity/path/tool checks and subsequent normal episode passed. This does not certify another wrapper or all storage/termination/isolation cases. |
+| H-ADMISSION | Execution identity and tool admission | One deployment's final identity/path/tool checks and subsequent normal episode passed. This does not establish behavior for another wrapper or all storage/termination/isolation cases. |
 | H-INTERRUPTED | External cancellation | An episode was cancelled during research without Candidate/TEST or a cancellation-time Worker teardown receipt. Later archive and working-storage disposal completed. Storage disposal does not by itself prove workload absence or full recovery. |
 | H-MON | Logs, monitoring and tool compatibility | Transient-heartbeat fixes have targeted regressions; short-log delay and stale final summaries were observed. A file-tool/path issue remained unresolved in one wrapper. A fix in another wrapper does not establish its resolution. |
 
@@ -159,7 +157,7 @@ wrong, revived and late fault evidence plus failed-injection recovery. The
 [local process fixtures](../tests/test_deadline_probe_process.py) use actual pause
 and termination signals, a separate deadline controller and a failing case where
 pausing Worker control also disables deadline enforcement. These fixtures do not
-certify a real Worker v16 deployment. The observer must be read-only, independent
+establish guarantees for a real Worker v17 deployment. The observer must be read-only, independent
 of Worker reconciliation, and able to establish uninterrupted control loss.
 
 Exercise an operation that exceeds its allowance and a stopped/nonresponsive
@@ -200,7 +198,7 @@ The supervising process must remain bounded, preserve the previous report where
 applicable and retain locks/uncertainty when helper termination is unconfirmed.
 Use [the documented recovery entry point](worker-recovery.md), not the
 cooperative primitive as proof of independent supervision. External Workers
-need their own equivalent evidence; Docker journal tests do not certify them.
+need their own equivalent evidence; Docker journal tests do not cover them.
 Recovery must leave sealed research, saved TEST decisions, Candidate identities
 and publication history unchanged. Archive verification and authorized working
 storage disposal remain separate observations.
@@ -298,7 +296,7 @@ a genuine cleanup failure and a result-publication write failure. Pass when
 TEST remains the primary accepted decision, ANALYSIS cannot select an incumbent,
 and cleanup attempts/dispositions precede final publication. Diagnostic or
 post-TEST teardown failure must not erase the TEST measurement; genuine cleanup
-failure must remain recorded and revoke compliance/eligibility. A finalized
+failure must remain recorded as an execution-integrity violation. A finalized
 report must not claim confirmed cleanup when absence is unconfirmed. A prepared
 event alone is not a finalized result. An in-process publication retry must not
 duplicate the decision; cleanup recovery after process loss must not resume or publish the
@@ -324,7 +322,7 @@ accepted result, workload cleanup and storage disposal without rewriting Core.
 For a new or changed heartbeat, progress publisher or watchdog, the following
 checks are applicable unless equivalent evidence covers the exact mechanism
 and runtime boundary. Use the actual deployment's monitor/control wiring and
-existing diagnostic hooks with disposable public fixtures. No Tested Agent or
+existing diagnostic hooks with disposable public fixtures. No Research Agent or
 hidden evaluation is needed. A CPU fixture can cover this monitoring boundary
 without establishing GPU enforcement. Fix the injection, configured loss
 tolerance, operation deadlines and outer recovery allowance before execution.
@@ -350,7 +348,7 @@ For an affected Agent wrapper, exercise actual required file/command tools in
 the final UID/path/temp view on a separate diagnostic workspace. A version or
 shell-only check does not establish native tool compatibility. Follow the
 already selected Agent identity and diagnostic authorization; this matrix does
-not select or supply a Tested Agent. An affected wrapper remains unverified until
+not select or supply a Research Agent. An affected wrapper remains unverified until
 its own evidence exists; a fix in another deployment does not establish its pass.
 
 ## Execution order and completion record
@@ -398,7 +396,7 @@ recorded assessment of changes affecting the tested boundary.
 | Existing evidence | Closeout disposition | What still needs checking for the target |
 | --- | --- | --- |
 | H-COMPLETE: normal A/B episodes and artifacts | Retain the completed preview objective, sealing/TEST/ANALYSIS sequence, archive verification and disposal facts; no replacement full A/B run is required merely for closeout | New v16 evaluation receipts and changed composition/result handling need their own focused evidence; differing hardware does not become a controlled A/B comparison |
-| H-FAULT: storage, deadlines, forced cleanup and device checks | Candidate for reuse of the same unchanged mechanism, fixture and resource boundary | Compare Worker/launcher changes and effective configuration. A later Core/probe version neither invalidates every mechanism test nor certifies new guarantees |
+| H-FAULT: storage, deadlines, forced cleanup and device checks | Candidate for reuse of the same unchanged mechanism, fixture and resource boundary | Compare Worker/launcher changes and effective configuration. A later Core/probe version neither invalidates every mechanism test nor establishes new guarantees |
 | H-ADMISSION / H-MON: tools, logs and monitoring | Retain successful admission and heartbeat regression evidence for the implementation actually tested | Recheck changed wrapper/path/log/status wiring; an unresolved file-tool issue cannot inherit another wrapper's pass |
 | H-INTERRUPTED: cancellation and later disposal | Retain interruption, archive and disposal evidence separately | Missing cancellation-time workload cleanup remains unknown. Do not infer it from storage disposal or reopen historical cancellation-cause investigation as part of this closeout |
 
@@ -451,15 +449,14 @@ new or applicable reused record, cleanup is confirmed, and limitations and
 policy status are reported accurately. A required failed guarantee must be
 fixed and retested or the corresponding run rejected; marking it unsupported
 does not turn that case into a pass. Optional or inapplicable cases need a
-reason, not a fabricated pass. Formal suite completion is not a condition for
-closing this explicitly non-formal preview scope.
+reason, not a fabricated pass.
 
 Reopen code work only for a reproduced defect or a required selected case that
 cannot be exercised through existing interfaces/hooks. State the concrete gap,
 Core/deployment owner and regression that will close it. Repair and rerun the
 affected case; do not automatically add another development round, full Track
 run or more general diagnostics. Report repository implementation closeout,
-target deployment acceptance and deferred formal readiness as separate statuses.
+target deployment acceptance as separate statuses.
 
 ### Per-case record
 
@@ -479,17 +476,12 @@ These are Operator record fields, not a new signed receipt or Core schema. Keep
 prior failed records; attach a new attempt when retesting. A row closes for a
 deployment only when all selected applicable subcases have evidence and the
 remaining limitations are explicit. Missing guarantees remain missing and can
-still prevent the intended run's admission. A passing diagnostic never upgrades
-formal eligibility.
+still prevent the intended run's admission.
 
 Completing this document closes the **matrix deliverable**, not the pending
 real-runtime acceptance. Step 5 still requires release owners to freeze and
-Workers to enforce the comparison conditions in
-[evaluation resources](evaluation-resources.md). Step 6 covers original issues
-10/12/13: formal conformance, Gateway execution identity and release/publication.
-The complete #10 and #13 deliverables are deferred to formal evaluation, still
-incomplete, rather than being the next preview repair tasks.
-The [Gateway execution evidence](gateway-execution.md) Core interface now
-supports issue 12; real launcher evidence and deployment certification remain
-pending independently of its regression tests.
+Workers to enforce the measurement conditions in
+[evaluation resources](evaluation-resources.md). The
+[Gateway execution evidence](gateway-execution.md) interface supports issue 12;
+real launcher evidence remains pending independently of its regression tests.
 Original issue 11 and full remote operations remain demand-driven work.

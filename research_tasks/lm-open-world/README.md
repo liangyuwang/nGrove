@@ -1,8 +1,7 @@
 # LM Open World
 
 > **Early vision, open for community design.** This directory currently contains
-> only this README. There is no runnable task, frozen evaluation contract, or
-> leaderboard-eligible release.
+> only this README. The task and evaluation contract remain to be implemented.
 
 This proposed task would provide a broader experimental setting for the project's
 [RSI and meta-optimization scope](../../docs/research-scope.md). Research
@@ -114,8 +113,6 @@ submitted system under its evaluation conditions. Claims about research
 effectiveness also need evidence of the Agent's starting point, the resources it
 could access, and how it used its budget. Choosing an effective existing system
 is a valid research decision; comparisons should make those conditions visible.
-A future benchmark can fix those conditions and compare the task's evaluation
-results; it is an optional use of the research task.
 
 ## Help shape the research task
 

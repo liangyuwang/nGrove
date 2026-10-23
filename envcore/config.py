@@ -309,17 +309,22 @@ def evaluator_backend(value: Any, field: str = "evaluation.backend") -> str:
 
 
 def _performance_score_contract(
-    value: Any, field: str = "evaluation.performance_score"
+    value: Any,
+    field: str = "evaluation.performance_score",
+    *,
+    allow_legacy: bool = False,
 ) -> PerformanceScoreContract:
     try:
-        return PerformanceScoreContract.from_manifest(value)
+        return PerformanceScoreContract.from_manifest(value, allow_legacy=allow_legacy)
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"{field} is invalid: {exc}") from exc
 
 
-def _cost_contract(value: Any, field: str = "evaluation.cost") -> CostContract:
+def _cost_contract(
+    value: Any, field: str = "evaluation.cost", *, allow_legacy: bool = False
+) -> CostContract:
     try:
-        return CostContract.from_manifest(value)
+        return CostContract.from_manifest(value, allow_legacy=allow_legacy)
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"{field} is invalid: {exc}") from exc
 
@@ -653,7 +658,10 @@ class TaskConfig:
             raise ConfigError(f"invalid JSON in {source}: {exc}") from exc
 
         root = _mapping(raw, "root")
-        if root.get("schema_version") == 8 and "leaderboard_eligible" in root:
+        schema_version = _positive_int(root.get("schema_version"), "schema_version")
+        if schema_version not in {7, 8}:
+            raise ConfigError("task schema_version must be 7 or 8")
+        if schema_version == 8 and "leaderboard_eligible" in root:
             raise ConfigError("task schema 8 does not declare leaderboard eligibility")
         paths = _mapping(root.get("paths"), "paths")
         images = _mapping(root.get("images"), "images")
@@ -676,8 +684,24 @@ class TaskConfig:
         evaluation = _mapping(root.get("evaluation"), "evaluation")
         analysis = _mapping(root.get("analysis"), "analysis")
         timing = root.get("timing")
+        preparation = None
+        preparation_field = "timing.environment_owned_preparation"
         if timing is not None:
             timing = _mapping(timing, "timing")
+            legacy_key = "benchmark_owned_preparation"
+            current_key = "environment_owned_preparation"
+            if legacy_key in timing and current_key in timing:
+                raise ConfigError("timing may not declare both preparation field names")
+            if legacy_key in timing:
+                if schema_version != 7:
+                    raise ConfigError(
+                        "rename timing.benchmark_owned_preparation to "
+                        "timing.environment_owned_preparation; preserve its value"
+                    )
+                preparation = timing[legacy_key]
+                preparation_field = "timing.benchmark_owned_preparation"
+            else:
+                preparation = timing.get(current_key)
         track_a = _mapping(root.get("track_a"), "track_a")
         track_b = _mapping(root.get("track_b"), "track_b")
 
@@ -705,7 +729,7 @@ class TaskConfig:
 
         config = cls(
             source=source,
-            schema_version=_positive_int(root.get("schema_version"), "schema_version"),
+            schema_version=schema_version,
             task_id=_string(root.get("task_id"), "task_id"),
             task_kind=task_kind(root.get("task_kind")),
             train_dir=resolved_path("train", directory=True),
@@ -724,9 +748,11 @@ class TaskConfig:
                 "images.inference_gateway",
             ),
             performance_score=_performance_score_contract(
-                evaluation.get("performance_score")
+                evaluation.get("performance_score"), allow_legacy=schema_version == 7
             ),
-            cost=_cost_contract(evaluation.get("cost")),
+            cost=_cost_contract(
+                evaluation.get("cost"), allow_legacy=schema_version == 7
+            ),
             vocab_size=_positive_int(
                 evaluation.get("vocab_size"), "evaluation.vocab_size"
             ),
@@ -737,7 +763,7 @@ class TaskConfig:
                 evaluation.get("context_lengths"), "evaluation.context_lengths"
             ),
             environment_owned_preparation=environment_owned_preparation(
-                None if timing is None else timing.get("environment_owned_preparation")
+                preparation, field=preparation_field
             ),
             track_a_total_seconds=_positive_int(
                 track_a.get("total_seconds"), "track_a.total_seconds"

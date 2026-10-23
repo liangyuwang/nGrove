@@ -155,7 +155,7 @@ evaluation envelope into an immutable snapshot. Direct trusted Worker
 compositions freeze these same fields without needing a named profile. Mutating
 input objects or copies of the record cannot change an active run's configuration.
 
-Result schema v17 includes this snapshot as `environment.configuration` and its
+Result schema v18 includes this snapshot as `environment.configuration` and its
 SHA-256 as `environment.configuration_sha256`. The public task, status and trusted
 report carry the same record. It contains execution settings, not private task
 or release fingerprints. The input inspection fingerprint from `environment-info`
@@ -172,27 +172,6 @@ compute/time dimensions and control task/data/image identities, Agent initial
 configuration and the remaining execution conditions. Record contention and cache
 differences; matching configuration hashes alone do not prove equal performance
 conditions.
-
-## Benchmark presets and comparisons
-
-Select a named budget with `--benchmark` and
-`--track-config`. To also reuse a published hardware profile, use
-`--benchmark ... --track-config ... --runtime-profile ...`. An optional
-`--environment` replaces its compute configuration and overrides only explicitly
-specified time budgets. The selected profile remains the comparison preset;
-changing effective conditions does not claim that preset's comparison key.
-Without `--runtime-profile`, a benchmark launch requires `--environment`.
-
-The benchmark application can attach its release identity to the same run.
-An explicitly selected Track/runtime preset receives a comparison key only when
-its complete resolved budget and resource contracts match. An environment file
-with identical effective conditions keeps that key. A different GPU count, time
-budget or evaluation contract produces a custom experiment with a null key;
-the source benchmark identity remains recorded. Formal eligibility still needs
-an official release, trusted execution and all existing evidence requirements.
-
-Benchmark resolution uses the same `resolve_environment_run` function as task-only
-execution. The environment types and resolver are independent of benchmark catalogs.
 
 ## Package and scope
 

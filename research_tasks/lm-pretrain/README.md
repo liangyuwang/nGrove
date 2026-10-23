@@ -54,7 +54,7 @@ The local preview builder pre-stages ANALYSIS/TEST under the trusted task root,
 but neither path is mounted into the Agent or Research Worker. After research
 sealing, the Evaluation Worker may materialize the frozen pair. It validates
 both files first, mounts only `contexts.json` read-only into the Candidate, and
-keeps `targets.json` inside trusted scoring. A formal Worker may instead fetch,
+keeps `targets.json` inside trusted scoring. An Evaluation Worker may instead fetch,
 mount, or decrypt the same release-frozen identity at that point; Core does not
 prescribe the storage mechanism.
 
@@ -64,8 +64,7 @@ choose how to use context to optimize next-token prediction within the resource
 budget. `evaluation.max_context_tokens` is 2,048 for this preview; it is an
 input bound, not a guarantee that any evaluation example reaches it. Sampling
 lengths and proportions remain in trusted evaluation configuration. The local
-builder is publicly reproducible, so its recipe is not secret; a formal release
-must use organizer-owned evaluation construction parameters and data.
+builder is publicly reproducible, so its recipe is not secret.
 
 The Evaluator uses non-overlapping contexts. Each contributes one hidden next-token
 target. The Candidate receives the complete unlabeled context artifact, owns
@@ -281,89 +280,14 @@ research lifecycle. Configure capture and retention with `--recording` and
 inspect the private evidence with `ngrove trajectory --episode PATH`; see
 [research recording](../../docs/recording.md).
 
-<a id="supported-preview-lanes"></a>
-
-## Benchmark preview lanes
-
-For benchmark comparisons, `benchmark.json` supplies named Track/runtime presets
-and comparison metadata. It remains `leaderboard_eligible: false`: the current
-settings are provisional, and a verified release will replace the reproducible
-local holdouts with organizer-owned hidden datasets.
-
-The preview publishes two provisional budget presets:
-
-- Track A: `preview-a-8h`;
-- Track B: `preview-b-6x1h`.
-
-Each hardware family has separate single-host profiles for **1, 2, 4, and 8
-full GPUs**:
-
-| Hardware | Runtime profile IDs | Minimum memory per GPU |
-| --- | --- | --- |
-| NVIDIA A100 SXM4 80GB | `a100-sxm4-80gb-x{1,2,4,8}` | 80,000 MiB |
-| NVIDIA H100 SXM 80GB | `h100-sxm-80gb-x{1,2,4,8}` | 80,000 MiB |
-| NVIDIA H200 SXM 141GB | `h200-sxm-141gb-x{1,2,4,8}` | 140,000 MiB |
-| NVIDIA H200 NVL 141GB | `h200-nvl-141gb-x{1,2,4,8}` | 140,000 MiB |
-
-This is a catalog of runnable configurations, not a set of official reference
-environments or a commitment to a leaderboard for every profile. Official
-reference environments remain to be selected and verified. Users can define
-profiles for their own hardware and are responsible for fair conditions across
-the Agents they compare; follow the
-[reference environment and comparison policy](../README.md#reference-environments-and-custom-comparisons).
-
-The braces abbreviate four concrete IDs; for example, use `h200-sxm-141gb-x2`.
-H200 SXM and NVL have distinct profiles because their hardware specifications
-differ ([NVIDIA H200 specifications](https://www.nvidia.com/en-us/data-center/h200/)).
-They require exact device names `NVIDIA H200` and `NVIDIA H200 NVL`, respectively;
-an unfamiliar reported name must be verified before adding a profile alias.
-Memory thresholds are preflight lower bounds, not conversions of product labels.
-
-The count is the episode allocation, not the host's total inventory. The Worker
-must expose exactly the selected full GPUs, preserve their identities between
-Leases and CUDA Candidate evaluation, and reject MIG-enabled devices. The
-reference Worker can select a subset of a larger host. Multi-host execution and
-other board variants require separate support and profiles.
-
-Track budgets are unchanged across profiles: Track A remains eight wall-clock
-hours, and Track B remains six one-hour Leases. They are not normalized to equal
-GPU-hours. GPU count and model therefore remain part of the comparison key.
-
-All profiles are provisional declarations, not evidence that every combination
-has passed a real run. They currently declare GPU requirements without fixing
-interconnect topology, CPU allocation or host-memory conditions. The expanded
-catalog and GPU binding are covered by
-hardware-free regression checks. Driver, pinned-image, CUDA execution, and
-multi-GPU behavior still require the selected deployment's
-[Worker integration checks](../../docs/worker-integration.md) and an authorized
-smoke episode. Host/interconnect calibration remains preview release work.
-
-CPU, B300, TPU, and other platforms may run the same task when runtime support
-exists, with effective conditions recorded in the frozen environment. Research
-comparisons must identify varied and controlled conditions. For benchmark
-comparisons, require the same frozen release and data identities, consistent
-resource conditions, and this complete comparison key:
-
-```text
-benchmark_id + track + track_config + runtime_profile
-```
-
-Inspect the finite maps:
-
-```bash
-ngrove benchmark-info \
-  --benchmark research_tasks/lm-pretrain/benchmark.json
-```
-
-The alternative preset-based command below infers `task.json` from the benchmark
-manifest. The following operator protections also apply to task-based runs:
+## Operator protections
 
 Track B defaults to a **24-hour private operator research-time protection**,
 configured in `operator-defaults.json`. The launcher announces it before run
 preparation. Add `--operator-max-research-seconds SECONDS` to change it or
 `--no-operator-research-limit` to disable it for one run. Disabling protection
 risks extremely high token consumption. The setting and notices are never sent
-to the Tested Agent and do not change the six one-hour Leases or comparison key.
+to the Research Agent and do not change the six one-hour Leases.
 See [operator protection semantics](../../docs/research-protocol.md#track-b--lease-bounded-autonomous-research).
 
 Both Tracks also default to **100 GiB of private operator storage protection**.
@@ -374,18 +298,3 @@ episode parent directory; an ordinary directory will fail admission. Use
 does not change Track budgets or the prediction-output protocol. Remote Workers
 must enforce this in their execution environment. See
 [storage protection requirements](../../docs/research-protocol.md#private-operator-storage-protection).
-
-```bash
-ngrove start \
-  --benchmark research_tasks/lm-pretrain/benchmark.json \
-  --track-config preview-b-6x1h \
-  --runtime-profile h100-sxm-80gb-x4 \
-  --episodes-root /path/to/ngrove-runs/episodes \
-  --agent-runner container \
-  --agent-image participant-agent@sha256:DIGEST \
-  --agent-command "participant-agent run"
-```
-
-Profile-bound benchmark runs reject `--track`, `--training-gpus`, and
-`--training-gpu-model`; those values come from the selected profiles so the
-recorded comparison key cannot disagree with the actual episode.

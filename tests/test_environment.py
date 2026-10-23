@@ -707,7 +707,9 @@ class EnvironmentTests(unittest.TestCase):
             fixture.finalize_after_agent_stop(supervisor)
             report = copy.deepcopy(supervisor.state)
             report["benchmark"]["release"].pop("environment_sha256")
-            self.assertIsNotNone(normalize_result_report(report)["benchmark"]["comparison_key"])
+            self.assertIsNotNone(
+                normalize_result_report(report)["benchmark"]["comparison_key"]
+            )
 
             changed = copy.deepcopy(report)
             larger = FrozenEnvironment.create(

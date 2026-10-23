@@ -1,3 +1,4 @@
+import copy
 import unittest
 
 from envcore.config import TrainingResources
@@ -138,7 +139,7 @@ def _resource_fields():
             "definition_id": "uniform_normalized_log_score_v1",
             "range": {"minimum": 0.0, "maximum": 100.0},
             "direction": "maximize",
-            "comparison_scope": "benchmark_release",
+            "comparison_scope": "task_release",
             "raw_metrics": ["mean_nll"],
         },
         "cost_contract": {
@@ -148,10 +149,10 @@ def _resource_fields():
             "unit": "seconds_per_task",
             "direction": "minimize",
             "aggregation": "candidate_wall_seconds_divided_by_task_count",
-            "comparison_scope": "benchmark_release",
+            "comparison_scope": "task_release",
             "comparison_requires": [
                 "hidden_dataset_identity",
-                "runtime_profile",
+                "effective_resources",
             ],
             "submetrics": [
                 "candidate_wall_seconds",
@@ -211,6 +212,15 @@ def _finalized(**overrides):
         "test_raw_metrics": {"mean_nll": 0.0},
     }
     payload.update(overrides)
+    if payload["result_schema_version"] < 17:
+        for field in ("performance_score_contract", "cost_contract"):
+            if field not in overrides:
+                payload[field]["comparison_scope"] = "benchmark_release"
+        if "cost_contract" not in overrides:
+            payload["cost_contract"]["comparison_requires"] = [
+                "hidden_dataset_identity",
+                "runtime_profile",
+            ]
     if payload["result_schema_version"] < 16:
         payload.pop("environment", None)
     if payload["result_schema_version"] < 15:
@@ -262,6 +272,70 @@ def _finalized(**overrides):
 
 
 class ResultMetricTests(unittest.TestCase):
+    def test_historical_metric_contracts_remain_readable_without_rewriting(self):
+        for version in range(12, 18):
+            with self.subTest(version=version):
+                payload = _finalized(result_schema_version=version)
+                for field in ("performance_score_contract", "cost_contract"):
+                    payload[field]["comparison_scope"] = "benchmark_release"
+                payload["cost_contract"]["comparison_requires"] = [
+                    "hidden_dataset_identity",
+                    "runtime_profile",
+                ]
+                original = copy.deepcopy(payload)
+                report = normalize_result_report(payload)
+                self.assertEqual(payload, original)
+                for field in ("performance_score_contract", "cost_contract"):
+                    self.assertEqual(report[field], original[field])
+                    self.assertEqual(
+                        report[field]["comparison_scope"], "benchmark_release"
+                    )
+                self.assertEqual(
+                    report["cost_contract"]["comparison_requires"],
+                    ["hidden_dataset_identity", "runtime_profile"],
+                )
+
+    def test_v17_workload_acceptance_remains_readable_and_validated(self):
+        for acceptance in ("canonical_identity", "unverified"):
+            with self.subTest(acceptance=acceptance):
+                payload = _finalized(result_schema_version=17)
+                payload["workload_resolutions"]["training"] = _workload_resolution(
+                    "training", acceptance
+                )
+                original = copy.deepcopy(payload)
+                report = normalize_result_report(payload)
+                self.assertEqual(payload, original)
+                self.assertEqual(
+                    report["workload_resolutions"], original["workload_resolutions"]
+                )
+
+        payload["workload_resolutions"]["training"] = _workload_resolution("training")
+        payload["workload_resolutions"]["training"]["effective_sha256"] = "b" * 64
+        with self.assertRaisesRegex(ResultSchemaError, "canonical identity"):
+            normalize_result_report(payload)
+        for acceptance in ("organizer_receipt", "unknown"):
+            with self.subTest(acceptance=acceptance):
+                payload["workload_resolutions"]["training"] = _workload_resolution(
+                    "training", acceptance
+                )
+                with self.assertRaisesRegex(ResultSchemaError, "acceptance"):
+                    normalize_result_report(payload)
+
+    def test_current_metric_contracts_reject_legacy_comparison_fields(self):
+        for field in ("performance_score_contract", "cost_contract"):
+            with self.subTest(field=field):
+                payload = _finalized()
+                payload[field]["comparison_scope"] = "benchmark_release"
+                with self.assertRaisesRegex(ResultSchemaError, "invalid .* contract"):
+                    normalize_result_report(payload)
+        payload = _finalized()
+        payload["cost_contract"]["comparison_requires"] = [
+            "hidden_dataset_identity",
+            "runtime_profile",
+        ]
+        with self.assertRaisesRegex(ResultSchemaError, "effective resources"):
+            normalize_result_report(payload)
+
     def test_prior_v12_reports_remain_readable_without_operator_semantics(self):
         payload = _finalized(result_schema_version=12)
         self.assertEqual(normalize_result_report(payload)["outcome"], "success")
@@ -776,11 +850,12 @@ class ResultMetricTests(unittest.TestCase):
         with self.assertRaisesRegex(ResultSchemaError, "canonical identity"):
             normalize_result_report(
                 _finalized(
+                    result_schema_version=16,
                     workload_resolutions={
                         "training": forged_identity,
                         "candidate": None,
                         "evaluator": None,
-                    }
+                    },
                 )
             )
 
@@ -793,11 +868,12 @@ class ResultMetricTests(unittest.TestCase):
         with self.assertRaisesRegex(ResultSchemaError, "organizer acceptance"):
             normalize_result_report(
                 _finalized(
+                    result_schema_version=16,
                     workload_resolutions={
                         "training": derived,
                         "candidate": None,
                         "evaluator": None,
-                    }
+                    },
                 )
             )
 

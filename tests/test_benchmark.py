@@ -9,6 +9,7 @@ from envcore.benchmark import (
     FORMAL_ARTIFACT_IDENTITY_ALGORITHMS,
     BenchmarkRelease,
     ReleaseVerificationReceipt,
+    validate_benchmark_task,
 )
 from envcore.config import ConfigError, TaskConfig
 from envcore.gateway_execution import GatewayArtifactIdentity
@@ -339,6 +340,65 @@ class BenchmarkReleaseTests(unittest.TestCase):
                     track_config_id="a-1h",
                     runtime_profile_id="h100-80gb-x4",
                 )
+
+            task = replace(
+                TaskConfig.load(TASK), source=release.task_path, task_kind="research"
+            )
+            with self.assertRaisesRegex(ConfigError, "digest-pinned"):
+                release.resolve(
+                    task, track_config_id="a-1h", runtime_profile_id="h100-80gb-x4"
+                )
+            task = replace(
+                task,
+                **{
+                    name: "image@sha256:" + "a" * 64
+                    for name in (
+                        "training_image",
+                        "candidate_image",
+                        "evaluator_image",
+                        "inference_gateway_image",
+                    )
+                },
+            )
+            resolved = release.resolve(
+                task, track_config_id="a-1h", runtime_profile_id="h100-80gb-x4"
+            )
+            self.assertTrue(resolved.release_manifest["leaderboard_eligible"])
+
+    def test_formal_task_prerequisites_apply_without_release_resolution(self):
+        task = TaskConfig.load(TASK)
+        with self.assertRaisesRegex(ConfigError, "development smoke"):
+            validate_benchmark_task(task)
+        task = replace(task, task_kind="research")
+        with self.assertRaisesRegex(ConfigError, "digest-pinned"):
+            validate_benchmark_task(task)
+        fields = (
+            "training_image",
+            "candidate_image",
+            "evaluator_image",
+            "inference_gateway_image",
+        )
+        task = replace(task, **{name: "image@sha256:" + "a" * 64 for name in fields})
+        validate_benchmark_task(task)
+        for field in fields:
+            with self.subTest(field=field), self.assertRaisesRegex(
+                ConfigError, "digest-pinned"
+            ):
+                validate_benchmark_task(replace(task, **{field: "image:latest"}))
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "task.json"
+            legacy = replace(task, source=source, schema_version=7)
+            for eligible in (False, True):
+                source.write_text(
+                    json.dumps({"schema_version": 7, "leaderboard_eligible": eligible})
+                )
+                if eligible:
+                    validate_benchmark_task(legacy)
+                else:
+                    with self.assertRaisesRegex(
+                        ConfigError, "legacy leaderboard release"
+                    ):
+                        validate_benchmark_task(legacy)
 
     def test_runtime_profile_can_explicitly_require_no_accelerator(self):
         with tempfile.TemporaryDirectory() as directory:
